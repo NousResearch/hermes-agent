@@ -153,26 +153,31 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
     return cleaned.rstrip("/")
 
 
-def _scoped_operator_override(name: str) -> Optional[str]:
-    """An operator routing override (``NOUS_INFERENCE_BASE_URL``, ``HERMES_PORTAL_BASE_URL``)
-    resolved through the profile secret scope, or None.
+def _scoped_operator_override(*names: str) -> Optional[str]:
+    """The first set operator routing override among ``names`` (``NOUS_INFERENCE_BASE_URL``,
+    ``HERMES_PORTAL_BASE_URL`` / its ``NOUS_PORTAL_BASE_URL`` alias), resolved through the profile
+    secret scope, or None.
 
     ``get_secret`` already reads ``os.environ`` for a single-profile process, so the only time it
     raises is a multi-profile call that has lost its profile scope. That call has no authority to
     route on the launch profile's value — returning the ambient env there would send a secondary's
     tokens to the launch profile's Portal or inference host — so the override is simply absent.
-    Absent is not free: the stored/default routing then applies, so a non-production deployment's
-    token is spent against the production hosts. Log it by name — the downstream
-    "ignoring invalid portal_base_url" warning hides which caller lost its scope.
+    Absent is not free: default routing then applies, so a non-production deployment's token is
+    spent against the production hosts. One WARNING per lost-scope event names the override; the
+    downstream "ignoring invalid portal_base_url" line never says which caller lost its scope.
     """
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
-        return get_secret(name)
+        for name in names:
+            value = get_secret(name)
+            if value:
+                return value
+        return None
     except UnscopedSecretError:
         logger.warning(
             "nous: %s unreadable — no profile secret scope on a multiplexed call; treating the "
             "override as absent (default routing applies). The caller needs a profile scope binding.",
-            name)
+            "/".join(names))
         return None
 
 
@@ -199,8 +204,7 @@ def _nous_portal_env_override() -> Optional[str]:
     secondary's refresh token to the DEFAULT profile's Portal.
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(
-        _scoped_operator_override("HERMES_PORTAL_BASE_URL") or _scoped_operator_override("NOUS_PORTAL_BASE_URL"))
+    return _optional_base_url(_scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
 def _scope_values(raw_scope: Any) -> set[str]:

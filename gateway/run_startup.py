@@ -108,32 +108,35 @@ class GatewayStartupMixin:
             return
         self._startup_warmup_task = asyncio.ensure_future(self._warm_turn_prerequisites())
 
+    async def _run_boot_probe_in_launch_scope(self, fn):
+        """Run a boot-time probe on the default executor under the LAUNCH profile's scope when
+        multiplexing (the ``_discover_gateway_mcp_tools`` shape). Boot probes (``check_fn``s) read profile-scoped secrets; an unscoped read under multiplex fails
+        closed, so routing overrides resolve as absent and default routing applies. ``copy_context``
+        carries the contextvars across the executor hop; single-profile keeps environ semantics."""
+        loop = asyncio.get_running_loop()
+        if getattr(self.config, "multiplex_profiles", False):
+            from gateway.run import _async_profile_runtime_scope
+            from hermes_constants import get_hermes_home
+            try:
+                async with _async_profile_runtime_scope(get_hermes_home()):
+                    return await loop.run_in_executor(None, copy_context().run, fn)
+            except Exception:
+                # Same fallback as load_gateway_config_for_runner: a scope that cannot be built must not
+                # abort startup; the probe runs unscoped as it did before.
+                logger.debug("multiplex launch-scope entry failed for boot probe %s; running unscoped",
+                             getattr(fn, "__name__", fn), exc_info=True)
+        return await loop.run_in_executor(None, copy_context().run, fn)
+
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
-        failed warm-up degrades to lazy init and must not block startup.
-
-        Under multiplex the warm-up runs inside the launch profile's ``_profile_runtime_scope`` and
-        carries that context into the executor thread (the ``_discover_gateway_mcp_tools`` shape).
-        ``get_tool_definitions`` runs every ``check_fn``, and the vision probe resolves live Nous
-        runtime credentials; with no scope installed ``get_secret`` fails closed, the Portal / inference
-        env overrides read as absent, and the refresh token of a non-production Portal is POSTed to the
-        production Portal — ``invalid_grant`` and a quarantined login ~10 s after every boot, before any
-        inbound turn (live on hosted staging, 2026-09-16)."""
+        failed warm-up degrades to lazy init and must not block startup."""
         from gateway.run import _warm_turn_machinery_sync
         with _log_suppressed(
             logging.WARNING, "Turn-machinery warm-up failed; first inbound turn will initialize lazily",
             exc_info=True,
         ):
-            loop = asyncio.get_running_loop()
             t0 = time.monotonic()
-            if getattr(self.config, "multiplex_profiles", False):
-                from gateway.run import _async_profile_runtime_scope
-                from hermes_constants import get_hermes_home
-                async with _async_profile_runtime_scope(get_hermes_home()):
-                    tool_count = await loop.run_in_executor(
-                        None, copy_context().run, _warm_turn_machinery_sync)
-            else:
-                tool_count = await loop.run_in_executor(None, _warm_turn_machinery_sync)
+            tool_count = await self._run_boot_probe_in_launch_scope(_warm_turn_machinery_sync)
             logger.info(
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,

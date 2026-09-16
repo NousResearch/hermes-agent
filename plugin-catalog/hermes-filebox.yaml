@@ -1,0 +1,18 @@
+name: hermes-filebox
+repo: https://github.com/imzacksong/hermes-filebox
+sha: e9cd578ded0d0443463c7a28d08495d28e8a6838
+description: 'Explorer-style file browser for Hermes Desktop: tabbed panes, resizable quick-access
+  sidebar, icon grid, search, and a preview pane with image/audio/video/PDF/text preview.
+  Send to… shares files over the home LAN; optional one-click heads-up to a paired agent.
+  Zero API keys, zero model tokens.'
+maintainer: imzacksong
+tier: community
+category: desktop
+requires_hermes: '>=0.21'
+docs_url: https://github.com/imzacksong/hermes-filebox
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

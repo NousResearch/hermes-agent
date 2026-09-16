@@ -65,12 +65,20 @@ export function surfaceModelSwitchConfirm<T extends GuardedModelSwitchResult>(
     try {
       const result = await options.requestConfirmed()
 
+      if (options.isStale?.()) {
+        return
+      }
+
       if (result?.confirm_required) {
         throw new Error(result.confirm_message?.trim() || options.failureMessage)
       }
 
       options.finish?.(result)
     } catch (err) {
+      if (options.isStale?.()) {
+        return
+      }
+
       options.rollback?.()
       notifyError(err, options.failureMessage)
     }

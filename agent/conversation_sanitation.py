@@ -62,6 +62,12 @@ _REPLAY_ENVELOPE_FIELDS = frozenset(
 # content. Redacting one (e.g. ``detail`` -> a redaction placeholder) passes this module's declared-
 # growth validation but the provider then hard-rejects the request. Only content-bearing fields may
 # carry placeholders; control keys stay verbatim (or refuse the candidate).
+# Envelope FIELD names (``image_url``, ``file``) are request-shape keys whose nested values may be
+# EITHER control (``detail``, ``media_type``) or payload (``url``, ``file_data``): routing the whole
+# envelope here verbatim would make a secret inside a signed URL or inline attachment permanently
+# unsanitizable, so the envelope re-classifies its nested keys per key. (Anthropic-style ``source``
+# stays fully structural via ``_CONTENT_PART_TYPE_FIELDS`` — its media-type shell is request shape.)
+_PAYLOAD_BEARING_ENVELOPE_FIELDS = frozenset({"image_url", "file"})
 _PROVIDER_CONTROL_FIELDS = frozenset(
     {
         "detail",
@@ -71,9 +77,6 @@ _PROVIDER_CONTROL_FIELDS = frozenset(
         "tool_call_id",
         "tool_use_id",
         "call_id",
-        "source",
-        "image_url",
-        "file",
         "media_type",
     }
 )
@@ -379,6 +382,12 @@ def _child_context(context: str, key: Any) -> tuple[str, bool]:
             return "structural", False
         if key in _PROVIDER_CONTROL_FIELDS:
             return "control", False
+        if key in _PAYLOAD_BEARING_ENVELOPE_FIELDS:
+            # Round-7 finding: an envelope like ``image_url``/``file`` holds BOTH request shape
+            # (``detail``, ``media_type``) and payload (``url``, ``file_data``, ``data``). Route
+            # it as content_part so its nested keys re-classify per key: a secret inside the
+            # payload stays sanitizable while the nested control keys stay verbatim.
+            return "content_part", False
         return "payload", False
     if context in {"payload", "content_part"}:
         return "payload", False

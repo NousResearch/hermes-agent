@@ -2144,6 +2144,70 @@ def test_sanitation_missing_watermark_retains_retry(tmp_path, monkeypatch, caplo
     ) == _without_persistence_markers(harness.candidate)
 
 
+def test_sanitation_redacts_secret_in_image_url_url_payload():
+    """A secret inside a content part's payload-bearing URL must be redactable (round-7 finding).
+
+    Round-6 classified the WHOLE ``image_url`` envelope as provider control, so a signed
+    image URL carrying an API token could never be sanitized: the whole candidate was
+    rejected and the secret stayed durable. ``url`` is payload-bearing — redaction inside
+    it must validate while the request-shape shell (``detail``, ``type``, ``cache_control``)
+    stays verbatim. Same contract for a ``file`` part's ``file_data`` payload field.
+    """
+    secret = "sk-siv3cret12345"
+    placeholder = _placeholder("api_key", secret)
+
+    original = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"token={secret}"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"https://img.example.com/i.png?token={secret}",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"][0]["text"] = f"token={placeholder}"
+    candidate[0]["content"][1]["image_url"]["url"] = (
+        f"https://img.example.com/i.png?token={placeholder}"
+    )
+    changes = validate_sanitation_candidate(original, candidate)
+    assert changes is not None
+    assert changes.placeholders == 2
+    assert candidate[0]["content"][1]["image_url"]["detail"] == "high"
+
+    # A file part's data payload field is content-bearing the same way.
+    original_file = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"token={secret}"},
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "report.pdf",
+                        "file_data": f"data:application/pdf;base64,{secret}",
+                    },
+                },
+            ],
+        }
+    ]
+    candidate_file = copy.deepcopy(original_file)
+    candidate_file[0]["content"][0]["text"] = f"token={placeholder}"
+    candidate_file[0]["content"][1]["file"]["file_data"] = (
+        f"data:application/pdf;base64,{placeholder}"
+    )
+    changes_file = validate_sanitation_candidate(original_file, candidate_file)
+    assert changes_file is not None
+    assert changes_file.placeholders == 2
+    assert candidate_file[0]["content"][1]["file"]["filename"] == "report.pdf"
+
+
 def test_sanitation_rejects_multimodal_control_redactions():
     """Control fields inside content blocks are request shape, not content (round-6 finding).
 

@@ -55,11 +55,32 @@ def _carry_repair_row_ids(messages: List[Dict[str, Any]], pre_repair_row_ids: Li
     ``_merged_row_ids``, keeping the marker off untouched transcripts. Nothing is stamped when
     alignment fails (a rewrite other than repair ran) — an unmarked transcript over-clones, which
     is the safe direction.
+
+    Dropped-LEADING ids (round-7 finding): the repair may drop the transcript's FIRST row(s)
+    (a stray tool result heading a resumed transcript). The first survivor's own id then differs
+    from ``pre_repair_row_ids[0]``, the position-aligned walk would bail before stamping anything,
+    and sanitation would treat the dropped durable row as absent from the snapshot (re-cloned
+    byte-exact, secret intact). Those ids are consumed up front and attached to the FIRST
+    survivor's membership group instead; alignment is preserved by matching the first survivor's
+    own id at its (possibly later) position, and the walk stamps nothing when no survivor
+    matches the pre-repair list at all.
     """
     dict_messages = [m for m in messages if isinstance(m, dict)]
-    stamps: List[Tuple[Dict[str, Any], List[int]]] = []
+    if not dict_messages:
+        return
     consumed = 0
     total = len(pre_repair_row_ids)
+    first_own_id = dict_messages[0].get("_row_id")
+    while consumed < total and pre_repair_row_ids[consumed] != first_own_id:
+        consumed += 1
+    if consumed >= total:
+        return  # no survivor matches the pre-repair ids — alignment lost, stamp nothing
+    dropped_leading = [
+        absorbed
+        for absorbed in pre_repair_row_ids[:consumed]
+        if isinstance(absorbed, int) and not isinstance(absorbed, bool) and absorbed > 0
+    ]
+    stamps: List[Tuple[Dict[str, Any], List[int]]] = []
     for index, message in enumerate(dict_messages):
         own_id = message.get("_row_id")
         if consumed >= total or pre_repair_row_ids[consumed] != own_id:
@@ -76,6 +97,8 @@ def _carry_repair_row_ids(messages: List[Dict[str, Any]], pre_repair_row_ids: Li
             if isinstance(absorbed, int) and not isinstance(absorbed, bool) and absorbed > 0:
                 merged_ids.append(absorbed)
             consumed += 1
+        if index == 0 and dropped_leading:
+            merged_ids = dropped_leading + merged_ids
         if len(merged_ids) > 1:
             stamps.append((message, merged_ids))
     for message, merged_ids in stamps:

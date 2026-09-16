@@ -382,3 +382,57 @@ def test_repaired_transcript_row_ids_carry_merged_membership(db) -> None:
     merged = messages[2]
     assert merged["_row_id"] == merged_first
     assert merged["_merged_row_ids"] == [merged_first, merged_second]
+
+
+def test_repaired_transcript_row_ids_carry_dropped_leading_membership(db) -> None:
+    """A repair that drops a LEADING row must still carry its durable membership (round-7 finding).
+
+    A stray tool result leading a resumed transcript is dropped by the repair; the first
+    survivor's ``_row_id`` differs from ``pre_repair_row_ids[0]``, so the position-aligned
+    walk bails before any stamping and the dropped durable row looks absent from the
+    snapshot. ``sanitize_and_compact`` then clones it byte-for-byte — the secret stays in
+    SQLite and stays FTS-indexed. The dropped-leading ids must ride the FIRST survivor's
+    membership group.
+    """
+    db.append_message(
+        "sess1",
+        role="tool",
+        tool_call_id="call-stray-orphan",
+        content="password=leadpw1 in stray result",
+    )
+    db.append_message("sess1", role="assistant", content="first reply")
+    secret_row = db.append_message("sess1", role="user", content="password=hostpw7")
+    db.append_message("sess1", role="assistant", content="next reply")
+
+    messages = db.get_messages_as_conversation(
+        "sess1", repair_alternation=True, include_row_ids=True
+    )
+    assert [m["role"] for m in messages] == ["assistant", "user", "assistant"]
+    assert messages[0]["_row_id"] != 1  # the leading row was dropped by the repair
+    assert messages[0]["_merged_row_ids"] == [1, messages[0]["_row_id"]]
+
+    # Membership derived from this snapshot covers the dropped leading row: a sanitation
+    # commit that sanitizes the surviving assistant message must purge the dropped row's
+    # secret too. Call sanitize_and_compact exactly the way the sanitation host does —
+    # plan row membership comes from the snapshot, never re-derived per position.
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "password=hostpw7"},
+            {"role": "assistant", "content": "next reply"},
+        ],
+        watermark=secret_row,
+        represented_row_ids=(1, 2, secret_row, secret_row + 1),
+        member_row_ids=((1, 2), (secret_row,), (secret_row + 1,)),
+        lock_holder="sanitizer",
+    )
+
+    contents = [row["content"] for row in db.get_messages("sess1")]
+    assert len(contents) == 3
+    assert "password=leadpw1" not in "".join(contents), (
+        "the dropped leading durable row was re-cloned byte-exact instead of "
+        "being represented by the first survivor's membership group"
+    )
+    assert len(db.search_messages("leadpw1", include_inactive=True)) == 0

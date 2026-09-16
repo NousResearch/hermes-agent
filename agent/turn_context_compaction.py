@@ -265,11 +265,15 @@ def _preflight_compression(
             or _preflight_deferred
             or _codex_native_auto_compaction(agent)
         ):
+            # No estimate yet (the cheap gate rejected this short transcript); pass None so
+            # engine maintenance either computes the real estimate once the hook opts in or
+            # the engine's documented ``current_tokens=None`` fallback applies — never 0,
+            # which a nonempty prompt must never be sized as (round-7 finding).
             _engine_preflight_maintenance(
                 agent,
                 out,
                 _compressor,
-                0,
+                None,
                 system_message,
                 effective_task_id,
             )
@@ -471,12 +475,15 @@ def _run_preflight_passes(
 
 
 def _engine_preflight_maintenance(
-    agent: Any, out: CompactionOutcome, _compressor: Any, _preflight_tokens: int,
+    agent: Any, out: CompactionOutcome, _compressor: Any, _preflight_tokens: Optional[int],
     system_message: Optional[str], effective_task_id: str,
 ) -> None:
     """Engine-driven sub-threshold preflight maintenance: engines overriding
     ``should_compress_preflight()`` get exactly ONE ``compress()`` pass; a no-op never
-    touches ``blocked``."""
+    touches ``blocked``. ``_preflight_tokens`` is the caller's preflight estimate when it
+    already computed one, else None; an unestimated call that the hook ACCEPTS derives the
+    real estimate here — forwarding 0 would size a nonempty prompt as empty for engines
+    that read the documented ``current_tokens`` (round-7 finding)."""
     _retry_pending = has_sanitation_retry(agent, out.messages)
     _engine_preflight = getattr(_compressor, "should_compress_preflight", None)
     if not callable(_engine_preflight) and not _retry_pending:
@@ -495,6 +502,12 @@ def _engine_preflight_maintenance(
             return
     if not _wants_engine_preflight:
         return
+    if _preflight_tokens is None:
+        from agent import turn_context as _tc
+
+        _preflight_tokens = _tc._preflight_request_tokens(
+            agent, out.messages, out.active_system_prompt or ""
+        )
     logger.info(
         "Engine-driven preflight maintenance: %s requested "
         "compress() at ~%s tokens (below %s threshold)",

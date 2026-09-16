@@ -847,10 +847,11 @@ class GatewayShutdownMixin:
             except Exception as e:
                 logger.debug("Cron interrupt targets unresolved for %s: %s", job_id, e)
                 continue
+            job_name = job.get("name") or job_id
             msg = (
-                f"⚠️ Cron job '{job.get('name') or job_id}' was interrupted — "
-                f"the gateway is {action} and killed the run before it "
-                "finished. No result was produced for this run."
+                f"⚠️ Scheduled job '{job_name}' was cut short because Hermes is {action}; "
+                "no result this run. It will run again on schedule, or run it now with "
+                f"`hermes cron run {job_name}` once Hermes is back."
             )
             for target in targets or ():
                 try:
@@ -931,11 +932,14 @@ class GatewayShutdownMixin:
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = "⚠️ Gateway shutting down — Your current task will be interrupted."
+        msg = (
+            "⚠️ Hermes is shutting down — your current task will be interrupted. "
+            "When it is back online, send any message and I'll try to pick up where we left off."
+        )
         if self._restart_requested:
             msg = (
-                "⚠️ Gateway restarting — Your current task will be interrupted. "
-                "Send any message after restart and I'll try to resume where you left off."
+                "⚠️ Hermes is restarting — your current task will be interrupted. "
+                "Send any message after the restart and I'll try to resume where you left off."
             )
         restart_key = None
         if restart_source is not None:
@@ -1280,8 +1284,9 @@ class GatewayShutdownMixin:
     @staticmethod
     def _restart_watcher_env() -> dict:
         """Watcher env minus ``_HERMES_GATEWAY`` (else the CLI's self-restart guard refuses; gateway stays down)."""
+        from gateway.config_loader import drop_bridged_env
         from tools.environments.local import build_subprocess_env
-        watcher_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+        watcher_env = drop_bridged_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=True))
         watcher_env.pop("_HERMES_GATEWAY", None)
         return watcher_env
 

@@ -396,13 +396,15 @@ describe('per-member delta', () => {
     const shared: GroupMember[] = [{ name: 'research', title: '' }]
     const quiet = () => !room.chat.$groupChats.get().Alpha?.running && !room.chat.$groupChats.get().Beta?.running
 
-    // Start both rooms without waiting for either drive to finish.
-    room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_1')
-    room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_1')
+    // Start both rooms without waiting for either drive to finish. Each send
+    // stays in ONE thread per room, so the isolation under test is
+    // cross-ROOM: two rooms sharing a member must not share its session.
+    const alphaThread = room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_1')
+    const betaThread = room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_1')
     await drain(() => !quiet())
 
-    const alphaFirst = room.gateway.calls.find(call => call.title === 'Group: Alpha')
-    const betaFirst = room.gateway.calls.find(call => call.title === 'Group: Beta')
+    const alphaFirst = room.gateway.calls.find(call => call.title?.startsWith('Group: Alpha'))
+    const betaFirst = room.gateway.calls.find(call => call.title?.startsWith('Group: Beta'))
 
     expect(alphaFirst && betaFirst).toBeTruthy()
     expect(alphaFirst?.stored).not.toBe(betaFirst?.stored)
@@ -411,19 +413,20 @@ describe('per-member delta', () => {
     expect(alphaFirst?.prompt).not.toContain('BETA_ONLY_1')
     expect(betaFirst?.prompt).toContain('BETA_ONLY_1')
     expect(betaFirst?.prompt).not.toContain('ALPHA_ONLY_1')
-    expect(room.chat.$groupChats.get().Alpha.sessions?.research).toBe(alphaFirst?.stored)
-    expect(room.chat.$groupChats.get().Beta.sessions?.research).toBe(betaFirst?.stored)
+    // Sessions are keyed per thread; each room minted exactly one.
+    expect(Object.values(room.chat.$groupChats.get().Alpha.sessions || {})).toEqual([alphaFirst?.stored])
+    expect(Object.values(room.chat.$groupChats.get().Beta.sessions || {})).toEqual([betaFirst?.stored])
 
     // Interleave a second pair. Each room resumes its own session and receives
     // only its unseen room delta, never the sibling room's messages.
     const firstCallCount = room.gateway.calls.length
-    room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_2')
-    room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_2')
+    room.rounds.sendToGroupChat('Alpha', shared, 'ALPHA_ONLY_2', alphaThread)
+    room.rounds.sendToGroupChat('Beta', shared, 'BETA_ONLY_2', betaThread)
     await drain(() => !quiet())
 
     const second = room.gateway.calls.slice(firstCallCount)
-    const alphaSecond = second.find(call => call.title === 'Group: Alpha')
-    const betaSecond = second.find(call => call.title === 'Group: Beta')
+    const alphaSecond = second.find(call => call.title?.startsWith('Group: Alpha'))
+    const betaSecond = second.find(call => call.title?.startsWith('Group: Beta'))
 
     expect(alphaSecond?.stored).toBe(alphaFirst?.stored)
     expect(betaSecond?.stored).toBe(betaFirst?.stored)
@@ -481,6 +484,48 @@ describe('threads', () => {
     expect(followUp?.prompt).not.toContain('research pricing')
     expect(replies.length).toBeGreaterThanOrEqual(1)
     expect(replies.every(entry => entry.thread === billing)).toBe(true)
+  })
+
+  it('never lets one thread answer out of another thread’s session (#90420, #106460)', async () => {
+    // The user-visible defect: two visible threads shared ONE hidden member
+    // session, so the model answering thread B had thread A's transcript in
+    // its context and replied with A's topic.
+    const room = await loadRoom()
+    const member: GroupMember[] = [{ name: 'research', title: '' }]
+
+    const alpha = room.rounds.sendToGroupChat('Bleed', member, 'ALPHA_TOPIC secret')
+    await settle(room, 'Bleed')
+    const beta = room.rounds.sendToGroupChat('Bleed', member, 'BETA_TOPIC unrelated')
+    await settle(room, 'Bleed')
+
+    const alphaCall = room.gateway.calls.find(call => call.prompt.includes('ALPHA_TOPIC'))
+    const betaCall = room.gateway.calls.find(call => call.prompt.includes('BETA_TOPIC'))
+
+    expect(alpha).not.toBe(beta)
+    // Two threads, two distinct hidden sessions — the room stores one per thread.
+    expect(alphaCall?.stored).toBeTruthy()
+    expect(alphaCall?.stored).not.toBe(betaCall?.stored)
+    expect(Object.keys(room.chat.$groupChats.get().Bleed.sessions || {})).toHaveLength(2)
+
+    // And neither backend transcript ever saw the other thread's prompt.
+    const alphaMessages = room.gateway.sessions.get(String(alphaCall?.stored))?.messages || []
+    const betaMessages = room.gateway.sessions.get(String(betaCall?.stored))?.messages || []
+
+    expect(alphaMessages.some(message => message.content.includes('BETA_TOPIC'))).toBe(false)
+    expect(betaMessages.some(message => message.content.includes('ALPHA_TOPIC'))).toBe(false)
+  })
+
+  it('surfaces an empty member seat instead of swallowing the send; empty text stays silent', async () => {
+    const room = await loadRoom()
+    const notify = room.gateway.host.notify as ReturnType<typeof vi.fn>
+
+    expect(room.rounds.sendToGroupChat('Seating', [], 'anyone there?')).toBeNull()
+    expect(log(room, 'Seating')).toHaveLength(0)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'error', message: expect.stringContaining('Seating') })
+
+    expect(room.rounds.sendToGroupChat('Seating', MEMBERS, '   ')).toBeNull()
+    expect(notify).toHaveBeenCalledTimes(1)
   })
 })
 

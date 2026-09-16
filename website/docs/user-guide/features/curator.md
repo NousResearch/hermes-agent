@@ -207,14 +207,17 @@ agent turns). The background fork runs with a write origin of `"background_revie
 `mark_agent_created()` call in `skill_manage`.
 
 Skills the foreground agent creates via `skill_manage(action="create")` during a
-conversation are **not** marked as agent-created — they are considered
-user-directed and the curator intentionally leaves them alone.
+conversation (including `/learn`) are **not** marked as agent-created — they are
+recorded as `created_by: learn`, which makes them show up in the
+[learning journey](./memory.md#learning-journey-journey) right away but is not a
+curator opt-in. They are considered user-directed and the curator intentionally
+leaves them alone.
 
 :::warning Your hand-written skills are NOT curated
 If you manually created a `SKILL.md` or pointed Hermes at an external skill
 directory, that skill will have a `.usage.json` entry with `created_by: null`
 (or the field absent). The curator will not touch it. The same applies to
-skills the foreground agent created at your request.
+skills the foreground agent created at your request (`created_by: learn`).
 
 **To see which skills the curator actually manages**, run `hermes curator status`.
 If the agent-created count is 0, no skills are currently in the curator's
@@ -245,8 +248,9 @@ for one of two reasons:
 - **pre-dates marker** — the record was written before `created_by` existed, so
   it carries no provenance signal at all. Authorship is genuinely unknowable
   from the record.
-- **foreground-created** — a foreground `skill_manage(create)` left the marker
-  unset by design, since skills you ask for belong to you.
+- **foreground-created** — a foreground `skill_manage(create)` recorded
+  `created_by: learn` (older records: unset) by design, since skills you ask for
+  belong to you.
 
 A large library can therefore look fully curated while most of it is
 untouchable. `adopt` closes that gap by **declaration**:

@@ -521,6 +521,75 @@ class TestStreamingAccumulator:
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 
+    @pytest.mark.parametrize(
+        "chunks, expect_content, expect_finish, expect_refusal",
+        [
+            pytest.param(
+                [(None, "I can't"), (None, " help with that."), (None, None)],
+                "I can't help with that.", "content_filter", "I can't help with that.",
+                id="refusal-only",
+            ),
+            pytest.param(
+                [("Partial answer.", None), (None, "But I won't do the rest."), (None, None)],
+                "Partial answer.", "stop", "But I won't do the rest.",
+                id="refusal-alongside-content",
+            ),
+        ],
+    )
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streamed_refusal_accumulated(
+        self, mock_close, mock_create, chunks, expect_content, expect_finish, expect_refusal
+    ):
+        """delta.refusal streams assemble onto message.refusal.
+
+        A refusal-only stream must not raise EmptyStreamError; the transport's
+        normalize_response promotes a sole-payload refusal to content +
+        content_filter, while a refusal next to real content stays a normal
+        usable turn with the note in provider_data.
+        """
+        from run_agent import AIAgent
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        def _chunk(content, refusal, finish_reason=None):
+            delta = SimpleNamespace(
+                content=content,
+                tool_calls=None,
+                reasoning_content=None,
+                reasoning=None,
+                refusal=refusal,
+            )
+            choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+            return SimpleNamespace(choices=[choice], model="test-model", usage=None)
+
+        *body, last = chunks
+        stream = [_chunk(*c) for c in body] + [_chunk(*last, finish_reason="stop")]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(stream)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+        assert response.choices[0].message.refusal == expect_refusal
+
+        normalized = ChatCompletionsTransport().normalize_response(response)
+        assert normalized.content == expect_content
+        assert normalized.finish_reason == expect_finish
+        if expect_finish == "stop":
+            assert normalized.provider_data["refusal"] == expect_refusal
+
+
 class TestStreamingCallbacks:
     """Verify that delta callbacks fire correctly."""
 
@@ -697,6 +766,72 @@ class TestStreamingFallback:
         assert agent._disable_streaming is True
         assert deltas == ["Hello from ACP"]
 
+    # ── Contentless SSE keepalive frames ─────────────────────────────────
+    #
+    # A degraded gateway answers *every* streaming request with contentless frames
+    # (``data:`` / ``event: ping`` / ``id:`` with no payload). Per the SSE spec those are
+    # legal keepalives, but the OpenAI SDK still hands them to ``json.loads`` →
+    # ``JSONDecodeError(doc='')`` → a fatal ProviderStreamError. Re-streaming therefore
+    # repeats the identical failure (3 retries into the same window) and killed the turn.
+    # An empty frame must instead flip the session to non-streaming, like 'stream not
+    # supported'. A *malformed* (non-empty) payload keeps its previous behaviour.
+
+    @staticmethod
+    def _wire_agent(mock_create, content: bytes):
+        """Agent whose streaming client replays ``content`` as the provider's raw SSE body
+        through a REAL ``openai.Stream`` — the same decoder that runs in production."""
+        import httpx
+        from openai import OpenAI, Stream
+        from openai.types.chat import ChatCompletionChunk
+        from run_agent import AIAgent
+
+        request = httpx.Request("POST", "https://gw.example/v1/chat/completions")
+        response = httpx.Response(
+            200, request=request, headers={"x-request-id": "req-empty-frame"}, content=content
+        )
+        stream = Stream(
+            cast_to=ChatCompletionChunk,
+            response=response,
+            client=OpenAI(api_key="test-key", max_retries=0),
+        )
+
+        wire = MagicMock()
+        wire.chat.completions.create.return_value = stream
+        mock_create.return_value = wire
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://gw.example/v1",
+            provider="custom",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent.status_callback = MagicMock()
+        agent.stream_delta_callback = MagicMock()
+        return agent
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_non_json_sse_frame_stays_a_fatal_provider_error(self, mock_close, mock_create):
+        """A real malformed payload is NOT a keepalive: unchanged behaviour (#65147)."""
+        from agent.error_classifier import PROVIDER_STREAM_NON_JSON_ERROR_CODE
+
+        agent = self._wire_agent(
+            mock_create, b"event: error\ndata: upstream sent opaque plain-text stream data\n\n"
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({})
+
+        exc = exc_info.value
+        assert exc.body["error"]["code"] == PROVIDER_STREAM_NON_JSON_ERROR_CODE
+        assert exc.raw_text == "upstream sent opaque plain-text stream data"
+        assert agent._disable_streaming is False
+        assert agent.status_callback.call_args_list == []
 
     @patch("run_agent.AIAgent._abort_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

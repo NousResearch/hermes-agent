@@ -966,6 +966,17 @@ def build_turn_context(
 
     _ensure_session_row(agent, pending_cli_message)
 
+    # A turn interrupted before admission could not write its accepted input because
+    # it did not own the session lease. Persist that carried-forward row now, before
+    # compaction can rewrite or drop it.
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    if conversation_history and any(
+        isinstance(msg, dict) and msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+        for msg in conversation_history
+    ):
+        agent._flush_messages_to_session_db(conversation_history, conversation_history)
+
     compaction = run_turn_start_compaction(
         agent, messages=messages, system_message=system_message,
         active_system_prompt=active_system_prompt, conversation_history=conversation_history,

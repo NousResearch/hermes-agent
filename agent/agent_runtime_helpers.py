@@ -1203,7 +1203,7 @@ def restore_primary_runtime(agent) -> bool:
 
 # Transient transport failures worth one more attempt with a rebuilt client / connection pool.
 _TRANSIENT_TRANSPORT_ERRORS = frozenset({
-    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "RemoteProtocolError",
+    "ReadTimeout", "ConnectTimeout", "PoolTimeout", "ConnectError", "ReadError", "RemoteProtocolError",
     "APIConnectionError", "APITimeoutError",
 })
 _INLINE_REASONING_PATTERNS = tuple(
@@ -1774,9 +1774,12 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
     # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
-    # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
+    # Authorization default_header overrides the SDK's "Bearer <api_key>". Key on the keyless
+    # placeholder as well as the provider: a free slug picked under the paid ``opencode`` profile
+    # resolves to the placeholder too, and shipping it as a bearer 401s every request with an
+    # empty pool to rotate (#110831).
+    from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
+    if agent.provider == "opencode-free" or client_kwargs.get("api_key") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
         client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
@@ -3010,12 +3013,28 @@ def _iter_httpx_pool_objects(http_client: Any):
 
 
 def _connection_candidates(conn: Any):
-    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    """Walk nested wrappers: proxy tunnels (``_connection``) plus httpx/httpcore
+    stream envelopes (``_stream``/``_httpcore_stream``: BoundSyncStream →
+    ResponseStream → connection byte stream → HTTP11/2 connection)."""
     seen: set[int] = set()
-    while conn is not None and id(conn) not in seen:
-        seen.add(id(conn))
-        yield conn
-        conn = getattr(conn, "_connection", None)
+    stack = [conn]
+    while stack:
+        obj = stack.pop()
+        if obj is None or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        yield obj
+        for attr in ("_connection", "_stream", "_httpcore_stream"):
+            nxt = getattr(obj, attr, None)
+            if nxt is not None:
+                stack.append(nxt)
+
+
+def _socket_from_candidate(candidate: Any):
+    """Raw socket behind a connection/stream wrapper yielded by ``_connection_candidates``."""
+    stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
+    sock = _socket_from_stream(stream) if stream is not None else None
+    return sock if sock is not None else _socket_from_stream(candidate)
 
 
 def _socket_from_stream(stream: Any):
@@ -3068,8 +3087,7 @@ def _iter_pool_sockets(client: Any):
                 connections.append(conn)
         for conn in connections:
             for candidate in _connection_candidates(conn):
-                stream = getattr(candidate, "_network_stream", None) or getattr(candidate, "_stream", None)
-                sock = _socket_from_stream(stream) if stream is not None else None
+                sock = _socket_from_candidate(candidate)
                 if sock is not None and id(sock) not in seen:
                     seen.add(id(sock))
                     yield sock
@@ -3206,24 +3224,30 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
-def force_close_tcp_sockets(client: Any) -> int:
-    """Abort in-flight TCP I/O via ``shutdown(SHUT_RDWR)`` WITHOUT closing FDs. ``close()`` from
-    a non-owner thread is unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a
-    flushed TLS record lands in the wrong file (once clobbered a SQLite header). ``shutdown()``
-    is FD-safe from any thread. Returns the count (logged as ``tcp_force_closed=N``)."""
+def _shutdown_socket(sock: Any) -> None:
+    """``shutdown(SHUT_RDWR)`` WITHOUT closing the FD. ``close()`` from a non-owner thread is
+    unsafe: the SSL BIO caches the raw FD, the kernel recycles it, and a flushed TLS record lands
+    in the wrong file (once clobbered a SQLite header). ``shutdown()`` is FD-safe from any thread.
+    Already shut down / not connected / FD invalid are all benign."""
     import socket as _socket
+    try:
+        # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
+        settimeout = getattr(sock, "settimeout", None)
+        if callable(settimeout):
+            with contextlib.suppress(OSError):
+                settimeout(0)
+        sock.shutdown(_socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def force_close_tcp_sockets(client: Any) -> int:
+    """Abort in-flight TCP I/O on every pool socket via ``_shutdown_socket``. Returns the count
+    (logged as ``tcp_force_closed=N``)."""
     shutdown_count = 0
     try:
         for sock in _iter_pool_sockets(client):
-            try:
-                # Clear a blocking timeout so a hung SSL_read notices the shutdown. Still no close().
-                settimeout = getattr(sock, "settimeout", None)
-                if callable(settimeout):
-                    with contextlib.suppress(OSError):
-                        settimeout(0)
-                sock.shutdown(_socket.SHUT_RDWR)
-            except OSError:
-                pass  # already shut down / not connected / FD invalid: all benign
+            _shutdown_socket(sock)
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

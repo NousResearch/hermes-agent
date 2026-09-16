@@ -1163,7 +1163,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                 </div>
               ]}
           {roomClarifies.map(entry => (
-            <GroupClarifyCard entry={entry} key={`clarify:${entry.memberKey}:${entry.requestId}`} members={members} />
+            <GroupClarifyCard
+              entry={entry}
+              key={`clarify:${entry.thread || 'legacy'}:${entry.memberKey}:${entry.requestId}`}
+              members={members}
+            />
           ))}
           {room.running ? (
             <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>

@@ -208,7 +208,6 @@ export const ru = defineLocale({
         'Бэкенд приложения отклонил запрос (405 Method Not Allowed). Попробуйте перезапустить Hermes Desktop.',
       microphonePermission: 'Доступ к микрофону запрещён.',
       openaiRejectedApiKey: 'OpenAI отклонил API-ключ.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI отклонил API-ключ (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'Для TTS OpenAI нужен VOICE_TOOLS_OPENAI_KEY или OPENAI_API_KEY.'
     },
     voice: {
@@ -335,6 +334,7 @@ export const ru = defineLocale({
       'view.toggleReview': 'Показать / скрыть панель ревью',
       'view.toggleStatusbar': 'Показать / скрыть строку состояния',
       'view.toggleTabStrip': 'Показать / скрыть вкладки',
+      'view.toggleProfileRail': 'Показать / скрыть панель профилей',
       'view.showFiles': 'Показать браузер файлов',
       'view.showBrowser': 'Открыть браузер',
       'view.toggleHud': 'Включить / выключить режим HUD',
@@ -476,7 +476,7 @@ export const ru = defineLocale({
         desktopSuccess: name => `Плагин приложения ${name} установлен`,
         agentFailed: 'Не удалось установить плагин агента',
         desktopFailed: 'Не удалось установить плагин приложения',
-        missingEnv: vars => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`
+        missingEnv: (_name, vars) => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`
       }
     },
     notifications: {
@@ -567,7 +567,7 @@ export const ru = defineLocale({
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
       tabStripTitle: 'Панель вкладок',
-      tabStripDesc: 'Показывать вкладки над зоной. Автоматически скрываются, когда в зоне только одна панель.',
+      tabStripDesc: 'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
@@ -839,6 +839,7 @@ export const ru = defineLocale({
       compression: {
         enabled: 'Авто-сжатие',
         threshold: 'Порог сжатия',
+        codexGpt55Autoraise: 'Автоповышение сжатия Codex',
         targetRatio: 'Целевое сжатие',
         protectLastN: 'Защищённые недавние сообщения'
       },
@@ -904,7 +905,8 @@ export const ru = defineLocale({
         engine: 'Стратегия управления длинными диалогами у предела контекста.'
       },
       compression: {
-        enabled: 'Сжимать более старый контекст, когда диалоги становятся большими.'
+        enabled: 'Сжимать более старый контекст, когда диалоги становятся большими.',
+        codexGpt55Autoraise: 'Повышает порог сжатия до 85% для поддерживаемых моделей ChatGPT Codex OAuth.'
       },
       voice: {
         autoTts: 'Автоматически зачитывать ответы ассистента.'
@@ -2672,6 +2674,7 @@ export const ru = defineLocale({
     voiceDictation: 'Голосовая диктовка',
     speakReplies: 'Зачитывать ответы вслух',
     stopSpeakingReplies: 'Перестать зачитывать ответы вслух',
+    wakeWord: phrase => `Слово-пробуждение «${phrase}»`,
     wakeWordListening: phrase => `Слово-пробуждение: «${phrase}» — слушает`,
     wakeWordOff: phrase => `Слово-пробуждение: «${phrase}» — выключено`,
     wakeWordPausedVoice: phrase => `Слово-пробуждение: «${phrase}» — приостановлено во время голосового чата`,
@@ -3773,7 +3776,8 @@ export const ru = defineLocale({
     secretSendFailed: 'Не удалось отправить секрет',
     sudoTitle: 'Пароль администратора',
     sudoDesc:
-      'Hermes нужен ваш пароль sudo, чтобы выполнить команду с повышенными правами. Он отправляется только вашему локальному агенту.',
+      'Проверьте команду перед вводом пароля sudo. Пароль отправляется агенту, который её выполняет, и кэшируется на время сеанса.',
+    sudoCommandUnavailable: 'Агент не предоставил команду. Отмените запрос, если не можете проверить её в разговоре.',
     sudoPlaceholder: 'пароль sudo',
     secretTitle: 'Требуется секрет',
     secretDesc: 'Hermes нужны учётные данные, чтобы продолжить.',

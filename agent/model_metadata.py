@@ -789,6 +789,33 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
     return int(raw) if isinstance(raw, (int, float)) and int(raw) > 0 else None
 
 
+# Generic ``/models`` pricing: an explicit ``unit`` beside the rates wins; without one, a token rate
+# at or above $0.001/token ($1,000/MTok — no real model charges that) can only be a per-million quote.
+_PRICING_UNIT_DIVISORS = {
+    "per_token": 1, "per_1k_tokens": 1_000, "per_thousand_tokens": 1_000,
+    "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
+}
+_PER_MILLION_QUOTE_MIN = 0.001
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+
+
+def _normalize_token_rates(pricing: Dict[str, Any], unit: Any) -> Dict[str, Any]:
+    """Rescale the generic path's token rates to per-token strings (the contract usage_pricing
+    multiplies by 1e6), the way the Novita/DeepInfra branches already do for their known units."""
+    rates: Dict[str, float] = {}
+    for key in _TOKEN_RATE_FIELDS:
+        try:
+            rates[key] = float(pricing[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    divisor = _PRICING_UNIT_DIVISORS.get(str(unit or "").strip().lower())
+    if divisor is None:
+        divisor = 1_000_000 if any(v >= _PER_MILLION_QUOTE_MIN for v in rates.values()) else 1
+    if divisor != 1:
+        pricing.update({key: str(value / divisor) for key, value in rates.items()})
+    return pricing
+
+
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     def _per_token(source: Dict[str, Any], fields: Dict[str, str], scale) -> Dict[str, Any]:
         # Provider $/MTok (or Novita's 1/10_000-$ per M) -> per-token strings, the same path usage_pricing uses for OpenRouter.
@@ -818,7 +845,7 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
-            return pricing
+            return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}
 
 
@@ -1162,9 +1189,12 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     if not _any_phrase_group(error_lower, _PARSEABLE_OUTPUT_CAP_SIGNALS):
         return None
     # Direct cap figures, most specific first: "exceeds model's maximum output tokens (65536)", "Range of
-    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "= available_tokens: 10000", last "= N".
+    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "max_tokens: 100000 > 64000, which
+    # is the maximum allowed number of output tokens" (the ceiling is the right-hand side), Anthropic
+    # "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
@@ -1208,12 +1238,13 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
 
 # Each entry is a phrase group; the group matches when ALL phrases are present.
-# DashScope, Anthropic, OpenRouter/Nous, LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
+# DashScope, Anthropic (available_tokens / "maximum allowed number of output tokens"), OpenRouter/Nous,
+# LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
 _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
-    ("output limit",),
+    ("output limit",), ("maximum allowed number of output tokens",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1228,7 +1259,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
-    ("output limit",),
+    ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
 )
 
 

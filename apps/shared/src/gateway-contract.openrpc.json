@@ -9039,6 +9039,46 @@
         "title": "ContextCategory",
         "type": "object"
       },
+      "ContextFileSource": {
+        "additionalProperties": false,
+        "description": "One row of ``agent.context_file_sources.list_context_file_sources``.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "chars": {
+            "title": "Chars",
+            "type": "integer"
+          },
+          "est_tokens": {
+            "title": "Est Tokens",
+            "type": "integer"
+          },
+          "loaded": {
+            "title": "Loaded",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "path",
+          "chars",
+          "est_tokens",
+          "loaded",
+          "status"
+        ],
+        "title": "ContextFileSource",
+        "type": "object"
+      },
       "ControllerScope": {
         "additionalProperties": false,
         "properties": {
@@ -13814,6 +13854,18 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "iss": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Iss"
           }
         },
         "required": [
@@ -14102,6 +14154,7 @@
           "disabled",
           "connecting",
           "failed",
+          "lazy",
           "configured"
         ],
         "title": "McpRuntimeStatus",
@@ -24433,7 +24486,7 @@
       },
       "SessionContextBreakdownResult": {
         "additionalProperties": false,
-        "description": "``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds).",
+        "description": "``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)\nplus the per-file context manifest (empty until the agent exists).",
         "properties": {
           "categories": {
             "items": {
@@ -24469,6 +24522,14 @@
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "context_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ContextFileSource"
+            },
+            "title": "Context Files",
+            "type": "array"
           }
         },
         "required": [
@@ -27233,6 +27294,42 @@
             "title": "Error",
             "type": "string"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error Code"
+          },
+          "retryable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retryable"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Retry After"
+          },
           "finished_at": {
             "title": "Finished At",
             "type": "number"
@@ -29973,6 +30070,26 @@
           "ok"
         ],
         "title": "SubscriptionUpgradeResult",
+        "type": "object"
+      },
+      "SudoRequestParams": {
+        "additionalProperties": false,
+        "description": "Original command, redacted server-side before any password-injection rewrite.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SudoRequestParams",
         "type": "object"
       },
       "SystemBatteryParams": {
@@ -33458,7 +33575,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/EmptyRequestParams"
+            "$ref": "#/components/schemas/SudoRequestParams"
           }
         }
       ],

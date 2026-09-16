@@ -22,6 +22,13 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def _agent_session_source(agent: Any) -> str:
+    """The surface the agent's own row create would stamp (``_ensure_db_session``), so an
+    accounting guard that wins the row-creation race never mints an anonymous session."""
+    from run_agent import _session_source_for_agent  # late: run_agent imports this module
+    return _session_source_for_agent(getattr(agent, "platform", None))
+
+
 @dataclass
 class ResponseUsageOutcome:
     """``compression_attempts`` is the (possibly rearmed-to-zero) budget counter;
@@ -248,6 +255,7 @@ def record_response_usage(
                 agent._ensure_db_session()
             agent._session_db.queue_token_counts(
                 agent.session_id,
+                source=_agent_session_source(agent),
                 input_tokens=canonical_usage.input_tokens,
                 output_tokens=canonical_usage.output_tokens,
                 cache_read_tokens=canonical_usage.cache_read_tokens,

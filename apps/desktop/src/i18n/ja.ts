@@ -197,7 +197,6 @@ export const ja = defineLocale({
         'デスクトップバックエンドがそのリクエストを拒否しました (405 Method Not Allowed)。Hermes Desktop を再起動してください。',
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
       openaiRejectedApiKey: 'OpenAI が API キーを拒否しました。',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI が API キーを拒否しました (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。',
       codeSkewRestartRequired:
         'アップデート後、このバックエンドは古いコードのままです。再起動して新しいコードを読み込んでください。'
@@ -498,7 +497,7 @@ export const ja = defineLocale({
       sessionDensityComfortable: '標準',
       sessionDensityDetailed: '詳細',
       tabStripTitle: 'タブバー',
-      tabStripDesc: 'ゾーンの上にタブを表示します。自動ではペインが1つのときに隠します。',
+      tabStripDesc: 'ゾーンの上にタブを表示します。自動では、他にチャットやタイルのゾーンがない限り、ペインが1つのときに隠します。',
       tabStripAuto: '自動',
       tabStripAlways: '常に表示',
       tabStripNever: '表示しない',
@@ -775,6 +774,7 @@ export const ja = defineLocale({
       compression: {
         enabled: '自動圧縮',
         threshold: '圧縮しきい値',
+        codexGpt55Autoraise: 'Codex 圧縮の自動引き上げ',
         targetRatio: '圧縮目標',
         protectLastN: '保護する直近メッセージ'
       },
@@ -836,7 +836,8 @@ export const ja = defineLocale({
         engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'
       },
       compression: {
-        enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
+        enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
+        codexGpt55Autoraise: '対応する ChatGPT Codex OAuth モデルの圧縮しきい値を 85% に引き上げます。'
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
@@ -1217,9 +1218,7 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
-      updateToast: next =>
-        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -2402,6 +2401,7 @@ export const ja = defineLocale({
     speakReplies: '返信を読み上げる',
     stopSpeakingReplies: '返信の読み上げを停止',
     wakeWordListening: phrase => `ウェイクワード:「${phrase}」— 待機中`,
+    wakeWord: phrase => `ウェイクワード「${phrase}」`,
     wakeWordOff: phrase => `ウェイクワード:「${phrase}」— オフ`,
     wakeWordPausedVoice: phrase => `ウェイクワード:「${phrase}」— 音声チャット中は一時停止`,
     lookupLoading: '検索中…',
@@ -3483,7 +3483,8 @@ export const ja = defineLocale({
     secretSendFailed: 'シークレットを送信できませんでした',
     sudoTitle: '管理者パスワード',
     sudoDesc:
-      'Hermes は特権コマンドを実行するために sudo パスワードが必要です。ローカルエージェントにのみ送信されます。',
+      'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
+    sudoCommandUnavailable: 'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
@@ -3634,6 +3635,11 @@ export const ja = defineLocale({
       'composer-mentions': {
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
+      },
+      'local-runtime-update': {
+        title: 'ローカルエンジンの更新があります',
+        text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
+        action: '今すぐ更新'
       },
       'local-setup': {
         title: 'このマシンはローカルでモデルを実行できます',

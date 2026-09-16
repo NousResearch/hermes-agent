@@ -102,7 +102,13 @@ class EmptyRequestParams(ServerRequestParams):
     pass
 
 
-server_request("sudo", params=EmptyRequestParams, result=ValueResult,
+class SudoRequestParams(ServerRequestParams):
+    """Original command, redacted server-side before any password-injection rewrite."""
+
+    command: str = ""
+
+
+server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 

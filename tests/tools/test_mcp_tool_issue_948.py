@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
-from tools.mcp_tool_config import _resolve_stdio_command
+from tools.mcp_tool_config import _node_fallback, _resolve_stdio_command
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -33,6 +33,45 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
 
     assert command == str(npx_path)
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def test_windows_managed_node_root_prefers_cmd_launchers(tmp_path):
+    """Managed Windows Node lives directly in ``<HERMES_HOME>/node`` (no ``bin``) as ``npx.cmd`` /
+    ``npm.cmd`` / ``node.exe``; a bare ``command: npx`` must resolve to those launchers (#111937).
+    The extensionless POSIX sibling is a shell script Windows cannot spawn, so it must never win."""
+    node_root = tmp_path / "node"
+    node_root.mkdir()
+    for name in ("npx", "npm", "npx.cmd", "npm.cmd", "node.exe"):
+        launcher = node_root / name
+        launcher.write_text("@echo off\r\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
+        assert _node_fallback("npx", windows=True) == str(node_root / "npx.cmd")
+        assert _node_fallback("npm", windows=True) == str(node_root / "npm.cmd")
+        assert _node_fallback("node", windows=True) == str(node_root / "node.exe")
+
+
+def test_node_fallback_uses_active_profile_home(tmp_path, monkeypatch):
+    """The managed-Node lookup follows ``get_hermes_home()`` (context override), not raw ``HERMES_HOME``:
+    a multiplexed profile whose home differs from the launch env must find ITS managed Node."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profile"
+    npx_path = profile_home / "node" / "bin" / "npx"
+    npx_path.parent.mkdir(parents=True)
+    npx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    npx_path.chmod(0o755)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))  # keep a real ~/.local/bin/npx out of the picture
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        with patch("tools.mcp_tool_config.shutil.which", return_value=None):
+            command, _env = _resolve_stdio_command("npx", {"PATH": "/usr/bin"})
+    finally:
+        reset_hermes_home_override(token)
+    assert command == str(npx_path)
 
 
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():

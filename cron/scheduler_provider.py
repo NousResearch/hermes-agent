@@ -165,7 +165,9 @@ class CronScheduler(ABC):
         attempt (even if the job failed); False if the claim was lost or the job is gone.
         ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
         ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
-        misfire fires run the slot that is due and keep the stamp."""
+        misfire fires arriving at/after the due instant run that slot and keep the stamp; a fire
+        arriving BEFORE the stored instant is off-tick like ``manual`` and stays occurrence-free
+        (it cannot be the tick that owns a future slot)."""
         claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False
@@ -273,6 +275,15 @@ def fire_overdue_jobs(
     concurrent late external retry is de-duplicated by the store CAS; waits out
     ``cron.misfire_grace_minutes`` so the external retry gets first right. Returns jobs dispatched.
     """
+    # `hermes pause` ESTOP: skip the sweep entirely. No state to unwind — the
+    # next housekeeping pass after `hermes resume` catches overdue work up
+    # through the existing claim_fire path. Distinct component name from the
+    # ticker's "cron" so the log-once mechanism fires independently.
+    with contextlib.suppress(ImportError):
+        from agent.estop import check_paused as _estop_check_paused
+        if _estop_check_paused("cron-misfire", logger):
+            return 0
+
     from datetime import datetime
 
     if isinstance(provider, InProcessCronScheduler):

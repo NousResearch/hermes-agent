@@ -7,6 +7,7 @@ and the delivery-targets listing used by UI pickers.
 """
 
 import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -134,8 +135,9 @@ def test_deliver_runs_canonical_bot_chat_lane():
 
     assert err is None
     argv = calls["argv"]
-    assert argv[0] == "/usr/bin/hermes"
-    assert argv[1:3] == ["-p", "default"]  # do not follow active_profile
+    # The running install's interpreter, not whatever `hermes` PATH names (same order as /update).
+    assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
+    assert argv[3:5] == ["-p", "default"]  # do not follow active_profile
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv

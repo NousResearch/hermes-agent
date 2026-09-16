@@ -1,9 +1,11 @@
-import { botFriendlyNames, botHandle, mentionNameForms } from './data'
 /**
  * Room-level coordination: who speaks, in what order, for how long — the
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
+import { host } from '@hermes/plugin-sdk'
+
+import { botFriendlyNames, botHandle, mentionNameForms } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -18,10 +20,17 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
-import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
+import {
+  durableGroupChatMembers,
+  followGroupChat,
+  groupMemberKey,
+  groupSessionKey,
+  hasThreadScopedGroupSession
+} from './group-membership'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -399,7 +408,15 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   })
 
   // The captured descriptor owns routing even if the roster has changed.
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  // Sessions are per thread, so a stop targets the session of the thread it
+  // was issued from; an unmigrated room still answers on its bare pointer.
+  const sessions = room.sessions || {}
+  const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
+
+  const sessionId = onTurn
+    ? sessions[groupSessionKey(thread || 'legacy', onTurn)] ||
+      (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
+    : null
 
   if (onTurn && sessionId) {
     try {
@@ -671,7 +688,20 @@ export function sendToGroupChat(
 
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 
-  if ((!trimmed && !attached.length) || !members.length) {
+  if (!trimmed && !attached.length) {
+    return null
+  }
+
+  // An empty member seat (roster hydration race, meta clobber, legacy room
+  // record without member descriptors) used to swallow the send: a fully
+  // typed message vanished with no thread and no error. Surface it — the
+  // caller keeps the draft, so nothing is lost.
+  if (!members.length) {
+    host.notify({
+      kind: 'error',
+      message: botsText().group.noMembersToSend(group)
+    })
+
     return null
   }
 

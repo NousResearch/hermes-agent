@@ -77,7 +77,7 @@ def _profile_build_scope(profile_home):
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
     """``_make_agent`` with the session context bound for the build and cleared after."""
-    tokens = _set_session_context(key)
+    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"))
     try:
         return _make_agent(sid, key, session_id=key, **kwargs)
     finally:
@@ -221,7 +221,7 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False) -> None:
+                    copy_fields=(), compensate: bool = False, title_source: str = "user") -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
@@ -240,7 +240,10 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         db.append_messages_batch(
             new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
                        **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
-        db.set_session_title(new_key, title)
+        if title_source == "user":
+            db.set_session_title(new_key, title)
+        else:
+            db.set_auto_title(new_key, title, source=title_source)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -261,7 +264,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
+                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                            compensate=True, title_source="derived")
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -726,7 +730,7 @@ def _resume_lazy(ctx: _Resume) -> dict:
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
-        return _err(ctx.rid, 5000, f"resume failed: {e}")
+        return _err(ctx.rid, 5000, resume_failed_message(e))
     record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
@@ -752,7 +756,10 @@ def _resume_deferred(ctx: _Resume) -> dict:
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
-    _schedule_resume_hydration(sid, ctx.target, ctx.db, close_db=ctx.owns_db)
+    # Desktop owns the visible transcript through bounded REST pages, not this model-history restore.
+    _schedule_resume_hydration(
+        sid, ctx.target, ctx.db, close_db=ctx.owns_db,
+        model_history_only=source == "desktop" and ctx.omit_messages)
     ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
     _schedule_session_cap_enforcement()
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), messages=[],
@@ -767,7 +774,7 @@ def _resume_cold(ctx: _Resume) -> dict:
     try:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
-        return _err(ctx.rid, 5000, f"resume failed: {e}")
+        return _err(ctx.rid, 5000, resume_failed_message(e))
     overrides = _stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, history, overrides, display_history_prefix=ctx.display_prefix(),
                         todo_state=_todo_state_from_history(history))
@@ -792,10 +799,11 @@ def _resume_eager(ctx: _Resume) -> dict:
             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
+                cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
         except Exception as e:
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
+            return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -826,7 +834,7 @@ def _resume_eager(ctx: _Resume) -> dict:
             if ctx.owns_db:
                 with _sessions_lock:
                     _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
+            return _err(ctx.rid, 5000, resume_failed_message(e))
         session = _sessions.get(sid) or {}
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
@@ -1079,8 +1087,12 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 @method("llm.oneshot")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend."""
+    """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend.
+    Runs under the session's profile scope (else ``params.profile`` / the launch scope): the aux
+    task config and its API key otherwise resolved from the LAUNCH profile — a secondary's titles /
+    project ideas ran on, and billed, the default profile's auxiliary provider."""
     template = (params.get("template") or "").strip() or None
     instructions = params.get("instructions") or ""
     user_input = params.get("input") or ""
@@ -1094,11 +1106,12 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id") or "")
     try:
         from agent.oneshot import run_oneshot
-        return _ok(rid, {"text": run_oneshot(
-            instructions=instructions, user_input=user_input, template=template, variables=variables,
-            task=(params.get("task") or "title_generation").strip() or "title_generation",
-            max_tokens=_int_param(params, "max_tokens", 1024) or 1024, temperature=temperature,
-            main_runtime=_main_runtime_from_agent(session.get("agent")) if session else None)})
+        with (_session_profile_runtime_scope(session) if session else contextlib.nullcontext()):
+            return _ok(rid, {"text": run_oneshot(
+                instructions=instructions, user_input=user_input, template=template, variables=variables,
+                task=(params.get("task") or "title_generation").strip() or "title_generation",
+                max_tokens=_int_param(params, "max_tokens", 1024) or 1024, temperature=temperature,
+                main_runtime=_main_runtime_from_agent(session.get("agent")) if session else None)})
     except (KeyError, ValueError) as e:
         return _err(rid, 4031 if isinstance(e, KeyError) else 4032, str(e))
     except Exception as e:
@@ -1209,7 +1222,11 @@ def _(rid, params: dict, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
         from agent.context_breakdown import compute_session_context_breakdown
-        return _ok(rid, compute_session_context_breakdown(agent, history))
+        from agent.context_file_sources import context_file_sources_for_agent
+        payload = compute_session_context_breakdown(agent, history)
+        # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
+        payload["context_files"] = context_file_sources_for_agent(agent)
+        return _ok(rid, payload)
     except Exception as exc:
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
     finally:
@@ -1718,8 +1735,8 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @_session_method("session.undo", live=True)
 def _(rid, params: dict, session: dict) -> dict:
-    # Under a running turn the post-run write would clobber the undo — /interrupt first.
-    busy = _err(rid, 4009, "session busy — /interrupt the current turn before /undo")
+    # Under a running turn the post-run write would clobber the undo — stop the reply first.
+    busy = _err(rid, 4009, busy_message("undo"))
     if session.get("running"):
         return busy
     removed = 0
@@ -1850,7 +1867,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     if session.get("running"):
-        return _err(rid, 4009, "session busy — /interrupt the current turn before /compress")
+        return _err(rid, 4009, busy_message("compress"))
     sid = params.get("session_id", "")
     try:
         return _compress_live(rid, sid, session, _str_param(params, "focus_topic"))
@@ -1919,6 +1936,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
+                                           cwd_override=_session_cwd(session),
                                            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
                                            auth_user_id=parent_user_id)
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
@@ -1979,7 +1997,8 @@ def _(rid, params: dict, session: dict) -> dict:
             home = session.get("profile_home")
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            copy_fields=_BRANCH_COPY_FIELDS)
+                            copy_fields=_BRANCH_COPY_FIELDS,
+                            title_source="user" if params.get("name") else "derived")
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:

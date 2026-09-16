@@ -736,18 +736,22 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         # Discovery/admission uncertainty must never open a second-writer fallback.
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
 
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        argv = [hermes_bin]
-    else:
-        try:
-            import importlib.util as _ilu
-            found = _ilu.find_spec("hermes_cli") is not None
-        except Exception:
-            found = False
-        if not found:
-            return "bot-chat delivery failed: hermes CLI not resolvable"
+    # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
+    # scheduler lives in the long-running gateway, so a PATH-first lookup would hand delivery
+    # to whatever `hermes` PATH names — another install, or a planted one — instead of this one.
+    try:
+        import importlib.util as _ilu
+        found = _ilu.find_spec("hermes_cli") is not None
+    except Exception:
+        found = False
+    if found:
         argv = [sys.executable, "-m", "hermes_cli.main"]
+    else:
+        hermes_bin = shutil.which("hermes")
+        if not hermes_bin:
+            return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
+                    "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
+        argv = [hermes_bin]
 
     def _fail(msg: str, **log_kwargs) -> str:
         logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
@@ -781,9 +785,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             creationflags=windows_hide_flags())
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]
-            return _fail(
-                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode}) at {home}"
-                + (f": {tail}" if tail else ""))
+            logger.warning(
+                "Job '%s': bot-chat delivery to profile '%s' failed (exit %s) at %s%s",
+                job_id, profile_label, result.returncode, home, f": {tail}" if tail else "")
+            return (
+                f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
+                "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening"
+                + (f". Details: {tail[-200:]}" if tail else ""))
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:
@@ -793,7 +801,12 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
             "this recurs)")
     except Exception as e:
-        return _fail(f"bot-chat delivery failed: {str(e) or type(e).__name__}", exc_info=True)
+        logger.warning(
+            "Job '%s': bot-chat delivery to profile '%s' failed: %s", job_id, profile_label,
+            str(e) or type(e).__name__, exc_info=True)
+        return (
+            f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
+            "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
     finally:
         if query_file:
             with contextlib.suppress(OSError):

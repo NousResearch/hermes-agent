@@ -1,4 +1,5 @@
 """Only never-started cron delivery may wait for a CLI owner's release."""
+import importlib.util
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -57,10 +58,11 @@ def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, mon
     original_is_dir = Path.is_dir
     armed = False
 
-    def resolve_cli(_):
+    def resolve_cli(name, *args, **kwargs):
+        # Delivery resolves the CLI (the running install's ``hermes_cli``) right after discovery.
         nonlocal armed
         armed = True
-        return "/bin/hermes"
+        return object()
 
     def is_dir(self):
         if armed and self == blocked_home:
@@ -71,7 +73,7 @@ def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, mon
         calls.append(kwargs["env"]["HERMES_HOME"])
         return subprocess.CompletedProcess([], 0, "", "")
 
-    monkeypatch.setattr(delivery.shutil, "which", resolve_cli)
+    monkeypatch.setattr(importlib.util, "find_spec", resolve_cli)
     monkeypatch.setattr(delivery.subprocess, "run", run)
     monkeypatch.setattr(Path, "is_dir", is_dir)
     queue.drain()

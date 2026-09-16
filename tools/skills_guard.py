@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v4"
+SCANNER_VERSION = "skills-guard-v5"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -197,8 +197,11 @@ THREAT_PATTERNS = [
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
     # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI; anything else rooted at "/" stays critical.
-    (r'rm\s+-rf\s+/(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))',
+    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
+    # so it remains destructive along with every other path rooted at "/".
+    (r'rm\s+-rf\s+/(?:'
+     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
+     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]*/)*\.\.(?=/|[\s;&|]|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
@@ -229,7 +232,10 @@ THREAT_PATTERNS = [
     (r'/etc/sudoers|visudo', "sudoers_mod", "critical", "persistence", "modifies sudoers (privilege escalation)"),
     (r'git\s+config\s+--global\s+', "git_config_global", "medium", "persistence", "modifies global git configuration"),
     # ── Network: reverse shells and tunnels ──
-    (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b', "reverse_shell", "critical", "network", "potential reverse shell listener"),
+    # socat needs an address spec (TCP:/EXEC:/…): a bare word match hit "SOCAT", the
+    # oceanographic CO2 atlas, across dozens of science skills (all patterns are IGNORECASE).
+    (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b[^\n]*\b(?:tcp|udp|openssl|ssl|exec|system|pty|unix)[\w-]*:',
+     "reverse_shell", "critical", "network", "potential reverse shell listener"),
     (r'\bngrok\b|\blocaltunnel\b|\bserveo\b|\bcloudflared\b',
      "tunnel_service", "high", "network", "uses tunneling service for external access"),
     (r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}', "hardcoded_ip_port", "medium", "network", "hardcoded IP address with port"),
@@ -512,14 +518,36 @@ def _mask_markdown_link_destinations(line: str) -> str:
     return "".join(masked)
 
 
+# A fenced code block opens with 3+ backticks or 3+ tildes indented at most 3 spaces (CommonMark
+# §4.5); a backtick fence's info string may not contain a backtick. It closes only on a line whose
+# fence uses the same marker, is at least as long, and carries nothing else — so a ``~~~`` line
+# inside a backtick fence, a shorter fence, or a fence line with an info string is all content.
+_FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+# A fence may open (and close) inside a container: a bullet ``- ```sh``, an ordered item ``1. ```sh``,
+# a blockquote ``> ```sh``, or a nest of them (§5.1/§5.2). Strip those prefixes before fence matching.
+_CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
+
+
 def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
-    """Mask link destinations only in Markdown prose. Inside a fenced code block a ``[x](../..)`` is
-    an argument to whatever command surrounds it, not a hyperlink, so those lines scan verbatim."""
-    out, in_fence = [], False
+    """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
+    ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
+    scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
+    mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
+    code to EOF (fail-safe)."""
+    out: List[str] = []
+    fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
-        if line.lstrip().startswith(("```", "~~~")):
-            in_fence = not in_fence
-        out.append(line if in_fence else _mask_markdown_link_destinations(line))
+        match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
+        if fence is not None:
+            if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
+                    and not match["info"].strip()):
+                fence = None
+            code = True
+        else:
+            if match and not (match["marker"][0] == "`" and "`" in match["info"]):
+                fence = (match["marker"][0], len(match["marker"]))
+            code = fence is not None or line.startswith(("\t", "    "))  # indented code block (§4.4)
+        out.append(line if code else _mask_markdown_link_destinations(line))
     return out
 
 

@@ -1075,7 +1075,7 @@ class GatewayTurnProgressMixin:
         if not automatic_notices_allowed(ctx.source):
             logger.debug("status_callback suppressed for bot-authored message: %s", event_type)
             return
-        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
+        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message, chat_type=ctx.source.chat_type)
         if prepared is None:
             logger.debug(
                 "status_callback suppressed for %s/%s: %s",

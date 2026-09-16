@@ -8,10 +8,13 @@ the provider; only --provider → error (ambiguous).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import sys
+import time
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +33,68 @@ _USAGE_KEYS = (
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
     "model", "provider", "session_id", "completed",
 )
+
+
+def _oneshot_invocation_mode(argv: list[str]) -> str:
+    """Return the non-sensitive CLI input form used for this one-shot."""
+    if "--query-file" in argv:
+        return "query-file"
+    if "-q" in argv or "--query" in argv:
+        return "query"
+    if "-z" in argv or "--oneshot" in argv:
+        return "prompt"
+    return "programmatic"
+
+
+def _oneshot_parent_comm(ppid: int) -> str | None:
+    """Best-effort parent executable name without retaining its arguments/secrets."""
+    if os.name != "posix":
+        return None
+    try:
+        return open(f"/proc/{ppid}/comm", encoding="utf-8").read().strip() or None
+    except OSError:
+        return None
+
+
+def _write_oneshot_audit(event: str, audit_id: str, prompt: str, **extra: object) -> None:
+    """Append a privacy-preserving lifecycle record for every CLI one-shot.
+
+    The session store retains the full prompt. This side ledger deliberately stores only its
+    SHA-256 and execution provenance, so an operator can correlate a suspicious session with
+    its launcher without copying arbitrary prompts (which may contain secrets) into another log.
+    """
+    try:
+        from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+
+        ppid = os.getppid()
+        try:
+            tty = os.ttyname(sys.stdin.fileno()) if sys.stdin.isatty() else None
+        except (AttributeError, OSError):
+            tty = None
+        record = {
+            "event": event,
+            "audit_id": audit_id,
+            "at_unix": time.time(),
+            "pid": os.getpid(),
+            "ppid": ppid,
+            "uid": os.getuid() if hasattr(os, "getuid") else None,
+            "cwd": os.getcwd(),
+            "tty": tty,
+            "parent_comm": _oneshot_parent_comm(ppid),
+            "input_mode": _oneshot_invocation_mode(sys.argv[1:]),
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8", "surrogatepass")).hexdigest(),
+            "prompt_chars": len(prompt),
+            **extra,
+        }
+        log_dir = mkdir_under_hermes_home(get_hermes_home() / "logs")
+        fd = os.open(log_dir / "oneshot-audit.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, (json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except Exception:
+        # Auditing must never prevent a one-shot from completing.
+        pass
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -177,6 +242,9 @@ def run_oneshot(
     the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
     by this turn. Returns the exit code; the caller owns process termination.
     """
+    audit_id = str(uuid.uuid4())
+    _write_oneshot_audit("started", audit_id, prompt)
+
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
     logging.disable(logging.CRITICAL)
@@ -189,11 +257,13 @@ def run_oneshot(
             "hermes -z: --provider requires --model (or HERMES_INFERENCE_MODEL). "
             "Pass both explicitly, or neither to use your configured defaults.\n"
         )
+        _write_oneshot_audit("finished", audit_id, prompt, exit_code=2, outcome="invalid_arguments")
         return 2
 
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
         sys.stderr.write(toolsets_error)
+        _write_oneshot_audit("finished", audit_id, prompt, exit_code=2, outcome="invalid_toolsets")
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
@@ -236,10 +306,18 @@ def run_oneshot(
         # Control-flow exceptions (Ctrl-C / sys.exit inside the agent) re-raise to the parent.
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
             _write_usage_file(usage_file, result, failure=repr(failure))
+            _write_oneshot_audit(
+                "finished", audit_id, prompt, outcome="interrupted",
+                session_id=result.get("session_id"), failure_type=type(failure).__name__,
+            )
             raise failure
         _write_usage_file(usage_file, result, failure=str(failure))
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
+        _write_oneshot_audit(
+            "finished", audit_id, prompt, exit_code=1, outcome="agent_error",
+            session_id=result.get("session_id"), failure_type=type(failure).__name__,
+        )
         return 1
 
     _write_usage_file(usage_file, result)
@@ -258,10 +336,21 @@ def run_oneshot(
 
     if not (response or "").strip():
         if result.get("failed") or result.get("partial"):
+            _write_oneshot_audit(
+                "finished", audit_id, prompt, exit_code=2, outcome="no_final_response",
+                session_id=result.get("session_id"),
+            )
             return 2
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
+        _write_oneshot_audit(
+            "finished", audit_id, prompt, exit_code=1, outcome="no_final_response",
+            session_id=result.get("session_id"),
+        )
         return 1
+    _write_oneshot_audit(
+        "finished", audit_id, prompt, exit_code=0, outcome="ok", session_id=result.get("session_id"),
+    )
     return 0
 
 

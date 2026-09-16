@@ -800,8 +800,6 @@ def _civic_assure_native_config_guard_create(name):
 
 def _civic_assure_native_config_guard_remove(job_id):
     """Enforce lifecycle authority before removing the canonical job."""
-    if job_id != "406ba6820205" or not _civic_assure_native_config_target_profile():
-        return
     _civic_assure_native_config_module()[1](job_id)
 
 

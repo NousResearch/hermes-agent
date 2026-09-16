@@ -322,6 +322,8 @@ export interface Translations {
       tryRecordingAgain: string
       unavailable: string
       liveEnded: string
+      liveEndedConnectionLost: string
+      liveEndedClosed: string
       liveError: string
       liveDelegationFailed: string
       liveUnavailable: (reason: string) => string
@@ -2071,6 +2073,12 @@ export interface Translations {
     actions: string
     color: string
     colorFor: string
+    openInNewWindow: string
+    setAsDefault: string
+    defaultProfile: string
+    defaultSet: (name: string) => string
+    defaultDescription: string
+    failedSetDefault: string
     setColor: (color: string) => string
     autoColor: string
     noProfiles: string
@@ -2511,6 +2519,7 @@ export interface Translations {
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
+    wakeWord: (phrase: string) => string
     wakeWordListening: (phrase: string) => string
     wakeWordOff: (phrase: string) => string
     wakeWordPausedVoice: (phrase: string) => string

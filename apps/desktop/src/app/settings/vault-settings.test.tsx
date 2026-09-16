@@ -5,16 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { stubResizeObserver } from '@/test/jsdom'
 
-const { requestGateway } = vi.hoisted(() => ({
-  requestGateway: vi.fn()
+const { requestGateway, requestGatewayForProfile } = vi.hoisted(() => ({
+  requestGateway: vi.fn(),
+  requestGatewayForProfile: vi.fn()
 }))
 
 // The panel routes every RPC through the owner profile's socket (never the ambient gateway);
 // the mock receives (method, params) after the profile argument.
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
-    requestGateway(method, params ?? {})
+  requestGatewayForProfile: (...args: [string, string, Record<string, unknown>?, ...unknown[]]) => {
+    requestGatewayForProfile(...args)
+
+    return requestGateway(args[1], args[2] ?? {})
+  }
 }))
 
 import { queryClient } from '@/lib/query-client'
@@ -45,6 +49,7 @@ const LOGIN_ITEM = {
 
 beforeEach(() => {
   requestGateway.mockReset()
+  requestGatewayForProfile.mockReset()
   queryClient.clear()
   $gatewayState.set('open')
 })
@@ -61,6 +66,16 @@ describe('VaultSettings', () => {
 
     await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
     expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
+    // The scoped Settings dial must be foreground so a cold profile spawn is not
+    // queued behind background work (#111651).
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      expect.any(String),
+      'vault.list',
+      {},
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
   })
 
   it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {

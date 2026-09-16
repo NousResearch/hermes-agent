@@ -165,7 +165,7 @@ export function VaultSettings() {
 
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params),
+      requestGatewayForProfile<T>(scopeProfile, method, params, undefined, undefined, { spawnPriority: 'foreground' }),
     [scopeProfile]
   )
 

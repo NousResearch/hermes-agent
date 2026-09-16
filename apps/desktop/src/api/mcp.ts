@@ -1,6 +1,6 @@
 import type { McpCatalogResponse, McpServerSummary } from '@/types/hermes'
 
-import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, scopedDialPriority } from './client'
 
 export interface McpTestResult {
   ok: boolean
@@ -117,6 +117,7 @@ export function setMcpServerEnabled(name: string, enabled: boolean): Promise<{ o
 export function getMcpCatalog(profile?: ProfileScope): Promise<McpCatalogResponse> {
   return window.hermesDesktop.api<McpCatalogResponse>({
     ...capabilityScoped(profile),
+    ...scopedDialPriority(profile),
     path: '/api/mcp/catalog'
   })
 }

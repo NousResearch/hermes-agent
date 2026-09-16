@@ -36,8 +36,10 @@ import {
 } from '@/app/chat/composer/inline-refs'
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
+  beginComposerComposition,
   composerPlainText,
   insertComposerContentsAtCaret,
+  markEditorEmptiness,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
@@ -257,6 +259,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const syncDraftFromEditor = useCallback(
     (editor: HTMLDivElement) => {
+      // Native edits bypass renderComposerContents, so refresh the placeholder
+      // marker here as well, just like the main composer.
+      markEditorEmptiness(editor)
       const nextDraft = sanitizeComposerInput(composerPlainText(editor))
 
       if (nextDraft !== draftRef.current) {
@@ -854,8 +859,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
                 composingRef.current = false
                 flushEditorToDraft(event.currentTarget)
               }}
-              onCompositionStart={() => {
+              onCompositionStart={event => {
                 composingRef.current = true
+                beginComposerComposition(event.currentTarget)
               }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}

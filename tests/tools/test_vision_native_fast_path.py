@@ -376,6 +376,59 @@ class TestVisionAnalyzeNative:
 class TestHandleVisionAnalyzeFastPath:
     """Verify the dispatcher chooses fast-path vs aux-LLM correctly."""
 
+    def test_gateway_native_attachment_is_not_embedded_twice(self, tmp_path):
+        """A gateway-attached image must not be returned again by the tool."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        from agent.native_vision_context import scoped_native_image_refs
+
+        with scoped_native_image_refs([str(img)]), patch(
+            "tools.vision_tools._vision_analyze_native"
+        ) as native_analyze:
+            result = asyncio.run(
+                _handle_vision_analyze(
+                    {"image_url": str(img), "question": "describe it"}
+                )
+            )
+
+        assert isinstance(result, str)
+        parsed = json.loads(result)
+        assert parsed["success"] is True
+        assert parsed["already_attached"] is True
+        assert "_multimodal" not in parsed
+        native_analyze.assert_not_called()
+
+    def test_attached_image_region_still_uses_native_crop(self, tmp_path):
+        """A region asks for new detail and must bypass whole-image dedupe."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+        expected = {"_multimodal": True, "content": []}
+
+        from agent.native_vision_context import scoped_native_image_refs
+
+        with scoped_native_image_refs([str(img)]), patch(
+            "tools.vision_tools._should_use_native_vision_fast_path",
+            return_value=True,
+        ), patch(
+            "tools.vision_tools._vision_analyze_native",
+            return_value=expected,
+        ) as native_analyze:
+            result = asyncio.run(
+                _handle_vision_analyze(
+                    {
+                        "image_url": str(img),
+                        "question": "read the label",
+                        "region": [0, 0, 1, 1],
+                    }
+                )
+            )
+
+        assert result is expected
+        native_analyze.assert_awaited_once_with(
+            str(img), "read the label", task_id=None, region=[0, 0, 1, 1]
+        )
+
     def test_vision_capable_main_model_uses_fast_path(self, tmp_path, monkeypatch):
         """Main model supports native vision → fast path returns multimodal."""
         img = tmp_path / "x.png"

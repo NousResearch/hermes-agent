@@ -41,6 +41,7 @@ describe('createPluginContext.os', () => {
     // The pickers answer with a path, so their "unavailable" is null.
     await expect(ctx.os.pickSavePath()).resolves.toBeNull()
     await expect(ctx.os.pickOpenPath()).resolves.toBeNull()
+    await expect(ctx.os.pickOpenPaths()).resolves.toEqual([])
   })
 
   it('file pickers return the chosen path, and null on cancel', async () => {
@@ -70,6 +71,103 @@ describe('createPluginContext.os', () => {
     }
   })
 
+  it('pickOpenPaths returns every selected path and enables native multiple selection', async () => {
+    const bridge = {
+      selectPaths: vi.fn().mockResolvedValue(['/tmp/source-a.docx', '/tmp/source-b.pdf'])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickOpenPaths({ directories: true, title: 'Choose sources' })).resolves.toEqual([
+        '/tmp/source-a.docx',
+        '/tmp/source-b.pdf'
+      ])
+      expect(bridge.selectPaths).toHaveBeenCalledWith({
+        directories: true,
+        multiple: true,
+        title: 'Choose sources'
+      })
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('pickOpenPath selects a directory when requested', async () => {
+    const bridge = {
+      selectPaths: vi.fn().mockResolvedValue(['/tmp/output'])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickOpenPath({ directories: true, title: 'Choose output folder' })).resolves.toBe('/tmp/output')
+      expect(bridge.selectPaths).toHaveBeenCalledWith({
+        directories: true,
+        multiple: false,
+        title: 'Choose output folder'
+      })
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('pickOpenPaths returns an empty list when the native bridge fails', async () => {
+    const bridge = {
+      selectPaths: vi.fn().mockRejectedValue(new Error('native dialog failed'))
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickOpenPaths()).resolves.toEqual([])
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('pickOpenPaths returns an empty list when the user cancels', async () => {
+    const bridge = {
+      selectPaths: vi.fn().mockResolvedValue([])
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickOpenPaths()).resolves.toEqual([])
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
+  it('pickOpenPaths filters malformed bridge results', async () => {
+    const bridge = {
+      selectPaths: vi
+        .fn()
+        .mockResolvedValueOnce(['/tmp/source.docx', '', null, 42])
+        .mockResolvedValueOnce(null)
+    }
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = bridge
+
+    try {
+      const ctx = createPluginContext('demo')
+
+      await expect(ctx.os.pickOpenPaths()).resolves.toEqual(['/tmp/source.docx'])
+      await expect(ctx.os.pickOpenPaths()).resolves.toEqual([])
+    } finally {
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
+  })
+
   it('file pickers degrade to null on an older shell that lacks them', async () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {}
 
@@ -77,6 +175,7 @@ describe('createPluginContext.os', () => {
       const ctx = createPluginContext('demo')
       await expect(ctx.os.pickSavePath()).resolves.toBeNull()
       await expect(ctx.os.pickOpenPath()).resolves.toBeNull()
+      await expect(ctx.os.pickOpenPaths()).resolves.toEqual([])
     } finally {
       delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
     }

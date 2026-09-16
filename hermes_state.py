@@ -10021,12 +10021,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             row = conn.execute(
-                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
+                "SELECT model, billing_provider, api_call_count, cost_status FROM sessions WHERE id = ?",
                 (session_id,),
             ).fetchone()
             existing_model = row["model"] if row is not None else None
             existing_provider = row["billing_provider"] if row is not None else None
             existing_api_calls = int((row["api_call_count"] if row is not None else 0) or 0)
+            session_params = params
+            if not absolute and cost_status is not None:
+                from agent.usage_pricing import merge_cumulative_cost_status
+
+                cumulative_status = merge_cumulative_cost_status(
+                    (row["cost_status"] if row is not None else None) or "unknown",
+                    cost_status,
+                    is_first_call=existing_api_calls == 0,
+                )
+                session_params = (*params[:8], cumulative_status, *params[9:])
 
             # Session creation records the requested primary route before any API
             # call. If it fails and fallback succeeds, the first accounted usage
@@ -10047,7 +10057,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        WHERE id = ?""",
                     (model, billing_provider, billing_base_url, billing_mode, session_id),
                 )
-            conn.execute(sql, params)
+            conn.execute(sql, session_params)
             if record_model_usage:
                 self._record_model_usage(
                     conn,

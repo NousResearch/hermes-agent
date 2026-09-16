@@ -136,6 +136,101 @@ class TestRunConversationCodexPath:
         assert agent.context_compressor.last_total_tokens == 130
         assert agent.context_compressor.context_length == 200000
 
+    def test_usage_less_codex_turn_counts_call_and_marks_status_unknown(self, monkeypatch):
+        """Codex app-server sometimes omits token_usage_last for a turn. That
+        turn must still count as one API call, and per
+        merge_cumulative_cost_status the session's cumulative cost status
+        must go "unknown" — mirrors the chat_completions path's usage-less
+        handling in conversation_loop.py."""
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-nousage-1",
+                thread_id="thread-nousage-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-nousage-1"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert agent.session_api_calls == 1
+        assert agent.session_cost_status == "unknown"
+
+    def test_priced_codex_turn_keeps_unknown_status_from_prior_subagent_cost(self, monkeypatch):
+        def priced_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-priced",
+                thread_id="thread-priced",
+                token_usage_last={"totalTokens": 130, "inputTokens": 80, "cachedInputTokens": 20, "outputTokens": 25},
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-x")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", priced_turn)
+        agent = _make_codex_agent(model="gpt-4o")
+        agent.session_cost_status = "unknown"
+        agent.session_cost_source = "subagent"
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("turn")
+
+        assert agent.session_api_calls == 1
+        assert agent.session_cost_status == "unknown"
+
+    def test_usage_less_codex_turn_sticks_status_unknown_after_a_later_priced_turn(self, monkeypatch):
+        def priced_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-priced",
+                thread_id="thread-priced",
+                token_usage_last={
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+            )
+
+        def usageless_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-nousage",
+                thread_id="thread-nousage",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "thread-x")
+        # gpt-4o carries a real official_docs_snapshot pricing entry, so the
+        # priced turns below report "estimated" rather than "unknown" for
+        # lack of pricing data — isolating the sticky behavior under test.
+        agent = _make_codex_agent(model="gpt-4o")
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", priced_turn)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("turn one")
+        assert agent.session_cost_status == "estimated"
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", usageless_turn)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("turn two")
+        assert agent.session_api_calls == 2
+        assert agent.session_cost_status == "unknown"
+
+        # A later, perfectly priced turn cannot undo the earlier gap.
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", priced_turn)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("turn three")
+        assert agent.session_api_calls == 3
+        assert agent.session_cost_status == "unknown"
+
     def test_native_codex_compaction_updates_bookkeeping(self, monkeypatch):
         def fake_run_turn(self, user_input: str, **kwargs):
             return TurnResult(

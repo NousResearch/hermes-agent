@@ -12,7 +12,7 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
-import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
+import { buildSubagentTree, fmtCost, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
@@ -299,15 +299,17 @@ export function statusRuleWidths(cols: number, cwdLabel: string, minLeftContent 
 
 // Progressive disclosure for the status rule's lower-priority tail segments.
 // As the terminal narrows we shed the least important pieces first (cost →
-// bg → voice → compressions → duration → context bar), and below the bar
-// breakpoint the context read-out collapses to a bare token count. Status and
-// model are never gated here — they're guaranteed room by `statusRuleWidths`.
+// tps → latency → cacheHit → subagents → bg → voice → compressions →
+// duration → context bar), and below the bar breakpoint the context
+// read-out collapses to a bare token count. Status and model are never
+// gated here — they're guaranteed room by `statusRuleWidths`.
 export interface StatusBarSegments {
   bar: boolean
   bg: boolean
   cacheHit: boolean
   compactCtx: boolean
   compressions: boolean
+  cost: boolean
   duration: boolean
   latency: boolean
   subagents: boolean
@@ -328,7 +330,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     subagents: w >= 92,
     cacheHit: w >= 96,
     latency: w >= 104,
-    tps: w >= 110
+    tps: w >= 110,
+    cost: w >= 116
   }
 }
 
@@ -517,6 +520,7 @@ export function StatusRule({
   liveSessionCount,
   sessionTitle,
   sessionStartedAt,
+  showCost = false,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -665,6 +669,24 @@ export function StatusRule({
     subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+
+  // Tracked-cost estimate — `display.show_cost` (off by default). Reuses the
+  // cumulative session_estimated_cost_usd/session_cost_status the Python
+  // side already merges (agent/usage_pricing.py merge_cumulative_cost_status);
+  // this is an estimate, never an invoice. Shown once at least one API call
+  // has happened (usage.calls), gated on cost_status rather than a positive
+  // amount so a sticky-unknown session still reads "n/a" instead of vanishing.
+  const costLabel =
+    showCost && usage.calls > 0
+      ? usage.cost_status === 'included'
+        ? 'trk included'
+        : usage.cost_status === 'estimated' || usage.cost_status === 'actual'
+          ? `trk ~${fmtCost(usage.cost_usd ?? 0) || '$0.00'}`
+          : 'trk n/a'
+      : ''
+
+  const showCostSeg = segs.cost && ok('cost') && !!costLabel && fits(SEP + stringWidth(costLabel))
+
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -835,6 +857,12 @@ export function StatusRule({
             {resumeHintText}
           </Text>
         ) : null}
+        {showCostSeg ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {costLabel}
+          </Text>
+        ) : null}
         {showDevCredits ? (
           <Text color={t.color.accent} wrap="truncate-end">
             {' │ '}
@@ -974,6 +1002,9 @@ interface StatusRuleProps {
   notice?: Notice | null
   sessionStartedAt?: null | number
   sessionTitle?: string
+  // `display.show_cost` — gates the tracked-cost tail segment. Off by
+  // default; this is an estimate, never an invoice.
+  showCost?: boolean
   status: string
   // display.status_bar.fields — segment visibility filter shared with the
   // classic CLI bar. null = defaults (everything shows).

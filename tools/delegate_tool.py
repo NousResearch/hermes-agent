@@ -3753,12 +3753,26 @@ def _finalize_child_results(
             invoke_hook = None
 
         children_cost_total = 0.0
+        children_cost_status = None
+        from agent.usage_pricing import merge_cumulative_cost_status
+
         for entry in results:
             child_role = entry.pop("_child_role", None)
             child_cost = entry.pop("_child_cost_usd", 0.0)
             try:
                 if child_cost:
                     children_cost_total += float(child_cost)
+                    observed_status = entry.get("cost_status")
+                    # A positive child subtotal is paid/estimated even if an
+                    # older result omitted its status; an explicit unknown
+                    # remains unknown and makes the parent subtotal incomplete.
+                    if observed_status not in {"actual", "estimated", "unknown"}:
+                        observed_status = "estimated"
+                    children_cost_status = merge_cumulative_cost_status(
+                        children_cost_status or "unknown",
+                        observed_status,
+                        is_first_call=children_cost_status is None,
+                    )
             except (TypeError, ValueError):
                 pass
             if invoke_hook is None:
@@ -3794,12 +3808,12 @@ def _finalize_child_results(
                     "none",
                 }:
                     parent_agent.session_cost_source = "subagent"
-                if getattr(parent_agent, "session_cost_status", "unknown") in {
-                    None,
-                    "",
-                    "unknown",
-                }:
-                    parent_agent.session_cost_status = "estimated"
+                parent_calls = getattr(parent_agent, "session_api_calls", 0)
+                parent_agent.session_cost_status = merge_cumulative_cost_status(
+                    getattr(parent_agent, "session_cost_status", "unknown") or "unknown",
+                    children_cost_status or "estimated",
+                    is_first_call=not isinstance(parent_calls, (int, float)) or parent_calls <= 0,
+                )
             except Exception:
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 

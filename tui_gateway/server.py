@@ -7458,6 +7458,12 @@ def _get_usage(agent) -> dict:
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
+        # Cumulative tracked-cost estimate (agent/usage_pricing.py's
+        # merge_cumulative_cost_status) — always present, unlike the
+        # optional fields below, so the TUI can render "trk n/a" instead of
+        # silently omitting the segment when an agent has no cost tracking.
+        "cost_usd": float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0),
+        "cost_status": getattr(agent, "session_cost_status", None) or "unknown",
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:

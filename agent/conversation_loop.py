@@ -103,7 +103,7 @@ from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import estimate_usage_cost, merge_cumulative_cost_status, normalize_usage
 from agent import empty_response_guard as _empty_guard
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
@@ -4785,7 +4785,14 @@ def run_conversation(
                             agent.session_estimated_cost_usd += float(_moa_ref_cost)
                         except (TypeError, ValueError):  # pragma: no cover - defensive
                             pass
-                    agent.session_cost_status = cost_result.status
+                    agent.session_cost_status = merge_cumulative_cost_status(
+                        agent.session_cost_status,
+                        cost_result.status,
+                        is_first_call=(
+                            agent.session_api_calls == 1
+                            and getattr(agent, "session_cost_source", "none") != "subagent"
+                        ),
+                    )
                     agent.session_cost_source = cost_result.source
 
                     # Persist token counts to session DB for /insights.
@@ -4873,6 +4880,37 @@ def run_conversation(
                             f"({hit_pct:.0f}% hit, {written:,} written)"
                         )
                 
+                else:
+                    # A real API response with no usable usage data (some
+                    # providers omit it on certain turns) still counts as one
+                    # API call, and per merge_cumulative_cost_status it poisons
+                    # this session's cumulative cost confidence — the running
+                    # total can no longer be vouched for. Mirrors the Codex
+                    # app-server usage-less path in codex_runtime.py.
+                    agent.session_api_calls += 1
+                    agent.session_cost_status = merge_cumulative_cost_status(
+                        agent.session_cost_status,
+                        "unknown",
+                        is_first_call=agent.session_api_calls == 1,
+                    )
+                    if agent._session_db and agent.session_id:
+                        try:
+                            if not agent._session_db_created:
+                                agent._ensure_db_session()
+                            agent._session_db.queue_token_counts(
+                                agent.session_id,
+                                cost_status="unknown",
+                                model=agent.model,
+                                billing_provider=agent.provider,
+                                billing_base_url=agent.base_url,
+                                api_call_count=1,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Token persistence failed for usage-less response (session=%s): %s",
+                                agent.session_id, e,
+                            )
+
                 _retry.has_retried_429 = False  # Reset on success
                 # Note: don't clear the retry buffer here — an "API call
                 # success" only means we got bytes back, not that we got

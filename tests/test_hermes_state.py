@@ -549,6 +549,30 @@ class TestSessionLifecycle:
         assert row["billing_base_url"] is None
         assert row["billing_mode"] is None
 
+    def test_incremental_cost_status_is_cumulative_but_model_status_stays_per_call(self, db):
+        db.create_session(session_id="cost-status", source="cli", model="m")
+
+        db.queue_token_counts(
+            "cost-status", model="m", billing_provider="p",
+            estimated_cost_usd=0.10, cost_status="estimated", api_call_count=1,
+        )
+        db.queue_token_counts(
+            "cost-status", model="m", billing_provider="p",
+            cost_status="unknown", api_call_count=1,
+        )
+        db.queue_token_counts(
+            "cost-status", model="m", billing_provider="p",
+            estimated_cost_usd=0.20, cost_status="estimated", api_call_count=1,
+        )
+
+        assert db.flush_token_counts()
+        assert db.get_session("cost-status")["cost_status"] == "unknown"
+        model_row = db._conn.execute(
+            "SELECT cost_status FROM session_model_usage WHERE session_id = ?",
+            ("cost-status",),
+        ).fetchone()
+        assert model_row["cost_status"] == "estimated"
+
 
 
 

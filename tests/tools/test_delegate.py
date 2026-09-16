@@ -899,6 +899,7 @@ class TestSubagentCostRollup(unittest.TestCase):
         parent.session_estimated_cost_usd = starting_cost
         parent.session_cost_status = "unknown"
         parent.session_cost_source = "none"
+        parent.session_api_calls = 0
         return parent
 
     def test_single_child_cost_folded_into_parent(self):
@@ -982,6 +983,55 @@ class TestSubagentCostRollup(unittest.TestCase):
         for entry in result["results"]:
             self.assertNotIn("_child_cost_usd", entry)
             self.assertNotIn("_child_role", entry)
+
+    def test_child_cost_does_not_clear_unknown_after_a_parent_call(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+        parent.session_api_calls = 1
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.25,
+            }
+            delegate_task(tasks=[{"goal": "test"}], parent_agent=parent)
+
+        self.assertEqual(parent.session_cost_status, "unknown")
+
+    def test_child_cost_promotes_included_session_to_estimated(self):
+        parent = self._make_parent_with_cost_counters()
+        parent.session_api_calls = 1
+        parent.session_cost_status = "included"
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.25,
+            }
+            delegate_task(tasks=[{"goal": "test"}], parent_agent=parent)
+
+        self.assertEqual(parent.session_cost_status, "estimated")
+
+    def test_unknown_child_pricing_keeps_parent_cost_status_unknown(self):
+        parent = self._make_parent_with_cost_counters()
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.25,
+                "cost_status": "unknown",
+            }
+            delegate_task(tasks=[{"goal": "test"}], parent_agent=parent)
+
+        self.assertEqual(parent.session_cost_status, "unknown")
 
 class TestBlockedTools(unittest.TestCase):
 

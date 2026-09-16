@@ -5,10 +5,57 @@ from agent.usage_pricing import (
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
+    merge_cumulative_cost_status,
     normalize_usage,
     resolve_billing_route,
 )
 from decimal import Decimal
+
+
+# ── merge_cumulative_cost_status ─────────────────────────────────────────
+
+
+def test_merge_first_call_sets_status_outright():
+    """The empty-session default is "unknown" (agent_init.py); the first
+    observed call must move off it to whatever that call's own status is,
+    not get vetoed by the "unknown" sticky rule."""
+    assert merge_cumulative_cost_status("unknown", "estimated", is_first_call=True) == "estimated"
+    assert merge_cumulative_cost_status("unknown", "included", is_first_call=True) == "included"
+    assert merge_cumulative_cost_status("unknown", "unknown", is_first_call=True) == "unknown"
+
+
+def test_merge_observed_unknown_is_sticky():
+    """A later usage-less call poisons the cumulative status even though an
+    earlier call was priced — the running total can no longer be vouched
+    for as complete."""
+    assert merge_cumulative_cost_status("estimated", "unknown", is_first_call=False) == "unknown"
+    assert merge_cumulative_cost_status("included", "unknown", is_first_call=False) == "unknown"
+
+
+def test_merge_unknown_stays_sticky_even_when_a_later_call_prices_fine():
+    """Once the cumulative status has gone "unknown", a subsequent priced
+    call cannot undo it — the total is already incomplete."""
+    assert merge_cumulative_cost_status("unknown", "estimated", is_first_call=False) == "unknown"
+    assert merge_cumulative_cost_status("unknown", "included", is_first_call=False) == "unknown"
+
+
+def test_merge_mixed_estimated_and_included_keeps_estimated():
+    """Mixing a billed call with a subscription-included call must not hide
+    the real paid subtotal behind "included"."""
+    assert merge_cumulative_cost_status("included", "estimated", is_first_call=False) == "estimated"
+    assert merge_cumulative_cost_status("estimated", "included", is_first_call=False) == "estimated"
+
+
+def test_merge_same_status_repeats_is_stable():
+    assert merge_cumulative_cost_status("estimated", "estimated", is_first_call=False) == "estimated"
+    assert merge_cumulative_cost_status("included", "included", is_first_call=False) == "included"
+
+
+def test_merge_actual_status_not_downgraded_by_estimated():
+    """Preserve exact-status semantics: an "actual" (invoiced) reading is
+    richer than "estimated" and must not be pulled back down."""
+    assert merge_cumulative_cost_status("actual", "estimated", is_first_call=False) == "actual"
+    assert merge_cumulative_cost_status("estimated", "actual", is_first_call=False) == "actual"
 
 
 

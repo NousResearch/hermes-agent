@@ -548,6 +548,124 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
   })
 })
 
+describe('StatusRule tracked-cost segment (display.show_cost)', () => {
+  const costUsage = { ...baseProps.usage, calls: 4, cost_status: 'estimated', cost_usd: 1.23 }
+
+  it('is hidden by default even with cost data and calls > 0 -- display.show_cost is off by default', () => {
+    const element = StatusRule({ ...baseProps, cols: 160, usage: costUsage })
+
+    expect(textContent(element)).not.toContain('trk')
+  })
+
+  it('renders the estimated paid subtotal when enabled', () => {
+    const element = StatusRule({ ...baseProps, cols: 160, showCost: true, usage: costUsage })
+
+    expect(textContent(element)).toContain('trk ~$1.23')
+  })
+
+  it('renders "trk included" for a subscription-included route', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      usage: { ...baseProps.usage, calls: 2, cost_status: 'included', cost_usd: 0 }
+    })
+
+    expect(textContent(element)).toContain('trk included')
+  })
+
+  it('renders "trk n/a" for incomplete/unknown pricing', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      usage: { ...baseProps.usage, calls: 3, cost_status: 'unknown', cost_usd: 0 }
+    })
+
+    expect(textContent(element)).toContain('trk n/a')
+  })
+
+  it('renders "trk n/a" once the session goes sticky-unknown, even with a positive prior subtotal', () => {
+    // The Python-side merge is sticky (agent/usage_pricing.py
+    // merge_cumulative_cost_status) -- by the time cost_status reaches the
+    // TUI as "unknown" it must win over any leftover cost_usd amount.
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      usage: { ...baseProps.usage, calls: 5, cost_status: 'unknown', cost_usd: 4.5 }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('trk n/a')
+    expect(rendered).not.toContain('trk ~$4.5')
+  })
+
+  it('never renders a sub-cent positive subtotal as zero', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      usage: { ...baseProps.usage, calls: 1, cost_status: 'estimated', cost_usd: 0.004 }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('trk ~')
+    expect(rendered).not.toContain('trk ~$0.00')
+  })
+
+  it('is hidden before the first API call even when enabled', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      usage: { ...baseProps.usage, calls: 0, cost_status: 'estimated', cost_usd: 1.23 }
+    })
+
+    expect(textContent(element)).not.toContain('trk')
+  })
+
+  it('honors the display.status_bar.fields visibility filter', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      statusBarFields: new Set(['model', 'context_pct']),
+      usage: costUsage
+    })
+
+    expect(textContent(element)).not.toContain('trk')
+  })
+
+  it('is the first tail segment dropped on a narrow terminal -- below every other segment breakpoint', () => {
+    const element = StatusRule({
+      ...baseProps,
+      // Above the tps breakpoint (110) but below the cost breakpoint (116):
+      // every other perf segment still fits, cost alone drops.
+      cols: 112,
+      showCost: true,
+      usage: { ...costUsage, avg_latency_s: 3.2, avg_tps: 50.4, cache_hit_pct: 87 }
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).not.toContain('trk')
+    expect(rendered).toContain('◎ 87%')
+    expect(rendered).toContain('◷ 3.2s')
+    expect(rendered).toContain('t/s')
+  })
+
+  it('never crowds out the pinned essentials (status/model/context)', () => {
+    const element = StatusRule({ ...baseProps, cols: 44, showCost: true, usage: costUsage })
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('ready')
+    expect(rendered).toContain('opus 4.8')
+  })
+})
+
 describe('StatusRule busy/recovery pending marker', () => {
   it('shows no marker when idle', () => {
     const element = StatusRule({ ...baseProps })

@@ -341,6 +341,10 @@ export interface UiState {
 
   sections: SectionVisibility
   sessionTitle: string
+  // `display.show_cost` — gates the status bar's tracked-cost segment
+  // (`trk ~$…`/`trk included`/`trk n/a`). Off by default; this is an
+  // estimate, never an invoice.
+  showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
   sid: null | string

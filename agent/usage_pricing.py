@@ -153,6 +153,43 @@ class CostResult:
 _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 
+_COST_STATUS_RANK: Dict[str, int] = {
+    "included": 1,
+    "estimated": 2,
+    "actual": 3,
+}
+
+
+def merge_cumulative_cost_status(
+    current: CostStatus,
+    observed: CostStatus,
+    *,
+    is_first_call: bool,
+) -> CostStatus:
+    """Fold one API call's cost status into the session-cumulative status.
+
+    - The session's first observed call sets the cumulative status outright
+      (moves off the empty-session "unknown" default seeded in agent_init.py).
+    - An observed "unknown" (a real API response with no usable usage data)
+      is sticky: once any call in the session can't be priced, the
+      session-wide status stays "unknown" for the rest of the session — a
+      later priced call can no longer vouch for the running total. This is
+      an estimate, never an invoice: partial data means the whole total is
+      untrusted, not just the one call that lacked usage.
+    - Otherwise the richer status wins ("estimated"/"actual" — a positive
+      paid subtotal exists — over "included", where nothing has been paid
+      yet), so a session mixing included and billed calls keeps reporting
+      the real subtotal instead of it getting hidden behind "included".
+    """
+    if is_first_call:
+        return observed
+    if current == "unknown" or observed == "unknown":
+        return "unknown"
+    if _COST_STATUS_RANK.get(observed, 0) > _COST_STATUS_RANK.get(current, 0):
+        return observed
+    return current
+
+
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {

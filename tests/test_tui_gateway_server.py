@@ -679,6 +679,31 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
     assert server._session_info(None, session)["model"] == "host-model"
 
 
+def test_get_usage_exposes_cost_defaults_when_agent_has_no_cost_attrs():
+    """_get_usage() must always emit cost_usd/cost_status — unlike the
+    optional fields it omits (context_used, cache_hit_pct) — so the TUI can
+    render "trk n/a" instead of the segment silently vanishing."""
+    class _BareAgent:
+        model = "m"
+
+    usage = server._get_usage(_BareAgent())
+
+    assert usage["cost_usd"] == 0.0
+    assert usage["cost_status"] == "unknown"
+
+
+def test_get_usage_exposes_cumulative_cost_fields_when_present():
+    class _PricedAgent:
+        model = "m"
+        session_estimated_cost_usd = 1.2345
+        session_cost_status = "estimated"
+
+    usage = server._get_usage(_PricedAgent())
+
+    assert usage["cost_usd"] == 1.2345
+    assert usage["cost_status"] == "estimated"
+
+
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):

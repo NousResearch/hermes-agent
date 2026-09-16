@@ -116,6 +116,8 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     Even when Codex omits usage for a turn, Hermes should still count that turn
     as one API call for session/status accounting.
     """
+    from agent.usage_pricing import merge_cumulative_cost_status
+
     agent.session_api_calls += 1
 
     usage = getattr(turn, "token_usage_last", None)
@@ -129,6 +131,11 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
             # Consume the marker so a later unrelated reading is not charged to
             # it and preflight deferral cannot stay latched indefinitely.
             compressor.update_from_response({})
+        agent.session_cost_status = merge_cumulative_cost_status(
+            agent.session_cost_status,
+            "unknown",
+            is_first_call=agent.session_api_calls == 1,
+        )
         if agent._session_db and agent.session_id:
             try:
                 if not agent._session_db_created:
@@ -142,6 +149,7 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                     billing_provider=agent.provider,
                     billing_base_url=agent.base_url,
                     billing_mode="subscription_included",
+                    cost_status="unknown",
                     api_call_count=1,
                 )
             except Exception as exc:
@@ -209,7 +217,14 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     )
     if cost_result.amount_usd is not None:
         agent.session_estimated_cost_usd += float(cost_result.amount_usd)
-    agent.session_cost_status = cost_result.status
+    agent.session_cost_status = merge_cumulative_cost_status(
+        agent.session_cost_status,
+        cost_result.status,
+        is_first_call=(
+            agent.session_api_calls == 1
+            and getattr(agent, "session_cost_source", "none") != "subagent"
+        ),
+    )
     agent.session_cost_source = cost_result.source
 
     if agent._session_db and agent.session_id:

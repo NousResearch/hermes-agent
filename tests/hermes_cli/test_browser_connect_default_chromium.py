@@ -100,6 +100,7 @@ class TestDetectDefaultDarwin:
             ("com.brave.Browser.origin", "brave-origin"),
             ("com.microsoft.edgemac", "edge"),
             ("org.chromium.Chromium", "chromium"),
+            ("com.vivaldi.Vivaldi", "vivaldi"),  # LaunchServices casing; match lowercases first
             ("com.brave.Browser.origin.beta", bc.UNSUPPORTED_CHANNEL),
             ("com.brave.Browser.origin.nightly", bc.UNSUPPORTED_CHANNEL),
         ],
@@ -130,6 +131,8 @@ class TestDetectDefaultLinux:
             ("brave-origin-nightly.desktop", bc.UNSUPPORTED_CHANNEL),
             ("microsoft-edge.desktop", "edge"),
             ("com.microsoft.Edge.desktop", "edge"),
+            ("vivaldi.desktop", "vivaldi"),
+            ("vivaldi-snapshot.desktop", bc.UNSUPPORTED_CHANNEL),
             ("firefox.desktop", None),
             ("org.mozilla.firefox.desktop", None),
             ("", None),
@@ -176,3 +179,7 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+    def test_vivaldi_profile_dir(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("vivaldi", "Linux") == str(tmp_path / ".config" / "vivaldi")

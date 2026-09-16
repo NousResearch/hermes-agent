@@ -85,9 +85,12 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   // Only a child that reported its own session id has somewhere to go.
   const open = sessionId ? () => void openSessionInNewWindow(sessionId, { watch: true }) : undefined
 
+  // Mark the goal row, never this wrapper. Opacity on a parent of the ticker
+  // opens a stacking context that lets the transformed reel paint old activity
+  // lines through the one-line window.
   return (
-    <div className="grid min-w-0 max-w-full gap-0.5" data-conversation-scaffold="">
-      <div className="flex min-w-0 max-w-full items-center gap-1.5">
+    <div className="grid min-w-0 max-w-full gap-0.5">
+      <div className="flex min-w-0 max-w-full items-center gap-1.5" data-conversation-scaffold="">
         <span className={SCAFFOLD_GLYPH_CLASS}>{statusGlyph(row.status, statusLabel)}</span>
         <button
           className={cn(

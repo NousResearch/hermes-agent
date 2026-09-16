@@ -320,6 +320,8 @@ hermes sessions list --source telegram
 hermes sessions list --limit 50
 ```
 
+When more sessions exist than `--limit` allows, the listing ends with a `… more not shown (use --limit N to see more)` footer, so a capped page is never mistaken for the full list.
+
 When sessions have titles, the output shows titles, previews, and relative timestamps:
 
 ```

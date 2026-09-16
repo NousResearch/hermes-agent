@@ -946,7 +946,9 @@ _ENV_CONFIG_KEYS = frozenset({
 
 
 def _is_env_config_key(key: str) -> bool:
-    """Return whether `hermes config set` routes this key to .env."""
+    """Return whether `hermes config set` routes this credential-shaped key to .env through the
+    provider credential lifecycle. Non-secret env settings (``*_HOME_CHANNEL``, ``*_ALLOWED_USERS``)
+    are ``config_env_routing.is_env_setting_key`` and take the plain ``.env`` path."""
     if "." in key:
         return False
     key_upper = key.upper()
@@ -1138,6 +1140,39 @@ def _validate_voice(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
+def _validate_timezone(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """``timezone`` must be an IANA name the runtime can load.
+
+    ``hermes_time._get_zoneinfo()`` swallows an invalid name behind a single WARNING in the
+    gateway log, then runs the agent clock AND every cron schedule on server-local time.
+    Surface it here, where doctor and the startup check both look. Silent when the
+    interpreter has no tz database at all (bare Windows without ``tzdata``) — nothing can be
+    judged there.
+    """
+    if "timezone" not in config:
+        return
+    tz = config.get("timezone")
+    hint = ("Use an IANA zone name such as America/New_York or Asia/Tokyo (see "
+            "`timedatectl list-timezones`). With an invalid value the agent clock and cron "
+            "schedules silently fall back to server-local time. HERMES_TIMEZONE overrides "
+            "this key when set.")
+    if tz is not None and not isinstance(tz, str):
+        _issue(issues, "error", f"timezone must be an IANA zone name string, got {tz!r}", hint)
+        return
+    if not (isinstance(tz, str) and tz.strip()):
+        return
+    name = tz.strip()
+    try:
+        import zoneinfo
+        zoneinfo.ZoneInfo("UTC")  # is a tz database available at all?
+    except Exception:
+        return
+    try:
+        zoneinfo.ZoneInfo(name)
+    except Exception:
+        _issue(issues, "error", f"timezone {name!r} is not a valid IANA zone name", hint)
+
+
 def _validate_entry_list(
     entries: list, label: str, issues: List[ConfigIssue], fields, *, non_dict: Tuple[str, str, str],
 ) -> None:
@@ -1220,6 +1255,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
     _validate_voice(config, issues)
+    _validate_timezone(config, issues)
     cp = config.get("custom_providers")
     fb = config.get("fallback_model")
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
@@ -2558,13 +2594,18 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     #77490, #88441.
     """
     try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from agent.secret_scope import current_secret_scope, serves_routed_profile
 
-        scope = current_secret_scope() if is_multiplex_active() else None
+        scope, routed = current_secret_scope(), serves_routed_profile()
     except Exception:
-        scope = None
-    target = scope if isinstance(scope, dict) else (None if scope is not None else os.environ)
-    if target is not None:
+        scope, routed = None, False
+    # The launch profile's own body runs under a scope snapshot even single-profile (the TUI /
+    # dashboard launch scope), so a same-request read after the write must see it there too; a
+    # routed profile's value never reaches the shared process env.
+    targets = [scope] if isinstance(scope, dict) else []
+    if not routed and (scope is None or isinstance(scope, dict)):
+        targets.append(os.environ)
+    for target in targets:
         if value is None:
             target.pop(key, None)
         else:
@@ -3262,17 +3303,25 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     if top in _OPEN_SUBKEY_TOP_LEVEL_KEYS:
         return True, None
 
-    # Walk DEFAULT_CONFIG: a nested ``platforms`` container or a scalar leaf hit before the path is
-    # consumed both accept (the latter matches set_config_value's leaf->dict replacement); an
-    # unknown sub-key fails with a same-level "did you mean" suggestion.
+    # Walk DEFAULT_CONFIG: a nested ``platforms`` container, a scalar leaf, or an EMPTY dict hit
+    # before the path is consumed all accept. An empty dict is a free-form mapping section
+    # (``compression.model_thresholds.<model>``, ``terminal.docker_env.<VAR>``,
+    # ``lsp.servers.<lang>``): its keys are user-chosen, so nothing under it can be a typo. An
+    # unknown sub-key of a populated section fails with a same-level "did you mean" suggestion.
     node: Any = DEFAULT_CONFIG.get(top)
     consumed = [top]
     for seg in segments[1:]:
-        if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict):
+        if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
         if seg not in node:
             sibling = _suggest_closest_key(seg, set(node.keys()))
-            return False, ".".join(consumed + [sibling]) if sibling is not None else None
+            if sibling is not None:
+                return False, ".".join(consumed + [sibling])
+            # ``gateway.discord.<field>``: the path minus its wrong prefix is itself a known key.
+            rest = ".".join(segments[len(consumed):])
+            if _split_key_path(rest)[0] in _known_top_level_keys() and _validate_config_key(rest)[0]:
+                return False, rest
+            return False, None
         consumed.append(seg)
         node = node[seg]
     return True, None
@@ -3466,9 +3515,19 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "this notice.)", Colors.DIM))
 
 
+def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
+    lines = [color(f"✗ '{key}' is not a recognized config key — nothing was written.", Colors.RED)]
+    if suggestion:
+        lines.append(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
+    lines.append(color(
+        "  (Custom top-level keys are supported; use --force to write this path anyway.)", Colors.DIM))
+    return "\n".join(lines)
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
+    ``force`` writes an unknown path under a known section (otherwise refused), skips the
+    unknown-top-level-key notice AND authorizes replacing a mapping section with a
     scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
     to ``model.default``."""
     if is_managed():
@@ -3483,7 +3542,6 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
-        # Unified lifecycle: also rotates any config.yaml mirror of the old value.
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
@@ -3491,19 +3549,33 @@ def set_config_value(key: str, value: str, force: bool = False):
         save_provider_env_credential(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
+    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
+
+    if is_env_setting_key(key):
+        # Every UPPER_SNAKE name is an environment setting: same file the platform setup flows and
+        # /sethome write, and the only one os.getenv readers see. config.yaml never gets one from
+        # here, --force included (#111848). The env writer's denylist (HERMES_YOLO_MODE, PATH, ...)
+        # therefore also refuses the config.yaml detour that used to bridge those into os.environ.
+        try:
+            save_env_setting(key, value)
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
+        print(f"✓ Set {key.upper()} in {get_env_path()}")
+        return
 
     # Canonicalize per-platform display keys BEFORE validation/coercion so both see the path the
-    # runtime reads. Unknown keys are still written (top-level scalars are bridged into os.environ
-    # for skills/external apps) but get a post-write "did you mean" hint.
+    # runtime reads.
     key, _redirect_note = _redirect_platform_display_key(key)
     if _redirect_note:
-        # Unknown-key notice (#34067): the key is still written (arbitrary keys are supported — top-level
-        # scalars are bridged into os.environ for skills and external apps), but a plausible-but-wrong
-        # dotted path like ``gateway.discord.gateway_restart_notification`` previously reported bare success
-        # and left the user debugging behavior that never changed. Warn after the write so the user gets
-        # immediate feedback plus a "did you mean" hint, without blocking legitimate unknown keys.
         print(_redirect_note)
     is_known, suggestion = _validate_config_key(key)
+    # Unknown-key handling (#34067, #112003): an unknown path UNDER a known section can only be a
+    # typo (``gateway.discord.gateway_restart_notification``), so it is refused before anything is
+    # written. Unknown lowercase TOP-LEVEL keys stay writable with a post-write notice — their
+    # scalars are bridged into os.environ for skills/external apps, so that namespace is open by
+    # design (UPPER_SNAKE names were already routed to .env above).
+    if not is_known and not force and _split_key_path(key)[0] in _known_top_level_keys():
+        _exit_invalid(_unknown_subkey_refusal(key, suggestion))
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
@@ -3555,8 +3627,13 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
     ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
     this command from sessions whose transcripts persist (#84106, #110758)."""
+    from hermes_cli.config_env_routing import is_env_setting_key, read_env_setting
+
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
+        value = _MISSING if env_value is None else env_value
+    elif is_env_setting_key(key):
+        env_value = read_env_setting(key)
         value = _MISSING if env_value is None else env_value
     else:
         # Mirror set_config_value: read the canonical display.platforms path.
@@ -3592,6 +3669,14 @@ def unset_config_value(key: str):
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         if not remove_provider_env_credential(key.upper()).get("found"):
+            _exit_invalid(f"Config key not set: {key}")
+        print(f"✓ Unset {key} from {get_env_path()}")
+        return
+    from hermes_cli.config_env_routing import is_env_setting_key, remove_env_setting
+
+    if is_env_setting_key(key):
+        # Also drops a stale top-level config.yaml copy left by older `config set` runs (#111848).
+        if not remove_env_setting(key):
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return

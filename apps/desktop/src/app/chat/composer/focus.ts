@@ -13,6 +13,7 @@
 import { isElementInHiddenPane, queryAllVisible, queryVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 
+import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -136,6 +137,14 @@ const targetIsReachable = (target: ComposerTarget): boolean => {
  * voice / soft `/` agree with the keyboard path.
  */
 const resolveActive = (): ComposerTarget => {
+  const owner = $floatingComposerOwner.get()?.target
+
+  if (owner && (activeTarget !== 'edit' || !targetIsReachable('edit'))) {
+    activeTarget = owner
+
+    return owner
+  }
+
   if (targetIsReachable(activeTarget)) {
     return activeTarget
   }
@@ -242,7 +251,22 @@ export const getActiveComposer = (): ComposerTarget => resolveActive()
 export const requestComposerFocus = (
   target: ComposerTarget | 'active' = 'active',
   { typeChar }: { typeChar?: string } = {}
-) => dispatch<FocusDetail>(FOCUS_EVENT, { target: resolve(target), typeChar })
+) => {
+  const detail = { target: resolve(target), typeChar }
+  const owner = $floatingComposerOwner.get()
+
+  // A first character must land before subsequent native input events, not
+  // behind a timer that can reorder fast typing or a pane handoff.
+  if (typeChar) {
+    dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
+  } else if (typeof window !== 'undefined') {
+    window.setTimeout(() => {
+      if (!owner || $floatingComposerOwner.get() === owner) {
+        dispatchNow<FocusDetail>(FOCUS_EVENT, detail)
+      }
+    }, 0)
+  }
+}
 
 export const requestComposerInsert = (
   text: string,
@@ -399,14 +423,26 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   // Also skip when another VISIBLE composer holds the caret — a keep-alive
   // remount must not yank typing. A hidden tab that still has DOM focus must
   // not block the pane the user just switched to.
+  const owner = $floatingComposerOwner.get()
+  const surfaceId = el.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
+
   const focus = () => {
-    if (document.activeElement === el) {
+    if (owner && (owner !== $floatingComposerOwner.get() || (surfaceId && surfaceId !== owner.id))) {
+      return
+    }
+
+    if (!el.isConnected || isElementInHiddenPane(el) || document.activeElement === el) {
       return
     }
 
     const active = document.activeElement
 
-    if (active instanceof HTMLElement && active.dataset.slot === RICH_INPUT_SLOT && !isElementInHiddenPane(active)) {
+    if (
+      active instanceof HTMLElement &&
+      active.dataset.slot === RICH_INPUT_SLOT &&
+      !isElementInHiddenPane(active) &&
+      (!owner || surfaceId !== owner.id)
+    ) {
       return
     }
 

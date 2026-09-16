@@ -1,12 +1,9 @@
-"""Live operator-note injection into a running kanban worker.
+"""Live Kanban-comment injection into a running worker.
 
 ``tools.kanban_tools.inject_new_comments_from_env`` polls the worker's task
 for comments added *after* the run started and folds them into the live turn
-via the agent's OUT-OF-BAND steer channel — so a user can talk to a running
-task without the block→comment→unblock dance or a restart.
-
-Verifies: no-op off a worker, watermark seeding (history isn't re-injected),
-new comments steer, and own-authored comments are skipped.
+through its dedicated Kanban-note channel. A task comment is not a message
+from the user and must never use the OUT-OF-BAND steer channel.
 """
 
 from __future__ import annotations
@@ -26,6 +23,15 @@ import tools.kanban_tools as kt
 
 
 class FakeAgent:
+    def __init__(self):
+        self.notes: list[str] = []
+
+    def kanban_note(self, text: str) -> bool:
+        self.notes.append(text)
+        return True
+
+
+class FakeAgentNoNote:
     def __init__(self):
         self.steers: list[str] = []
 
@@ -63,6 +69,14 @@ def test_noop_without_worker_env(worker_home, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     agent = FakeAgent()
     assert kt.inject_new_comments_from_env(agent) is False
+    assert agent.notes == []
+
+
+def test_noop_without_kanban_note_method(worker_home, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_missing_note")
+    agent = FakeAgentNoNote()
+
+    assert kt.inject_new_comments_from_env(agent) is False
     assert agent.steers == []
 
 
@@ -81,7 +95,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
     # First poll seeds the watermark past the existing thread — no injection.
     _unthrottle()
     assert kt.inject_new_comments_from_env(agent) is False
-    assert agent.steers == []
+    assert agent.notes == []
 
     conn = kbc.connect()
     try:
@@ -91,13 +105,14 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
 
     _unthrottle()
     assert kt.inject_new_comments_from_env(agent) is True
-    assert len(agent.steers) == 1
-    assert "v2 API" in agent.steers[0]
+    assert len(agent.notes) == 1
+    assert "v2 API" in agent.notes[0]
+    assert "not a message from the user" in agent.notes[0]
 
     # Watermark advanced — a re-poll with no new comments injects nothing.
     _unthrottle()
     assert kt.inject_new_comments_from_env(agent) is False
-    assert len(agent.steers) == 1
+    assert len(agent.notes) == 1
 
 
 def test_skips_own_authored_comments(worker_home, monkeypatch):
@@ -122,4 +137,4 @@ def test_skips_own_authored_comments(worker_home, monkeypatch):
 
     _unthrottle()
     assert kt.inject_new_comments_from_env(agent) is False
-    assert agent.steers == []
+    assert agent.notes == []

@@ -225,6 +225,16 @@ class InterruptControlMixin:
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
         return True
 
+    def kanban_note(self, text: str) -> bool:
+        """Queue a durable Kanban comment for the safe post-tool boundary."""
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        with _ic_lock(self, "_pending_kanban_note_lock"):
+            existing = _ic_slot(self, "_pending_kanban_note_lock", "_pending_kanban_note")
+            self._pending_kanban_note = (existing + "\n" + cleaned) if existing else cleaned
+        return True
+
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task: during a model request only that
         request is cancelled (completed messages kept, partial reasoning becomes assistant context, the
@@ -301,4 +311,11 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = None
+        return text
+
+    def _drain_pending_kanban_note(self) -> Optional[str]:
+        """Return and clear the pending Kanban comment text."""
+        with _ic_lock(self, "_pending_kanban_note_lock"):
+            text = _ic_slot(self, "_pending_kanban_note_lock", "_pending_kanban_note")
+            self._pending_kanban_note = None
         return text

@@ -4919,11 +4919,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
-    # Provider-supplied client, consulted before the built-in gemini/OpenAI ladder so an
-    # out-of-tree provider registered with auth_type="api_key" keeps its native transport for
-    # auxiliary tasks — the same hook the main-agent path honors (#112384). ``None`` (the
-    # profile default) falls through to the standard construction, so built-in providers
-    # without a registered profile are untouched.
+    # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)

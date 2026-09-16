@@ -1849,7 +1849,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             continue
 
         try:
-            from agent.auxiliary_client import _resolve_moa_aggregator, resolve_provider_client
+            from agent.auxiliary_client import (
+                _normalize_aux_provider,
+                _resolve_moa_aggregator,
+                resolve_provider_client,
+            )
             from hermes_cli.fallback_config import resolve_entry_api_key
             # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
             # of falling through to OpenRouter defaults.
@@ -1871,7 +1875,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if fb_provider == "moa":
                 resolved_fb_provider, _ = _resolve_moa_aggregator(fb_model)
                 if resolved_fb_provider:
-                    fb_provider = resolved_fb_provider.strip().lower()
+                    fb_provider = _normalize_aux_provider(resolved_fb_provider)
             try:
                 from hermes_cli.model_normalize import normalize_model_for_provider
                 fb_model = normalize_model_for_provider(fb_model, fb_provider)

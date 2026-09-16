@@ -347,6 +347,54 @@ class TestFallbackChainAdvancement:
         create.assert_called_once()
         assert agent.client is rebuilt_client
 
+    def test_moa_fallback_canonicalizes_aggregator_alias_from_real_config(
+        self, tmp_path, monkeypatch
+    ):
+        """The runtime identity must match the provider used by the real resolver."""
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "moa": {
+                        "default_preset": "default",
+                        "presets": {
+                            "default": {
+                                "reference_models": [
+                                    {"provider": "openrouter", "model": "openai/gpt-5.5"}
+                                ],
+                                "aggregator": {
+                                    "provider": "codex",
+                                    "model": "gpt-5.6-sol",
+                                },
+                            }
+                        },
+                    }
+                }
+            )
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
+        codex_client = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
+
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="token"),
+            patch("agent.auxiliary_client._create_openai_client", return_value=codex_client),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "openai-codex"
+        assert agent.requested_provider == "openai-codex"
+        assert agent.api_mode == "codex_responses"
+        assert agent.client is codex_client
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

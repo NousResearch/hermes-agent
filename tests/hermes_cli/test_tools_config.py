@@ -1086,6 +1086,37 @@ def test_gui_selection_of_krea_row_writes_a_krea_model_when_none_is_set(monkeypa
     assert config["image_gen"]["model"] in KREA_MODEL_IDS
 
 
+def test_gui_selection_of_fal_row_drops_a_native_krea_model(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config import apply_provider_selection
+
+    paid = NousSubscriptionFeatures(
+        subscribed=True, nous_auth_present=True, provider_is_nous=False,
+        features={"image_gen": SimpleNamespace(managed_by_nous=True)}, account_info=_paid_account(),
+    )
+    monkeypatch.setattr(tools_config, "get_nous_subscription_features", lambda *args, **kwargs: paid)
+    config = {"image_gen": {"provider": "nous", "model": "krea-2-medium"}}
+
+    apply_provider_selection("image_gen", _image_gen_row("fal")["name"], config)
+
+    assert config["image_gen"] == {"provider": "nous"}
+    assert tools_config._is_provider_active(_image_gen_row("fal"), config) is True
+    assert tools_config._is_provider_active(_image_gen_row("krea"), config) is False
+
+
+def test_gui_selection_of_fal_row_keeps_a_fal_hosted_krea_model(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config import apply_provider_selection
+
+    paid = _subscription_features(_paid_account())
+    monkeypatch.setattr(tools_config, "get_nous_subscription_features", lambda *args, **kwargs: paid)
+    config = {"image_gen": {"provider": "nous", "model": "fal-ai/krea/v2/medium/text-to-image"}}
+
+    apply_provider_selection("image_gen", _image_gen_row("fal")["name"], config)
+
+    assert config["image_gen"]["model"] == "fal-ai/krea/v2/medium/text-to-image"
+
+
 def test_gui_model_catalog_follows_each_managed_image_row_backend():
     from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin
 

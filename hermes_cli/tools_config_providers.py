@@ -714,6 +714,17 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         if isinstance(section, dict):
             section["provider"] = NOUS_MANAGED_PROVIDER
             section.pop("use_gateway", None)
+            backend = provider.get("imagegen_backend")
+            if backend:
+                # The stored model decides which gateway a managed image pick reaches, so it must match
+                # the row: a Krea pick needs a Krea id (the default if none), a FAL pick must not keep one.
+                from plugins.image_gen.krea import DEFAULT_MODEL, KREA_MODEL_IDS
+
+                stored_model_is_krea = section.get("model") in KREA_MODEL_IDS
+                if backend == "krea" and not stored_model_is_krea:
+                    section["model"] = DEFAULT_MODEL
+                elif backend == "fal" and stored_model_is_krea:
+                    del section["model"]
     elif not managed_feature:
         # Non-gateway pick — clear any stale legacy use_gateway key on the category. Resolve the category from
         # the row's own markers first (plugin-injected rows are NOT in TOOL_CATEGORIES' hardcoded lists), then
@@ -730,7 +741,7 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     """Non-interactively persist a provider selection for a toolset (config keys only — API keys, post-setup
     hooks, auth gating and model pickers are separate GUI endpoints). ``provider_name`` is resolved among
     :func:`_visible_providers` rows; raises ``KeyError`` for an unknown toolset or provider."""
-    from hermes_cli.tools_config import TOOL_CATEGORIES, _cfg_section
+    from hermes_cli.tools_config import TOOL_CATEGORIES
 
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat is None:
@@ -754,15 +765,6 @@ def apply_provider_selection(ts_key: str, provider_name: str, config: dict) -> N
     for section_key, vendor in selections:
         if vendor:
             _select_into(config, section_key, "provider", vendor, managed_feature)
-
-    # The GUI picks a model in a separate step, and the runtime only reaches the Krea gateway for a Krea
-    # model id — with a FAL model still stored, this pick would silently keep generating on FAL.
-    if provider.get("imagegen_backend") == "krea":
-        from plugins.image_gen.krea import DEFAULT_MODEL, KREA_MODEL_IDS
-
-        image_cfg = _cfg_section(config, "image_gen")
-        if image_cfg.get("model") not in KREA_MODEL_IDS:
-            image_cfg["model"] = DEFAULT_MODEL
 
 
 def _nous_provider_gate(provider: dict, config: dict, managed_feature, *, force_fresh: bool) -> bool:

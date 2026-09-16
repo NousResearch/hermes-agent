@@ -10,6 +10,7 @@ import copy
 import json
 import logging
 import re
+import ast as _ast
 import threading
 import time
 from datetime import datetime
@@ -3134,25 +3135,61 @@ def _set_reset_from_retry_after(context: Dict[str, Any], retry_after: Any) -> No
         context["reset_at"] = time.time() + seconds
 
 
+def _set_reset_from_payload(context: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Fill reason/message/reset_at from a provider error payload (structured body or
+    embedded in a string-form error). ``resets_in_seconds`` is relative and converts
+    to an absolute ``reset_at``; ``resets_at``/``reset_at`` are already absolute."""
+    reason = payload.get("code") or payload.get("type")
+    if isinstance(reason, str) and reason.strip():
+        context.setdefault("reason", reason.strip())
+    message = payload.get("message") or payload.get("error_description")
+    if isinstance(message, str) and message.strip():
+        context.setdefault("message", message.strip())
+    reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
+    if reset is not None:
+        context.setdefault("reset_at", reset)
+    elif (relative := payload.get("resets_in_seconds")) not in {None, ""}:
+        with contextlib.suppress(TypeError, ValueError):
+            context.setdefault("reset_at", time.time() + float(relative))
+    _set_reset_from_retry_after(context, payload.get("retry_after"))
+
+
+def _embedded_error_payload(error: Exception) -> Optional[Dict[str, Any]]:
+    """Error payload embedded in ``str(error)`` by wrappers that flatten the provider
+    body into the message — ``Error code: 429 - {'error': {...}}`` (Python repr, from
+    litellm-style wrapping) or the JSON form. Real SDK exceptions carry a structured
+    ``body`` and never need this; only the body-less path does (it used to keep only
+    the raw string, so a Codex quota wall's ``resets_at`` was lost and the pool never
+    armed its reset-aware gate)."""
+    m = re.search(r"-\s*(\{.*\})\s*$", str(error), re.DOTALL)
+    if not m:
+        return None
+    raw = m.group(1)
+    for parser in (json.loads, _ast.literal_eval):
+        try:
+            obj = parser(raw)
+        except (ValueError, SyntaxError, RecursionError):
+            continue
+        if isinstance(obj, dict):
+            payload = obj.get("error") if isinstance(obj.get("error"), dict) else obj
+            return payload if isinstance(payload, dict) else None
+    return None
+
+
 def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     """Extract structured rate-limit details from provider errors."""
     context: Dict[str, Any] = {}
     body = getattr(error, "body", None)
     payload = (body.get("error") if isinstance(body.get("error"), dict) else body) if isinstance(body, dict) else None
     if isinstance(payload, dict):
-        reason = payload.get("code") or payload.get("type") or payload.get("error")
-        if isinstance(reason, str) and reason.strip():
-            context["reason"] = reason.strip()
-        message = payload.get("message") or payload.get("error_description")
-        if not message and isinstance(payload.get("error"), str):
+        _set_reset_from_payload(context, payload)
+        if not isinstance(payload.get("message") or payload.get("error_description"), str) and isinstance(payload.get("error"), str):
             # xAI uses a top-level string ``error`` beside a structured ``code``.
-            message = payload.get("error")
-        if isinstance(message, str) and message.strip():
-            context["message"] = message.strip()
-        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
-        if reset is not None:
-            context["reset_at"] = reset
-        _set_reset_from_retry_after(context, payload.get("retry_after"))
+            context.setdefault("message", payload["error"].strip())
+    else:
+        payload = _embedded_error_payload(error)
+        if payload is not None:
+            _set_reset_from_payload(context, payload)
     headers = getattr(getattr(error, "response", None), "headers", None)
     if headers:
         _set_reset_from_retry_after(context, headers)

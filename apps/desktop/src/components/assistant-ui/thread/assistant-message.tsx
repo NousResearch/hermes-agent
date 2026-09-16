@@ -26,6 +26,7 @@ import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/as
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
+import { isApprovalActivity, isCurrentTurnMessage } from '@/components/assistant-ui/tool/approval-activity'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { formatElapsed } from '@/components/chat/activity-timer'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -55,6 +56,7 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
 import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
+import { sessionApprovalRequest } from '@/store/prompts'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel, setModelPickerOpen } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
@@ -198,6 +200,18 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // the markdown part and the tiny status leaves — not the footer, the
   // preview block, or this root.
   const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+
+  const activityOnly = useAuiState(
+    state =>
+      isCurrentTurnMessage(state.thread.messages, state.message.id) &&
+      state.message.content.some(part => part.type === 'tool-call' && isApprovalActivity(part)) &&
+      state.message.content.every(
+        part => (part.type === 'tool-call' && isApprovalActivity(part)) || (part.type === 'text' && !part.text.trim())
+      )
+  )
+
   // Sealed mid-turn commentary keeps its text but not the footer, so a
   // tool-heavy turn doesn't grow a copy/refresh bar per paragraph (see
   // ChatMessage.interim).
@@ -239,6 +253,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
         collapsedNotice && 'pb-(--conversation-turn-gap)'
       )}
+      data-approval-activity-only={approval && activityOnly ? '' : undefined}
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       // Collapsed inter-agent rows never carried the tapback listener; keeping

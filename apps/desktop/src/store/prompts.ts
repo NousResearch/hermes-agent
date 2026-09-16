@@ -123,9 +123,11 @@ export interface VaultUnlockRequest extends KeyedPrompt {
 
 const EMPTY_APPROVALS: ApprovalRequest[] = []
 const $approvalQueues = atom<Record<string, ApprovalRequest[]>>({})
+const $approvalStackSizes = atom<Record<string, number>>({})
 // A replay started before a response/reset cannot resurrect the answered card.
 let approvalRevision = 0
 const sessionApprovalRevisions = new Map<string, number>()
+
 const approval = {
   $all: computed($approvalQueues, queues =>
     Object.fromEntries(Object.entries(queues).map(([key, queue]) => [key, queue[0]]))
@@ -133,6 +135,7 @@ const approval = {
   reset() {
     approvalRevision += 1
     sessionApprovalRevisions.clear()
+    $approvalStackSizes.set({})
     $approvalQueues.set({})
   },
   set(request: ApprovalRequest) {
@@ -143,6 +146,8 @@ const approval = {
     const next = [...queue]
 
     if (index < 0) {
+      const sizes = $approvalStackSizes.get()
+      $approvalStackSizes.set({ ...sizes, [key]: (sizes[key] ?? 0) + 1 })
       next.push(request)
     } else {
       next[index] = request
@@ -157,6 +162,7 @@ const approval = {
       const key = keyFor(sessionId)
       sessionApprovalRevisions.set(key, (sessionApprovalRevisions.get(key) ?? 0) + 1)
     }
+
     const queues = $approvalQueues.get()
     const next = { ...queues }
     let changed = false
@@ -173,10 +179,14 @@ const approval = {
       }
 
       changed = true
+
       if (remaining.length) {
         next[key] = remaining
       } else {
         delete next[key]
+        const sizes = { ...$approvalStackSizes.get() }
+        delete sizes[key]
+        $approvalStackSizes.set(sizes)
       }
     }
 
@@ -185,6 +195,7 @@ const approval = {
     }
   }
 }
+
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
 const vaultUnlock = keyedPromptStore<VaultUnlockRequest>()
@@ -283,27 +294,32 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   }
 
   const ids = new Set(result.approvals.map(pending => pending.request_id))
+
   for (const request of previous ?? EMPTY_APPROVALS) {
     if (request.requestId && !ids.has(request.requestId)) {
       clearApprovalRequest(sessionId, request.requestId)
     }
   }
 
-  await Promise.all(result.approvals.map(pending => {
-    if (typeof pending.request_id !== 'string') {
-      return
-    }
+  await Promise.all(
+    result.approvals.map(pending => {
+      if (typeof pending.request_id !== 'string') {
+        return
+      }
 
-    return receiveApprovalRequest(gateway, {
-      allowPermanent: pending.allow_permanent !== false,
-      choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
-      command: typeof pending.command === 'string' ? pending.command : '',
-      description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
-      requestId: pending.request_id,
-      sessionId,
-      smartDenied: pending.smart_denied === true
+      return receiveApprovalRequest(gateway, {
+        allowPermanent: pending.allow_permanent !== false,
+        choices: Array.isArray(pending.choices)
+          ? pending.choices.filter(choice => typeof choice === 'string')
+          : undefined,
+        command: typeof pending.command === 'string' ? pending.command : '',
+        description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+        requestId: pending.request_id,
+        sessionId,
+        smartDenied: pending.smart_denied === true
+      })
     })
-  }))
+  )
 }
 
 /**
@@ -337,6 +353,8 @@ export async function answerApproval(
 
 /** The prompt request for one specific session — the tile counterpart of the
  *  active-session `$*Request` views (same map, fixed key). */
+export const sessionApprovalStackSize = (sessionId: string | null) =>
+  computed($approvalStackSizes, sizes => sizes[keyFor(sessionId)] ?? 0)
 export const sessionApprovalRequests = (sessionId: string | null) =>
   computed($approvalQueues, all => all[keyFor(sessionId)] ?? EMPTY_APPROVALS)
 export const sessionApprovalRequest = (sessionId: string | null) =>

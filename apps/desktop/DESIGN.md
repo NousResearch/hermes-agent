@@ -86,12 +86,23 @@ Menus and popovers use their own shared `shadow-md` +
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
-**Queued cards:** `CardStack` (`src/components/ui/card-stack.tsx`) shows one
-interactive front card and at most two inert, inset back edges. Queue length
-changes the count, not the pile height. Approvals rise above the composer;
-top-center toasts stack downward and bottom-right toasts upward. Pass the
-existing surface tokens/radius; the primitive owns only depth. Hidden cards
-have no live controls. Toasts may explicitly expand to the full list.
+**Queued cards:** `CardStack` (`src/components/ui/card-stack.tsx`) consumes a live,
+keyed list, retaining the current item when more arrive. Inline and floating
+approvals and both toast placements share its gesture handling and geometry.
+The Cursor-reference treatment uses one 96%-scale silhouette 7px above the
+front, 220ms promotion, and 180ms upward clearance; no rotation or lateral throw
+on button/keyboard decisions. Consumers supply the existing surface tokens and
+own the exact-request response. Gestures never grant approval. Departing cards
+are immediately inert; toasts can expand to the full live list. One persistent
+transcript-level host owns approvals, independent of tool rows and assistant
+message boundaries. Prepared approvals can precede tool.start: execution must
+not relocate or remount the stack. While approvals remain, a real activity line
+above the cards changes from awaiting approval to current-turn command status;
+represented execution rows appear only when explicitly expanded. Empty text
+continuations must not introduce paragraph gaps. Keep inline approvals beside
+the conversation and let genuine content scroll normally; do not inject padding
+or write scroll offsets to pin the decision. Preview this order with delayed
+start and completion events, not pre-created tool rows.
 
 ## Window glass
 

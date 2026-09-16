@@ -17,7 +17,11 @@ function activeApprovalStack(): HTMLElement | undefined {
   return queryAllVisible<HTMLElement>('[data-approval-stack]').find(stack => {
     const surface = stack.closest<HTMLElement>('[data-composer-target]')
 
-    return !surface || surface.dataset.composerTarget === target
+    return (
+      Boolean(stack.querySelector('[data-stack-active="true"]')) &&
+      !stack.closest('[inert]') &&
+      (!surface || surface.dataset.composerTarget === target)
+    )
   })
 }
 
@@ -32,6 +36,7 @@ export function handleApprovalKey(event: KeyboardEvent): boolean {
     composerFocusBlockedBySurface()
   ) {
     releaseApprovalKey()
+
     return false
   }
 
@@ -46,8 +51,10 @@ export function handleApprovalKey(event: KeyboardEvent): boolean {
     if (!heldStack) {
       return false
     }
+
     event.preventDefault()
     event.stopPropagation()
+
     if (stack !== heldStack || event.key !== 'Enter') {
       return true
     }
@@ -55,26 +62,34 @@ export function handleApprovalKey(event: KeyboardEvent): boolean {
     if (!stack || (isEditableTarget(target) && !emptyComposer)) {
       return false
     }
+
     if (event.key === 'Enter' && isActivateOnEnterTarget(target) && !runTarget && !emptyComposer) {
       return false
     }
+
     if (runTarget && !stack.contains(runTarget)) {
       return false
     }
+
     heldStack = stack
     event.preventDefault()
     event.stopPropagation()
   }
 
   const selector = event.key === 'Enter' ? '[data-approval-run]' : '[data-approval-deny]'
-  const button = event.key === 'Enter' && !event.repeat && runTarget
-    ? runTarget as HTMLButtonElement
-    : stack?.querySelector<HTMLButtonElement>(selector)
+
+  const button =
+    event.key === 'Enter' && !event.repeat && runTarget
+      ? (runTarget as HTMLButtonElement)
+      : Array.from(stack?.querySelectorAll<HTMLButtonElement>(selector) ?? []).find(
+          button => !button.closest('[inert]')
+        )
 
   // While the first reply is in flight, repeat does nothing. Once the exact
   // card is removed, the next keydown sees the next card. No implicit allow-all.
   if (button && !button.disabled) {
     button.click()
   }
+
   return true
 }

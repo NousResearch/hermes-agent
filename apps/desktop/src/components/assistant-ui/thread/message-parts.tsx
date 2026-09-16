@@ -3,7 +3,8 @@ import {
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
-  useMessagePartReasoning
+  useMessagePartReasoning,
+  useMessagePartText
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
@@ -140,12 +141,22 @@ const PREVIEW_RELOCK_THRESHOLD_PX = 24
 
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
-const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
-  <>
-    <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
-  </>
-)
+const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => {
+  const { text } = useMessagePartText()
+
+  // assistant-ui adds an empty continuation after a tool starts. It is not
+  // prose yet and must not create paragraph spacing above pending approvals.
+  if (!text.trim()) {
+    return null
+  }
+
+  return (
+    <>
+      <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
+      <MarkdownText />
+    </>
+  )
+}
 
 const ThinkingDisclosure: FC<{
   children: ReactNode

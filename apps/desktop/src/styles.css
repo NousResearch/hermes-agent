@@ -2071,6 +2071,12 @@ body.guest-pointer-lock :is(webview, iframe) {
   opacity: 1;
 }
 
+/* Tool-only continuation bubbles have no independent line while the approval
+   activity row represents them. An explicitly opened result remains in place. */
+[data-approval-activity-only]:not(:has([data-tool-open])) {
+  display: none;
+}
+
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
    of the message content with no per-part wrapper, so adjacency rules cover
    every pairing — first block needs no reset, nested tool rows are untouched.

@@ -1,4 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
@@ -7,24 +9,23 @@ import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { PendingApprovalStack } from './approval'
 
-// Radix's DropdownMenu touches pointer-capture + scrollIntoView, which jsdom
-// doesn't implement; stub them so the menu can open in tests.
+function Runtime({ children }: { children: ReactNode }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({ messages: [], isRunning: false, onNew: async () => {} })
+
+  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+}
+
+function render(children: ReactNode) {
+  return renderUi(<Runtime>{children}</Runtime>)
+}
+
 beforeAll(() => {
-  const proto = window.HTMLElement.prototype as unknown as Record<string, () => unknown>
-
-  const stubs: Record<string, () => unknown> = {
-    hasPointerCapture: () => false,
-    releasePointerCapture: () => undefined,
-    scrollIntoView: () => undefined,
-    setPointerCapture: () => undefined
-  }
-
-  for (const [name, fn] of Object.entries(stubs)) {
-    proto[name] ??= fn
-  }
+  stubMenuDomApis()
+  stubResizeObserver()
 })
 
 function setRequest(
@@ -65,10 +66,12 @@ afterEach(() => {
 })
 
 describe('PendingApprovalStack', () => {
-  it('renders nothing when there is no pending approval', () => {
+  it('retains an empty host without consuming keyboard input', () => {
     const { container } = render(<PendingApprovalStack />)
 
-    expect(container.innerHTML).toBe('')
+    expect(container.querySelector('[data-approval-stack]')).not.toBeNull()
+    expect(container.querySelector('[data-stack-active="true"]')).toBeNull()
+    expect(handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }))).toBe(false)
   })
 
   it('renders run/reject controls for a pending terminal command', () => {
@@ -114,6 +117,7 @@ describe('PendingApprovalStack', () => {
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('approval.respond', {
+        all: false,
         choice: 'once',
         request_id: 'apr-1',
         session_id: 'sess-1'
@@ -122,18 +126,13 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
-  it('reveals the full command inline when the Command toggle is clicked', () => {
+  it('keeps the full command in a bounded scrollable body', () => {
     const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
     setRequest(longCommand)
     render(<PendingApprovalStack />)
 
-    // Preview is a single line until the user asks to inspect the full command.
-    expect(screen.getByText(longCommand).className).toContain('truncate')
-
-    fireEvent.click(screen.getByRole('button', { name: /Command/ }))
-
-    expect(screen.getByText(longCommand).className).not.toContain('truncate')
-    expect(screen.getByRole('button', { name: /Command/ }).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText(longCommand).className).toContain('max-h-40')
+    expect(screen.getByText(longCommand).className).toContain('overflow-auto')
   })
 
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
@@ -209,9 +208,13 @@ describe('PendingApprovalStack', () => {
     rpc.mockRejectedValueOnce(new Error('Disconnected'))
     setRequest('first')
     render(<PendingApprovalStack />)
-    act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true })) })
+    act(() => {
+      handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }))
+    })
     await waitFor(() => expect((screen.getByRole('button', { name: /Run/ }) as HTMLButtonElement).disabled).toBe(false))
-    act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, cancelable: true })) })
+    act(() => {
+      handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, cancelable: true }))
+    })
     expect(rpc).toHaveBeenCalledTimes(1)
     expect($approvalRequest.get()?.command).toBe('first')
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
@@ -221,13 +224,20 @@ describe('PendingApprovalStack', () => {
   it('drains exact cards with held Enter without answering a draft or background session', async () => {
     const rpc = mockGateway()
     $activeSessionId.set('sess-1')
+
     for (const id of ['a', 'b', 'c']) {
       setApprovalRequest({ command: id, description: id, requestId: id, sessionId: 'sess-1' })
     }
+
     setApprovalRequest({ command: 'background', description: 'background', requestId: 'other', sessionId: 'sess-2' })
-    render(<><PendingApprovalStack /><input aria-label="Draft" /></>)
+    render(
+      <>
+        <PendingApprovalStack />
+        <input aria-label="Draft" />
+      </>
+    )
     expect(screen.getAllByRole('button', { name: /Run/ })).toHaveLength(1)
-    expect(document.querySelectorAll('[data-slot="card-stack-edge"]')).toHaveLength(2)
+    expect(document.querySelectorAll('[data-slot="card-stack-edge"]')).toHaveLength(1)
     const draft = screen.getByRole('textbox')
     fireEvent.change(draft, { target: { value: 'keep this' } })
     const typing = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
@@ -236,12 +246,21 @@ describe('PendingApprovalStack', () => {
     expect(rpc).not.toHaveBeenCalled()
 
     for (const [index, id] of ['a', 'b', 'c'].entries()) {
-      act(() => { handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true })) })
-      await waitFor(() => expect(rpc).toHaveBeenCalledWith('approval.respond', {
-        choice: 'once', request_id: id, session_id: 'sess-1'
-      }))
+      act(() => {
+        handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true }))
+      })
+      await waitFor(() =>
+        expect(rpc).toHaveBeenCalledWith('approval.respond', {
+          all: false,
+          choice: 'once',
+          request_id: id,
+          session_id: 'sess-1'
+        })
+      )
       await waitFor(() => expect(screen.queryAllByRole('button', { name: /Run/ })).toHaveLength(index === 2 ? 0 : 1))
     }
+
+    releaseApprovalKey()
     expect(rpc.mock.calls.filter(([method]) => method === 'approval.respond')).toHaveLength(3)
     expect(sessionApprovalRequests('sess-2').get().map(request => request.requestId)).toEqual(['other'])
     expect((draft as HTMLInputElement).value).toBe('keep this')

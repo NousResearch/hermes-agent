@@ -372,6 +372,7 @@ export function ProfileRail() {
                   color={resolveProfileColor(profile.name, colors)}
                   key={profile.name}
                   label={profileLabel(profile)}
+                  name={profile.name}
                   // The legacy per-profile remote override predates the
                   // gateway registry; once the rail shows machines directly
                   // it only confuses, so it is offered on single-gateway
@@ -1133,6 +1134,9 @@ function RestSquare({
 interface ProfileSquareProps {
   active: boolean
   color: null | string
+  /** Canonical profile key — routing, prewarm, and drag-reorder identity. */
+  name: string
+  /** Presentation label only (display_name). Never used for routing. */
   label: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
@@ -1162,6 +1166,7 @@ function ProfileSquare({
   active,
   color,
   label,
+  name,
   onConnectRemote,
   onDelete,
   onEditSoul,
@@ -1177,11 +1182,12 @@ function ProfileSquare({
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
   // Hovering a square telegraphs the switch — start that profile's backend
-  // spawn now so a cold click doesn't pay the full boot.
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
+  // spawn now so a cold click doesn't pay the full boot. Identity is the
+  // canonical name, never display_name (#100330).
+  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(name)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
-    id: label,
+    id: name,
     transition: RAIL_TRANSITION
   })
 

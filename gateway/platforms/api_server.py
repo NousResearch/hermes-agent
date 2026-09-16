@@ -1618,6 +1618,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+        # Hub-authenticated peer-send delivery surface (§1/§3/§4): authenticated by the
+        # gateway's OWN API_SERVER_KEY, not a per-profile key, so a peer reaches a named
+        # profile without that profile's private key.
+        routes.extend([
+            ("POST", "/v1/messages", self._handle_message_send),
+            ("GET", "/v1/messages/{delivery_id}", self._handle_message_status),
+            ("POST", "/v1/messages/{delivery_id}/ack", self._handle_message_ack),
+        ])
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -3164,7 +3172,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     BOT_SEND_WAIT_HEADER = "X-Hermes-Wait-Seconds"
     #: Delivery statuses (ENUM B) that are terminal: never run another turn.
     _BOT_SEND_TERMINAL_STATUSES = frozenset(
-        {"delivered", "failed", "expired", "cancelled", "ambiguous"})
+        {"delivered", "acknowledged", "failed", "expired", "cancelled", "ambiguous"})
 
     def _bot_send_request(self, request: "web.Request") -> Optional[Dict[str, Any]]:
         """Parse a peer-delivery request, or ``None`` for an ordinary chat turn.
@@ -3539,6 +3547,209 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return await _bot_delivery.drain_under_lock(
             self, home=home, target_profile=target_profile,
             delivery_id=delivery_id, ctx=ctx, waited=waited)
+
+    # -- Hub-authenticated delivery surface (peer-send spec §1/§3/§4) -------------
+
+    def _check_hub_auth(self, request: "web.Request") -> Optional["web.Response"]:
+        """Validate the Bearer token against the gateway's OWN ``API_SERVER_KEY``.
+
+        The delivery surface must not depend on a named profile's private key (§4): a
+        peer holds this gateway's ROOT key (``hermes peer add --key``), so ``dm`` reaches
+        a named profile whose per-profile key stays private. The session/chat routes keep
+        ``_check_auth`` and keep failing closed for the root key -- exactly as designed.
+        """
+        expected_key = self._api_key
+        if not expected_key:
+            logger.warning("API server rejected hub-authenticated request: no API_SERVER_KEY configured; %s",
+                           self._request_audit_log_suffix(request))
+            return self._auth_failed_response()
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+            if hmac.compare_digest(token.encode(), expected_key.encode()):
+                return None
+        logger.warning("API server rejected invalid hub API key: %s", self._request_audit_log_suffix(request))
+        return self._auth_failed_response()
+
+    async def _bot_send_resolve_session(self, target_profile: str) -> str:
+        """Resolve (or create) the canonical Bot Chat for ``target_profile`` server-side.
+
+        A peer cannot resolve the session through the per-profile ``/api/sessions``
+        mirror without the profile's private key (§4), so the delivery endpoint resolves
+        it here -- inside the target profile's own scope, where its session DB lives.
+        """
+        from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+        db = await self._ensure_session_db_async()
+        if db is None:
+            raise RuntimeError("session database unavailable")
+        existing = await asyncio.to_thread(db.get_session_by_title, BOT_CHAT_TITLE)
+        if existing and existing.get("id"):
+            if existing.get("archived"):
+                try:
+                    await asyncio.to_thread(db.unarchive_recoverable_session, existing["id"])
+                except Exception:
+                    pass
+            return str(existing["id"])
+        # No canonical Bot Chat yet: mint one with the same source the peer CLI uses.
+        session_id = f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        source = self._normalize_session_source("bot_peer_dm")
+        clean_title = db.sanitize_title(BOT_CHAT_TITLE)
+
+        def _atomic(conn):
+            conn.execute(
+                "INSERT INTO sessions (id, source, model, model_config, system_prompt, started_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, source, None, None, None, time.time()))
+            if clean_title:
+                conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
+            row = conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            return str(row["id"]) if row else session_id
+
+        return await asyncio.to_thread(db._execute_write, _atomic)
+
+    @staticmethod
+    def _hub_target_profile(body: Dict[str, Any]) -> tuple[str, Optional["web.Response"]]:
+        """Validate and normalize ``target_profile`` from a delivery request body."""
+        raw = str(body.get("target_profile") or "").strip()
+        if not raw or raw == "default":
+            return "default", None
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", raw):
+            return "", _error_response(
+                "target_profile must match [A-Za-z0-9_.-]{1,64}", 400, code="invalid_target_profile")
+        return raw, None
+
+    async def _handle_message_send(self, request: "web.Request") -> "web.Response":
+        """POST /v1/messages -- hub-authenticated peer-send delivery admission (§1, §3).
+
+        Body: ``{"target_profile": str, "message": str, "session_id": str|None}``.
+        Delivery headers: ``Idempotency-Key``, ``X-Hermes-Sender-Profile``,
+        ``X-Hermes-Wait-Seconds``. When ``Idempotency-Key`` is absent it is derived here
+        (the sender cannot: the session is resolved server-side under hub auth).
+        """
+        from hermes_cli import delivery_keys
+        from tools import bot_delivery_queue as delivery_queue
+
+        auth_err = self._check_hub_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        target_profile, perr = self._hub_target_profile(body)
+        if perr:
+            return perr
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return _error_response("message must be a non-empty string", 400, code="invalid_message")
+        message = message.strip()
+        sender = (request.headers.get(self.BOT_SEND_SENDER_HEADER) or "").strip()
+        if not sender:
+            return _error_response(
+                f"{self.BOT_SEND_SENDER_HEADER} header is required", 400, code="missing_sender")
+        sender = re.sub(r"[^A-Za-z0-9_.@-]", "_", sender)[:64] or "unknown"
+        key = (request.headers.get(self.BOT_SEND_KEY_HEADER) or "").strip()
+        requested_session = str(body["session_id"]).strip() if body.get("session_id") else None
+
+        scope = self._profile_scope(target_profile if target_profile != "default" else None)
+        token = _api_request_profile.set(target_profile) if target_profile != "default" else None
+        try:
+            with scope:
+                session_id = requested_session or await self._bot_send_resolve_session(target_profile)
+                if not key:
+                    key = delivery_keys.derive_delivery_key(sender, target_profile, session_id, message)
+                run_kwargs = _bot_delivery.delivery_run_kwargs(
+                    {"message": message, "target_session_id": session_id})
+                ctx = {"session_id": session_id, "user_message": message, "run_kwargs": run_kwargs}
+                bot_send = {
+                    "idempotency_key": key,
+                    "sender_profile": sender,
+                    "wait_seconds": self._bot_send_wait_seconds(request),
+                }
+                return await self._handle_bot_send(request, ctx, bot_send)
+        finally:
+            if token is not None:
+                _api_request_profile.reset(token)
+
+    async def _handle_message_status(self, request: "web.Request") -> "web.Response":
+        """GET /v1/messages/{delivery_id} -- hub-authenticated status read (§3).
+
+        Returns the sender-visible envelope for a delivery_id. Query ``?profile=``
+        names the target profile whose ledger holds the record (default ``default``).
+        """
+        from tools import bot_delivery_queue as delivery_queue
+
+        auth_err = self._check_hub_auth(request)
+        if auth_err:
+            return auth_err
+        delivery_id = request.match_info.get("delivery_id", "")
+        try:
+            key_id = delivery_queue.validate_delivery_id(delivery_id)
+        except ValueError:
+            return _error_response("Invalid delivery_id", 400, code="invalid_delivery_id")
+        profile = (request.query.get("profile") or "default").strip()
+        home = self._bot_send_home_for(profile)
+        record = await asyncio.to_thread(delivery_queue.read_record, home, key_id)
+        if record is None:
+            return _error_response("No such delivery", 404, code="delivery_not_found")
+        return self._bot_send_json(delivery_queue.build_envelope(record, replayed=True))
+
+    async def _handle_message_ack(self, request: "web.Request") -> "web.Response":
+        """POST /v1/messages/{delivery_id}/ack -- receiver-written acknowledgement (§3).
+
+        Moves a ``delivered`` record to ``acknowledged`` (idempotent). Body may carry
+        ``{"profile": str}`` naming the target profile whose ledger holds the record.
+        """
+        from tools import bot_delivery_queue as delivery_queue
+
+        auth_err = self._check_hub_auth(request)
+        if auth_err:
+            return auth_err
+        delivery_id = request.match_info.get("delivery_id", "")
+        try:
+            key_id = delivery_queue.validate_delivery_id(delivery_id)
+        except ValueError:
+            return _error_response("Invalid delivery_id", 400, code="invalid_delivery_id")
+        # ``profile`` is optional; an empty body is a valid ack for the default profile.
+        body: Dict[str, Any] = {}
+        if request.content_length:
+            body, err = await self._read_json_body(request)
+            if err:
+                return err
+        profile = str((body or {}).get("profile") or "default").strip()
+        home = self._bot_send_home_for(profile)
+        record = await asyncio.to_thread(delivery_queue.read_record, home, key_id)
+        if record is None:
+            return _error_response("No such delivery", 404, code="delivery_not_found")
+        if record.get("status") == delivery_queue.STATUS_ACKNOWLEDGED:
+            # Idempotent: a receiver that retries its ack gets the same envelope,
+            # never an error (§3).
+            return self._bot_send_json(delivery_queue.build_envelope(record, replayed=True))
+        if record.get("status") != delivery_queue.STATUS_DELIVERED:
+            return _error_response(
+                f"cannot acknowledge a delivery in status {record.get('status')!r}",
+                409, code="not_delivered")
+        acked = await asyncio.to_thread(delivery_queue.acknowledge, home, key_id)
+        # Mirror the new stage into the run registry and mark it acknowledged for GC.
+        token = _api_request_profile.set(profile) if profile and profile != "default" else None
+        try:
+            self._bot_send_record_status(key_id, acked, result=delivery_queue.RESULT_DELIVERED)
+            store = getattr(self, "_run_idempotency_store", None)
+            if store is not None:
+                store.mark_acknowledged(key_id)
+        finally:
+            if token is not None:
+                _api_request_profile.reset(token)
+        return self._bot_send_json(delivery_queue.build_envelope(acked, replayed=True))
+
+    def _bot_send_home_for(self, profile: str) -> Path:
+        """Resolve the delivery ledger home for a named (or default) profile."""
+        normalized = profile if (profile and profile != "default") else None
+        token = _api_request_profile.set(normalized)
+        try:
+            return self._bot_send_home()
+        finally:
+            _api_request_profile.reset(token)
 
     @staticmethod
     def _session_headers(session_id: str, gateway_session_key: Optional[str]) -> Dict[str, str]:

@@ -398,12 +398,19 @@ def _resolve_idempotency_key(args, *, sender_profile: str, target_profile: str,
 
 
 def _delivery_headers(idempotency_key: str, sender_profile: str, wait_seconds: float) -> dict:
-    """The three delivery headers the client owns (§5.1)."""
-    return {
-        "Idempotency-Key": idempotency_key,
+    """The delivery headers the client owns (§5.1).
+
+    ``Idempotency-Key`` is omitted when empty: the hub send endpoint then derives the
+    key server-side from (sender, target, resolved session, message), so a named
+    profile that the client cannot resolve still coalesces retries.
+    """
+    headers = {
         "X-Hermes-Sender-Profile": sender_profile,
         "X-Hermes-Wait-Seconds": str(int(wait_seconds)),
     }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
 
 
 def _peer_error_body(exc: urllib.error.HTTPError) -> tuple[str, str]:

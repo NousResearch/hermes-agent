@@ -860,6 +860,10 @@ export interface SessionRuntimeInfo {
 export interface UsageStats {
   /** Rolling tokens-per-second over the last ~10 API calls (tui_gateway `_get_usage`). */
   avg_tps?: number
+  /** Rolling time-to-first-byte / first-chunk in seconds over the last ~10 API calls (tui_gateway `_get_usage`). */
+  avg_ttfb_s?: number
+  /** @deprecated Alias for avg_ttfb_s */
+  avg_ttft_s?: number
   /** Session prompt-cache hit rate, 0–100. Omitted (not 0) when the provider reports no cache reads. */
   cache_hit_pct?: number
   calls: number

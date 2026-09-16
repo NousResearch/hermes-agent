@@ -1132,6 +1132,12 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     idle_default = next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
         12.0)
+    if codex and not openai_codex_backend:
+        # Compatible reasoning backends can pause after a lifecycle event while
+        # producing the first substantive token. A 12s gap repeatedly killed
+        # otherwise healthy xAI cron turns even after the outer retry exhausted
+        # all three attempts. Keep a bounded 60s floor for these backends.
+        idle_default = max(idle_default, 60.0)
 
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.

@@ -38,8 +38,11 @@ def _request_timeout_env(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
-def _result(output: str, returncode: int = 1) -> dict:
-    return {"output": output, "returncode": returncode}
+def _result(output: str, returncode: int = 1, *, timed_out: bool = False) -> dict:
+    result = {"output": output, "returncode": returncode}
+    if timed_out:
+        result["timed_out"] = True
+    return result
 
 
 class ManagedModalEnvironment(BaseEnvironment):
@@ -117,7 +120,7 @@ class ManagedModalEnvironment(BaseEnvironment):
                 return _result(f"Managed Modal exec failed: {exc}")
             if time.monotonic() >= deadline:
                 self._cancel_exec(exec_id)
-                return _result(f"Managed Modal exec timed out after {timeout}s", 124)
+                return _result(f"Managed Modal exec timed out after {timeout}s", 124, timed_out=True)
             # Periodic activity touch so the gateway knows we're alive (lazy import:
             # tests stub tools.environments.base with only BaseEnvironment)
             try:
@@ -131,7 +134,10 @@ class ManagedModalEnvironment(BaseEnvironment):
     def _result_from_body(body: dict) -> dict | None:
         """Final result dict if the exec body reports a terminal status, else ``None``."""
         if body.get("status") in _TERMINAL_EXEC_STATUSES:
-            return _result(body.get("output", ""), body.get("returncode", 1))
+            return _result(
+                body.get("output", ""), body.get("returncode", 1),
+                timed_out=body.get("status") == "timeout",
+            )
 
     def _poll_exec(self, exec_id: str) -> dict | None:
         try:

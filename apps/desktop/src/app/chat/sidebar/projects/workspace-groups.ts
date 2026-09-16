@@ -789,6 +789,26 @@ export function reconcileEnteredProjectSessions(
   return missingPreviews.length ? [...live, ...missingPreviews] : live
 }
 
+/**
+ * The live rows an ENTERED project may overlay: only the rows that project
+ * OWNS — the same `sessionMatchesProjectFilter` rule every other surface uses —
+ * plus the overview's preview rows (so a row the drill-in hasn't loaded yet
+ * still renders). Never the unscoped live list: a NESTED project
+ * (`…/gpresearch/复盘` under `…/gpresearch`) shares its path prefix with its
+ * parent, and {@link overlayRepoLanes} places rows by path nesting, so an
+ * unscoped list injects the child's chats into the parent's lanes and the same
+ * row shows under BOTH projects. Path-prefix is not membership.
+ */
+export function enteredProjectOverlayRows(
+  live: SessionInfo[],
+  project: Pick<SidebarProjectTree, 'id' | 'previewSessions'>,
+  explicitProjects: ProjectInfo[]
+): SessionInfo[] {
+  const scoped = live.filter(session => sessionMatchesProjectFilter(session, [project.id], explicitProjects))
+
+  return reconcileEnteredProjectSessions(scoped, project.previewSessions)
+}
+
 interface PreviewOverlayOptions {
   removed?: ReadonlySet<string>
   /** The active sort key as an id order; recency when empty. */

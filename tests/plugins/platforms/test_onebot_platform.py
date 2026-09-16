@@ -2357,8 +2357,9 @@ def test_send_t2i_over_limit_falls_back_to_text_chunks(monkeypatch) -> None:
 
 
 def test_reverse_server_startup_warns_non_loopback_without_token(caplog) -> None:
-    """A4 启动期告警：绑定非 loopback host 且未配 access_token → 启动即
-    WARNING 一次；配 token 或 loopback host 不告警。"""
+    """A4 启动期告警：绑定非 loopback host（含 localhost 等主机名，按事实
+    陈述措辞提示）且未配 access_token → 启动即 WARNING 一次；配 token 或
+    loopback host 不告警。"""
     adapter = _make_adapter(host="0.0.0.0", port=0)
 
     async def run():
@@ -2373,7 +2374,7 @@ def test_reverse_server_startup_warns_non_loopback_without_token(caplog) -> None
 
     warn_texts = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any(
-        "non-loopback host" in t and "access_token" in t for t in warn_texts
+        "not a loopback literal" in t and "access_token" in t for t in warn_texts
     ), warn_texts
 
     # 反例 1：默认 loopback host 不告警
@@ -2389,7 +2390,7 @@ def test_reverse_server_startup_warns_non_loopback_without_token(caplog) -> None
     assert not [
         r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.WARNING and "non-loopback host" in r.getMessage()
+        if r.levelno == logging.WARNING and "not a loopback literal" in r.getMessage()
     ]
 
     # 反例 2：非 loopback host 但已配 token 不告警
@@ -2405,6 +2406,5 @@ def test_reverse_server_startup_warns_non_loopback_without_token(caplog) -> None
     assert not [
         r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.WARNING and "non-loopback host" in r.getMessage()
+        if r.levelno == logging.WARNING and "not a loopback literal" in r.getMessage()
     ]
-    asyncio.run(run())

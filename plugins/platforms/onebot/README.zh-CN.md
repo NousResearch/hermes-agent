@@ -105,7 +105,9 @@ forward 模式同样提供 qq_* 工具：forward WS 拨通后，适配器会在 
 `/api/send_media`）的本地 HTTP server——reverse 专属的 `/ws` 路由**不**注册。
 server 复用与 reverse 相同的 `host` / `port` 配置（代码默认 `127.0.0.1:8643`，
 与 qq_* 工具默认 base URL `http://127.0.0.1:8643` 一致），端点同样在下述
-鉴权闸门之后。reverse 与 forward 互斥：每个 adapter 实例只会运行两者之一，
+鉴权闸门之后。若自定义 `host` / `port`，需同步设置 `ONEBOT_TOOL_BASE`（如
+`http://127.0.0.1:9000`）——qq_* 工具的 base URL 只读该环境变量，不读取插件
+配置。reverse 与 forward 互斥：每个 adapter 实例只会运行两者之一，
 绝不会同时起两个 server。
 
 ### Token 与网络安全
@@ -116,8 +118,9 @@ forward 模式单独成 server——共用同一道鉴权闸门：
 
 - **设置了 `access_token`**：对 `/ws` 与 `/api/*` 的所有请求都必须携带
   `Authorization: Bearer <token>`，否则一律 401。
-- **未设置 `access_token`**：仅放行 loopback 客户端（`127.0.0.1` / `::1`）；
-  其他来源一律 401 并逐条记录 WARNING。默认 `127.0.0.1` 部署不受影响。
+- **未设置 `access_token`**：仅放行 loopback 客户端（`127.0.0.1` / `::1`，含
+  `127.0.0.0/8` 全段与 IPv4-mapped loopback 形式）；其他来源一律 401 并逐条
+  记录 WARNING。默认 `127.0.0.1` 部署不受影响。
 
 **`host` 配 `0.0.0.0`（或任何非 loopback 地址）时必须设置 `access_token`**：
 不配 token 时，能连上端口的任意主机都能以“桥”的身份接入 `/ws`，而本地辅助端点
@@ -205,7 +208,7 @@ base64 内嵌上报的大于 4 MiB 的帧会被拒收。生产传图以 URL（Na
 
 - **≤ `split_length`**（默认 100）字：单条文本直接发。
 - **`split_length` 到 `text_image_threshold`**（默认 150）：按句子边界分段为多条（在 `。！？!?；;\n` 处断），句子从不被拦腰截断。
-- **> `text_image_threshold`**：渲染成黑字白底文字图（800px 宽、CJK 字体回退链）单张图片发送。渲染失败回退分段文本。
+- **> `text_image_threshold`**：渲染成黑字白底文字图（800px 宽、CJK 字体回退链）单张图片发送。卡片总高上限 8000px——超限中止渲染，回退为分段纯文本（与渲染失败同一路径）。渲染失败回退分段文本。
 
 `text_image_threshold: 0` 关闭图片路径（全部走分段文本）；调高调低两个值可权衡消息条数与卡片渲染。
 

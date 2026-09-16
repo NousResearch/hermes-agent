@@ -110,7 +110,10 @@ the `/api/*` helper endpoints (`/api/group_history`, `/api/napcat`,
 server reuses the same `host` / `port` keys as reverse mode (code default
 `127.0.0.1:8643`, matching the qq_* tools' default base URL
 `http://127.0.0.1:8643`), and its endpoints sit behind the same auth gate
-described below. Reverse and forward are mutually exclusive: each adapter
+described below. If you customize `host` / `port`, set `ONEBOT_TOOL_BASE`
+accordingly (e.g. `http://127.0.0.1:9000`) — the qq_* tools derive their base
+URL from that environment variable only, not from the plugin config. Reverse
+and forward are mutually exclusive: each adapter
 instance runs exactly one of the two servers, never both.
 
 ### Token & network security
@@ -122,7 +125,8 @@ forward mode — and all of them sit behind one shared auth gate:
 
 - **`access_token` set**: every request to `/ws` and `/api/*` must carry
   `Authorization: Bearer <token>`; anything else gets `401`.
-- **`access_token` empty**: only loopback clients (`127.0.0.1` / `::1`) are
+- **`access_token` empty**: only loopback clients (`127.0.0.1` / `::1` — the
+  whole `127.0.0.0/8` range and IPv4-mapped loopback forms included) are
   served; requests from other addresses get `401` and a WARNING is logged per
   request. Default `127.0.0.1` deployments are unaffected.
 
@@ -225,7 +229,7 @@ Reply length is handled in three tiers. Both thresholds are user-configurable
 
 - **≤ `split_length`** (default 100) characters: sent as a single text message.
 - **`split_length` to `text_image_threshold`** (default 150): split into multiple messages, breaking at sentence boundaries (`。！？!?；;\\n`) so sentences are never cut in half.
-- **> `text_image_threshold`**: rendered as a black-on-white text image (800 px wide, CJK-aware font fallback chain) and sent as a single image message. Falls back to text chunks if rendering fails.
+- **> `text_image_threshold`**: rendered as a black-on-white text image (800 px wide, CJK-aware font fallback chain) and sent as a single image message. The card is capped at a total height of 8000 px — taller content aborts the render and falls back to plain text chunks (the same fallback as a failed render). Falls back to text chunks if rendering fails.
 
 Set `text_image_threshold: 0` to disable the image path (everything splits as text);
 raise/lower either value to tune the trade-off between message count and card rendering.

@@ -253,6 +253,26 @@ def _build_font_chain(size: int):
     return chain
 
 
+# ── 引用目标解析 ───────────────────────────────────────────────────────
+def _reply_target_id(raw: str, message: Optional[list] = None) -> Optional[str]:
+    """提取被引用消息的 message_id（段数组优先，回退 CQ 字符串）；无引用返回 None。
+
+    纯本地解析、不发网络请求，供提及门预取 sender 用；实际取回原文的
+    get_msg 调用在 _process_message 中（结果复用，同一 reply 段至多一次）。
+    多 reply 段时与 _parse_message_array 同语义：最后一个非空 id 生效。
+    """
+    if isinstance(message, list):
+        rid: Optional[str] = None
+        for seg in message:
+            if isinstance(seg, dict) and seg.get("type") == "reply":
+                cand = str((seg.get("data") or {}).get("id", "") or "").strip()
+                if cand:
+                    rid = cand
+        return rid
+    rm = _CQ_REPLY_RE.search(raw or "")
+    return rm.group(1) if rm else None
+
+
 # ── Chat id 工具 ───────────────────────────────────────────────────────
 def _build_chat_id(message_type: str, id_: Any) -> str:
     """Canonical chat_id used by the session store and outbound sends."""

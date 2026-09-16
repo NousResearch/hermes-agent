@@ -417,9 +417,8 @@ class OneBotAdapter(BasePlatformAdapter):
         # 处理（fail-loud，宁多告警不漏裸奔）。
         if not self._access_token and not _is_loopback_peer(self._host):
             logger.warning(
-                "[onebot] reverse server binding non-loopback host %s without "
-                "access_token — any reachable host can connect as the bridge; "
-                "set access_token",
+                "[onebot] reverse server host %s is not a loopback literal — "
+                "if it resolves publicly, set access_token",
                 self._host,
             )
         app = web.Application()
@@ -881,7 +880,7 @@ class OneBotAdapter(BasePlatformAdapter):
                 # 撤回消息被回复后永不触发。bot 自身 id 沿用既有
                 # self_id（事件学习）/ bot_qq（配置），不新增配置键。
                 if self._require_mention:
-                    rid = self._reply_target_id(raw, message)
+                    rid = _load_onebot_utils()._reply_target_id(raw, message)
                     if rid:
                         reply_fetch_attempted = True
                         try:
@@ -1066,25 +1065,6 @@ class OneBotAdapter(BasePlatformAdapter):
         if policy == "allowlist":
             return group_id in self._group_allow_from
         return True
-
-    @staticmethod
-    def _reply_target_id(raw: str, message: Optional[list] = None) -> Optional[str]:
-        """提取被引用消息的 message_id（段数组优先，回退 CQ 字符串）；无引用返回 None。
-
-        纯本地解析、不发网络请求，供提及门预取 sender 用；实际取回原文的
-        get_msg 调用在 _process_message 中（结果复用，同一 reply 段至多一次）。
-        多 reply 段时与 _parse_message_array 同语义：最后一个非空 id 生效。
-        """
-        if isinstance(message, list):
-            rid: Optional[str] = None
-            for seg in message:
-                if isinstance(seg, dict) and seg.get("type") == "reply":
-                    cand = str((seg.get("data") or {}).get("id", "") or "").strip()
-                    if cand:
-                        rid = cand
-            return rid
-        rm = _load_onebot_utils()._CQ_REPLY_RE.search(raw or "")
-        return rm.group(1) if rm else None
 
     def _is_mentioned(
         self,

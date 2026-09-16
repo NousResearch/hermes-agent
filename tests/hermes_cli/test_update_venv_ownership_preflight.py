@@ -61,6 +61,7 @@ def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
 
     monkeypatch.setattr(update_cmd, "_path_uid", fake_uid)
     monkeypatch.setattr(update_cmd_deps, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps.os, "geteuid", lambda: 12345, raising=False)
     foreign = update_cmd._venv_foreign_owned_paths(venv)
     assert foreign == [(installer, 0)]
 
@@ -79,6 +80,7 @@ def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
         "_path_uid",
         lambda p: 0 if str(p) == hermes_bin else real_uid(p),
     )
+    monkeypatch.setattr(update_cmd_deps.os, "geteuid", lambda: 12345, raising=False)
     with pytest.raises(SystemExit) as exc:
         update_cmd._refuse_update_if_venv_foreign_owned(tmp_path)
     assert exc.value.code == 1

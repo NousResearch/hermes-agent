@@ -13,6 +13,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -123,6 +124,8 @@ def extract_document_bytes(data: bytes, path: str) -> str:
     if ext not in EXTRACTABLE_EXTENSIONS:
         raise ExtractionError(f"Unsupported document type: {path!r}")
     with _temp_copy(data, ext) as temp_path:  # the stdlib extractors are path-oriented
+        if ext == ".ipynb":
+            return _extract_notebook(temp_path, display_path=path)
         return _STDLIB_EXTRACTORS[ext](temp_path)
 
 
@@ -395,7 +398,7 @@ def _notebook_outputs(cell: dict, jq_pointer: str = "", filename: str = "") -> s
     joined = "\n".join(filter(None, map(_notebook_output_text, outputs)))
     if len(joined) <= _MAX_OUTPUT_CHARS:
         return joined
-    hint = f" — full output: jq -r '{jq_pointer}' {filename}" if jq_pointer and filename else ""
+    hint = f" — full output: jq -r '{jq_pointer}' {shlex.quote(filename)}" if jq_pointer and filename else ""
     omitted = len(joined) - _MAX_OUTPUT_CHARS
     return joined[:_MAX_OUTPUT_CHARS] + f"\n… [{omitted:,} output chars truncated{hint}]"
 
@@ -403,7 +406,7 @@ def _notebook_outputs(cell: dict, jq_pointer: str = "", filename: str = "") -> s
 _CELL_LABELS = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
 
 
-def _extract_notebook(path: str) -> str:
+def _extract_notebook(path: str, *, display_path: Optional[str] = None) -> str:
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             nb = json.load(fh)
@@ -421,7 +424,9 @@ def _extract_notebook(path: str) -> str:
             for ci, cell in enumerate(ws.get("cells", []))]
     if not cells:
         raise ExtractionError("Notebook contains no cells")
-    nb_name = os.path.basename(path)
+    # Backend bytes are parsed through a disposable host copy; recovery commands
+    # must instead name the original notebook in the user's filesystem.
+    nb_name = display_path if display_path is not None else path
     counts = dict.fromkeys(_CELL_LABELS, 0)
     out: list[str] = []
     for jq_pointer, cell in cells:

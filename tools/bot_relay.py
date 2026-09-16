@@ -241,6 +241,15 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     return True
 
 
+def _queued_at(path: Path) -> tuple[float, str]:
+    """Claim order for one outbox entry: oldest first. ``mtime`` is what ``_sweep_stale`` already
+    treats as an envelope's age, and unlike the whole-second ``created_at`` field it separates two
+    DMs sent in the same second. The name only breaks ties."""
+    with contextlib.suppress(OSError):
+        return (path.stat().st_mtime, path.name)
+    return (0.0, path.name)
+
+
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
     """Drain the outbox (rename → claimed/ so a second drain can't double-deliver).
     TTL-expired envelopes get a 'queued_expired' reply and are removed instead.
@@ -254,7 +263,10 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     ttl = _envelope_ttl_seconds()
     now = time.time()
     out: list[dict] = []
-    for path in sorted((base / OUTBOX_DIR).glob("*.json")):
+    # Oldest first: the Desktop delivers each target's claimed envelopes in the order this list
+    # gives them, so a sender's two DMs to one agent arrive in the order they were sent. Sorting
+    # by filename ordered them by ``uuid4().hex`` — at random.
+    for path in sorted((base / OUTBOX_DIR).glob("*.json"), key=_queued_at):
         if ttl > 0 and _expire_if_stale(root, path, ttl, now):
             with contextlib.suppress(OSError):
                 path.unlink()

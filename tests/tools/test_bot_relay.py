@@ -528,6 +528,33 @@ def test_drain_expires_old_envelope_with_queued_expired_reply(root):
     assert not reply["reply"]
 
 
+def test_the_outbox_is_claimed_oldest_first(root):
+    """Two DMs from one sender to one agent must arrive in the order they were sent. The Desktop
+    delivers each target's claimed envelopes in the order this list gives them, one turn at a
+    time, so the claim IS the delivery order — and sorting by filename ordered them by
+    ``uuid4().hex``. The names here are forced into the reverse of the send order to pin that
+    deterministically, which random ids reproduce half the time."""
+    first = bot_relay.enqueue_envelope(
+        root, target=_target(), message="do this first",
+        sender_profile="default", sender_handle="hermes",
+    )
+    second = bot_relay.enqueue_envelope(
+        root, target=_target(), message="then this",
+        sender_profile="default", sender_handle="hermes",
+    )
+    outbox = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR
+    now = _time2.time()
+    for env, name, sent_at in ((first, "f" * 32, now - 2), (second, "0" * 32, now - 1)):
+        path = outbox / f"{name}.json"
+        (outbox / f"{env['id']}.json").rename(path)
+        _os2.utime(path, (sent_at, sent_at))
+
+    claimed = bot_relay.claim_pending_envelopes(root)
+
+    assert [e["id"] for e in claimed] == [first["id"], second["id"]]
+    assert [e["message"] for e in claimed] == ["do this first", "then this"]
+
+
 def test_drain_delivers_fresh_envelope_under_ttl(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="on time",

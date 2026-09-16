@@ -166,6 +166,24 @@ class TestFetchApiModels:
     def test_returns_none_when_no_base_url(self):
         assert fetch_api_models("key", None) is None
 
+    def test_probe_api_models_accepts_bare_model_array(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'[{"id": "together-model"}, {"id": "another-model"}]'
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+            probe = probe_api_models("key", "https://api.example.com/v1")
+
+        assert probe["models"] == ["together-model", "another-model"]
+        assert probe["resolved_base_url"] == "https://api.example.com/v1"
+        assert probe["used_fallback"] is False
+
 
     def test_probe_api_models_tries_v1_fallback(self):
         class _Resp:

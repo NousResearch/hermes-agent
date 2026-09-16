@@ -1,0 +1,69 @@
+.thread-timeline-ticks {
+  width: 3rem;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+}
+
+.thread-timeline-ticks::-webkit-scrollbar {
+  display: none;
+}
+
+.thread-timeline-track {
+  position: relative;
+  width: 100%;
+}
+
+.thread-timeline-tick {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+
+  height: 0.4375rem;
+  width: 100%;
+  padding: 0 0.375rem 0 0;
+  cursor: pointer;
+  outline: none;
+}
+
+.thread-timeline-tick [data-slot='timeline-bar'] {
+  display: block;
+  flex: none;
+  width: 0.5rem;
+  height: 0.0625rem;
+  border-radius: 999px;
+  background: var(--ui-text-tertiary);
+  opacity: 0.65;
+  transition: width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.thread-timeline-tick[aria-current='location'] [data-slot='timeline-bar'] {
+  background: var(--theme-primary);
+  opacity: 1;
+}
+
+.thread-timeline-tick:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--ui-stroke-secondary);
+  border-radius: 0.25rem;
+}
+
+.thread-timeline-tick[aria-busy='true'] [data-slot='timeline-bar'] {
+  animation: timeline-loading 700ms ease-in-out infinite alternate;
+}
+
+@keyframes timeline-loading {
+  to {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread-timeline-tick [data-slot='timeline-bar'] {
+    transition: none;
+    animation: none;
+  }
+}

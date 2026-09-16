@@ -178,3 +178,34 @@ def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, mo
     executions.finish_execution(legitimate['id'], success=True)
 
     assert completed_occurrence({'id': 'job'}, slot)
+
+
+def test_completed_occurrence_skip_names_job_slot_and_row(tmp_path, monkeypatch, caplog):
+    """A due slot the dedup gate consumes (already completed, e.g. after a jobs.json rollback)
+    leaves no run and no ledger row, so the skip itself must be logged with the job, the
+    instant and the completed execution (#111414: a consumed slot left zero trace)."""
+    import logging
+    from datetime import timedelta
+
+    from cron import executions, jobs
+    from hermes_time import now
+
+    monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
+    slot = (now() - timedelta(minutes=2)).isoformat()
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        stored = jobs.create_job(prompt='test', schedule='every 4h')
+        rows = jobs.load_jobs()
+        rows[0]['next_run_at'] = slot
+        jobs.save_jobs(rows)
+        completed = executions.create_execution(stored['id'], source='builtin', scheduled_instant=slot)
+        executions.finish_execution(completed['id'], success=True)
+
+        with caplog.at_level(logging.WARNING, logger='cron.occurrences'):
+            assert jobs.get_due_jobs() == []
+
+        assert jobs.load_jobs()[0]['next_run_at'] != slot
+    skip = [r.getMessage() for r in caplog.records if completed['id'] in r.getMessage()]
+    assert len(skip) == 1, caplog.text
+    assert stored['id'] in skip[0]
+    from cron.occurrences import scheduled_instant
+    assert scheduled_instant(slot) in skip[0]

@@ -1217,7 +1217,7 @@ class TestFailClosedUnderPromptToolkit:
 
     When prompt_toolkit owns the terminal and no approval callback is
     registered on the calling thread, prompt_dangerous_approval() must
-    deny fast instead of falling through to the input() fallback -- which
+    fail closed fast instead of falling through to the input() fallback -- which
     deadlocks because the user's keystrokes go to prompt_toolkit's raw-mode
     stdin capture, not to input().
     """
@@ -1246,7 +1246,7 @@ class TestFailClosedUnderPromptToolkit:
                 "prompt_dangerous_approval deadlocked under prompt_toolkit "
                 "with no callback -- fail-closed guard is broken"
             )
-            assert result == ["deny"]
+            assert result == ["cancelled"]  # unanswered, not a user denial (#22992)
         finally:
             ptc.get_app_or_none = orig
 

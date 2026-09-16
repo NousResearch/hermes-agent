@@ -17,7 +17,9 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
-from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
+from hermes_constants import (
+    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +42,16 @@ _CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.j
 
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile
 # (``~/.hermes``): git checkout (+ ~3 GB venv), worktrees, sibling profiles, shared bins,
-# npm packages. Named profiles never hold these at root, so the gate avoids silently
-# dropping user data from a named-profile source. Export uses a root allow-list instead
-# (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot, a clone must run.
+# npm packages, and the managed local-models trees — GGUF weights (tens of GB), the
+# llama.cpp runtime binaries and the managed Node install, all re-downloadable on demand
+# and resolved from the default root only. Named profiles never hold these at root, so the
+# gate avoids silently dropping user data from a named-profile source. Export uses a root
+# allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
+# a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
+# ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
-})
+}) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
 # (+wal/shm, can reach many GB), session dirs, `hermes backup` archives, quick-backup
@@ -1858,7 +1864,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
 
-    # 6. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
+    # 6. Migrate profile-name-keyed session/routing state (session keys, profile_name, heartbeats,
+    # delivery + routing index) from the old name to the new one. A stale ``agent:<old>:*`` routing
+    # key otherwise resolves to a profile that no longer exists on every inbound event.
+    from hermes_cli.profile_identity import _migrate_profile_identity
+    _migrate_profile_identity(old_canon, new_canon, live_mux)
+
+    # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
         _notify_multiplexer(new_canon)
     return new_dir

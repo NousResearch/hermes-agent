@@ -150,6 +150,31 @@ class TestRequiredEnvironmentVariablesNormalization:
         assert _is_env_var_persisted("EMPTY_HOST_KEY", {}) is False
         assert _is_env_var_persisted("FILLED_KEY", {}) is True
 
+    def test_active_profile_secret_scope_satisfies_requirement(self):
+        """Cron workers must accept a value hydrated from this profile's vault."""
+        from agent import secret_scope
+        from tools.skills_tool import _is_env_var_persisted
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"VAULT_SKILL_API_KEY": "vault-value"})
+        try:
+            assert _is_env_var_persisted("VAULT_SKILL_API_KEY", {}) is True
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_unscoped_multiplex_requirement_does_not_read_process_environment(self, monkeypatch):
+        """A worker without a profile scope must keep the fail-closed boundary."""
+        from agent import secret_scope
+        from tools.skills_tool import _is_env_var_persisted
+
+        monkeypatch.setenv("OTHER_PROFILE_SKILL_API_KEY", "other-profile-value")
+        secret_scope.set_multiplex_active(True)
+        try:
+            assert _is_env_var_persisted("OTHER_PROFILE_SKILL_API_KEY", {}) is False
+        finally:
+            secret_scope.set_multiplex_active(False)
+
 
 # ---------------------------------------------------------------------------
 # _get_category_from_path

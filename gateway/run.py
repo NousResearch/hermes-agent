@@ -3223,10 +3223,23 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
 _SESSION_DB_UNPINNED = object()
 
 
-# Only explicit suspension can replace a routed conversation.
+# Agent-facing sidecar notes for explicit and configured conversation boundaries.
 _AUTO_RESET_CONTEXT_NOTES = {
     "suspended": "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]",
+    "daily": "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]",
+    "idle": "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]",
 }
+
+
+def _auto_reset_reason_text(reset_reason: str, policy) -> str:
+    """Human-readable cause for the user-facing auto-reset notice."""
+    if reset_reason == "suspended":
+        return "previous session was stopped or interrupted"
+    if reset_reason == "daily":
+        return f"daily schedule at {policy.at_hour}:00"
+    hours, mins = divmod(policy.idle_minutes, 60)
+    duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
+    return f"inactive for {duration}"
 
 
 def _write_runtime_status_quiet(**fields: Any) -> None:
@@ -3448,10 +3461,14 @@ class GatewayRunner(
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
         from tools.process_registry import process_registry
+        bg_max_age_hours = getattr(self.config.default_reset_policy, "bg_process_max_age_hours", 24)
+        bg_max_age_seconds = (
+            bg_max_age_hours * 3600 if bg_max_age_hours and bg_max_age_hours > 0 else None
+        )
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
-                key))
+                key, max_active_age=bg_max_age_seconds))
         # Loop-side boundary: sync helpers use ``session_store`` directly; async handlers await this facade.
         self._async_session_store = AsyncSessionStore(self.session_store)
         self.delivery_router = DeliveryRouter(self.config)

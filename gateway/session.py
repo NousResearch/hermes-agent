@@ -496,7 +496,7 @@ class SessionEntry:
     prev_session_id: Optional[str] = None  # feeds the continuity note
     # Explicit /new or /reset triggers topic/channel skill re-injection on the first turn.
     is_fresh_reset: bool = False
-    # Historical finalization fence; timers no longer write it.
+    # Finalization fence written by the idle/daily expiry watcher.
     expiry_finalized: bool = False
     # Next get_or_create_session() auto-resets; set by /stop to break stuck-resume loops.
     # When True the next call to get_or_create_session() will auto-reset this session (create a new

@@ -80,9 +80,46 @@ class SessionLifecycleMixin:
             return False
         return bool(row is not None and row.get("end_reason") is not None)
 
+    @staticmethod
+    def _policy_reset_reason(policy, updated_at: datetime) -> Optional[str]:
+        """Return ``idle``/``daily`` when *updated_at* is overdue under *policy*."""
+        if policy.mode == "none":
+            return None
+        now = _now()
+        if policy.mode in {"idle", "both"} and now > updated_at + timedelta(minutes=policy.idle_minutes):
+            return "idle"
+        if policy.mode in {"daily", "both"}:
+            reset_at = now.replace(hour=policy.at_hour, minute=0, second=0, microsecond=0)
+            if now.hour < policy.at_hour:
+                reset_at -= timedelta(days=1)
+            if updated_at < reset_at:
+                return "daily"
+        return None
+
+    def _is_session_expired(self, entry: SessionEntry) -> bool:
+        """Whether policy has expired *entry*; active background work blocks finalization."""
+        if self._has_active_processes_safe(entry.session_key, context="expiry"):
+            return False
+        policy = self.config.get_reset_policy(platform=entry.platform, session_type=entry.chat_type)
+        return self._policy_reset_reason(policy, entry.updated_at) is not None
+
+    def is_session_finalizable(self, entry: SessionEntry) -> bool:
+        """Whether the expiry watcher may finalize this entry under its policy."""
+        try:
+            return self.config.get_reset_policy(
+                platform=entry.platform, session_type=entry.chat_type,
+            ).mode != "none"
+        except Exception:
+            return False
+
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
-        """Only explicit suspension replaces a routed conversation; time never does."""
-        return "suspended" if entry.suspended else None
+        """Explicit suspension wins; otherwise apply the configured time policy."""
+        if entry.suspended:
+            return "suspended"
+        if self._has_active_processes_safe(entry.session_key, context="reset"):
+            return None
+        policy = self.config.get_reset_policy(platform=entry.platform, session_type=entry.chat_type)
+        return self._policy_reset_reason(policy, entry.updated_at)
 
     def _update_entry(self, session_key: str, mutate) -> bool:
         """Apply ``mutate(entry)`` under ``_lock`` and full-save; False when the entry is missing

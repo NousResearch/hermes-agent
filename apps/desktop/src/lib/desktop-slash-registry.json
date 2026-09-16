@@ -37,6 +37,7 @@
   "/snap": "terminal",
   "/snapshot": "terminal",
   "/statusbar": "terminal",
+  "/to": "hidden",
   "/toolsets": "terminal",
   "/update": "terminal",
   "/verbose": "terminal",

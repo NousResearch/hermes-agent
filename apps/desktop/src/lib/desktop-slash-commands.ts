@@ -69,6 +69,7 @@ export type DesktopActionId =
   | 'skin'
   | 'stop'
   | 'title'
+  | 'to'
   | 'wake'
   | 'yolo'
 
@@ -208,6 +209,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'options'
   },
   { name: '/title', description: 'Rename the current session', surface: action('title'), argumentMode: 'text' },
+  {
+    name: '/to',
+    description: 'Send a prompt directly to a Bot without leaving this session',
+    surface: action('to'),
+    argumentMode: 'mixed'
+  },
   { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
   {
     name: '/browser',

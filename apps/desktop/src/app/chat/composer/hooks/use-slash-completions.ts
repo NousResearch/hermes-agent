@@ -4,6 +4,7 @@ import { useCallback, useEffect } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { directBotCompletions } from '@/lib/direct-bot-routing'
 import {
   type CommandsCatalogLike,
   desktopSkinSlashCompletions,
@@ -107,6 +108,23 @@ export function useSlashCompletions(options: {
         }))
 
         return { items, query }
+      }
+
+      // /to resolves Bot Mode's live union roster client-side. Handles are
+      // already source-qualified by Electron when duplicate profile names
+      // exist, so selecting one preserves the exact (connection, profile)
+      // route instead of asking the active backend to guess.
+      const directBotArg = /^\/to\s+([^\s]*)$/is.exec(text)
+
+      if (directBotArg && window.hermesDesktop?.getAgentRoster) {
+        try {
+          return {
+            items: directBotCompletions(await window.hermesDesktop.getAgentRoster(), directBotArg[1] ?? ''),
+            query
+          }
+        } catch {
+          return { items: [], query }
+        }
       }
 
       // /resume (and its aliases) completes recent sessions inline — the same
@@ -289,7 +307,11 @@ export function useSlashCompletions(options: {
     (query: string) => {
       const text = `/${query}`
 
-      if ((skinThemes && /^\/skin\s+/is.test(text)) || /^\/(?:resume|sessions|switch)\s+/is.test(text)) {
+      if (
+        (skinThemes && /^\/skin\s+/is.test(text)) ||
+        /^\/to\s+[^\s]*$/is.test(text) ||
+        /^\/(?:resume|sessions|switch)\s+/is.test(text)
+      ) {
         return true
       }
 

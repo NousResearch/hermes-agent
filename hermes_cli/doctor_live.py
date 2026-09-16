@@ -211,18 +211,9 @@ def run_live_checks(issues: List[str]) -> List[ProbeResult]:
 # ---------------------------------------------------------------------------
 # Configured-model existence (primary + fallback chain)
 # ---------------------------------------------------------------------------
-# doctor's static block validates that ``model.provider`` NAMES a real provider
-# and that slug style suits it, plus a hardcoded retired-model list. It never
-# asks the provider whether the configured model is actually served, and it
-# never looks at ``fallback_providers`` at all.
-#
-# That combination hides a specific, silent failure: a fallback entry whose
-# provider is valid and whose model simply is not there any more. The primary
-# path masks it until the moment the fallback is needed, and then every call
-# returns a hard 400 (observed in the wild: ``lmstudio / hermes-4-14b`` against
-# an LM Studio that had been re-provisioned with different models). A dead
-# fallback is worse than a dead primary, because it is invisible right up to
-# the moment it is load-bearing.
+# The static block never asks a provider whether the configured model is served and never
+# reads ``fallback_providers``, so a fallback whose model is gone stays invisible until the
+# moment it is load-bearing, when every call returns a hard 400.
 
 
 def _served_model_ids(base_url: str, api_key: Optional[str],
@@ -270,17 +261,9 @@ def _fetch_served_models(base_url: str, api_key: Optional[str],
 
 
 def _configured_model_routes(config: dict) -> list:
-    """(label, provider, model, base_url, api_key) for the primary and every fallback.
-
-    ``api_key`` is the route's own credential when the entry carries one
-    (inline ``api_key`` or ``key_env``, resolved exactly as the runtime does
-    via ``resolve_entry_api_key``); None otherwise, so the probe falls back to
-    the provider's pooled credential.
-
-    The fallback chain comes from ``get_fallback_chain`` rather than reading
-    ``fallback_providers`` directly, so legacy ``fallback_model`` entries and
-    de-duplication behave exactly as they do at call time.
-    """
+    """(label, provider, model, base_url, api_key) for the primary and every fallback, with the
+    route's own key resolved as the runtime does (``resolve_entry_api_key``) and the chain read
+    through ``get_fallback_chain`` so legacy entries and de-duplication match call time."""
     routes = []
     model_section = config.get("model")
     if isinstance(model_section, dict):
@@ -324,23 +307,10 @@ def _configured_model_routes(config: dict) -> list:
 
 
 def _pool_credential(provider: str) -> tuple:
-    """(base_url, api_key, due_for_refresh) of the pooled credential for ``provider``.
-
-    ``due_for_refresh`` is the pool's OWN verdict (``_entry_needs_refresh``):
-    an OAuth access token the runtime would refresh before its next call. The
-    probe must not send such a token (the provider would reject it and the
-    result would read as a bad credential) and must not refresh it either —
-    for xAI / Codex / Nous the refresh token is single-use, so a refresh from
-    ``doctor`` could rotate the grant out from under the running gateway.
-
-    A fallback entry usually carries only ``provider`` and ``model``; the
-    endpoint AND the key live with the pooled credential (``load_pool`` takes
-    the provider — calling it bare raises, which an earlier version swallowed,
-    so nothing pooled was ever resolved). ``peek()`` is the runtime's own
-    choice: the current credential, else the first available one. For OAuth
-    providers ``access_token`` is the bearer the runtime sends, so ``/v1/models``
-    is read with the same credential inference uses.
-    """
+    """(base_url, api_key, due_for_refresh) of the pooled credential the runtime would use
+    (``peek()``). ``due_for_refresh`` is the pool's own verdict: such a token must be neither
+    sent (rejected, and misread as a bad credential) nor refreshed from doctor, since a
+    single-use refresh token would rotate the grant out from under the gateway."""
     try:
         from agent.credential_pool import load_pool
         pool = load_pool(provider)

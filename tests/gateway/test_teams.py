@@ -1109,3 +1109,142 @@ class TestTeamsMediaAttachments:
         adapter._app.send.assert_awaited_once()
 
 
+
+
+# ---------------------------------------------------------------------------
+# Tests: require_mention gating (RSC-delivered history)
+# ---------------------------------------------------------------------------
+
+class TestTeamsRequireMention:
+    """With resource-specific consent the adapter receives every conversation
+    message, not just mentions — ``require_mention`` must gate non-personal
+    chats while personal chats and replies-to-the-bot stay ungated."""
+
+    def _make_adapter(self, require_mention=None, **extra):
+        if require_mention is not None:
+            extra["require_mention"] = require_mention
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant", **extra,
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(
+        self,
+        *,
+        text="Hello",
+        conversation_type="channel",
+        entities=None,
+        reply_to_id=None,
+        activity_id="activity-rm-001",
+    ):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = activity_id
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:channel@thread.v2"
+        activity.conversation.conversation_type = conversation_type
+        activity.conversation.name = "Channel"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = []
+        activity.entities = entities or []
+        activity.reply_to_id = reply_to_id
+        return activity
+
+    def _mention_entity(self, mentioned_id="bot-id"):
+        entity = MagicMock()
+        entity.type = "mention"
+        entity.mentioned = MagicMock()
+        entity.mentioned.id = mentioned_id
+        return entity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_channel_message_without_mention_is_dropped_when_enabled(self):
+        adapter = self._make_adapter(require_mention=True)
+        await adapter._on_message(self._make_ctx(self._make_activity()))
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_channel_message_with_mention_entity_passes_when_enabled(self):
+        adapter = self._make_adapter(require_mention=True)
+        activity = self._make_activity(
+            text="<at>Hermes</at> run the report", entities=[self._mention_entity()]
+        )
+        await adapter._on_message(self._make_ctx(activity))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_group_message_with_at_tag_only_passes_when_enabled(self):
+        # Payloads without an entity list still carry the rendered mention form.
+        adapter = self._make_adapter(require_mention=True)
+        activity = self._make_activity(
+            text="<at>Hermes</at> status?", conversation_type="groupChat")
+        await adapter._on_message(self._make_ctx(activity))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_mention_of_another_user_is_dropped_when_enabled(self):
+        adapter = self._make_adapter(require_mention=True)
+        activity = self._make_activity(
+            entities=[self._mention_entity(mentioned_id="other-user")]
+        )
+        await adapter._on_message(self._make_ctx(activity))
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_message_passes_when_enabled(self):
+        adapter = self._make_adapter(require_mention=True)
+        adapter._remember_sent(MagicMock(id="bot-msg-7"))
+        activity = self._make_activity(reply_to_id="bot-msg-7")
+        await adapter._on_message(self._make_ctx(activity))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reply_to_foreign_message_is_dropped_when_enabled(self):
+        adapter = self._make_adapter(require_mention=True)
+        adapter._remember_sent(MagicMock(id="bot-msg-7"))
+        activity = self._make_activity(reply_to_id="someone-else-msg")
+        await adapter._on_message(self._make_ctx(activity))
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_personal_chat_stays_ungated_when_enabled(self):
+        adapter = self._make_adapter(require_mention=True)
+        activity = self._make_activity(conversation_type="personal")
+        await adapter._on_message(self._make_ctx(activity))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_gate_inactive_by_default(self):
+        # Opt-in default (same as TELEGRAM_REQUIRE_MENTION): without RSC Teams only
+        # delivers mention activities, so an ungated adapter keeps today's behaviour.
+        adapter = self._make_adapter()
+        await adapter._on_message(self._make_ctx(self._make_activity()))
+        adapter.handle_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_env_override_enables_gate(self, monkeypatch):
+        monkeypatch.setenv("TEAMS_REQUIRE_MENTION", "true")
+        adapter = self._make_adapter()
+        assert adapter._require_mention is True
+        await adapter._on_message(self._make_ctx(self._make_activity()))
+        adapter.handle_message.assert_not_awaited()
+
+    def test_sent_id_tracking_is_bounded(self):
+        adapter = self._make_adapter()
+        for i in range(600):
+            adapter._remember_sent(MagicMock(id=f"sent-{i}"))
+        assert len(adapter._sent_ids) == 500
+        assert "sent-0" not in adapter._sent_id_set
+        assert "sent-599" in adapter._sent_id_set

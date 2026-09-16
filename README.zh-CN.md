@@ -31,6 +31,21 @@
 
 ## 快速安装
 
+### PyPI (pip)
+
+如果已有 Python 3.11+ 环境，最简单的方式是直接从 PyPI 安装：
+
+```bash
+pip install hermes-agent
+hermes
+```
+
+wheel 已打包 Ink TUI 与 shell 启动器，开箱即用完整体验。（[v0.14.0](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.5.16) 已支持。）
+
+若需安装程序自动准备 uv、Python 3.11、Node.js、ripgrep、ffmpeg 等系统依赖，请使用下方的平台脚本。
+
+### Linux、macOS、WSL2、Termux
+
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```

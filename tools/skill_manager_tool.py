@@ -1412,7 +1412,19 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     try:
         from tools import write_approval as wa
     except Exception:
-        return None  # fail open
+        # The autonomous fork must never bypass a broken or unavailable gate.
+        try:
+            from tools.skill_provenance import is_background_review
+            background = is_background_review()
+        except Exception:
+            background = False
+        if background:
+            return tool_error(
+                "Refusing background_review skill write: the write-approval "
+                "policy could not be loaded.",
+                success=False,
+            )
+        return None  # preserve foreground availability
 
     decision = wa.evaluate_gate(wa.SKILLS)
     if decision.allow:

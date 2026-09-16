@@ -36,6 +36,18 @@ def _skill_dir(tmp_path):
         yield
 
 
+@contextmanager
+def _approved_replay():
+    """Exercise downstream guards as if a staged write was approved."""
+    from tools.skill_manager_tool import _skill_gate_bypass
+
+    token = _skill_gate_bypass.set(True)
+    try:
+        yield
+    finally:
+        _skill_gate_bypass.reset(token)
+
+
 VALID_SKILL_CONTENT = """\
 ---
 name: test-skill
@@ -370,7 +382,7 @@ class TestSkillManageDispatcher:
 
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
-            with _skill_dir(tmp_path), \
+            with _skill_dir(tmp_path), _approved_replay(), \
                  patch("tools.skill_usage.is_protected_builtin", return_value=False), \
                  patch("tools.skill_usage.is_hub_installed", return_value=False), \
                  patch("tools.skill_usage.is_bundled",
@@ -847,7 +859,7 @@ class TestCuratorConsolidationDeleteGuard:
         from tools.skill_manager_tool import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
-        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch), _approved_replay():
             _create_curator_skill("reviewed", _skill_content("reviewed"))
             ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
             ref.mkdir()

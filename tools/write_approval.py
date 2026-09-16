@@ -59,11 +59,11 @@ MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Config key (per subsystem). A single boolean: the approval gate is OFF by
-# default (writes flow freely, the pre-gate behaviour), and ON means stage /
-# prompt every write for the user's approval. There is intentionally no third
-# "block all writes" state — to disable a subsystem entirely use its own
-# enable flag (e.g. ``memory.memory_enabled: false``).
+# Config key (per subsystem). Skill writes are approval-gated by default;
+# memory keeps its existing opt-in default. The background-review fork has an
+# additional code-level invariant below: it may never commit skill writes
+# directly, even when a mutable config explicitly disables the foreground gate.
+# This makes a config reset unable to reopen autonomous skill mutation.
 CONFIG_KEY = "write_approval"
 
 
@@ -74,18 +74,18 @@ CONFIG_KEY = "write_approval"
 def write_approval_enabled(subsystem: str) -> bool:
     """Return whether the approval gate is enabled for ``subsystem``.
 
-    Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
-    ``False`` (gate off — writes flow freely) for any unset / invalid value so
-    existing installs keep their current behaviour until the user opts in.
+    Reads ``<subsystem>.write_approval`` from the merged configuration.
+    Skills default to ``True`` (fail closed); memory retains its existing
+    ``False`` default. Config read failures also fail closed for skills.
     """
     if subsystem not in _SUBSYSTEMS:
         return False
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
-        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
+        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=(subsystem == SKILLS))
     except Exception:
-        return False
+        return subsystem == SKILLS
     return _normalize_enabled(raw)
 
 
@@ -262,22 +262,34 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             are small; skills never take the inline path).
 
     Decision matrix:
-        gate off (default)                    → allow (writes flow freely)
-        gate on, memory + interactive CLI     → inline approve/deny prompt
-        gate on, memory + gateway/script/bg   → stage
-        gate on, skills (any origin)          → stage (too big to review inline)
+        background-review + skills            → stage (unconditional invariant)
+        gate off                               → allow (foreground only for skills)
+        gate on, memory + interactive CLI      → inline approve/deny prompt
+        gate on, memory + gateway/script/bg    → stage
+        gate on, skills                        → stage (too big to review inline)
 
     Note: there is no config-driven "blocked" outcome — the gate only ever
     delays a write for approval, never silently refuses it. ``blocked`` is
     still produced when the user *actively denies* an inline prompt.
     """
+    background = is_background()
+
+    # Security invariant: autonomous background skill writes are never allowed
+    # to reach disk directly. This check deliberately precedes mutable config;
+    # deleting/resetting skills.write_approval cannot reopen the write path.
+    if subsystem == SKILLS and background:
+        return GateDecision(
+            stage=True,
+            message=(
+                "Staged for approval (background skill writes are always gated). "
+                "Not yet saved — review with /skills pending."
+            ),
+        )
+
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
-    background = is_background()
-
-    # Skills always stage — a SKILL.md is too large to review inline, and a
-    # background skill write happens in a daemon thread with no user present.
+    # Skills always stage — a SKILL.md is too large to review inline.
     if subsystem == SKILLS or background:
         where = "/skills pending" if subsystem == SKILLS else "/memory pending"
         return GateDecision(

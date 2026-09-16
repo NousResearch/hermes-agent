@@ -1815,17 +1815,14 @@ DEFAULT_CONFIG = {
         # scanned regardless of this setting.
         "guard_agent_created": False,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
-        # remove_file), applied to BOTH foreground agent turns and the
-        # background self-improvement review fork.
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
-        #   true            — require approval: stage the write for review
-        #                     instead of committing (a SKILL.md is too large to
-        #                     review inline, so skills always stage rather than
-        #                     prompt). List with /skills pending, inspect with
-        #                     /skills diff <id> (full diff — CLI/dashboard/file,
-        #                     never crammed into a chat bubble), apply with
-        #                     /skills approve <id> or drop with /skills reject <id>.
-        "write_approval": False,
+        # remove_file). Background-review writes are always staged by a
+        # code-level invariant, regardless of this mutable setting.
+        #   true (default) — stage foreground and background writes for review
+        #   false           — allow foreground writes; background still stages
+        # A SKILL.md is too large to review inline, so staged changes are listed
+        # with /skills pending and inspected with /skills diff <id> before
+        # /skills approve <id> or /skills reject <id>.
+        "write_approval": True,
     },
 
     # Curator — background skill maintenance.

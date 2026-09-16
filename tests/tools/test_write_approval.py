@@ -36,11 +36,11 @@ def _set_approval(subsystem, enabled):
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def test_default_gate_is_off(hermes_home):
+def test_default_gate_is_fail_closed_for_skills(hermes_home):
     from tools import write_approval as wa
-    # Default: gate off → writes flow freely.
+    # Memory preserves its historical default; skills fail closed.
     assert wa.write_approval_enabled("memory") is False
-    assert wa.write_approval_enabled("skills") is False
+    assert wa.write_approval_enabled("skills") is True
 
 
 def test_invalid_subsystem_is_off(hermes_home):
@@ -143,6 +143,95 @@ _SKILL = (
     "---\nname: test-skill\ndescription: A test skill\nversion: 1.0.0\n---\n"
     "# Test\nbody\n"
 )
+
+
+def test_background_skill_manage_stages_even_when_foreground_gate_is_disabled(hermes_home):
+    from tools.skill_manager_tool import skill_manage
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+    from tools import write_approval as wa
+
+    _set_approval("skills", False)
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        result = json.loads(skill_manage(action="create", name="test-skill", content=_SKILL))
+    finally:
+        reset_current_write_origin(token)
+
+    assert result["staged"] is True
+    assert not os.path.exists(os.path.join(hermes_home, "skills", "test-skill", "SKILL.md"))
+    assert wa.pending_count("skills") == 1
+
+
+def test_background_skill_gate_import_failure_blocks(hermes_home, monkeypatch):
+    import builtins
+    from tools.skill_manager_tool import _apply_skill_write_gate
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    real_import = builtins.__import__
+
+    def deny_gate(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools" and "write_approval" in fromlist:
+            raise ImportError("simulated gate import failure")
+        return real_import(name, globals, locals, fromlist, level)
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    monkeypatch.setattr(builtins, "__import__", deny_gate)
+    try:
+        result = json.loads(_apply_skill_write_gate("create", "test-skill", content=_SKILL))
+    finally:
+        reset_current_write_origin(token)
+
+    assert result["success"] is False
+    assert "policy could not be loaded" in result["error"]
+
+
+
+
+def test_background_skill_gate_ignores_explicit_disable(hermes_home):
+    """Mutable config must never let background_review write skills directly."""
+    from tools import write_approval as wa
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    _set_approval("skills", False)
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        decision = wa.evaluate_gate("skills")
+    finally:
+        reset_current_write_origin(token)
+
+    assert decision.stage is True
+    assert decision.allow is False
+    assert "always gated" in decision.message
+
+
+def test_config_reset_cannot_reopen_background_skill_writes(hermes_home):
+    """Removing the user override restores True and the code invariant remains."""
+    from hermes_cli.config import save_config
+    from tools import write_approval as wa
+
+    save_config({})
+    assert wa.write_approval_enabled("skills") is True
+
+
+def test_explicit_disable_only_opens_foreground_skill_writes(hermes_home):
+    from tools import write_approval as wa
+
+    _set_approval("skills", False)
+    decision = wa.evaluate_gate("skills")
+    assert decision.allow is True
+    assert decision.stage is False
 
 
 # ---------------------------------------------------------------------------

@@ -21,10 +21,11 @@ The Tool Gateway is included with every paid [Nous Portal](https://portal.nousre
 |---|---|---|
 | 🔍 | **Web search & extract** | Agent-grade web search and full-page extraction via Firecrawl. No rate limits to worry about — the gateway handles scaling. |
 | 🎨 | **Image generation** | Nine models under one endpoint: **FLUX 2 Klein 9B**, **FLUX 2 Pro**, **Z-Image Turbo**, **Nano Banana Pro** (Gemini 3 Pro Image), **GPT Image 1.5**, **GPT Image 2**, **Ideogram V3**, **Recraft V4 Pro**, **Qwen Image**. Pick per-generation with a flag, or let Hermes default to FLUX 2 Klein. |
+| 🎨 | **Krea image generation** | Krea 2 (Medium, Large, Medium Turbo) through the same gateway as its own **Nous Subscription (Krea)** row: illustration and photoreal styles, up to 10 style-reference images, optional Enhance upscale. Paid subscriptions only. |
 | 🔊 | **Text-to-speech** | OpenAI TTS voices wired into the `text_to_speech` tool. Drop voice notes into Telegram, generate audio for pipelines, narrate anything. |
 | 🌐 | **Cloud browser automation** | Headless Chromium sessions via Browser Use. `browser_navigate`, `browser_click`, `browser_type`, `browser_vision` — all the agent-driving primitives, no Browserbase account required. |
 
-All four are pay-as-you-use billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
+Every tool here is pay-as-you-use, billed against your Nous subscription. Use any combination — run the gateway for web and images while keeping your own ElevenLabs key for TTS, or route everything through Nous.
 
 ## Why it's here
 
@@ -126,6 +127,8 @@ Image generation defaults to FLUX 2 Klein 9B for speed. Override per-call by pas
 | Qwen Image | `fal-ai/qwen-image` | Alibaba multimodal |
 
 The set evolves — `hermes tools` → Image Generation shows the current live list.
+
+**Managed Krea** is a second row, **Nous Subscription (Krea)**, rather than more entries in the FAL list, because it is billed differently: the free tool pool does not fund Krea, so the row only appears for paid subscriptions. Picking it stores `image_gen.provider: nous` together with a Krea model id (`krea-2-medium`, `krea-2-large` or `krea-2-medium-turbo`), and the stored model is what sends a request to the Krea gateway instead of FAL. To go back, pick the plain **Nous Subscription** row and a FAL model.
 
 ---
 

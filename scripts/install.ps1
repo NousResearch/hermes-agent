@@ -781,6 +781,8 @@ function Get-UsableUvVersion($UvPath) {
 
 # Probe the managed uv and purge it when it does not run, so a broken shim or
 # truncated download is never left in place to fail later in the venv stage.
+# Install-Uv only: it can reinstall what it removes. Resolve-UvCmd merely
+# rejects (see there).
 function Get-UsableManagedUv($ManagedUv, $FailureMessage) {
     if (-not (Test-Path $ManagedUv)) { return $null }
     $version = Get-UsableUvVersion $ManagedUv
@@ -1235,11 +1237,13 @@ function Resolve-UvCmd {
     }
 
     # Check the managed location first -- this is where Install-Uv puts it.
-    # Same self-heal as Install-Uv's rerun path: a salvaged Chocolatey shim
-    # (or a truncated download) would otherwise be accepted here and fail
-    # later inside the venv stage with an unrelated-looking error.
+    # Probe it so a salvaged Chocolatey shim (or a truncated download) is not
+    # accepted here only to fail inside the venv stage with an unrelated-
+    # looking error. Reject, never Remove-Item: this runs at the top of every
+    # later stage, and a transient failure (AV holding uv.exe open) must not
+    # destroy a binary that worked a stage earlier. Install-Uv owns the purge.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
-    if (Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; removing it.") {
+    if ((Test-Path $managedUv) -and (Get-UsableUvVersion $managedUv)) {
         $script:UvCmd = $managedUv
         return
     }

@@ -26,10 +26,12 @@ _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromi
 
 
 def profile_dir() -> Path:
-    """User-data-dir the bot's browser uses on this profile's screen (``AGENT_BROWSER_PROFILE`` wins)."""
-    override = os.environ.get("AGENT_BROWSER_PROFILE", "").strip()
-    if override and os.path.isabs(override):
-        return Path(override)
+    """User-data-dir the bot's browser uses on this profile's screen. ``AGENT_BROWSER_PROFILE`` pins your own:
+    ``~`` expands, and a relative path is anchored at this profile's HERMES_HOME (where the rest of the screen's
+    state lives), so ``pin`` means ``<HERMES_HOME>/pin`` and two profiles never share one jar by accident."""
+    override = os.path.expanduser(os.environ.get("AGENT_BROWSER_PROFILE", "").strip())
+    if override:
+        return Path(override) if os.path.isabs(override) else runtime.get_hermes_home() / override
     return runtime.state_dir() / "browser-profile"
 
 

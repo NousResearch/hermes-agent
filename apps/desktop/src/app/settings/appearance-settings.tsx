@@ -61,6 +61,10 @@ import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
 import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/user-themes'
 
+// Presets imported from main's zoom module so the advertised UI Scale range
+// can never drift from what the engine actually honors (same pattern as
+// pool-limits, review note on #92581).
+import { matchUiScalePreset, UI_SCALE_PRESETS } from '../../../electron/ui-scale-presets'
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ChatFontSetting } from './chat-font-setting'
@@ -152,20 +156,10 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
   )
 }
 
-// UI scale presets, as zoom percentages. 100 is Chromium's actual-size
-// baseline; the shipped default is the 90% preset. Ids double as the percent
-// values sent to the main process. A Cmd/Ctrl +/- step landing between
-// presets highlights nothing, and the row description keeps showing the
-// exact current percent.
-const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 const APPEARANCE_SEARCH_TARGETS = new Set<string>(Object.values(APPEARANCE_SETTING_IDS))
 const appearanceSettingElementId = (id: string) => `setting-field-${id}`
 
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
-
-function matchUiScalePreset(percent: number): UiScalePreset | null {
-  return UI_SCALE_PRESETS.find(preset => Number(preset) === percent) ?? null
-}
 
 const compactNumber = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
 

@@ -59,13 +59,13 @@ test('percentToZoomLevel rejects garbage by falling back to the shipped default'
 })
 
 test('preset percentages roundtrip within rounding', () => {
-  for (const percent of [90, 100, 110, 125, 150, 175]) {
+  for (const percent of [90, 100, 110, 125, 150, 175, 200, 250]) {
     assert.equal(zoomLevelToPercent(percentToZoomLevel(percent)), percent)
   }
 })
 
 test('conversion is monotonic across the preset range', () => {
-  const levels = [90, 100, 110, 125, 150, 175].map(percentToZoomLevel)
+  const levels = [90, 100, 110, 125, 150, 175, 200, 250].map(percentToZoomLevel)
 
   for (let i = 1; i < levels.length; i++) {
     assert.ok(levels[i] > levels[i - 1])

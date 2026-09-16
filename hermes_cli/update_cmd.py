@@ -97,8 +97,9 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
-    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _STALE_PURGE_PREFIXES,
-    _STALE_PURGE_PROTECTED, _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
+    _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+    _STALE_PURGE_PROTECTED,
+    _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
     _ensure_acp_launcher, _ensure_fhs_path_guard, _finish_dashboard_update_cleanup,
     _format_time_ago, _post_update_sqlite_runtime_status, _print_bundled_skills_sync_report,
     _print_curator_first_run_notice, _print_curator_recent_run_notice,
@@ -106,7 +107,8 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _print_verified_update_completion, _purge_stale_hermes_modules, _read_project_version,
     _reload_process_scan_modules, _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode, _restore_state_db_from_snapshot,
-    _run_post_update_maintenance, _run_pre_update_backup, _sweep_bytecode_after_update,
+    _run_post_update_maintenance, _run_pre_update_backup, _stale_purge_prefixes,
+    _sweep_bytecode_after_update,
     _update_complete_message, _verify_and_restore_one_state_db,
     _verify_and_restore_state_dbs_post_update)
 logger = logging.getLogger(__name__)
@@ -596,7 +598,7 @@ def _print_update_check_result(behind: int | None, compare_branch: str) -> None:
 
 
 def _repair_venv_on_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id,
     had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
     _windows_gateway_resume) -> bool:
     """Reinstall ``.[all]`` + lazy/tool deps into an unhealthy (or handed-off) venv; returns
@@ -630,15 +632,17 @@ def _repair_venv_on_current_checkout(
         print("  Close all Hermes windows/gateways and re-run: hermes update")
         return False
     print("✓ Dependencies repaired!")
-    # Check for config migrations (#91360).
-    _check_and_apply_config_migration(
-        assume_yes=assume_yes, gateway_mode=gateway_mode, pre_update_snapshot_id=pre_update_snapshot_id)
-    # The hand-off child never reaches the commits-pulled rebuild; do it here.
-    if _rebuild_desktop_after_update(desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update):
-        return _print_verified_update_completion("✓ Update complete!")
-    _print_update_completion(
-        "⚠ Update partially complete — the desktop app was not rebuilt and is still on the previous build.")
-    return False
+    # The hand-off child never reaches the commits-pulled Node/web/Desktop
+    # phase. Finish through the current-checkout repair path, whose npm digest
+    # gate keeps this cheap when the pulled manifests did not change.
+    return _repair_node_deps_on_current_checkout(
+        _print_verified_update_completion,
+        assume_yes=assume_yes,
+        gateway_mode=gateway_mode,
+        pre_update_snapshot_id=pre_update_snapshot_id,
+        completion_message="✓ Update complete!",
+        had_desktop_app_before_update=had_desktop_app_before_update,
+    )
 
 
 def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
@@ -657,7 +661,7 @@ def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
 
 
 def _repair_current_checkout(
-    *, assume_yes, gateway_mode, pre_update_snapshot_id, desktop_dir,
+    *, assume_yes, gateway_mode, pre_update_snapshot_id,
     had_desktop_app_before_update, active_lazy_features, active_tool_dependencies,
     upstream_checked, _windows_gateway_resume) -> bool:
     """Already-up-to-date path: keep the managed runtime current, repair a broken venv.
@@ -685,7 +689,7 @@ def _repair_current_checkout(
     if handed_off_sync or not healthy:
         current_checkout_complete = _repair_venv_on_current_checkout(
             assume_yes=assume_yes, gateway_mode=gateway_mode,
-            pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+            pre_update_snapshot_id=pre_update_snapshot_id,
             had_desktop_app_before_update=had_desktop_app_before_update,
             active_lazy_features=active_lazy_features,
             active_tool_dependencies=active_tool_dependencies,
@@ -1149,17 +1153,21 @@ def _handle_update_called_process_error(
         if gateway_mode:
             _write_gateway_update_exit_code(desktop_build_ok)
     else:
-        print(f"✗ {stage}: {e}")
-        _print_called_process_error_tail(e)
         if _called_process_error_is_python_dep_install(e):
-            print(
-                "  The git update already finished. Re-downloading the source "
-                "ZIP cannot fix a dependency install error and would overwrite local files.")
+            print(f"✗ {stage} (the code update itself succeeded).")
+            _print_called_process_error_tail(e)
+            print()
+            print("  Hermes may not start until the dependencies are installed. Fix the error above")
+            print("  (usually network or disk space), then run `hermes update` again.")
             if _m()._is_windows():
-                print("  Retry through the venv interpreter:")
+                print("  If `hermes update` itself will not start, retry through the venv interpreter:")
                 print(
                     '    venv\\Scripts\\python.exe -c '
                     '"from hermes_cli.main import main; main()" update --yes')
+        else:
+            print(f"✗ {stage}.")
+            print(f"  Details: {e}")
+            _print_called_process_error_tail(e)
         _finalize_receipt("failed", 'Update receipt finalize failed: %s')
         sys.exit(1)
 
@@ -1173,7 +1181,7 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
 
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, assume_yes: bool, gateway_mode: bool,
-    gw_input_fn, pre_update_snapshot_id, desktop_dir, had_desktop_app_before_update: bool,
+    gw_input_fn, pre_update_snapshot_id, had_desktop_app_before_update: bool,
     active_lazy_features, active_tool_dependencies, _windows_gateway_resume) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
     ``sys.exit(1)`` when the repair is incomplete (after gateway exit code + partial receipt)."""
@@ -1198,7 +1206,7 @@ def _finish_already_up_to_date(
 
     current_checkout_complete = _repair_current_checkout(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
-        pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+        pre_update_snapshot_id=pre_update_snapshot_id,
         had_desktop_app_before_update=had_desktop_app_before_update,
         active_lazy_features=active_lazy_features,
         active_tool_dependencies=active_tool_dependencies, upstream_checked=_plan.upstream_checked,
@@ -1373,7 +1381,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _finish_already_up_to_date(
                 git_cmd, branch, current_branch, _plan, assume_yes=assume_yes,
                 gateway_mode=gateway_mode, gw_input_fn=gw_input_fn,
-                pre_update_snapshot_id=pre_update_snapshot_id, desktop_dir=desktop_dir,
+                pre_update_snapshot_id=pre_update_snapshot_id,
                 had_desktop_app_before_update=had_desktop_app_before_update,
                 active_lazy_features=opts.active_lazy_features,
                 active_tool_dependencies=opts.active_tool_dependencies,

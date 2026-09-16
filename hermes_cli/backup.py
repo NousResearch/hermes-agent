@@ -22,6 +22,7 @@ from hermes_constants import (
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
+    default_new_file_mode,
 )
 
 from hermes_cli.sizefmt import format_bytes as _format_size
@@ -33,6 +34,13 @@ logger = logging.getLogger(__name__)
 # Where ``hermes backup --quick`` / ``/snapshot`` / the pre-update safety net write state
 # snapshots (see ``create_quick_snapshot``); defined here because the exclusion set needs it.
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
+
+
+def _snapshot_recovery_hint() -> str:
+    """How to restore a state snapshot. There is no `hermes snapshot` subcommand — only the /snapshot
+    slash command inside a `hermes` session (hermes_cli/commands.py)."""
+    return ("To restore a newer snapshot, start `hermes` in a terminal and run `/snapshot list`, then "
+            "`/snapshot restore <id>` (CLI only).")
 
 # Directory names to skip (matched against each path component). ``hermes-agent`` only matches at
 # the root (``_should_exclude``) so skill dirs like ``skills/.../hermes-agent/`` survive. The
@@ -322,6 +330,21 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
     """
     conn = backup_conn = None
     try:
+        # sqlite3.connect() creates a missing destination with the process
+        # umask, which is commonly 0022 (0644).  Snapshot databases contain
+        # session and tool state, so create the inode owner-only before SQLite
+        # writes its first byte.  O_NOFOLLOW also refuses a planted symlink on
+        # platforms that support it.  Tighten an existing internal staging
+        # file as well (NamedTemporaryFile callers already create it 0600).
+        if os.name != "nt":
+            open_flags = os.O_WRONLY | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags |= os.O_NOFOLLOW
+            secure_fd = os.open(dst, open_flags, 0o600)
+            try:
+                os.fchmod(secure_fd, 0o600)
+            finally:
+                os.close(secure_fd)
         # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
         # full locked-source deadline instead of adding the default timeout before each callback.
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=0.0)
@@ -744,21 +767,6 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     return ""
 
 
-def _default_new_file_mode() -> Optional[int]:
-    """The mode ``open(path, "wb")`` gives a file it has to create.
-
-    ``mkstemp`` always creates at 0600, so staging an import through a temp file would tighten
-    every *newly created* file to owner-only — the Docker/NAS volume-mount hazard
-    ``utils._restore_file_mode`` documents.
-    """
-    try:
-        current = os.umask(0o077)
-        os.umask(current)
-    except OSError:
-        return None
-    return 0o666 & ~current
-
-
 def _extract_member_atomically(
     zf: zipfile.ZipFile, member: str, target: Path, new_file_mode: Optional[int] = None) -> None:
     """Restore one zip member onto *target* with no truncation window.
@@ -897,7 +905,7 @@ def _import_members(
     db_shrunk: list[tuple[str, tuple[int, int], tuple[int, int]]] = []
     restored = restored_external = 0
     home_dir = Path.home().resolve()
-    new_file_mode = _default_new_file_mode()  # once: every member is published via mkstemp (0600)
+    new_file_mode = default_new_file_mode()  # once: every member is published via mkstemp (0600)
     for member in members:
         # ``_external/`` members restore to their home-relative location (~/.honcho/config.json),
         # NOT under HERMES_HOME; provider configs commonly hold credentials, so tighten to 0600.
@@ -1001,8 +1009,7 @@ def run_import(args) -> None:
             for rel, before, after in db_shrunk:
                 print(f"    {rel}: {before[0]} session(s) / {before[1]} message(s)"
                       f" -> {after[0]} / {after[1]}")
-            print("    Anything recorded after the backup was taken is not in it. "
-                  "Recover from a newer backup or snapshot: hermes snapshot list")
+            print(f"    Anything recorded after the backup was taken is not in it. {_snapshot_recovery_hint()}")
         if skipped_runtime:
             _print_capped(f"\n  Preserved {len(skipped_runtime)} runtime state "
                           f"file(s) (kept this machine's, not the backup's):",
@@ -1182,6 +1189,25 @@ def _copy_quick_snapshot_files(
     return manifest, failed_dbs, oversized_skipped
 
 
+def _secure_quick_snapshot_tree(root: Path, snapshot_dir: Path) -> None:
+    """Make a staged quick snapshot owner-only before it is published.
+
+    The staging directory is private from creation, so copied source modes can
+    be normalized safely before the final atomic rename exposes the snapshot.
+    Permission failures are intentionally fatal: publishing a readable
+    recovery bundle is worse than reporting a failed snapshot.
+    """
+    if os.name == "nt":
+        return
+    os.chmod(root, 0o700)
+    os.chmod(snapshot_dir, 0o700)
+    for path in snapshot_dir.rglob("*"):
+        if path.is_dir():
+            os.chmod(path, 0o700)
+        elif path.is_file():
+            os.chmod(path, 0o600)
+
+
 def _create_quick_snapshot_locked(
     label: Optional[str], home: Path, keep: Optional[int], max_file_size: Optional[int]
 ) -> Optional[str]:
@@ -1199,14 +1225,17 @@ def _create_quick_snapshot_locked(
         suffix += 1
     staging_dir = root / f".{snap_id}.{os.getpid()}.partial"
     shutil.rmtree(staging_dir, ignore_errors=True)
-    staging_dir.mkdir(parents=True, exist_ok=False)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "nt":
+        os.chmod(root, 0o700)
+    staging_dir.mkdir(mode=0o700, exist_ok=False)
     logger.info("quick snapshot phase=copy status=started id=%s", snap_id)
     manifest, failed_dbs, oversized_skipped = _copy_quick_snapshot_files(home, staging_dir, max_file_size)
     if failed_dbs:
         # Surface on stdout: a log-and-continue made a missing state.db backup look like a
         # successful pre-update snapshot (#68474).
         print(f"  ⚠ CRITICAL: could not snapshot DB file(s): {', '.join(failed_dbs)}\n"
-              f"  ⚠ If sessions disappear after update, check {root} and run: hermes snapshot list")
+              f"  ⚠ If sessions disappear after the update, check {root}. {_snapshot_recovery_hint()}")
         logger.error("Quick snapshot failed to capture DB file(s): %s", ", ".join(failed_dbs))
     if not manifest:
         shutil.rmtree(staging_dir, ignore_errors=True)
@@ -1221,6 +1250,7 @@ def _create_quick_snapshot_locked(
     }
     with open(staging_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
+    _secure_quick_snapshot_tree(root, staging_dir)
     os.replace(staging_dir, root / snap_id)
     # Auto-prune (pre-update callers pass a smaller keep so state.db copies don't accumulate).
     # Skip when a DB failed to capture OR was skipped for size (#68805): the snapshot is

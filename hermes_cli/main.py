@@ -416,32 +416,68 @@ def _inside_mcp_add_args(argv: list, index: int) -> bool:
     return True
 
 
+def _looks_like_hermes_invocation() -> bool:
+    """False when ``sys.argv`` belongs to a test runner rather than a ``hermes`` run.
+
+    pytest's own ``-p no:xdist`` reaches ``_scan_profile_flag`` through ``sys.argv`` at import
+    time; it must stay a silent skip, while a real ``hermes -p 'Work Bot'`` must fail loudly.
+    """
+    return "pytest" not in (sys.argv[0] or "")
+
+
+def _exit_invalid_profile_name(value: str) -> None:
+    from hermes_cli.profiles import _invalid_profile_name_error
+
+    print(f"Error: {_invalid_profile_name_error(value)}", file=sys.stderr)
+    print("Run `hermes profile list` to see your profiles.", file=sys.stderr)
+    sys.exit(2)
+
+
+def _looks_like_option_value(value: str) -> bool:
+    """A ``-p`` value that clearly belongs to some other tool (pytest's ``-p no:xdist``, a
+    third-party ``-p --flag``), never a mistyped profile name."""
+    return value.startswith("-") or ":" in value
+
+
 def _scan_profile_flag(argv: list) -> tuple:
     """Find -p/--profile/--profile= in argv -> (name, tokens_consumed, index).
 
     Historically the flag worked even after the subcommand (`hermes chat -p
     coder`), so scan broadly; stop at ``--`` and at the `mcp add --args`
-    passthrough region. Values that can't be profile names (pytest's
-    ``-p no:xdist``) are rejected so resolve_profile_env never sys.exits on them.
+    passthrough region. The value is normalised (strip + casefold, matching
+    ``profiles.normalize_profile_name``) before validation so ``-p Work`` selects
+    ``work``. A value that cannot be a profile name is rejected so
+    resolve_profile_env never sys.exits on it; the rejection is explained (exit 2)
+    only when the flag comes BEFORE the first subcommand token under a real
+    ``hermes`` run — after a subcommand, ``-p`` may belong to that subcommand or a
+    plugin (`hermes kanban ... -p 8080`), and option-looking values (``no:xdist``,
+    ``--flag``) are always a silent skip.
     """
     from hermes_cli._parser import top_level_value_flag_sets
 
     value_flags, optional_value_flags = top_level_value_flag_sets()
     i = 0
+    saw_subcommand = False
     while i < len(argv):
         arg = argv[i]
         if arg == "--" or (arg == "--args" and _inside_mcp_add_args(argv, i)):
             break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
-            if re.match(_PROFILE_NAME_RE, argv[i + 1]):
-                return argv[i + 1], 2, i
+            raw = argv[i + 1]
+            value = raw.strip().casefold()
+            if re.match(_PROFILE_NAME_RE, value):
+                return value, 2, i
+            if not saw_subcommand and not _looks_like_option_value(raw) and _looks_like_hermes_invocation():
+                _exit_invalid_profile_name(raw)
             break
         if arg.startswith("--profile="):
-            return arg.split("=", 1)[1], 1, i
+            return arg.split("=", 1)[1].strip().casefold(), 1, i
         takes_value = "=" not in arg and i + 1 < len(argv) and (
             arg in value_flags
             or (arg in optional_value_flags and not argv[i + 1].startswith("-"))
         )
+        if not takes_value and not arg.startswith("-"):
+            saw_subcommand = True
         i += 2 if takes_value else 1
     return None, 0, None
 
@@ -586,17 +622,10 @@ if sys.platform == "win32":
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
 
-# ``update`` must not import optional secret-manager libs before ``uv``
-# replaces the environment: on Windows Bitwarden's cryptography import maps
-# ``_rust.pyd`` and the parent updater then blocks its own child installer.
-# Profile flags are already stripped, so argv[1] is the authoritative subcommand.
-# Profile flags have already been stripped above, so the first remaining argument is the authoritative
-# argparse subcommand. Dotenv/managed config still loads; only external secret fetches are unnecessary for
-# installation maintenance. See #73381.
-load_hermes_dotenv(
-    project_env=PROJECT_ROOT / ".env",
-    load_external_secrets=sys.argv[1:2] != ["update"],
-)
+# ``update`` must not resolve external secret sources (Windows self-lock via cryptography, slow
+# helpers inside the import probe) — ``_early_recovery._should_skip_external_secret_sources``
+# owns that argv check for every dotenv load in the process. See #73381.
+load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
 # Bridge security.redact_secrets → HERMES_REDACT_SECRETS BEFORE hermes_logging
 # imports agent.redact, which snapshots the flag exactly once at import. A
@@ -604,20 +633,14 @@ load_hermes_dotenv(
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
 try:
-    # read_raw_config()'s (mtime, size)-keyed cache means this SAME parse serves
-    # hermes_logging and later raw reads: 3-4 config.yaml parses become one.
-    from hermes_cli.config import read_raw_config as _read_raw_early
+    # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
+    # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
+    # Managed overlay included: administrator-pinned redact_secrets / force_ipv4 win here too.
+    from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
-        _early_cfg_raw = _read_raw_early() or {}
-        # Managed scope overlay: administrator-pinned redact_secrets /
-        # force_ipv4 must win here too (load_config isn't usable yet). Fail-open.
-        try:
-            from hermes_cli import managed_scope
-            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
-        except Exception:
-            pass
+        _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -720,6 +743,8 @@ from hermes_cli.main_provider_setup import (
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
     _named_custom_provider_map,
+    _offer_reasoning_after_pick,
+    _prompt_main_reasoning_effort,
     _prompt_provider_choice,
     _remove_custom_provider,
 )
@@ -1161,14 +1186,16 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Open failures yield None and any error raised by the ``with``
-    body is swallowed — callers fall through to their ``return None``."""
+    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
+    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
+    never opens a writer beside the one the CLI acquires from the registry a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed —
+    callers fall through to their ``return None``."""
     db = None
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB(read_only=True)
     except Exception:
         pass
     try:
@@ -1340,12 +1367,13 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
-        import uuid as _uuid
+        from hermes_state_ids import new_session_id as mint_session_id
+        from hermes_state_registry import acquire
 
-        from hermes_state import SessionDB
-
-        new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        db = SessionDB()
+        new_session_id = mint_session_id()
+        # The CLI acquires the registry handle for this same path moments later; share it
+        # instead of minting a second writer for one INSERT (close() releases the refcount).
+        db = acquire()
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)
         return new_session_id
@@ -1429,7 +1457,11 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                     args.resume = last_id
                 else:
                     kind = "TUI" if use_tui else "CLI"
-                    print(f"No previous {kind} session found to continue.")
+                    print(
+                        f"No previous {kind} session to continue. Start a new one with "
+                        "`hermes`, or list sessions with `hermes sessions list`.",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
 
 
@@ -1686,7 +1718,9 @@ def cmd_chat(args):
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
-    use_tui = _resolve_use_tui(args)
+    from hermes_cli.stream_json import stream_json_requested
+    # Structured stdout is a non-interactive protocol: it overrides HERMES_TUI/display.interface too.
+    use_tui = False if stream_json_requested(args) else _resolve_use_tui(args)
 
     _resolve_chat_session_args(args, use_tui)
 
@@ -1740,6 +1774,7 @@ def cmd_chat(args):
         "query": args.query,
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "run_budget": getattr(args, "run_budget", None),
+        "output_format": getattr(args, "output_format", "text"),
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),
@@ -1924,7 +1959,11 @@ def _resolve_active_provider(config, model_cfg, effective_provider, custom_provi
         try:
             active = resolve_provider("auto")
         except AuthError as exc:
-            if effective_provider == "auto":
+            if exc.code == "no_provider_configured":
+                # The picker that is about to open IS the fix; a warning that says
+                # "run `hermes model`" from inside `hermes model` is circular.
+                print("No provider is set up yet — pick one below. (Nous Portal works without an API key.)")
+            elif effective_provider == "auto":
                 print(f"Warning: {format_auth_error(exc)} Falling back to auto provider detection.")
             active = None  # no provider yet; default to first in list
 
@@ -2004,6 +2043,10 @@ def select_provider_and_model(args=None):
     if selected_provider == "aux-config":
         _aux_config_menu()
         return
+    if selected_provider == "reasoning":
+        # Effort for the CURRENT default model, no model change.
+        _prompt_main_reasoning_effort(current_model, active or "")
+        return
 
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
@@ -2030,6 +2073,10 @@ def select_provider_and_model(args=None):
         or _is_profile_api_key_provider(selected_provider)
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+
+    # Every flow persists through _save_model_choice; a changed model.default means a pick
+    # landed, so offer its reasoning effort here once instead of inside each flow.
+    _offer_reasoning_after_pick(current_model)
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons
@@ -2463,14 +2510,10 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
-        print(f"Import error: {e}")
+        from hermes_cli.main_dep_hints import missing_optional_deps_message
+
+        print(missing_optional_deps_message("dashboard", "its web-server packages (fastapi, uvicorn)", "all"))
+        print(f"Details: {e}")
         sys.exit(1)
 
     # Seed bundled skills on first dashboard launch so the desktop GUI's

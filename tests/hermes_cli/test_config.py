@@ -226,7 +226,7 @@ class TestLoadConfigParseFailure:
             assert after["approvals"]["deny"] == ["curl*evil.com*"]
             # Warning says we kept the previous config, not defaults
             err = capsys.readouterr().err
-            assert "previously loaded config" in err
+            assert "settings it loaded before the edit" in err
 
 
 
@@ -294,7 +294,7 @@ class TestSaveAndLoadRoundtrip:
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
-                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                with pytest.raises(RuntimeError, match="this change was not saved"):
                     save_config({"model": "test/replacement"})
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -327,7 +327,7 @@ class TestSaveAndLoadRoundtrip:
         config_path.write_text(original, encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="not valid YAML"):
+            with pytest.raises(RuntimeError, match="formatting error"):
                 set_config_value("model.default", "gpt-4o")
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -343,7 +343,7 @@ class TestSaveAndLoadRoundtrip:
         (tmp_path / ".env").write_text("TERMINAL_TIMEOUT=30\n", encoding="utf-8")
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            with pytest.raises(RuntimeError, match="not valid YAML"):
+            with pytest.raises(RuntimeError, match="formatting error"):
                 unset_config_value("terminal.timeout")
 
         assert config_path.read_text(encoding="utf-8") == original
@@ -399,11 +399,26 @@ class TestSaveAndLoadRoundtrip:
         original = "broken: [unterminated\n"
         config_path.write_text(original, encoding="utf-8")
 
-        with pytest.raises(RuntimeError, match="not valid YAML"):
+        with pytest.raises(RuntimeError, match="formatting error"):
             atomic_config_write(config_path, {"model": {"provider": "openai"}})
 
         assert config_path.read_text(encoding="utf-8") == original
         assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
+
+class TestLoadEnvInlineComments:
+    def test_unquoted_hash_is_a_comment_quoted_hash_is_data(self, tmp_path):
+        """load_env is the one dotenv reader (agent.secret_scope.load_env_file): an unquoted ` #...` tail
+        is a comment, a quoted value keeps its hash. Hermes' own writer (_quote_env_value) always quotes
+        values containing `#`, so a saved secret round-trips."""
+        from hermes_cli.config import invalidate_env_cache
+
+        (tmp_path / ".env").write_text('PASSWORD=abc #123\nPASSWORD2="abc #123"\n', encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            invalidate_env_cache()
+            env = load_env()
+        assert env["PASSWORD"] == "abc"
+        assert env["PASSWORD2"] == "abc #123"
+
 
 class TestSaveEnvValueSecure:
 
@@ -1893,7 +1908,7 @@ class TestConfigCommandFailClosedSurface:
 
         assert excinfo.value.code == 1
         err = capsys.readouterr().err
-        assert "not valid YAML" in err
+        assert "formatting error" in err and "`hermes config edit`" in err
         assert config_path.read_text(encoding="utf-8") == original
 
     def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
@@ -1908,5 +1923,21 @@ class TestConfigCommandFailClosedSurface:
                 config_command(self._args(config_command="unset", key="model.default"))
 
         assert excinfo.value.code == 1
-        assert "not valid YAML" in capsys.readouterr().err
+        assert "formatting error" in capsys.readouterr().err
         assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_gateway_multiplex_keys_are_recognized_config_keys():
+    """``hermes config set gateway.multiplex_profiles true`` used to warn 'not a recognized config
+    key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
+    assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
+    assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
+    assert _validate_config_key("gateway.profile_routes") == (True, None)
+    assert _validate_config_key("gateway.auto_multiplex_migration") == (True, None)
+    known, suggestion = _validate_config_key("gateway.auto_migrate")
+    assert known is False
+    assert suggestion == "gateway.auto_multiplex_migration"

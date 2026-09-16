@@ -19,13 +19,24 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_create.add_argument("profile_name", help="Profile name (lowercase, alphanumeric)")
     profile_create.add_argument(
         "--clone", action="store_true",
-        help="Copy config.yaml, .env, SOUL.md, and skills from active profile")
+        help="Copy config.yaml, .env, SOUL.md, and skills from active profile "
+             "(messaging bot tokens/allowlists are left behind; see --clone-channels)")
     profile_create.add_argument(
         "--clone-all", action="store_true",
-        help="Full copy of active profile (all state, excluding per-profile history)")
+        help="Full copy of active profile (all state, excluding per-profile history and messaging channels)")
     profile_create.add_argument(
         "--clone-from", metavar="SOURCE",
         help="Source profile to clone from; implies --clone unless --clone-all is set")
+    profile_create.add_argument(
+        "--clone-channels", action="store_true",
+        help="Also copy the source's messaging channels (bot tokens, allowlists, platform sections). "
+             "Two profiles holding one bot token collide; refused when the source is served by a live "
+             "multiplexed gateway.")
+    profile_create.add_argument(
+        "--sync-imports", action="store_true",
+        help="With --clone/--clone-from: also carry over the `hermes import-agent` sync manifest so "
+             "the new profile stays registered against the same Claude Code / Codex trees "
+             "(`hermes -p <name> import-agent --sync`). Never syncs config from the source profile.")
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation")
     profile_create.add_argument(
@@ -114,7 +125,8 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_update = profile_subparsers.add_parser(
         "update", help="Re-pull a distribution and apply updates (user data preserved)",
         description="Fetch the distribution from its recorded source and overwrite "
-            "distribution-owned files (SOUL.md, skills/, cron/, mcp.json). "
+            "distribution-owned files (SOUL.md, mcp.json) and the skills and cron jobs "
+            "the distribution ships; skills or cron jobs you added yourself stay in place. "
             "User data (memories, sessions, auth, .env) is never touched. "
             "config.yaml is preserved unless --force-config is passed.")
     profile_update.add_argument("profile_name", help="Profile to update")

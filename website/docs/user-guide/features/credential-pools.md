@@ -48,6 +48,9 @@ If you already have an API key set in `.env`, Hermes auto-discovers it as a 1-ke
 # Add a second OpenRouter key
 hermes auth add openrouter --api-key sk-or-v1-your-second-key
 
+# ...or let a browser login mint one (OpenRouter OAuth PKCE; stored as a plain API key)
+hermes auth add openrouter --type oauth
+
 # Add a second Anthropic key
 hermes auth add anthropic --type api-key --api-key sk-ant-api03-your-second-key
 
@@ -283,6 +286,8 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
 ```
 
 The OpenRouter entry above was borrowed from an external source, so the raw key is not stored in `auth.json`. The manual Anthropic entry was intentionally added to Hermes' credential store, so its token remains persistable.
+
+An `env:` row is re-hydrated from the environment on every load, and the variable name does not have to be one Hermes declares for the provider: a second row with `"source": "env:OPENROUTER_API_KEY_2"` is filled from `OPENROUTER_API_KEY_2` (shell, `.env`, or your secret manager) and rotates alongside the primary key without the secret ever being written to `auth.json`.
 
 Strategies are stored in `config.yaml` (not `auth.json`):
 

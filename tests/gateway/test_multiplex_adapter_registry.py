@@ -301,7 +301,7 @@ class TestSecondaryProfileFatalRecovery:
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
         if entry == "startup":
@@ -335,7 +335,7 @@ class TestSecondaryProfileFatalRecovery:
         synced = []
         runner._sync_voice_mode_state_to_adapter = synced.append
         monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
 
@@ -864,6 +864,23 @@ class TestSecondaryProfileConfigHandling:
         assert "good" in runner._profile_adapters
         assert "bad" not in runner._profile_adapters
         assert "Failed to start adapters for profile 'bad'" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_single_profile_start_clears_inherited_served_profiles(self, monkeypatch, tmp_path):
+        """``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+        ``served_profiles`` survived into a later single-profile run and every `hermes -p X` surface
+        kept treating X as served (exit 78 on start, "running via multiplexer" on status)."""
+        import json
+        from gateway.status import read_runtime_status
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps(
+            {"pid": 1, "gateway_state": "stopped", "served_profiles": ["default", "coder"]}))
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=False)
+
+        assert await runner._start_secondary_profile_adapters() == 0
+        assert read_runtime_status(tmp_path / "gateway_state.json")["served_profiles"] == []
 
     @pytest.mark.asyncio
     async def test_multiplexer_propagates_security_config_error(self, monkeypatch):

@@ -16,19 +16,19 @@ describe('bot mood -> blobatar expression mapping', () => {
 })
 
 describe('blobatar motion feature detection', () => {
-  it('resolves the animated component and expression roster in this build', () => {
+  it('resolves the animated component and expression roster in this build', async () => {
     // blobatar 2.0.0 publishes both subpaths; when a future SDK drops one,
     // these trip and every caller falls back to the static path.
-    expect(blobatarMotionAvailable()).toBe(true)
+    expect(await blobatarMotionAvailable()).toBe(true)
   })
 
-  it('resolves the mood expressions by name from the roster', () => {
-    const thinking = blobatarExpressionFor('think')
+  it('resolves the mood expressions by name from the roster', async () => {
+    const thinking = await blobatarExpressionFor('think')
 
     expect(thinking).toBeDefined()
-    expect(blobatarExpressionFor('work')).toBeDefined()
+    expect(await blobatarExpressionFor('work')).toBeDefined()
     // idle needs no pose: the ambient loop is the idle personality.
-    expect(blobatarExpressionFor('idle')).toBeUndefined()
+    expect(await blobatarExpressionFor('idle')).toBeUndefined()
   })
 })
 
@@ -45,23 +45,30 @@ describe('animated path (real blobatar/react component)', () => {
   it('renders the animated svg with the backfill hook and the mood expression', async () => {
     // With motion available, BotFace renders the library's component: the
     // data-bot-face hook must land on the svg (roster PNG backfill) and the
-    // mood's expression rides along.
+    // mood's expression rides along. The dynamic import resolves in an
+    // effect, so the first paint is the static path — assert on the
+    // post-resolution render.
     const { BotFace } = await import('./avatar')
-    const { cleanup, render } = await import('@testing-library/react')
+    const { cleanup, render, waitFor } = await import('@testing-library/react')
 
     const { container } = render(
       <BotFace color="#38bdf8" mood="think" name="inbox-triage" shape="blobatar" size={56} />
     )
 
     try {
-      const svg = container.querySelector('svg[data-bot-face="inbox-triage"]')
+      await waitFor(
+        () => {
+          const svg = container.querySelector('svg[data-bot-face="inbox-triage"]')
 
-      expect(svg).toBeTruthy()
-      // The motion root class hangs on the inner <g> (the library renders the
-      // svg itself): blink/saccade/breathe/bob all run from it.
-      expect(svg!.querySelector('.mo-root')).toBeTruthy()
-      // The animated render wraps eyes in .mo-eyes with seeded phases.
-      expect(svg!.querySelector('.mo-eyes')).toBeTruthy()
+          expect(svg).toBeTruthy()
+          // The motion root class hangs on the inner <g> (the library renders
+          // the svg itself): blink/saccade/breathe/bob all run from it.
+          expect(svg!.querySelector('.mo-root')).toBeTruthy()
+          // The animated render wraps eyes in .mo-eyes with seeded phases.
+          expect(svg!.querySelector('.mo-eyes')).toBeTruthy()
+        },
+        { timeout: 2_000 }
+      )
     } finally {
       cleanup()
     }

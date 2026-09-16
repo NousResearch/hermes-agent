@@ -311,6 +311,9 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             return blocked.format(why=_NO_HUMAN)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
+        if choice == "cancelled":
+            return blocked.format(why="approval prompt could not be delivered or was not answered "
+                                      f"({getattr(choice, 'cause', 'no answer')}).")
         timed = choice == "timeout"
     # Any tapped scope is a one-operation grant; nothing is persisted.
     if not timed and choice in {"once", "session", "always"}:

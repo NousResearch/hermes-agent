@@ -25,9 +25,9 @@ def receipt_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME for receipt writes."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
+    # ``_receipt_dir`` resolves through ``hermes_constants.get_hermes_home`` (env var), not
+    # ``hermes_cli.config`` — patch where production reads.
+    monkeypatch.setenv("HERMES_HOME", str(home))
     # ensure no receipt bleeds between tests
     ur._current = None
     yield home

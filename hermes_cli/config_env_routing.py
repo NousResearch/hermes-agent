@@ -5,25 +5,40 @@ Platform setting keys such as ``FEISHU_HOME_CHANNEL`` had two writers: the platf
 routed credential-shaped names there and wrote every other bare name to the top level of
 ``config.yaml``. The gateway bridges top-level scalars into the environment only when ``.env`` lacks
 the name and one-shot CLI readers never bridge, so the two copies diverged silently (#111848).
-Every name Hermes itself registers as an environment variable now routes to ``.env`` from
-``set``/``get``/``unset``; provider credentials keep their own rotation lifecycle in
-``hermes_cli.credential_lifecycle``.
+
+The routing rule is the key's SHAPE, not a registry: a bare ``UPPER_SNAKE`` name is an environment
+setting and goes to ``.env`` — the file every runtime reader (``os.getenv``, the gateway's
+``platform_gate_env``) resolves against — whether or not Hermes enumerates it anywhere. Roughly 290
+of the ~700 documented variables (``TELEGRAM_GROUP_ALLOWED_USERS``, ``HERMES_TIMEZONE``, ...) are
+read straight from the environment without being registered in ``OPTIONAL_ENV_VARS``, so a registry
+check alone kept landing them in ``config.yaml``. Provider credentials keep their own rotation
+lifecycle in ``hermes_cli.credential_lifecycle``.
 """
 
+import re
+import sys
+from pathlib import Path
 from typing import Optional
 
+# Environment-variable shape: what every shell and ``os.getenv`` caller treats as a variable name.
+# Case-sensitive on purpose: a lowercase bare name (``my_flag``) stays a config.yaml top-level key.
+_ENV_SHAPE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
-def is_env_setting_key(key: str) -> bool:
-    """True for a bare (undotted) name Hermes documents as a ``.env`` variable: registered in
-    ``OPTIONAL_ENV_VARS`` or ``_EXTRA_ENV_KEYS``, or carrying a self-configuring platform suffix so
-    plugin adapters nobody enumerated (``IRC_HOME_CHANNEL``) get the same routing."""
-    if "." in key:
-        return False
+def is_registered_env_name(name: str) -> bool:
+    """True when Hermes itself enumerates ``name``: ``OPTIONAL_ENV_VARS`` / ``_EXTRA_ENV_KEYS``, or a
+    self-configuring platform suffix so plugin adapters nobody listed (``IRC_HOME_CHANNEL``) count."""
     from hermes_cli.config import _EXTRA_ENV_KEYS, OPTIONAL_ENV_VARS
     from hermes_cli.setup_hidden_env import is_setup_hidden_env
 
-    name = key.upper()
     return name in OPTIONAL_ENV_VARS or name in _EXTRA_ENV_KEYS or is_setup_hidden_env(name)
+
+
+def is_env_setting_key(key: str) -> bool:
+    """True for a bare (undotted) key ``hermes config`` stores in ``.env``: any ``UPPER_SNAKE`` name,
+    plus registered names typed in any case (``discord_home_channel``)."""
+    if "." in key:
+        return False
+    return bool(_ENV_SHAPE_RE.match(key)) or is_registered_env_name(key.upper())
 
 
 def _drop_config_yaml_copies(key: str) -> bool:
@@ -58,10 +73,13 @@ def remove_env_setting(key: str) -> bool:
 
 def read_env_setting(key: str) -> Optional[str]:
     """Resolve like the gateway does: ``.env`` first, then a not-yet-converged top-level
-    ``config.yaml`` copy under the name as typed."""
+    ``config.yaml`` copy under the name as typed, which is reported as stale on stderr."""
     from hermes_cli.config import get_env_value, read_raw_config_readonly
 
     value = get_env_value(key.upper())
     if value is None:
         value = read_raw_config_readonly().get(key)
+        if value is not None:
+            print(f"  (note: {key} is a stale top-level config.yaml copy; `hermes config set {key} <value>` "
+                  f"moves it to .env, `hermes config unset {key}` removes it)", file=sys.stderr)
     return value

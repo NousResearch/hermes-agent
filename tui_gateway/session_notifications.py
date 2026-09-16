@@ -545,9 +545,13 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
-    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner
+    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
 
     home = _session_home(session)
+    # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
+    # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
+    if not has_mailbox(home):
+        return False
     with session["history_lock"]:
         if any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
@@ -595,6 +599,35 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     return started
 
 
+# A failing mailbox poll (typically the active-session registry lock unavailable under contention) retries
+# every ``queue.get`` slice; back off between attempts and log the failure once per window, not per attempt.
+_BOT_POLL_FAILURE_BACKOFF_S = 5.0
+_BOT_POLL_WARN_INTERVAL_S = 60.0
+
+
+def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None:
+    """One poller-loop pass of the mailbox poll: skipped while backing off after a failure; a failure is
+    logged at WARNING once per ``_BOT_POLL_WARN_INTERVAL_S`` (with the count of suppressed repeats) and at
+    DEBUG otherwise. An unthrottled poll logged ``Bot live-owner delivery poll failed`` ~2×/minute per session
+    for days, 91% of an install's WARNING output (#111719)."""
+    if now < session.get("_bot_poll_retry_at", 0.0):
+        return
+    try:
+        _poll_bot_live_delivery_once(sid, session)
+    except Exception:
+        session["_bot_poll_retry_at"] = now + _BOT_POLL_FAILURE_BACKOFF_S
+        suppressed = int(session.get("_bot_poll_warn_suppressed", 0))
+        if now - session.get("_bot_poll_warned_at", -_BOT_POLL_WARN_INTERVAL_S) < _BOT_POLL_WARN_INTERVAL_S:
+            session["_bot_poll_warn_suppressed"] = suppressed + 1
+            logger.debug("Bot live-owner delivery poll failed (repeat)", exc_info=True)
+            return
+        session["_bot_poll_warned_at"], session["_bot_poll_warn_suppressed"] = now, 0
+        logger.warning("Bot live-owner delivery poll failed (%d repeat(s) suppressed since the last report)",
+                       suppressed, exc_info=True)
+        return
+    session["_bot_poll_warn_suppressed"] = 0
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
     (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
@@ -613,10 +646,7 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        try:
-            _poll_bot_live_delivery_once(sid, session)
-        except Exception:
-            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
+        _poll_bot_live_delivery_guarded(sid, session, now)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

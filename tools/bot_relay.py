@@ -86,7 +86,8 @@ def relay_root(root: Path | str) -> Path:
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
-        (base / sub).mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(base / sub)
     return base
 
 

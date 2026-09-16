@@ -24,6 +24,7 @@ import type { ReactNode } from 'react'
 import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
+import { syncWorkspaceRoute } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
@@ -54,7 +55,8 @@ import {
   requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
-  retireLocalProfileGateways
+  retireLocalProfileGateways,
+  type SpawnPriority
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -232,18 +234,44 @@ const $busyBySession = computed($sessionStates, states => {
 
 const $viewport = atom<ViewportRect>(readViewport())
 
+/** Options a plugin may attach to one `host.requestProfile` call. */
+export interface PluginProfileRequestOptions {
+  /** Tag the dial that may cold-spawn this route's backend. Default
+   *  'background'; an explicit user action passes 'foreground' so its spawn
+   *  takes the pool's reserved interactive slot (#102281 primitive). */
+  spawnPriority?: SpawnPriority
+}
+
 async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
   method: string,
   params: Record<string, unknown>,
-  timeoutMs?: number
+  timeoutMs?: number,
+  options?: PluginProfileRequestOptions
 ): Promise<T> {
+  const spawnPriority = options?.spawnPriority
+
+  // Preserve the exact call arity the pool tests pin: pass the deadline and the
+  // dial options only when the caller set them, so a plain routed RPC keeps its
+  // four-argument shape and a timeout-only caller its five-argument shape.
+  const dialProfile = (profile: string): Promise<T> =>
+    spawnPriority
+      ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, { spawnPriority })
+      : timeoutMs === undefined
+        ? requestGatewayForProfile<T>(profile, method, params)
+        : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
+
   if (typeof route !== 'string') {
     if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    // Omit the bound entirely when unset so callers stay on the pool default.
+    if (spawnPriority) {
+      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
+        spawnPriority
+      })
+    }
+
     return timeoutMs === undefined
       ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
       : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
@@ -252,9 +280,7 @@ async function requestPluginProfile<T>(
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
-    return timeoutMs === undefined
-      ? requestGatewayForProfile<T>(route, method, params)
-      : requestGatewayForProfile<T>(route, method, params, timeoutMs)
+    return dialProfile(route)
   }
 
   const roster = await getAgentRoster()
@@ -266,9 +292,7 @@ async function requestPluginProfile<T>(
   // its live enumeration transiently failed. Any additional source requires a
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
-    return timeoutMs === undefined
-      ? requestGatewayForProfile<T>(profile, method, params)
-      : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
+    return dialProfile(profile)
   }
 
   throw new Error(
@@ -663,7 +687,16 @@ export const host = {
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
-    window.location.hash = path.startsWith('#') ? path : `#${path}`
+    const to = path.startsWith('#') ? path.slice(1) : path
+
+    window.location.hash = `#${to}`
+    // The router follows the hash and fronts the workspace pane on a route
+    // CHANGE (wiring's `syncWorkspaceRoute` effect). Re-issuing the current
+    // route — palette/statusbar/hotkey while already on the page with a tile
+    // focused — changes nothing, so no event fires and the page stays behind
+    // the tile. Reveal imperatively, the same way `navigateToWorkspacePage`
+    // does for the sidebar and keybinds.
+    syncWorkspaceRoute(to)
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
@@ -1321,13 +1354,21 @@ export const host = {
    *  `timeoutMs` opts one call out of the pool's generic deadline (#93911: a
    *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
    *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
-   *  to keep the default. */
+   *  to keep the default.
+   *
+   *  `options.spawnPriority: 'foreground'` marks the call as an explicit user
+   *  action (a roster click opening a Bot Chat) so the dial that may cold-spawn
+   *  the route's backend takes the pool's reserved interactive slot instead of
+   *  queuing behind background roster hydration (#105104). `timeoutMs` stays
+   *  the fourth positional argument so existing callers keep their shape; pass
+   *  `undefined` there to set options alone. Default is 'background'. */
   requestProfile: async <T>(
     route: PluginProfileRoute | string,
     method: string,
     params: Record<string, unknown> = {},
-    timeoutMs?: number
-  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+    timeoutMs?: number,
+    options?: PluginProfileRequestOptions
+  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs, options),
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

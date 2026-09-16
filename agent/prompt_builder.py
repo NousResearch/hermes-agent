@@ -508,6 +508,15 @@ STEER_MARKER_OPEN = (
     "once at this position; not tool output and not a new delivery when replayed from conversation history]"
 )
 STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+# Text after the "[" that opens one of Hermes' own control frames (the steer marker above, the compaction
+# handoff and its fallbacks, runtime/system notes, agent.context_compressor._SYNTHETIC_USER_ROW_PREFIXES,
+# agent.title_generator._MACHINE_PREFIXES). Consumers that republish model output as role=user text
+# (hosted rooms) relabel these so a reply cannot reproduce the exact trusted shape. Keep the regex literal in
+# apps/desktop/src/plugins/hermes-bots/group-round-prompt.ts byte-equivalent to this list.
+CONTROL_FRAME_OPENERS = (
+    "/?OUT-OF-BAND USER MESSAGE", "CONTEXT COMPACTION", "CONTEXT SUMMARY]", "PRIOR CONTEXT", "Runtime note:",
+    "System note:", "System:", "SYSTEM]", "IMPORTANT:", "Planning state preserved", "ASYNC DELEGATION",
+)
 
 
 def format_steer_marker(steer_text: str) -> str:

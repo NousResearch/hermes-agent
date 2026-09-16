@@ -532,6 +532,23 @@ The container ENTRYPOINT is now the `entrypoint-dispatch.sh` dispatcher (which d
 Do not override the image entrypoint unless you keep `/init` (or, equivalently, the legacy `docker/entrypoint.sh` shim that forwards to the stage2 hook) in the command chain. s6-overlay's `/init` runs as root so it can chown the volume on first boot, then drops to the `hermes` user via `s6-setuidgid` for every supervised service AND for the main program. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
 :::
 
+:::warning Overriding `entrypoint:` also removes the zombie reaper
+`/init` is what reaps orphaned grandchildren (headless browsers, MCP servers, `git`/`npm` helpers spawned by tools). A Compose service that overrides `entrypoint:` to call `hermes` directly — for example to run the dashboard as a non-root user — makes the hermes process itself PID 1, and nothing above it ever calls `wait()`: every orphan stays a `<defunct>` entry forever (one deployment reached 284 zombies in under three hours). Hermes prints `[hermes] WARNING: this process is PID 1 with no init above it` at startup in that configuration.
+
+If you must override the entrypoint, add Docker's init as PID 1 so orphans are reaped:
+
+```yaml
+services:
+  hermes-dashboard:
+    image: nousresearch/hermes-agent:latest
+    init: true                                      # docker-init becomes PID 1 and reaps orphans
+    entrypoint: ["/opt/hermes/.venv/bin/hermes"]
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--skip-build"]
+```
+
+(`docker run --init …` is the equivalent flag.) This fixes the zombie accumulation only — with `/init` out of the chain, the s6 supervision tree is still gone: the dashboard, `hermes gateway run` and per-profile gateways are unsupervised, exactly as the dispatcher's own non-PID-1 warning says. Keep the default `ENTRYPOINT` whenever you can.
+:::
+
 ### `docker exec` automatically drops to the `hermes` user
 
 `docker exec hermes <cmd>` defaults to running as root inside the container, but the image ships a thin shim at `/opt/hermes/bin/hermes` (earliest on PATH) that detects root callers and transparently re-execs through `s6-setuidgid hermes`. So `docker exec hermes login`, `docker exec hermes profile create …`, `docker exec hermes setup`, etc. all write files owned by UID 10000 — i.e. readable by the supervised gateway — with no extra `--user` flag needed. Non-root callers (the supervised processes themselves, `docker exec --user hermes`, kanban subagents inside the container) hit a short-circuit that exec's the venv binary directly, so there's no overhead on the hot paths.
@@ -845,6 +862,10 @@ Pulling a newer image and recreating the container fixes it permanently (the ins
 ```sh
 docker exec -u root hermes chmod 0755 /opt/hermes
 ```
+
+### Zombie (`<defunct>`) processes piling up under PID 1
+
+`ps -eo stat,ppid,comm | awk '$1 ~ /^Z/'` inside the container lists dead children that were never reaped. This happens when hermes itself is PID 1 — almost always because a Compose service overrides `entrypoint:` and so skips `docker/entrypoint-dispatch.sh` → `/init`. Hermes also warns about it at startup (`this process is PID 1 with no init above it`). Restore the default entrypoint, or add `init: true` (Compose) / `docker run --init` so `docker-init` reaps orphans; see [What the Dockerfile does](#what-the-dockerfile-does). Recreating the container clears the existing zombies.
 
 ### Browser tools not working
 

@@ -1775,15 +1775,19 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
 
 
 def load_gateway_config_for_runner() -> "GatewayConfig":
-    """Load gateway config for the process-level GatewayRunner. Multiplexed: reload under the default
-    profile's ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret
-    scope; unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
+    """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
+    settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
+    still runs per-profile gateways standalone). Multiplexed: reload under the default profile's
+    ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret scope;
+    unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
     ``profiles/<name>/.env``. Off -> identical to ``load_gateway_config()``.
 
     See #64674.
     """
+    from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
-    if not getattr(cfg, "multiplex_profiles", False):
+    log_multiplex_decision(resolve_multiplex_mode(cfg))
+    if not cfg.multiplex_profiles:
         return cfg
     try:
         home = get_hermes_home()
@@ -1791,10 +1795,12 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
         return cfg
     try:
         with _profile_runtime_scope(Path(home)):
-            return load_gateway_config()
+            scoped = load_gateway_config()
     except Exception:
         logger.debug("multiplex default-scope config reload failed; using unscoped load", exc_info=True)
         return cfg
+    scoped.multiplex_profiles = cfg.multiplex_profiles  # the verdict above, not a second unset flag
+    return scoped
 
 
 async def _discover_gateway_mcp_tools(config: object) -> None:
@@ -2878,17 +2884,20 @@ def _get_channel_override(
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Hermes update command argv: ``hermes`` on PATH, else ``python -m hermes_cli.main``, else None."""
-    import shutil
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return [hermes_bin]
+    """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
+    (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
+    PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
+    /update or /restart re-execs it (#111569)."""
     try:
         import importlib.util
         if importlib.util.find_spec("hermes_cli") is not None:
             return [sys.executable, "-m", "hermes_cli.main"]
     except Exception:
         pass
+    import shutil
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin]
     return None
 
 
@@ -3398,6 +3407,8 @@ class GatewayRunner(
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
+        # An injected config (tests, ``gateway run --config``) is taken verbatim: an unset flag there
+        # stays None (= standalone); only the loaded path runs the boot-time default-on guard.
         self.config = config if config is not None else load_gateway_config_for_runner()
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
@@ -5068,6 +5079,7 @@ async def _start_gateway_start_control_socket(runner):
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer
+        from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5115,7 +5127,9 @@ async def _start_gateway_start_control_socket(runner):
 
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
-                           "rescan-profiles": _rescan_profiles_handler})
+                           "rescan-profiles": _rescan_profiles_handler,
+                           "migrate-profile-identity": migrate_profile_identity_verb(runner),
+                           "purge-profile-identity": purge_profile_identity_verb(runner)})
         if not await _control_server.start():
             _control_server = None
         else:
@@ -5454,6 +5468,9 @@ def main():
         import yaml
         with open(args.config, encoding="utf-8") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})
+        # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
+        from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+        log_multiplex_decision(resolve_multiplex_mode(config))
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
     # wedged non-daemon worker can't block Py_FinalizeEx's join. SystemExit caught so EVERY path exits.

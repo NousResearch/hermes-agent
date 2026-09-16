@@ -406,6 +406,21 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") == "Kanban task t_missing"
         mock_auto.assert_not_called()
 
+    def test_delegated_child_of_a_worker_is_not_named_after_the_card(self, tmp_path, monkeypatch):
+        """A delegate_task child inherits ``HERMES_KANBAN_TASK`` but is not the card's session;
+        it takes the ordinary title path instead of the parent's card title (#112817)."""
+        from agent.delegation_context import delegated_child_context
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="child-1", source="kanban")
+
+        with delegated_child_context(), patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "child-1", "research the auth flow for the parent", [])
+
+        assert db.get_session_title("child-1") != "Kanban task t_parent"
+        mock_auto.assert_called_once()
+
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
         """The derived title lands synchronously — no LLM, no waiting."""
         db = SessionDB(tmp_path / "state.db")

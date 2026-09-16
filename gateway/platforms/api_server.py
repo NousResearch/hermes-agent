@@ -14,7 +14,7 @@ import hmac
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import wraps
 import logging
 import os
@@ -580,7 +580,7 @@ def _reap_disconnected_agent_processes(
         is_still_current = _epoch_still_current
     from gateway.run import _reap_gateway_turn_processes
     threading.Thread(
-        target=_reap_gateway_turn_processes, args=(process_task_id, process_baseline),
+        target=copy_context().run, args=(_reap_gateway_turn_processes, process_task_id, process_baseline),
         kwargs={"source": source, "is_still_current": is_still_current},
         name=f"api-turn-reaper-{process_task_id[:12]}", daemon=True).start()
 
@@ -3203,7 +3203,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     "session_id": effective_session_id, "message_id": message_id, **fields,
                     "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
                 self._set_run_status(
-                    run_id, status, session_id=effective_session_id, usage=usage,
+                    run_id, status, session_id=effective_session_id,
+                    # The reply text, so a caller whose stream died can still read it from
+                    # GET /v1/runs/{run_id}; POST /v1/runs already records output in `_finish`.
+                    output=final_response, usage=usage,
                     last_event=f"run.{status}", **fields)
             except asyncio.CancelledError:
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")

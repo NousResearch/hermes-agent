@@ -103,8 +103,9 @@ def _write_json_cache(path: Path, data: Any, **dump_kwargs: Any) -> None:
     """Atomically persist a cache file (creating parents). Raises on failure — callers decide
     whether a failed cache write is worth logging."""
     from utils import atomic_json_write
+    from hermes_constants import mkdir_under_hermes_home
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, **dump_kwargs)
 
 
@@ -2254,14 +2255,14 @@ def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen) and MiniMax (Go) use /v1/messages, as do Qwen models on both
-# relays; everything else falls through to /v1/chat/completions.
+# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
+# everything else falls through to /v1/chat/completions.
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen"), "anthropic_messages")),
+        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
-        (("claude-",), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
+        (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}
 
 

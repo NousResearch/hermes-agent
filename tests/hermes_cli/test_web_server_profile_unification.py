@@ -679,6 +679,7 @@ class TestProfileScopedGateway:
         runtime = {
             "pid": 4242,
             "gateway_state": "startup_failed",
+            "desired_state": "running",
             "platforms": {
                 "telegram": {"state": "fatal", "error_code": "telegram_auth_error"},
                 "alpha:telegram": {"state": "fatal", "error_code": "credential_collision"},
@@ -709,6 +710,36 @@ class TestProfileScopedGateway:
         # Fatal entries (root and namespaced) survive; the stale non-fatal is dropped.
         assert set(data["gateway_platforms"]) == {"telegram", "alpha:telegram"}
         assert data["gateway_platforms"]["alpha:telegram"]["error_code"] == "credential_collision"
+
+    def test_status_hides_historical_startup_failure_after_operator_stop(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """A durable stop intent takes precedence over an old startup failure."""
+        import hermes_cli.web_server as web_server
+
+        runtime = {
+            "pid": 4242,
+            "gateway_state": "startup_failed",
+            "desired_state": "stopped",
+            "platforms": {"telegram": {"state": "fatal"}},
+            "exit_reason": "telegram: token rejected",
+            "updated_at": "2026-06-17T00:00:00+00:00",
+        }
+        monkeypatch.setattr(_cfg_mod, "check_config_version", lambda: (1, 1))
+        monkeypatch.setattr(
+            _gw_status, "get_running_pid_cached", lambda *a, **k: None
+        )
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda *a, **k: runtime)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = client.get("/api/status", params={"profile": "worker_beta"})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+        assert data["gateway_state"] == "stopped"
+        assert data["gateway_exit_reason"] is None
+        assert data["gateway_platforms"] == {}
 
     def test_status_clears_platforms_on_clean_stop(
         self, client, isolated_profiles, monkeypatch

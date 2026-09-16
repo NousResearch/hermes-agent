@@ -428,6 +428,7 @@ class GatewayAgentCacheMixin:
         """Sync core shared by /stop, /new and eviction: request a hard interrupt on the in-flight
         agent, invalidate its run generation, and reap the tool processes that turn spawned.
         Returns the post-bump generation."""
+        from contextvars import copy_context
         from gateway.run import _AGENT_PENDING_SENTINEL, _reap_gateway_turn_processes, request_hard_interrupt
         state = self._peek_session_state(session_key)
         running_agent = state.turn.agent if state else None
@@ -447,8 +448,8 @@ class GatewayAgentCacheMixin:
         _generation_at_interrupt = self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         if _process_task_id and _process_baseline is not None:
             threading.Thread(
-                target=_reap_gateway_turn_processes,
-                args=(_process_task_id, _process_baseline),
+                target=copy_context().run,
+                args=(_reap_gateway_turn_processes, _process_task_id, _process_baseline),
                 kwargs={
                     "source": "gateway_turn_interrupt",
                     "is_still_current": lambda: self._is_session_run_current(session_key, _generation_at_interrupt),

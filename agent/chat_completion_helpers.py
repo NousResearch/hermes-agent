@@ -27,6 +27,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
+from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.fast_mode import effective_request_overrides
@@ -734,7 +735,12 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+    request_client = make_client("chat_completion_request")
+    # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
+    # request transform. No-op unless this really is the OpenAI SDK, so the
+    # MoA facade above and the suite's stand-in clients are unaffected.
+    api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
+    return request_client.chat.completions.create(**api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -1311,10 +1317,12 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
             tools_for_api, _ = strip_slash_enum(tools_for_api)
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
+    ephemeral_out = _consume_ephemeral_max_output(agent)
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
-        cache_scope_id=cache_scope_id, base_url=agent.base_url, max_tokens=agent.max_tokens,
+        cache_scope_id=cache_scope_id, base_url=agent.base_url,
+        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
@@ -1703,6 +1711,14 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     landed on the chat_completions default (never called for an explicit api_mode)."""
     if fb_provider == "openai-codex":
         return "codex_responses"
+    from hermes_cli.models import opencode_model_api_mode
+    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
+    opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
+    if opencode_family is not None:
+        # OpenCode Zen/Go/free serve Responses-only (muse-spark, gpt-*, grok-*), anthropic_messages
+        # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
+        # already re-derives per model — the fallback wire must agree (#102148).
+        return opencode_model_api_mode(opencode_family, fb_model)
     if fb_provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
         from hermes_cli.providers import nous_api_mode
@@ -2730,6 +2746,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
+        # #93650: as above — the streaming path carries the same bulk
+        # messages/tools payload and pays the same client-side walk.
+        stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:

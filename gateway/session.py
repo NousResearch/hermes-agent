@@ -1121,6 +1121,53 @@ class SessionStore(
         self._save()
         return new_entry
 
+    def rekey_profile_routing(self, old_name: str, new_name: str) -> int:
+        """Rekey the live routing index and reject target collisions before mutation."""
+        from dataclasses import replace as _dc_replace
+        old, new = (old_name or "").strip(), (new_name or "").strip()
+        if not old or not new or old == new:
+            return 0
+        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        with self._lock:
+            moving = [key for key in self._entries if key.startswith(old_ns)]
+            collisions = [
+                new_ns + key[len(old_ns):] for key in moving
+                if new_ns + key[len(old_ns):] in self._entries]
+            if collisions:
+                raise ValueError(
+                    f"profile routing collision while renaming {old!r} to {new!r}: "
+                    f"{collisions[0]!r} already exists")
+            for key in moving:
+                new_key = new_ns + key[len(old_ns):]
+                entry = self._entries.pop(key)
+                origin = entry.origin
+                if origin is not None and getattr(origin, "profile", None) == old:
+                    origin = _dc_replace(origin, profile=new)
+                self._entries[new_key] = _dc_replace(entry, session_key=new_key, origin=origin)
+            if moving:
+                self._save()
+        return len(moving)
+
+    def purge_profile_routing(self, profile: str) -> int:
+        """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_routing`, and it has to happen here for the same reason:
+        this index is written back by the owning process, so a durable DB delete made elsewhere is
+        undone by the next save of this in-memory copy — which is how a deleted profile kept
+        resolving. Idempotent; returns the number of entries dropped.
+        """
+        name = (profile or "").strip()
+        if not name:
+            return 0
+        ns = f"agent:{name}:"
+        with self._lock:
+            dropped = [key for key in self._entries if key.startswith(ns)]
+            for key in dropped:
+                self._entries.pop(key, None)
+            if dropped:
+                self._save()
+        return len(dropped)
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).

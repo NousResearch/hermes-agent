@@ -483,7 +483,7 @@ _USER_SUMMARIES = {
     "denied": "You denied this {noun} — it did not run.",
     "timeout": "No answer within {minutes} — the {noun} did not run.",
     "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
-    "cancelled": "The approval prompt was withdrawn before you answered — the {noun} did not run.",
+    "cancelled": "The approval prompt was withdrawn or never reached you — the {noun} did not run.",
     "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
 }
 
@@ -894,6 +894,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
+    if choice == "cancelled":
+        # The prompt never reached a human (callback raised, no callback under prompt_toolkit, interrupted
+        # read): fail closed, but do not attribute a refusal to the user (#22992).
+        return deny(spec.gateway_refused, "cancelled",
+                    reason="was not approved: the approval prompt could not be delivered or was not answered "
+                           f"({getattr(choice, 'cause', 'no answer')})",
+                    reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
     if choice == "deny":
         # No _record_denial(): the breaker counts consecutive guardian LLM
         # DENY verdicts, not deliberate human denials.
@@ -1129,6 +1136,11 @@ def check_all_command_guards(command: str, env_type: str,
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:
         return blocked
+
+    from agent.terminal_approval_batch import consume_prepared_guard
+    prepared = consume_prepared_guard(command, env_type, has_host_access)
+    if prepared is not None:
+        return prepared
 
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":

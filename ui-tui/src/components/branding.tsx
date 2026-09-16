@@ -324,6 +324,11 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.muted}>disabled</Text>
           ) : s.status === 'connecting' ? (
             <Text color={t.color.warn}>connecting</Text>
+          ) : s.status === 'lazy' ? (
+            // Registered from the schema cache, process not spawned yet: its tools are callable.
+            <Text color={t.color.text}>
+              {s.tools} tool{s.tools === 1 ? '' : 's'} <Text color={t.color.muted}>(lazy)</Text>
+            </Text>
           ) : s.status === 'configured' ? (
             <Text color={t.color.muted}>configured</Text>
           ) : (

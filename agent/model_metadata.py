@@ -380,9 +380,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
-    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); NVIDIA Nemotron (128K
+    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
+    # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
     # except 3.5 Lightning); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
-    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576,
+    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576, "union-alpha": 262144,
     "nemotron-3.5-lightning": 1_000_000, "nemotron": 131072,
     "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format

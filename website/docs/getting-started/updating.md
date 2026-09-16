@@ -129,6 +129,18 @@ The same inventory is embedded in every real update's receipt (`~/.hermes/logs/u
 
 Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. The SQLite runtime repair is one of those steps (`sqlite_runtime_repair`): a failed repair records the actual reason (for example the `uv sync` error) and the SQLite version pair, a deferred or not-applicable repair lands in the skips with its reason. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
 
+### Automated updates from inside the gateway: `--no-gateway-restart`
+
+An update launched *by* the gateway (a cron job, the Desktop updater, any automation that is a
+child of the gateway process) cannot survive its own fleet restart: the gateway drains on
+`SIGUSR1` and systemd's `KillMode=mixed` then kills everything left in the cgroup, updater
+included. `hermes update --no-gateway-restart` runs the full pipeline (pull, dependencies,
+Node workspaces, web UI, maintenance) and skips only the restart and fleet verification. The
+pending-restart marker is kept, so the next CLI start warns and the next normal `hermes update`
+(or `hermes gateway restart`) catches the fleet up. Pair it with a separate restart step, for
+example a timer 10–15 minutes after the update job. The receipt records the deferral; a stale
+fleet caused only by the deferral does not make the update `partial`.
+
 ### Interrupted gateway restarts
 
 If an earlier update pulled code but did not finish restarting the fleet, the next

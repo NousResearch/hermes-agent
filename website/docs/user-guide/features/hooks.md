@@ -1372,7 +1372,7 @@ Same kwargs as `pre_approval_request`, plus:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, `"cancelled"` (the prompt was withdrawn before anyone answered — turn interrupted or ended; the command did not run), or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
+| `choice` | `str` | Prompted surfaces use `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, `"cancelled"` (nobody answered — the prompt was withdrawn because the turn was interrupted or ended, or on the CLI it never reached the user because the approval callback failed, no callback was registered under prompt_toolkit, or the read was interrupted; the command did not run), or `"notify_failed"`; smart decisions use `"smart_approve"` or `"smart_deny"` |
 | `decided_by` | `str` | `"aux_llm"` for smart decisions; absent on prompted surfaces |
 
 **Return value:** ignored.

@@ -174,6 +174,20 @@ Once a conversation starts, its terminal record is always `result` — including
 `exit_code: 130` when it is interrupted with Ctrl-C. Treat that record as the
 completion signal; the process exit code matches its `exit_code`.
 
+#### Exit codes for one-shot runs
+
+When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
+stdio) the process exit code reports the turn's outcome, on both the quiet and
+the non-quiet path: `0` the turn completed; `1` it failed, stopped partway
+(`partial`), hit the iteration budget, or never ran (credentials / agent init
+failed); `130` it was interrupted. A Kanban dispatcher-spawned worker
+(`HERMES_KANBAN_TASK` set) whose turn failed only because the provider was
+rate-limited, overloaded, returning 5xx, timing out, or the account hit a
+billing/quota wall, exits
+`75` (`EX_TEMPFAIL`) so the dispatcher requeues the task without counting a
+failure. With `--format stream-json` the terminal `result` record carries the
+same `exit_code`.
+
 #### Delegation in finite chat runs
 
 When chat answers and exits (`-Q`, `chat --oneshot`, or a query with non-TTY
@@ -1228,8 +1242,8 @@ Subcommands:
 | `show` | Show current config values. |
 | `edit` | Open `config.yaml` in your editor. |
 | `get <key> [--json] [--raw]` | Print a single config value by dotted key (e.g. `hermes config get model.default`). `--json` emits machine-readable output. Credential-shaped values (`api_key`, `*_TOKEN`, `*_SECRET`, `password`, …) are masked (`sk-o...7890`) because the agent runs this from sessions whose transcripts persist; `--raw` prints the real value (or set `security.redact_secrets: false`). |
-| `set <key> <value> [--force]` | Set a config value. Dotted paths go to `config.yaml`; API keys and the environment settings Hermes registers (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `*_ALLOWED_USERS` and the other platform `*_HOME_CHANNEL` / `*_ALLOWED_USERS`-style names) go to `.env` — the same file the platform setup flows and `/sethome` write. An unknown path under a known section (`gateway.discord.foo`) is refused with a did-you-mean and nothing is written; an unknown *top-level* key is written with a notice (top-level scalars are bridged into the environment for skills). `--force` writes either. |
-| `unset <key>` | Remove a config key, reverting it to the built-in default. For `.env`-routed names this also drops a stale top-level `config.yaml` copy. |
+| `set <key> <value> [--force]` | Set a config value. Dotted paths go to `config.yaml`; every `UPPER_SNAKE` name (`OPENROUTER_API_KEY`, `DISCORD_HOME_CHANNEL`, `TELEGRAM_GROUP_ALLOWED_USERS`, `HERMES_TIMEZONE`, …) is an environment variable and goes to `.env` — the same file the platform setup flows and `/sethome` write, and the one every runtime reader resolves against. `config set` never writes an `UPPER_SNAKE` key into `config.yaml`, `--force` included; names on the env writer's denylist (`HERMES_YOLO_MODE`, `PATH`, …) are refused outright; any other `UPPER_SNAKE` name is saved to `.env` as-is (plugins, skills and external tools read it from the process environment). An unknown path under a known section (`gateway.discord.foo`) is refused with a did-you-mean and nothing is written; an unknown lowercase *top-level* key is written with a notice (top-level scalars are bridged into the environment for skills). `--force` writes either of those. |
+| `unset <key>` | Remove a config key, reverting it to the built-in default. For `UPPER_SNAKE` names this removes the `.env` entry and also drops a stale top-level `config.yaml` copy left by older `config set` runs (`get` reports such a copy as stale). |
 | `path` | Print the config file path. |
 | `env-path` | Print the `.env` file path. |
 | `check` | Check for missing or stale config. |

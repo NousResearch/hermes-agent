@@ -304,7 +304,7 @@ def test_call_llm_retries_transient_http_error(monkeypatch):
     )
 
     assert result == "recovered"
-    assert sleeps == [1.0]
+    assert sleeps == [2.0]
     assert responses == []
     assert session.trust_env is False
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatMessageTimestamp, formatTimelineRange, formatTimelineTimestamp } from './timestamp'
+import { formatClockTimestamp, formatMessageTimestamp, formatTimelineRange, formatTimelineTimestamp } from './timestamp'
 
 const labels = {
   today: (time: string) => `Today at ${time}`,
@@ -40,10 +40,21 @@ describe('precise timeline timestamps', () => {
     const local = new Date(2026, 4, 1, 13, 2, 3, 456)
     const formatted = formatTimelineTimestamp(local.getTime() / 1000)
 
-    expect(formatted).toMatch(/13|1/)
-    expect(formatted).toContain('02')
-    expect(formatted).toContain('03')
-    expect(formatted).toContain('456')
+    // Locale-agnostic: under ar-SA this renders "١:٠٢:٠٣٫٤٥٦ م", so match the
+    // locale's own output rather than Latin digits.
+    expect(formatted).toBe(
+      new Intl.DateTimeFormat(undefined, {
+        fractionalSecondDigits: 3,
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit'
+      }).format(local)
+    )
+
+    // The contract that matters: sub-second detail is preserved, so instants
+    // differing only in milliseconds stay distinguishable.
+    const oneMsLater = formatTimelineTimestamp(local.getTime() / 1000 + 0.001)
+    expect(oneMsLater).not.toBe(formatted)
   })
 
   it('renders start and finish as a range', () => {
@@ -59,5 +70,31 @@ describe('precise timeline timestamps', () => {
     expect(formatTimelineTimestamp(undefined)).toBe('')
     expect(formatTimelineTimestamp(Number.NaN)).toBe('')
     expect(formatTimelineRange(undefined, 10)).toBe('')
+  })
+})
+
+describe('formatClockTimestamp', () => {
+  it('renders a minute-precision wall clock without seconds or milliseconds', () => {
+    const local = new Date(2026, 4, 1, 16, 30, 3, 456)
+    const seconds = local.getTime() / 1000
+
+    // Assert against the locale's own digits/day-period rendering while forcing
+    // the owner's requested 12-hour clock contract in every locale.
+    expect(formatClockTimestamp(seconds)).toBe(
+      new Intl.DateTimeFormat(undefined, { hour: 'numeric', hour12: true, minute: '2-digit' }).format(local)
+    )
+
+    // The distinguishing contract: two instants in the same minute collapse to
+    // one label, while the precise formatter still separates them.
+    const laterInSameMinute = new Date(2026, 4, 1, 16, 30, 44, 789).getTime() / 1000
+    expect(formatClockTimestamp(laterInSameMinute)).toBe(formatClockTimestamp(seconds))
+    expect(formatTimelineTimestamp(laterInSameMinute)).not.toBe(formatTimelineTimestamp(seconds))
+  })
+
+  it('returns an empty string for invalid values', () => {
+    expect(formatClockTimestamp(undefined)).toBe('')
+    expect(formatClockTimestamp(Number.NaN)).toBe('')
+    expect(formatClockTimestamp(0)).toBe('')
+    expect(formatClockTimestamp(-5)).toBe('')
   })
 })

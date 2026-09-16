@@ -1,5 +1,6 @@
 """Gateway intentional-silence token behavior."""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -142,6 +143,42 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_agent_start_is_closed_when_the_turn_raises(monkeypatch, tmp_path):
+    """A failed turn still emits exactly one terminal hook event."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(side_effect=RuntimeError("backend exploded"))
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    emitted = [call.args[0] for call in runner.hooks.emit.await_args_list]
+    assert emitted.count("agent:start") == 1
+    assert emitted.count("agent:end") == 1
+    end_context = next(
+        call.args[1] for call in runner.hooks.emit.await_args_list if call.args[0] == "agent:end"
+    )
+    assert end_context["session_id"] == "sess-silent"
+    assert end_context["failed"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_start_is_closed_when_the_turn_is_cancelled(monkeypatch, tmp_path):
+    """Cancellation after agent:start cannot leave the lifecycle pair open."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._handle_message_with_agent(
+            _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        )
+
+    emitted = [call.args[0] for call in runner.hooks.emit.await_args_list]
+    assert emitted.count("agent:start") == 1
+    assert emitted.count("agent:end") == 1
 
 
 @pytest.mark.asyncio

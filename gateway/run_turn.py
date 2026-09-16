@@ -1570,6 +1570,19 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
+    async def _hmwa_emit_failed_agent_end(self, hook_ctx):
+        """Close the hook pair when a started turn cannot produce a normal result."""
+        await self.hooks.emit(
+            "agent:end",
+            {
+                **hook_ctx,
+                "response": "",
+                "model": "",
+                "provider": "",
+                "failed": True,
+            },
+        )
+
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
@@ -2072,6 +2085,8 @@ class GatewayTurnMixin:
         if not isinstance(prepared, self._PreparedTurn):
             return prepared
         history, message_text = prepared.history, prepared.message_text
+        _hook_ctx = None
+        _agent_end_emitted = False
 
         try:
             hook_ctx = {
@@ -2083,6 +2098,7 @@ class GatewayTurnMixin:
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
+            _hook_ctx = hook_ctx
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
@@ -2134,6 +2150,7 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+            _agent_end_emitted = True
             await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
 
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
@@ -2159,8 +2176,12 @@ class GatewayTurnMixin:
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
-            # Restore session context variables to their pre-handler state
+            # Restore session context variables to their pre-handler state.
             self._clear_session_env(_session_env_tokens)
+            # agent:start is emitted before several abortable operations. Close the pair for
+            # failures and abandonments without allowing cleanup to be skipped.
+            if _hook_ctx is not None and not _agent_end_emitted:
+                await self._hmwa_emit_failed_agent_end(_hook_ctx)
 
     def _profile_scope_for_source(self, source: SessionSource):
         """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.

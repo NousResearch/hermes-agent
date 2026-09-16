@@ -27,6 +27,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    route_scope: Optional[Dict[str, str]] = None  # thread the prompt is bound to (Buzz channels)
 
 
 _lock = threading.RLock()
@@ -43,12 +44,36 @@ TEXT_REJECTED_SELECTION = "rejected_selection"
 TEXT_NO_PENDING = "no_pending"
 
 
+def build_route_scope(*, platform, chat_id, chat_type=None, thread_id=None, message_id=None) -> Optional[Dict[str, str]]:
+    """Bounded interactive scope for thread-aware platforms. Buzz channel prompts are bound to the
+    thread that displayed them (a top-level channel event is that thread's root); Buzz DMs keep
+    conversation-wide session semantics and get no scope. None for every other platform."""
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").strip().lower() != "buzz":
+        return None
+    if str(chat_type or "").strip().lower() in {"dm", "private"}:
+        return None
+    normalized_chat_id = str(chat_id or "").strip()
+    normalized_thread_id = str(thread_id or message_id or "").strip()
+    if not normalized_chat_id or not normalized_thread_id:
+        return None
+    return {"platform": "buzz", "chat_id": normalized_chat_id, "thread_id": normalized_thread_id}
+
+
+def _normalize_route_scope(route_scope) -> Optional[Dict[str, str]]:
+    if not isinstance(route_scope, dict):
+        return None
+    return build_route_scope(platform=route_scope.get("platform"), chat_id=route_scope.get("chat_id"),
+                             thread_id=route_scope.get("thread_id"))
+
+
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, route_scope: Optional[Dict[str, str]] = None) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices),
+                          route_scope=_normalize_route_scope(route_scope))
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
@@ -98,14 +123,21 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
         return True
 
 
-def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False) -> Optional[_ClarifyEntry]:
+def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False,
+                            route_scope: Optional[Dict[str, str]] = None) -> Optional[_ClarifyEntry]:
     """Oldest pending entry awaiting free text (open-ended, or after "Other");
     ``include_choice_prompts=True`` returns the oldest unresolved entry of any kind (user
-    typed at an active choice prompt: resolve it rather than queue a follow-up turn)."""
+    typed at an active choice prompt: resolve it rather than queue a follow-up turn).
+    An entry bound to a ``route_scope`` (Buzz thread) only matches a reply from that scope."""
+    normalized_route_scope = _normalize_route_scope(route_scope)
     with _lock:
         for cid in _session_index.get(session_key) or []:
             entry = _entries.get(cid)
-            if entry is not None and (include_choice_prompts or entry.awaiting_text):
+            if entry is None:
+                continue
+            if entry.route_scope is not None and entry.route_scope != normalized_route_scope:
+                continue
+            if include_choice_prompts or entry.awaiting_text:
                 return entry
         return None
 
@@ -204,9 +236,10 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     return json.dumps(selected, ensure_ascii=False) if selected else None
 
 
-def attempt_text_response_for_session(session_key: str, response: str) -> str:
+def attempt_text_response_for_session(session_key: str, response: str, *,
+                                      route_scope: Optional[Dict[str, str]] = None) -> str:
     """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
-    entry = get_pending_for_session(session_key, include_choice_prompts=True)
+    entry = get_pending_for_session(session_key, include_choice_prompts=True, route_scope=route_scope)
     if entry is None:
         return TEXT_NO_PENDING
     coerced, reason = _coerce_text_response_detailed(entry, response)
@@ -217,9 +250,10 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
     return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
 
 
-def resolve_text_response_for_session(session_key: str, response: str) -> bool:
+def resolve_text_response_for_session(session_key: str, response: str, *,
+                                      route_scope: Optional[Dict[str, str]] = None) -> bool:
     """True only when the typed reply was accepted and the waiter unblocked."""
-    return attempt_text_response_for_session(session_key, response) == TEXT_RESOLVED
+    return attempt_text_response_for_session(session_key, response, route_scope=route_scope) == TEXT_RESOLVED
 
 
 def mark_awaiting_text(clarify_id: str) -> bool:

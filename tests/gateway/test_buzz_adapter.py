@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from gateway.platforms.base import CachedMedia
 from gateway.platforms.event import MessageType
+from gateway.session import build_session_key
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 from gateway.platforms.event import MessageType
 
@@ -1626,6 +1627,57 @@ class TestMentionGating:
         assert adapter._strip_mention("@Chip: /whoami") == "/whoami"
         assert adapter._strip_mention("Chip: please review") == "Chip: please review"
         assert adapter._strip_mention("@Chip-bot: please review") == "@Chip-bot: please review"
+
+    @pytest.mark.asyncio
+    async def test_top_level_command_confirmation_reply_uses_same_session(self):
+        """A reply to a top-level Buzz command must see its pending confirm."""
+        from tools import slash_confirm
+
+        adapter = _make_adapter()
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter._message_handler = capture
+        adapter.handle_message = capture
+        root_id = "f" * 64
+        reply_id = "e" * 64
+
+        await adapter._dispatch_message(
+            text="/new",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="tester",
+            message_id=root_id,
+            created_at=10,
+        )
+        await adapter._dispatch_message(
+            text="/always",
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="tester",
+            message_id=reply_id,
+            created_at=11,
+            thread_id=root_id,
+        )
+
+        root_key = build_session_key(dispatched[0].source)
+        reply_key = build_session_key(dispatched[1].source)
+        slash_confirm.clear(root_key)
+
+        async def handler(_choice):
+            return "approved"
+
+        try:
+            slash_confirm.register(root_key, "confirm-1", "new", handler)
+            assert reply_key == root_key
+            assert slash_confirm.get_pending(reply_key) is not None
+        finally:
+            slash_confirm.clear(root_key)
+            slash_confirm.clear(reply_key)
 
 
     @pytest.mark.asyncio

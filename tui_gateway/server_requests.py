@@ -100,7 +100,9 @@ def _register(req: ServerRequest) -> bool:
         return False
     with _lock:
         _open[req.id] = req
-    _write(req.frame())
+        # Publication and withdrawal are one ordered operation. Otherwise cancel() can remove the
+        # request and emit request.cancel before this frame is written, leaving an orphan prompt.
+        _write(req.frame())
     return True
 
 
@@ -135,7 +137,10 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     the underlying wait ends; if the request is still open it is withdrawn with ``request.cancel``."""
     req = ServerRequest(sid, method, params, on_result=on_result)
     if not _register(req):
-        on_result(None)
+        # ``None`` means the queue ended through its own timeout/interrupt path. An unsupported
+        # client is instead an immediate empty answer, which fails approval closed ("deny") and
+        # wakes the queue now rather than after its independent deadline.
+        on_result({})
         return lambda reason: None
 
     def settle(reason: str) -> None:

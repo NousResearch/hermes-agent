@@ -632,6 +632,9 @@ from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 def _client_supports_server_requests(sid: str) -> bool:
     transport = (_sessions.get(sid) or {}).get("transport") or current_transport() or _stdio_transport
+    scoped_support = getattr(transport, "supports_server_requests_for", None)
+    if callable(scoped_support):
+        return bool(scoped_support(sid))
     return bool(getattr(transport, "supports_server_requests", False))
 
 

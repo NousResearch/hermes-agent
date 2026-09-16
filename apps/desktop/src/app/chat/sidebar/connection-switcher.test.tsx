@@ -203,6 +203,26 @@ describe('ConnectionSwitcher', () => {
     expect(selectConnection).toHaveBeenCalledTimes(1)
   })
 
+  it('hides This device while a remote source is active', () => {
+    $connectionsRegistry.set(
+      registry([
+        connection('local', 'This device', 'local'),
+        connection('homelab', 'Homelab'),
+        connection('work-vps', 'Work VPS')
+      ])
+    )
+    $activeConnectionId.set('homelab')
+    render(<ConnectionSwitcher onConnect={onConnect} />)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Registered gateways: Homelab' }), {
+      button: 0,
+      pointerType: 'mouse'
+    })
+
+    expect(screen.queryByRole('menuitemradio', { name: 'This device' })).toBeNull()
+    expect(screen.getByRole('menuitemradio', { name: 'Work VPS' })).toBeTruthy()
+  })
+
   it('fits the shared statusbar slot without changing its gateway identity', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
     render(<ConnectionSwitcher compact onConnect={onConnect} />)

@@ -1,4 +1,4 @@
-"""Profile rename must preserve profile-local checkpoint history."""
+"""Profile rename must preserve profile-local checkpoint history (#112973)."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -20,7 +20,7 @@ def profile_env(tmp_path, monkeypatch):
     return default_home
 
 
-def test_rename_preserves_profile_local_checkpoint_history(profile_env):
+def test_rename_preserves_profile_local_checkpoint_history(profile_env, tmp_path):
     """A moved profile keeps rollback history under the moved workspace path.
 
     Checkpoint refs, project metadata, and the safe-restore ledger are keyed by the
@@ -28,8 +28,11 @@ def test_rename_preserves_profile_local_checkpoint_history(profile_env):
     checkpoint store itself, but it also changes every profile-local workdir key.
     """
     old_dir = create_profile("oldname", no_alias=True)
-    workdir = old_dir / "workspace"
+    workdir = old_dir / "project"
     workdir.mkdir()
+    outside = tmp_path / "outside-project"  # control: not under the profile dir, same store
+    outside.mkdir()
+    (outside / "keep.txt").write_text("v1\n", encoding="utf-8")
     (workdir / "pyproject.toml").write_text("[project]\nname = 'rename-checkpoint'\n", encoding="utf-8")
     tracked = workdir / "note.txt"
     tracked.write_text("before\n", encoding="utf-8")
@@ -39,6 +42,8 @@ def test_rename_preserves_profile_local_checkpoint_history(profile_env):
         manager = CheckpointManager(enabled=True, max_snapshots=5)
         assert manager.ensure_checkpoint(str(workdir), "before profile rename") is True
         checkpoint_hash = manager.list_checkpoints(str(workdir))[0]["hash"]
+        assert manager.ensure_checkpoint(str(outside), "outside profile") is True
+        outside_hash = manager.list_checkpoints(str(outside))[0]["hash"]
         tracked.write_text("after\n", encoding="utf-8")
         manager.record_agent_write(str(tracked))
     finally:
@@ -48,13 +53,14 @@ def test_rename_preserves_profile_local_checkpoint_history(profile_env):
          patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
         new_dir = rename_profile("oldname", "newname")
 
-    new_workdir = new_dir / "workspace"
+    new_workdir = new_dir / "project"
     new_tracked = new_workdir / "note.txt"
     token = set_hermes_home_override(new_dir)
     try:
         manager = CheckpointManager(enabled=True, max_snapshots=5)
         checkpoints = manager.list_checkpoints(str(new_workdir))
         assert [entry["hash"] for entry in checkpoints] == [checkpoint_hash]
+        assert [entry["hash"] for entry in manager.list_checkpoints(str(outside))] == [outside_hash]
 
         project_paths = {entry["workdir"] for entry in manager.list_all_checkpoints()}
         assert str(new_workdir.resolve()) in project_paths

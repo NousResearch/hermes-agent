@@ -164,7 +164,7 @@ def _gateway_accepts_profile_identity_verb(root: Path) -> bool:
 def _migrate_checkpoint_identity(old_canon: str, new_canon: str) -> bool:
     """Rekey checkpoint projects whose absolute workdirs moved with the profile directory."""
     from hermes_cli.profiles import get_profile_dir
-    from tools.checkpoint_profile_migration import migrate_profile_checkpoint_projects
+    from tools.checkpoint_manager_profile_rename import migrate_profile_checkpoint_projects
 
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)

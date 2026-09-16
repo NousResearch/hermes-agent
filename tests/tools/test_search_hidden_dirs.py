@@ -13,12 +13,20 @@ Fix: _search_files (find) and _search_with_grep both now exclude hidden
 directories, matching ripgrep's default behavior.
 """
 
+import shutil
 import subprocess
 
 import pytest
 
 from tools.file_operations import ShellFileOperations
 from tools.environments.local import LocalEnvironment
+
+# Resolved once, at import: a `skipif` condition is evaluated during collection,
+# so it has to be total. Shelling out to `which` is not -- `which` is not an
+# executable on Windows, so the probe raised FileNotFoundError (WinError 2) and
+# the collection error took every test under tests/tools down with it.
+# shutil.which never raises and honours PATHEXT, so it finds rg.exe too.
+RG = shutil.which("rg")
 
 
 @pytest.fixture
@@ -140,27 +148,21 @@ class TestGrepExcludesHiddenDirs:
 class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
+    @pytest.mark.skipif(RG is None, reason="ripgrep not installed")
     def test_rg_skips_hub_by_default(self, searchable_tree):
         """rg should skip .hub/ by default (no --hidden flag)."""
         result = subprocess.run(
-            ["rg", "--no-heading", "ignore", str(searchable_tree)],
+            [RG, "--no-heading", "ignore", str(searchable_tree)],
             capture_output=True, text=True,
         )
         assert ".hub" not in result.stdout
         assert "catalog.json" not in result.stdout
 
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
+    @pytest.mark.skipif(RG is None, reason="ripgrep not installed")
     def test_rg_finds_visible_content(self, searchable_tree):
         """rg should find content in visible directories."""
         result = subprocess.run(
-            ["rg", "--no-heading", "visible document", str(searchable_tree)],
+            [RG, "--no-heading", "visible document", str(searchable_tree)],
             capture_output=True, text=True,
         )
         assert "SKILL.md" in result.stdout

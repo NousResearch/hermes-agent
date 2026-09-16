@@ -54,6 +54,21 @@ export function testMessagingPlatform(
   })
 }
 
+export interface TeamsPlaygroundTestResponse {
+  callback_url?: null | string
+  message: string
+  ok: boolean
+  test_url?: null | string
+}
+
+export function testTeamsPlayground(profile?: null | string): Promise<TeamsPlaygroundTestResponse> {
+  return hermesApi<TeamsPlaygroundTestResponse>({
+    ...profileScoped(profile),
+    path: '/api/messaging/platforms/teams/playground/test',
+    method: 'POST'
+  })
+}
+
 // -- Telegram QR onboarding ---------------------------------------------------
 // Pairing state lives in the memory of the backend process that started it, so
 // every call in one flow carries the SAME profile scope — the Electron router

@@ -9751,6 +9751,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None,
     image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
+    chat_mode: bool = False,
 ) -> None:
     with session["history_lock"]:
         if (
@@ -10047,6 +10048,12 @@ def _run_prompt_submit(
                 _run_params = {}
             if "task_id" in _run_params:
                 run_kwargs["task_id"] = session["session_key"]
+            # Chat mode: route this turn through the tool-less path (voice
+            # conversation replies — plain completion, no tool loop, no action
+            # side effects). Signature-gated so an older agent without the
+            # parameter simply runs the normal tool-enabled turn.
+            if chat_mode and "no_tools" in _run_params:
+                run_kwargs["no_tools"] = True
             if display_kind and "persist_user_display_kind" in _run_params:
                 run_kwargs["persist_user_display_kind"] = display_kind
                 run_kwargs["persist_user_display_metadata"] = display_metadata

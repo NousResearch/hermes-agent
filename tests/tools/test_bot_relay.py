@@ -659,23 +659,17 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
 
 
-def test_remote_roster_drops_an_agent_that_went_private():
-    """Enforced on the CONSUMING side too: a peer on an older build advertises every managed
-    profile unconditionally, and must not be able to put a private agent back into our roster."""
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [(True, False), (1, False), ("true", False), ("yes", False), ("on", False), ("1", False),
+     (False, True), (0, True), ("false", True), ("no", True), ("0", True), ("", True), (None, True), ("maybe", True)],
+)
+def test_the_remote_roster_drops_a_private_agent_however_the_flag_is_spelled(value, kept):
+    """Enforced on the consuming side too: a peer on an older build advertises every managed profile
+    unconditionally and must not put a private agent back into our roster; an unrecognised value
+    fails open so it cannot hide a working teammate."""
     from tools.bot_relay import _normalize_roster_row
 
-    public = {"profile": "researcher", "handle": "researcher", "connection_id": "mini"}
-    assert _normalize_roster_row(public) is not None
+    row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
 
-    for value in (True, 1, "true", "yes", "on", "1"):
-        row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
-        assert _normalize_roster_row(row) is None, f"private={value!r} should be dropped"
-
-
-def test_remote_roster_keeps_an_agent_whose_private_flag_is_falsey():
-    """Fail OPEN: an unrecognised value must not silently hide a working teammate."""
-    from tools.bot_relay import _normalize_roster_row
-
-    for value in (False, 0, "false", "no", "0", "", None, "maybe"):
-        row = {"profile": "lucky", "handle": "lucky", "connection_id": "mini", "private": value}
-        assert _normalize_roster_row(row) is not None, f"private={value!r} should stay visible"
+    assert (_normalize_roster_row(row) is not None) is kept

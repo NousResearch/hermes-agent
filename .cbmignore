@@ -1,0 +1,8 @@
+# Keep the shared graph focused on runtime and client implementation.
+tests/
+evals/
+website/
+contributors/
+optional-skills/
+skills/
+plugins/

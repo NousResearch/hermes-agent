@@ -46,6 +46,9 @@ export interface PluginRestOptions {
   body?: unknown
   /** Single-file multipart upload (see HermesApiRequest.upload). */
   upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
+  /** The response is binary (e.g. a file download) — return raw bytes as an
+   *  ArrayBuffer instead of parsing JSON. */
+  binary?: boolean
   timeoutMs?: number
 }
 
@@ -81,6 +84,7 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
     method: opts.method,
     body: opts.body,
     upload: opts.upload,
+    binary: opts.binary,
     timeoutMs: opts.timeoutMs,
     ...profileScoped()
   })

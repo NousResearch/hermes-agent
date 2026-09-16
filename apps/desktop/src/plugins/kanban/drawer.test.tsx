@@ -27,11 +27,19 @@ let client: QueryClient
 let disposeApi: () => void
 let disposeLocales: () => void
 
+const saveFileBufferMock = vi.fn(async (_bytes: ArrayBuffer, _filename: string) => true)
+
 const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<unknown> => {
   if (path === '/tasks/t_example/attachments' && options?.method === 'POST') {
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: options.upload?.filename }] }
 
     return { ok: true }
+  }
+
+  if (path.startsWith('/attachments/1')) {
+    const bytes = new TextEncoder().encode('attachment payload')
+
+    return bytes.buffer as ArrayBuffer
   }
 
   if (path === '/tasks/t_example') {
@@ -59,7 +67,8 @@ beforeEach(() => {
   disposeApi = bindApi(
     async <T,>(path: string, options?: PluginRestOptions) => (await rest(path, options)) as T,
     { get: (_key, fallback) => fallback, set: vi.fn(), remove: vi.fn() },
-    () => vi.fn()
+    () => vi.fn(),
+    { os: { saveFileBuffer: saveFileBufferMock } as never }
   )
 })
 
@@ -125,5 +134,22 @@ describe('task attachment compatibility', () => {
     )
     expect(await screen.findByText(file.name)).toBeTruthy()
     expect(screen.queryByText(en.noAttachments)).toBeNull()
+  })
+
+  it('downloads an attachment through the binary REST door and the shell save dialog', async () => {
+    detail = { ...legacyDetail, attachments: [{ id: 1, filename: 'report.pdf' }] }
+    openDrawer()
+
+    const download = await screen.findByRole('button', { name: `${en.downloadAttachment}: report.pdf` })
+    fireEvent.click(download)
+
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith('/attachments/1', { binary: true })
+    )
+    await waitFor(() => expect(saveFileBufferMock).toHaveBeenCalledTimes(1))
+
+    const [bytes, filename] = saveFileBufferMock.mock.calls[0] as [ArrayBuffer, string]
+    expect(filename).toBe('report.pdf')
+    expect(new TextDecoder().decode(bytes)).toBe('attachment payload')
   })
 })

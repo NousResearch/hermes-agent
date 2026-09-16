@@ -1595,7 +1595,7 @@ def set_model_override(
 
 def set_routing_receipt(
     conn: sqlite3.Connection, task_id: str, receipt_id: Optional[str], *,
-    expected_run_id: Optional[int] = None,
+    expected_run_id: int,
 ) -> bool:
     """Record the guided-routing decision receipt id resolved for this task's
     current attempt (design plans/2026-09-15_141016-guided-model-routing.md
@@ -1603,19 +1603,21 @@ def set_routing_receipt(
     successful ``select()`` for a ``routing_role`` task, before spawning the
     worker — never at card-creation time.
 
-    ``expected_run_id`` is a compare-and-set guard against the run the caller
-    claimed: a decision resolved under a run that a concurrent reclaim/replace
-    has since superseded (``current_run_id`` moved on) must NOT be linked to
-    the new run — the "claim/run CAS" half of the claim/start/crash contract
-    (design §12). Returns False (never raises) when the CAS misses, so the
-    caller treats it as a lost claim, not a schema/persistence error."""
-    if expected_run_id is None:
-        return _set_task_override(
-            conn, task_id,
-            "UPDATE tasks SET routing_receipt_id = ? WHERE id = ?", (receipt_id,),
-            "routing_receipt_set", {"receipt_id": receipt_id},
-            ("routing_receipt_id",), archived_msg="cannot set routing receipt",
-        )
+    ``expected_run_id`` is a MANDATORY compare-and-set guard against the run
+    the caller claimed: a decision resolved under a run that a concurrent
+    reclaim/replace has since superseded (``current_run_id`` moved on) must
+    NOT be linked to the new run — the "claim/run CAS" half of the
+    claim/start/crash contract (design §12). There is no unguarded fallback:
+    a receipt can only ever be attached to a genuine, still-current, live
+    claim — never persisted "blind" against whatever run happens to be
+    current at write time. Returns False (never raises) when the CAS misses
+    (including when ``expected_run_id`` is falsy — no live run to bind to),
+    so the caller treats it as a lost claim, not a schema/persistence error."""
+    if not expected_run_id:
+        # No live run to bind this receipt to (never claimed / already
+        # cleared) — refuse rather than attach it unconditionally to
+        # whatever the task's current_run_id happens to be.
+        return False
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None:
@@ -1971,12 +1973,27 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
-    ``current_run_id``; None when no run was active (never-claimed task)."""
+    ``current_run_id``; None when no run was active (never-claimed task).
+
+    ``expected_run_id``, when given, is a CAS guard: the caller is reporting
+    on a SPECIFIC prior attempt (e.g. a spawn-failure/timeout/crash handler
+    that read the run id earlier, before its own possibly-slow bookkeeping).
+    If a concurrent reclaim/replace has since installed a NEWER run as
+    ``current_run_id``, this must be a no-op — a stale handler ending "the
+    current run" must never end/clobber a successor run it never owned.
+    Returns None (not the successor's id) when the CAS misses, exactly like
+    "no run was active", so callers can't mistake it for success.
+    """
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
+        return None
+    if expected_run_id is not None and run_id != expected_run_id:
+        # The current run is a successor to the one this caller is reporting
+        # on — never touch it.
         return None
     conn.execute(
         """
@@ -1995,7 +2012,10 @@ def _end_run(
         """,
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
-    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    conn.execute(
+        "UPDATE tasks SET current_run_id = NULL WHERE id = ? AND current_run_id = ?",
+        (task_id, run_id),
+    )
     return run_id
 
 

@@ -4246,10 +4246,44 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
     route than the one the dispatcher/policy actually authorized never
     reaches the model. A non-managed task (no receipt id in the env) is a
     complete no-op: True, unchanged behavior.
+
+    Ownership contract (design §12): before ANY of that, this worker must
+    prove it still holds the LIVE claim on the task/run it was spawned
+    under — a stale or reclaimed attempt (superseded ``current_run_id``,
+    e.g. this process's TTL expired and a fresh dispatcher tick reclaimed
+    and respawned the task) must be rejected here, before the receipt check
+    and before the first inference call, never after. Checked against the
+    real board via a real connection — never mocked away.
     """
     receipt_id = os.environ.get("HERMES_KANBAN_ROUTING_RECEIPT", "").strip()
     if not receipt_id:
         return True
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    worker_run_id = _int_or(raw_run_id, None) if raw_run_id else None
+    if task_id and worker_run_id is not None:
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli import kanban_db_connect as _kbc
+
+        try:
+            with _kbc.connect_closing() as _conn:
+                live_run_id = _kb._current_run_id(_conn, task_id)
+        except Exception:
+            logger.error(
+                "guided-routing enforcement: could not verify live claim for "
+                "task=%s run=%s; refusing to proceed without proof of ownership",
+                task_id, worker_run_id,
+            )
+            return False
+        if live_run_id != worker_run_id:
+            logger.error(
+                "guided-routing enforcement blocked this Kanban worker: stale/"
+                "reclaimed claim (task=%s spawned under run=%s, task's current "
+                "run is now %s) — refusing to send any request under a "
+                "superseded claim",
+                task_id, worker_run_id, live_run_id,
+            )
+            return False
     from agent.model_selection_types import RoutingBlocked
     from hermes_cli.kanban_model_routing import enforce_worker_route
     from hermes_constants import get_hermes_home

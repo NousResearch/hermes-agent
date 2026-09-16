@@ -1028,6 +1028,7 @@ def _record_task_failure(
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
+    expected_run_id: Optional[int] = None,
 ) -> bool:
     """Record a non-success outcome and maybe trip the circuit breaker; every
     non-success path funnels through here so ``consecutive_failures`` stays
@@ -1040,6 +1041,14 @@ def _record_task_failure(
     ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
     ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
     unconditionally (caller applied its own bounded-retry policy).
+
+    ``expected_run_id``, when given (the spawn-failure path always has it —
+    the run it just claimed), is a CAS guard: this call must never release
+    the claim / end the run / restore the phase of a NEWER run that a
+    concurrent reclaim already installed. When the task's live
+    ``current_run_id`` has moved past ``expected_run_id`` this becomes a
+    pure counter-only bookkeeping no-op — the successor run's claim, status,
+    and run row are left completely untouched.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1051,6 +1060,14 @@ def _record_task_failure(
         ).fetchone()
         if row is None:
             return False
+        live_run_id = row["current_run_id"]
+        # A concurrent reclaim/replace has already superseded the run this
+        # caller is reporting on — never touch the successor's claim/run.
+        stale_claim = (
+            expected_run_id is not None
+            and release_claim
+            and live_run_id != expected_run_id
+        )
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])
             if release_claim
@@ -1066,26 +1083,43 @@ def _record_task_failure(
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
         if not (force_trip or failures >= effective_limit):
-            if release_claim:
+            if release_claim and not stale_claim:
                 # Spawn path: restore the claimed source phase + clear claim.
-                conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                    "claim_expires = NULL, worker_pid = NULL, "
-                    "consecutive_failures = ?, last_failure_error = ? "
-                    "WHERE id = ? AND status = 'running'",
-                    (retry_status, failures, error, task_id),
-                )
-            else:
+                # CAS on current_run_id only when the caller supplied one to
+                # guard against (bare release_claim=True with no
+                # expected_run_id is the pre-existing unconditional-release
+                # contract and must keep working unchanged).
+                if expected_run_id is not None:
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL, "
+                        "consecutive_failures = ?, last_failure_error = ? "
+                        "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+                        (retry_status, failures, error, task_id, expected_run_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                        "claim_expires = NULL, worker_pid = NULL, "
+                        "consecutive_failures = ?, last_failure_error = ? "
+                        "WHERE id = ? AND status = 'running'",
+                        (retry_status, failures, error, task_id),
+                    )
+            elif not stale_claim:
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
                     "last_failure_error = ? WHERE id = ?",
                     (failures, error, task_id),
                 )
             # Timeout/crash path's caller already emitted its own event.
-            if end_run:
+            # A stale spawn-failure never closes/emits against the
+            # successor's run — there is nothing of this attempt left to
+            # report against once the claim moved on.
+            if end_run and not stale_claim:
                 run_id = _kb._end_run(
                     conn, task_id, outcome=outcome, status=outcome, error=error,
                     metadata={"failures": failures, "retry_status": retry_status},
+                    expected_run_id=expected_run_id,
                 )
                 _kb._append_event(
                     conn, task_id, outcome,
@@ -1094,15 +1128,22 @@ def _record_task_failure(
                 )
             return False
 
+        if stale_claim:
+            # Even a breaker-tripping failure on a stale claim must not touch
+            # the successor's status/claim/run — nothing left to trip.
+            return False
+
         # Spawn path (release_claim) is still running and also clears claim
-        # state; the timeout/crash path already did.
+        # state; the timeout/crash path already did. CAS on current_run_id
+        # only when the caller supplied one to guard against.
         conn.execute(
             "UPDATE tasks SET status = 'blocked', "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
+            "WHERE id = ? AND status IN ('running', 'ready', 'review')"
+            + (" AND current_run_id = ?" if release_claim and expected_run_id is not None else ""),
+            (failures, error, task_id, *((expected_run_id,) if release_claim and expected_run_id is not None else ())),
         )
         payload = {
             "failures": failures,
@@ -1124,6 +1165,7 @@ def _record_task_failure(
                     "limit_source": limit_source,
                     "retry_status": retry_status,
                 },
+                expected_run_id=expected_run_id,
             )
         if event_payload_extra:
             payload.update(event_payload_extra)
@@ -1671,6 +1713,7 @@ def _dispatch_lane_task(
             if _record_task_failure(
                 conn, claimed.id, f"routing: {exc}",
                 outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+                expected_run_id=claimed.current_run_id,
             ):
                 result.auto_blocked.append(claimed.id)
             return False
@@ -1707,6 +1750,7 @@ def _dispatch_lane_task(
         if _record_task_failure(
             conn, claimed.id, f"workspace: {exc}",
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            expected_run_id=claimed.current_run_id,
         ):
             result.auto_blocked.append(claimed.id)
         return False
@@ -1734,6 +1778,7 @@ def _dispatch_lane_task(
         if _record_task_failure(
             conn, claimed.id, str(exc),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
+            expected_run_id=claimed.current_run_id,
         ):
             result.auto_blocked.append(claimed.id)
         return False

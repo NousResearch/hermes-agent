@@ -129,6 +129,7 @@ def test_resolve_task_route_carries_receipt_id_for_worker_enforcement(routing_ho
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="managed", assignee="alice", routing_role="builder")
+        kb.claim_task(conn, tid, claimer="alice")
         task = kb.get_task(conn, tid)
         kwargs = resolve_task_route(
             routing_home, conn, task, now=1000, frozen_sha="deadbeef", verified_by="test",

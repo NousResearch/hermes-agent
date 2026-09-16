@@ -82,6 +82,48 @@ describe('log window', () => {
   })
 })
 
+describe('room member limit', () => {
+  it('keeps the shipped default and clamps configured values to the safety ceiling', async () => {
+    const { chat } = await loadRoom()
+
+    expect(chat.resolveGroupChatMemberLimit(undefined)).toBe(6)
+    expect(chat.resolveGroupChatMemberLimit(true)).toBe(6)
+    expect(chat.resolveGroupChatMemberLimit(1)).toBe(6)
+    expect(chat.resolveGroupChatMemberLimit('7')).toBe(7)
+    expect(chat.resolveGroupChatMemberLimit(99)).toBe(24)
+  })
+
+  it('uses the room limit for the synchronized member projection', async () => {
+    const { chat } = await loadRoom()
+    const members = Array.from({ length: 7 }, (_, index) => ({ name: `bot-${index}` }))
+
+    const room = (memberLimit?: number) => ({
+      log: [{ at: 1, from: { kind: 'user' as const, name: 'You' }, text: 'plan' }],
+      members,
+      memberLimit,
+      watermarks: {}
+    })
+
+    const defaultSnapshot = chat.groupChatSyncSnapshot({ Default: room() })
+    const configuredSnapshot = chat.groupChatSyncSnapshot({ Configured: room(7) })
+    const defaultRoom = Object.values(defaultSnapshot.rooms)[0]
+    const configuredRoom = Object.values(configuredSnapshot.rooms)[0]
+
+    expect(defaultRoom.members).toHaveLength(6)
+    expect(defaultRoom.memberLimit).toBeUndefined()
+    expect(configuredRoom.members).toHaveLength(7)
+    expect(configuredRoom.memberLimit).toBe(7)
+
+    const durable = chat.durableGroupChatRooms({ Configured: room(7) })
+    const reloaded = chat.mergeRemoteGroupChatSnapshotIntoRooms(configuredSnapshot, {})
+
+    expect(durable.Configured.members).toHaveLength(7)
+    expect(durable.Configured.memberLimit).toBe(7)
+    expect(reloaded.Configured.members).toHaveLength(7)
+    expect(reloaded.Configured.memberLimit).toBe(7)
+  })
+})
+
 describe('room naming', () => {
   it('same-name dedup reserves suffix length at the 64-char cap', async () => {
     const { chat } = await loadRoom()

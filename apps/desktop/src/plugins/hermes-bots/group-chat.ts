@@ -58,6 +58,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 interface GroupChatSyncRoom {
   image?: null | string
   log: GroupMessage[]
+  memberLimit?: number
   members?: GroupMember[]
   name?: string
   revision?: number
@@ -214,6 +215,8 @@ export function groupChatSyncSnapshot(
   }
 
   for (const [name, room] of ranked) {
+    const memberLimit = resolveGroupChatMemberLimit(room.memberLimit)
+
     const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
       ...(entry?.id
         ? {
@@ -247,7 +250,8 @@ export function groupChatSyncSnapshot(
         : {}),
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
-      members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
+      ...(durableGroupChatMemberLimit(room.memberLimit) ? { memberLimit } : {}),
+      members: (Array.isArray(room.members) ? room.members : []).slice(0, memberLimit).map(member => ({
         name: String(member?.name || '').slice(0, 128),
         ...(member?.handle
           ? {
@@ -471,6 +475,9 @@ export function mergeGroupChatSyncSnapshots(
       }),
       members,
       revision: Math.max(remoteRevision, localRevision),
+      ...(durableGroupChatMemberLimit(identity?.memberLimit)
+        ? { memberLimit: resolveGroupChatMemberLimit(identity?.memberLimit) }
+        : {}),
       ...(typeof image === 'string' && image
         ? {
             image
@@ -605,7 +612,8 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       continue
     }
 
-    const existing = (localName ? rooms[localName] : rooms[displayName]) || {}
+    const existingRoom = localName ? rooms[localName] : rooms[displayName]
+    const existing = existingRoom || {}
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
 
@@ -630,6 +638,12 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     }
 
     const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
+
+    const memberLimit = durableGroupChatMemberLimit(
+      isPreserved || remoteRevision < localRevision || (remoteRevision === localRevision && existingRoom)
+        ? existing.memberLimit
+        : projected.memberLimit
+    )
 
     if (!isPreserved) {
       if (remoteRevision > localRevision) {
@@ -670,6 +684,7 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
       members: [...members.values()],
+      ...(memberLimit ? { memberLimit } : {}),
       ...(projectedRoomId || existing.roomId
         ? {
             roomId: existing.roomId || projectedRoomId
@@ -742,6 +757,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       sessions: room.sessions || {},
       stranded: room.stranded || {},
       members: Array.isArray(room.members) ? room.members : [],
+      memberLimit: durableGroupChatMemberLimit(room.memberLimit),
       // Immutable room identity: without this, a room merged in via the
       // remote-sync path (the only caller of this function) loses its
       // roomId on the next cold hydrate and falls back to legacy
@@ -1214,6 +1230,29 @@ export const GROUP_CHAT_MAX_MESSAGES = 10
 export const GROUP_CHAT_MAX_CONTINUATIONS = 2
 export const GROUP_CHAT_HISTORY_LIMIT = 24
 export const GROUP_CHAT_MAX_MEMBERS = 6
+export const GROUP_CHAT_MEMBER_LIMIT_CEILING = 24
+
+/** Resolve untrusted persisted/UI input to the room's bounded member cap. */
+export function resolveGroupChatMemberLimit(value: unknown): number {
+  if (typeof value === 'boolean' || value === null || value === undefined || value === '') {
+    return GROUP_CHAT_MAX_MEMBERS
+  }
+
+  const numeric = Number(value)
+
+  if (!Number.isFinite(numeric) || numeric < 2) {
+    return GROUP_CHAT_MAX_MEMBERS
+  }
+
+  return Math.min(GROUP_CHAT_MEMBER_LIMIT_CEILING, Math.floor(numeric))
+}
+
+/** Omit the default from durable/sync state so old rooms stay byte-compatible. */
+export function durableGroupChatMemberLimit(value: unknown): number | undefined {
+  const resolved = resolveGroupChatMemberLimit(value)
+
+  return resolved === GROUP_CHAT_MAX_MEMBERS ? undefined : resolved
+}
 
 /** Transcript form of a room speaker's profile name. Friendly identity wins:
  *  a Bot Mode title or a core profile display_name (e.g. default renamed to
@@ -1346,6 +1385,7 @@ export function updateGroupChat(
         // Source-qualified member descriptors keep the room whole when the
         // active connection changes and today's local members become remote.
         members: Array.isArray(room.members) ? room.members : [],
+        memberLimit: durableGroupChatMemberLimit(room.memberLimit),
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
         // Room picture (small data URL, same normalization as bot avatars).

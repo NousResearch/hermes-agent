@@ -278,11 +278,17 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
-    if runtime is None:
-        # A profile served by the multiplexer writes no record of its own; its adapters live in the
-        # multiplexer's record under ``<profile>:<platform>``. Unscoped, the profile is the process's
-        # own home (a pooled ``hermes --profile X serve``); the default home resolves to None here.
-        own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+    # A profile served by the multiplexer writes no live record of its own; its adapters live in the
+    # multiplexer's record under ``<profile>:<platform>``. A leftover ``gateway_state.json`` from the
+    # profile's standalone days outranks nothing: only a record proving a live own gateway does —
+    # the same rung order ``resolve_gateway_liveness`` uses (own runtime PID before the multiplexer),
+    # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
+    # ``hermes --profile X serve``); the default home resolves to a name the multiplexer never serves.
+    own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+    if (
+        runtime is None
+        or get_runtime_status_running_pid(runtime, expected_home=own_home) is None
+    ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
@@ -807,7 +813,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
     secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, load_gateway_config
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
 
     if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
@@ -825,11 +831,12 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     if target in ("default", "custom"):
         return None
 
-    # The flag that matters is the one the shared gateway reads at startup: the DEFAULT
-    # profile's config (plus the process-wide GATEWAY_MULTIPLEX_PROFILES override).
-    with _config_profile_scope("default"):
-        if not load_gateway_config().multiplex_profiles:
-            return None
+    # The flag that matters is the one the shared gateway settled at startup: its served record when
+    # it runs, else the DEFAULT profile's explicit config (plus the process-wide
+    # GATEWAY_MULTIPLEX_PROFILES override). An unset flag is decided by the gateway, not guessed here.
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    if not default_gateway_multiplexes():
+        return None
 
     return (
         f"Cannot enable '{platform_id}' on profile '{target}': gateway.multiplex_profiles is on and the "

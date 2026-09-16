@@ -405,7 +405,9 @@ class MintFailure:
     attempts: int = 1
 
     def remaining(self) -> float:
-        return 0.0 if not self.retryable else max(0.0, self.not_before - time.monotonic())
+        # Rounded to the millisecond: ``(now + wait) - now`` is not exactly ``wait`` in floating point,
+        # and the ceil below turned that dust into an extra whole second ("retry in 61s").
+        return 0.0 if not self.retryable else max(0.0, round(self.not_before - time.monotonic(), 3))
 
     def as_payload(self) -> Dict[str, Any]:
         """The wire shape every status RPC carries: ``{error_code, error, retryable, retry_after}``

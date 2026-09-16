@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import (
-    _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home, display_hermes_home,
+    LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
+    display_hermes_home,
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from utils import (
@@ -68,10 +69,10 @@ _EXCLUDED_DIRS = {
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
-# Hermes-managed runtime downloads (GGUF models, llama.cpp runtimes, managed Node): re-downloaded
-# on demand and routinely tens to hundreds of GB. Matched ONLY at the root of HERMES_HOME and at
-# ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``) is user data.
-_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
+# Hermes-managed runtime downloads (see ``LOCAL_RUNTIME_ROOT_DIRS``). Matched ONLY at the root of
+# HERMES_HOME and at ``profiles/<name>/`` — a deeper dir of the same name (a skill's ``models/``)
+# is user data.
+_EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media

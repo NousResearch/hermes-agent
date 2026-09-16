@@ -93,6 +93,11 @@ Safety guarantees (all modes, any age):
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
+- **Repositories without a remote** are judged against the local trunk
+  (`main`/`master`, else the branch checked out in the main worktree): only
+  trees and branches whose commits are reachable from — or patch-equivalent
+  to — that trunk are reclaimed. With no trunk to compare against, every tree
+  and branch is preserved.
 - **Pushed open-PR lanes free their disk without losing anything**: when a
   clean tree's branch head exactly matches what `origin` holds (checked with
   one `git ls-remote` per sweep), the checkout is redundant — the tree is

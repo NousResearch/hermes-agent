@@ -618,7 +618,12 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
     ]
     if len(blocks) <= _OUTBOUND_IMAGE_LIMIT:
         return
-    retire = min(_SCREENSHOT_EVICTION_BATCH, max(len(blocks) - _MAX_KEEP_SCREENSHOTS, 0))
+    # Overshoot rounded UP to a whole batch: this runs statelessly on every request, so a fixed
+    # one-batch retire would stop enforcing the limit after the first batch, and an exact
+    # "limit minus batch" target would move the frontier on every new screenshot.
+    overshoot = len(blocks) - _OUTBOUND_IMAGE_LIMIT
+    retire = -(-overshoot // _SCREENSHOT_EVICTION_BATCH) * _SCREENSHOT_EVICTION_BATCH
+    retire = min(retire, max(len(blocks) - _MAX_KEEP_SCREENSHOTS, 0))
     for block in blocks[-retire:]:
         placeholder = _text_block("[screenshot removed to save context]")
         block["content"] = [

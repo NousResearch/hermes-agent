@@ -109,17 +109,21 @@ class TestOutboundStaleVisionEviction:
         """
         from agent.conversation_loop import _clone_message_for_send
 
-        def first_surviving(n: int) -> str:
+        def surviving(n: int) -> list:
             msgs = [_clone_message_for_send(m) for m in _history_with_screenshots(n)]
             evict_stale_outbound_tool_images(msgs)
-            return _image_bearing_tool_ids(msgs)[0]
+            return _image_bearing_tool_ids(msgs)
 
-        span = range(_MAX_KEEP_TOOL_IMAGES + 1, _OUTBOUND_IMAGE_LIMIT + _IMAGE_EVICTION_BATCH)
-        frontier = [first_surviving(n) for n in span]
-        held = sum(a == b for a, b in zip(frontier, frontier[1:]))
-        assert held >= len(frontier) - 3, (
-            f"eviction advanced on nearly every image (frontier={frontier}); "
-            "each advance rewrites a cached row and restarts the prefix"
+        # Span three batch windows: a fixed one-batch retire holds the frontier but stops
+        # enforcing the limit after the first window, which the count assertion catches.
+        span = range(_MAX_KEEP_TOOL_IMAGES + 1, _OUTBOUND_IMAGE_LIMIT + 3 * _IMAGE_EVICTION_BATCH)
+        kept = [surviving(n) for n in span]
+        assert all(len(k) <= _OUTBOUND_IMAGE_LIMIT for k in kept), [len(k) for k in kept]
+        frontier = [k[0] for k in kept]
+        moves = sum(a != b for a, b in zip(frontier, frontier[1:]))
+        assert moves == 3, (
+            f"frontier moved {moves} times over {len(span)} images (frontier={frontier}); "
+            "each move rewrites a cached row and restarts the prefix"
         )
 
     def test_does_not_rewrite_persisted_history(self):

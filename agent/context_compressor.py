@@ -1274,6 +1274,32 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
+def _batched_retire_count(
+    count: int,
+    sizes_newest_first: List[int],
+    *,
+    limit: int,
+    budget: int,
+    batch: int,
+    keep_newest: int,
+) -> int:
+    """How many of the OLDEST image-bearing messages to retire, in whole batches.
+
+    The send path recomputes eviction from scratch on a fresh clone every turn, so the
+    retire count must be a step function of the overshoot: a fixed ``min(batch, ...)``
+    would cap total eviction at one batch forever and let the outbound count grow past
+    the provider limit unbounded, while ``count - limit + batch`` would advance the
+    frontier on every new image again. Rounding the overshoot up to a batch multiple
+    keeps the request within ``limit``/``budget`` and moves the frontier once per batch.
+    """
+    if count <= limit and sum(sizes_newest_first) <= budget:
+        return 0
+    retire = -(-max(count - limit, 0) // batch) * batch
+    while retire < count and sum(sizes_newest_first[: count - retire]) > budget:
+        retire += batch
+    return max(0, min(retire, count - max(keep_newest, 0)))
+
+
 def _image_payload_bytes(msg: Dict[str, Any]) -> int:
     """Serialized size of the image parts in a tool message (0 when it carries none)."""
     content = msg.get("content")
@@ -1311,12 +1337,17 @@ def evict_stale_outbound_tool_images(
         and api_messages[i].get("role") == "tool"
         and (size := _image_payload_bytes(api_messages[i])) > 0
     ]
-    over = len(images) > _OUTBOUND_IMAGE_LIMIT or sum(s for _, s in images) > _OUTBOUND_IMAGE_BUDGET_BYTES
-    if not over:
+    retire = _batched_retire_count(
+        len(images),
+        [s for _, s in images],
+        limit=_OUTBOUND_IMAGE_LIMIT,
+        budget=_OUTBOUND_IMAGE_BUDGET_BYTES,
+        batch=_IMAGE_EVICTION_BATCH,
+        keep_newest=keep_newest,
+    )
+    if retire <= 0:
         return 0
 
-    # Retire a whole batch so the next several turns stay under the limit and append cleanly.
-    retire = min(_IMAGE_EVICTION_BATCH, max(len(images) - keep_newest, 0))
     pruned = 0
     for i, _ in images[-retire:]:
         new_msg = _strip_images_from_tool_msg(api_messages[i])

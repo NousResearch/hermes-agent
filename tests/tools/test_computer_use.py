@@ -571,17 +571,17 @@ class TestAnthropicAdapterMultimodal:
                 )
             )
 
-        # The frontier must hold across at least one new screenshot. Asserted as an
-        # absolute invariant rather than against the batch constant, so shrinking the
-        # batch back to a one-step frontier fails this test.
-        counts = [placeholder_count(n) for n in range(_OUTBOUND_IMAGE_LIMIT - 2,
-                                                      _OUTBOUND_IMAGE_LIMIT + _SCREENSHOT_EVICTION_BATCH)]
-        held = [a == b for a, b in zip(counts, counts[1:])]
-        assert any(held), (
-            f"eviction rewrote a new block on every screenshot (counts={counts}); "
+        # Span three batch windows. The placeholder count must step once per batch (a
+        # one-step frontier fails the plateau check) AND the surviving image count must
+        # never exceed the limit (a fixed one-batch retire fails that after window one).
+        span = range(_OUTBOUND_IMAGE_LIMIT - 2, _OUTBOUND_IMAGE_LIMIT + 3 * _SCREENSHOT_EVICTION_BATCH)
+        counts = [placeholder_count(n) for n in span]
+        assert all(n - c <= _OUTBOUND_IMAGE_LIMIT for n, c in zip(span, counts)), counts
+        steps = sum(a != b for a, b in zip(counts, counts[1:]))
+        assert steps == 3, (
+            f"eviction frontier moved {steps} times over {len(span)} screenshots (counts={counts}); "
             "each step invalidates the cached prefix"
         )
-        assert counts[-1] >= counts[0], "eviction must still make progress"
 
 # ---------------------------------------------------------------------------
 # Context compressor: screenshot-aware pruning

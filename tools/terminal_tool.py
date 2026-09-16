@@ -1072,6 +1072,7 @@ def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    config_snapshot=None,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize."""
     max_retries = 3
@@ -1097,7 +1098,8 @@ def _run_foreground(
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
+                                task_id=task_id, session_key=session_key,
+                                config_snapshot=config_snapshot),
             )
             break
         except Exception as e:
@@ -1227,6 +1229,17 @@ def terminal_tool(
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
 
+        # Shell text can hide writes behind variables, interpreters, or generated
+        # scripts, so static dangerous-command patterns are not a complete file
+        # boundary. Snapshot when this backend can reach host files; background
+        # sessions carry the snapshot until the process registry observes exit.
+        config_snapshot = None
+        if env_type == "local" or _docker_has_host_access(plan.config):
+            from tools.security_config_guard import ActiveConfigSnapshot
+            config_snapshot, snapshot_error = ActiveConfigSnapshot.capture()
+            if snapshot_error:
+                return _error_json(snapshot_error)
+
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
@@ -1239,15 +1252,34 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
+                config_snapshot=config_snapshot,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
+            try:
+                started = bool(json.loads(result).get("session_id"))
+            except (TypeError, json.JSONDecodeError):
+                started = False
+            if not started and config_snapshot is not None:
+                violation = config_snapshot.restore_if_changed()
+                if violation:
+                    return _error_json(violation, exit_code=126)
             return result
-        return _run_foreground(
+        result = _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+            config_snapshot=config_snapshot,
         )
+        try:
+            yielded = json.loads(result).get("status") == "yielded_to_background"
+        except (TypeError, json.JSONDecodeError):
+            yielded = False
+        if not yielded and config_snapshot is not None:
+            violation = config_snapshot.restore_if_changed()
+            if violation:
+                return _error_json(violation, exit_code=126)
+        return result
     except _Rejected as r:
         return r.result_json
     except EnvironmentConnectionError as e:

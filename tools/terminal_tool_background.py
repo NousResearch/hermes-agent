@@ -86,9 +86,10 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty):
+           session_key, effective_pty, config_snapshot=None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
-                  owner_task_id=task_id or effective_task_id, session_key=session_key)
+                  owner_task_id=task_id or effective_task_id, session_key=session_key,
+                  config_snapshot=config_snapshot)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
@@ -130,7 +131,7 @@ def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
-    pty_disabled_reason: Optional[str],
+    pty_disabled_reason: Optional[str], config_snapshot=None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -149,7 +150,7 @@ def spawn_background_process(
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
-            effective_pty=effective_pty,
+            effective_pty=effective_pty, config_snapshot=config_snapshot,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
@@ -209,7 +210,7 @@ _YIELDED_NOTE = (
 
 def yield_to_background_handler(
     *, command: str, env_type: str, cwd: Optional[str], effective_task_id: str,
-    task_id: Optional[str], session_key: str,
+    task_id: Optional[str], session_key: str, config_snapshot=None,
 ):
     """Build the ``yield_handler`` a foreground ``env.execute`` calls when the tool thread is
     asked to yield (a user message arrived mid-command). Local backend only: the live Popen
@@ -224,7 +225,7 @@ def yield_to_background_handler(
         session = process_registry.adopt_local(
             proc, command=command, cwd=cwd, task_id=effective_task_id,
             owner_task_id=task_id or effective_task_id, session_key=session_key,
-            output_so_far=output_so_far)
+            output_so_far=output_so_far, config_snapshot=config_snapshot)
         _stamp_routing_if_gateway(process_registry, session, session_key)
         logger.info("foreground command yielded to background as %s (pid %s)", session.id, session.pid)
         return {

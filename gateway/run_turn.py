@@ -23,7 +23,10 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import (
+    display_kind_for_event, is_intentional_silence_agent_result,
+    is_invisible_only_response, is_machinery_display_kind,
+)
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -311,14 +314,6 @@ class GatewayTurnMixin:
         if adapter and hasattr(adapter, "_post_delivery_callbacks"):
             return adapter._post_delivery_callbacks.pop(key, None)
         return None
-
-    @staticmethod
-    def _is_intentional_silence(agent_result, response) -> bool:
-        try:
-            from gateway.response_filters import is_intentional_silence_agent_result
-            return is_intentional_silence_agent_result(agent_result, response)
-        except Exception:
-            return False
 
     async def _hmwa_resolve_session(self, event, source):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
@@ -1443,11 +1438,21 @@ class GatewayTurnMixin:
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
-        _intentional_silence = self._is_intentional_silence(agent_result, response)
+        _allow_human_silence = agent_result.get("queued_terminal_allow_human_silence")
+        if _allow_human_silence is None:
+            _allow_human_silence = self._allows_human_silence_markers(source)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
+        # opened the chain: human follow-ups require the same opt-in as standalone turns.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        _intentional_silence = is_intentional_silence_agent_result(
+            agent_result, response,
+            human_silence_opt_in=_allow_human_silence and not is_machinery_display_kind(_silence_kind),
+        )
+        if (
+            _intentional_silence
+            and not is_machinery_display_kind(_silence_kind)
+            and not _allow_human_silence
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -1845,7 +1850,7 @@ class GatewayTurnMixin:
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
-            response = ""
+            return ""
 
         adapter = self._adapter_for_source(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
@@ -3591,9 +3596,25 @@ class GatewayTurnMixin:
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
-        # Same silence predicate as the normal path, else this branch leaks the literal marker.
-        if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+        _allow_human_silence = self._allows_human_silence_markers(turn_ctx.source)
+        # Keep internal-notification policy independent of the human opt-in.
+        _intentional_silence = is_intentional_silence_agent_result(
+            _delivery_result, first_response,
+            human_silence_opt_in=(
+                _allow_human_silence and not is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+            ),
+        )
+        if is_invisible_only_response(first_response) and not _intentional_silence:
+            from gateway.run import _normalize_empty_agent_response, _sanitize_gateway_final_response
+
+            first_response = _normalize_empty_agent_response(_delivery_result, "")
+            first_response = _sanitize_gateway_final_response(turn_ctx.source.platform, first_response)
+            _already_streamed = False
+        if _intentional_silence:
+            if (
+                is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+                or _allow_human_silence
+            ):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -3770,12 +3791,14 @@ class GatewayTurnMixin:
         # reply is recorded under the first message's id, so a first reply that was refused (flood
         # control) has its outstanding row replaced and marked delivered by an identical-text
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
-        # so only fill the key while it is still absent: the innermost turn wins.
+        # so only fill the key while it is still absent: the innermost turn wins. Its profile
+        # also owns the silence opt-in, even when the outer handler runs under another profile.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
             merged = {
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_allow_human_silence": self._allows_human_silence_markers(next_source),
             }
         return merged
 
@@ -3854,7 +3877,9 @@ class GatewayTurnMixin:
         if not isinstance(response, dict) or response.get("failed"):
             return
         _final = response.get("final_response") or ""
-        _is_empty_sentinel = not _final or _final == "(empty)"
+        # Empty/format-only finals belong to response shaping; never reconcile them by
+        # overwriting a cumulative stream's already-visible preamble with blank content.
+        _is_empty_sentinel = not _final or _final == "(empty)" or is_invisible_only_response(_final)
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).
         _previewed = bool(response.get("response_previewed"))

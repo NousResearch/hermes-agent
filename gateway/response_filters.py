@@ -29,7 +29,7 @@ _BRACKETED_SILENCE_MARKERS = tuple(
 )
 
 # The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
-# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+# machinery kind the gateway produces; these may vanish without a human-turn opt-in.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
 
@@ -96,9 +96,38 @@ def is_autonomous_silence_response(response: Any) -> bool:
     )
 
 
-def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
-    """Silence markers suppress delivery only for successful agent turns."""
-    return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+def is_intentional_silence_agent_result(
+    agent_result: dict | None, response: Any, *, human_silence_opt_in: bool = False,
+) -> bool:
+    """Keep legacy marker policy; the human opt-in requires a healthy, completed turn."""
+    if not isinstance(agent_result, dict) or agent_result.get("failed"):
+        return False
+    if human_silence_opt_in and (
+        any(agent_result.get(key) for key in ("partial", "interrupted", "error"))
+        or agent_result.get("completed") is False
+    ):
+        return False
+    return is_intentional_silence_response(response) or (
+        human_silence_opt_in and is_invisible_only_response(response)
+    )
+
+
+def is_invisible_only_response(response: Any) -> bool:
+    """True for non-empty output made only of whitespace and Unicode format controls.
+
+    Models sometimes use U+200B/U+FEFF to approximate an empty response. Those code points are
+    non-empty to the gateway but render as a blank chat message. Require at least one format
+    control so ordinary whitespace-only output keeps following the normal empty-response path.
+    """
+    if not isinstance(response, str) or not response:
+        return False
+    has_format_control = False
+    for ch in response:
+        if unicodedata.category(ch) == "Cf":
+            has_format_control = True
+        elif not ch.isspace():
+            return False
+    return has_format_control
 
 
 def display_kind_for_event(event: Any) -> str | None:
@@ -107,7 +136,7 @@ def display_kind_for_event(event: Any) -> str | None:
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:
-    """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
+    """Whether a turn is machinery and may use silence without a human-turn opt-in.
 
     The caller passes the current turn's persisted display kind instead of inferring it from the
     transcript: the inbound user row is not persisted yet, and a previous internal row must never
@@ -121,10 +150,11 @@ def is_partial_silence_marker(text: Any) -> bool:
 
     A buffer whose canonical form is a non-empty *prefix* of a marker (``"NO"`` on
     the way to ``"NO_REPLY"``, or an exact marker not yet terminated by stream-end)
-    is held back so a raw marker is never shown and then retracted.  Divergence
-    from every marker, or exceeding the cap, resumes normal streaming.
+    is held back so a raw marker is never shown and then retracted. Format-only buffers are
+    held too. Substantive text that diverges from every marker, or exceeds the marker cap,
+    resumes normal streaming.
     """
-    return any(
+    return is_invisible_only_response(text) or any(
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )

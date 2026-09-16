@@ -28,6 +28,7 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
+    is_invisible_only_response as _is_invisible_only_response,
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
@@ -556,8 +557,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
-                    if _is_intentional_silence_response(self._clean_for_display(self._accumulated)):
-                        await self._suppress_silence_marker()
+                    _clean_accumulated = self._clean_for_display(self._accumulated)
+                    # On overflow, the active buffer is only a tail; substantive sealed
+                    # chunks still belong to this segment and must not be retracted.
+                    _invisible_only = _is_invisible_only_response(_clean_accumulated) and (
+                        not self._turn_split_delivery
+                        or _is_invisible_only_response(self._clean_for_display(self._stream_ledger))
+                    )
+                    if _is_intentional_silence_response(_clean_accumulated) or _invisible_only:
+                        await self._suppress_silence_marker(segment_only=_invisible_only)
                         return
 
                 if self._should_edit(tick) and (
@@ -677,6 +685,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return
         if not self._turn_split_delivery:
             final_payload = self._clean_for_display(final_raw)
+            # An empty final segment cannot replace substantive pre-tool text in a cumulative
+            # transport. Edit-based transports already sealed that text as a separate message.
+            if (self._cumulative_transport() and _is_invisible_only_response(final_payload)
+                    and not _is_invisible_only_response(self._clean_for_display(self._accumulated))):
+                return
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
@@ -705,6 +718,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _should_edit(self, tick: "_Tick") -> bool:
         """Decide whether this tick flushes an edit/frame."""
+        # Tool AND commentary boundaries flush a complete segment: hold non-content, but deliver
+        # legitimate words such as "No" even though they prefix a silence marker mid-stream.
+        clean = self._clean_for_display(self._accumulated)
+        if not tick.got_done and (
+            _is_invisible_only_response(clean) or _is_intentional_silence_response(clean)
+        ):
+            return False
         if not tick.is_interim:
             return True
         if self.cfg.buffer_only:
@@ -720,8 +740,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                                or len(self._accumulated) >= self.cfg.buffer_threshold)
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
-        return should_edit and not _is_partial_silence_marker(
-            self._clean_for_display(self._accumulated))
+        return should_edit and not _is_partial_silence_marker(clean)
 
     async def _split_first_send(self, tick: "_Tick") -> bool:
         """No message to edit yet and the buffer overflows: seal only the head chunks; the

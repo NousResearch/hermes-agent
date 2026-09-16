@@ -15,7 +15,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from gateway.config import Platform
+from gateway.config import Platform, _coerce_bool
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -41,6 +41,21 @@ _BUSY_INPUT_MODES = {"interrupt", "queue", "steer"}
 
 class GatewayConfigLoadersMixin:
     """Config/env loaders (busy modes, reasoning, service tier, timeouts, fallback) for GatewayRunner."""
+
+    def _allows_human_silence_markers(self, source: SessionSource) -> bool:
+        """A multiplexed turn uses its own profile's opt-in, never the launch profile's."""
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return bool(getattr(config, "allow_human_silence_markers", False))
+        from gateway.run import _load_gateway_config
+
+        with self._profile_scope_for_source(source):
+            raw = _load_gateway_config()
+        value = raw.get(
+            "allow_human_silence_markers",
+            cfg_get(raw, "gateway", "allow_human_silence_markers", default=False),
+        )
+        return _coerce_bool(value, False)
 
     @staticmethod
     def _cfg_str(section: str, key: str) -> str:

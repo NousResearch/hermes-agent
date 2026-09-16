@@ -167,9 +167,9 @@ def _own_task_env(task_id: str, var: str) -> Optional[str]:
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
 
 
-def _worker_run_id(task_id: str, target_board: str) -> Optional[int]:
-    """This worker's dispatcher run id when it owns this task and board."""
-    if os.environ.get("HERMES_KANBAN_BOARD") != target_board:
+def _worker_run_id(task_id: str, target_board: Optional[str] = None) -> Optional[int]:
+    """This worker's dispatcher run id, optionally bound to its pinned board."""
+    if target_board is not None and os.environ.get("HERMES_KANBAN_BOARD") != target_board:
         return None
     raw = _own_task_env(task_id, "HERMES_KANBAN_RUN_ID")
     try:

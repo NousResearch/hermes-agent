@@ -270,7 +270,12 @@ def _discover_entry_point_providers() -> None:
     # Same opt-in gate as the general PluginManager: only entry points named
     # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
     try:
-        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+        # ``hermes_cli.plugins_discovery`` OWNS both gates; the ``hermes_cli.plugins`` facade only
+        # re-exports them. Importing the facade here pulls the whole plugin machinery (loader,
+        # dispatch, ledger, middleware — ~170ms) into EVERY process that imports hermes_cli.config,
+        # which runs this at import time, and it is then thrown away by the opt-in gate below on
+        # any install with no entry-point plugins enabled.
+        from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins
 
         enabled = _get_enabled_plugins()  # None = nothing enabled yet (opt-in default)
         disabled = _get_disabled_plugins()

@@ -104,15 +104,58 @@ def _build_rubric_prompt(draft: dict, stream: str) -> dict:
 
     body = draft.get("body_md", "")
     title = draft.get("title", "")
-    user = "\n".join([
+
+    # Material-integrity judgements are only fair when the reviewer can see
+    # the grounding materials the draft was written from. Without this, every
+    # named entity looks "unsupported by supplied context" by construction.
+    def _trunc(text: str, limit: int) -> str:
+        text = str(text or "").strip()
+        return text if len(text) <= limit else text[:limit] + " [...]"
+
+    context_parts: list[str] = []
+    if draft.get("context"):
+        context_parts.append("### Topic context\n" + _trunc(draft["context"], 2200))
+    kb = draft.get("kb_snippets") or []
+    if kb:
+        context_parts.append(
+            "### Knowledge-base snippets\n"
+            + "\n---\n".join(_trunc(k, 600) for k in kb[:3])
+        )
+    sigs = draft.get("signals") or []
+    sig_lines = [
+        _trunc(s.get("summary", "") or s.get("title", ""), 300)
+        for s in sigs[:3] if isinstance(s, dict)
+    ]
+    if any(sig_lines):
+        context_parts.append("### Source signals\n" + "\n".join(sig_lines))
+    verified = draft.get("verified_sources") or []
+    if verified:
+        context_parts.append(
+            "### Web-verified sources (news_verify)\n"
+            + "\n".join(_trunc(v, 300) for v in verified[:8])
+        )
+    grounding = ("\n\n".join(context_parts)).strip()
+
+    user_parts = [
         f"Title: {title}",
         f"Stream: {stream}",
         "",
+    ]
+    if grounding:
+        user_parts += [
+            "## Supplied grounding context (use this for material_integrity",
+            "and accuracy judgements — claims traceable to it, or listed under",
+            "web-verified sources, are supported)",
+            grounding,
+            "",
+        ]
+    user_parts += [
         "## Draft body",
         body,
         "",
         "Review this draft. Return JSON only.",
-    ])
+    ]
+    user = "\n".join(user_parts)
     return {"system": system, "user": user}
 
 

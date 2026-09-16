@@ -727,17 +727,19 @@ def _redact_draft(draft: dict) -> None:
     draft["body_md"] = gate_res.redacted_body
 
 
-def _verify_claims(claims: list[str]) -> list[str]:
-    """Run news_verify on a list of claim strings.
+def _verify_claims_detailed(claims: list[str]) -> tuple[list[str], list[str]]:
+    """Verify reviewer-flagged claims via web search.
 
-    Returns a list of warning strings to inject into the retry feedback for
-    claims that could not be verified. Verified claims are noted as confirmed
-    context. Unverified claims get a reframe instruction.
+    Returns (warnings, verified_evidence):
+    - warnings: instructions for claims that could NOT be verified.
+    - verified_evidence: human-readable lines for claims that WERE verified
+      (claim + source), so the reviewer and the retry see the sourcing.
     """
     if not claims:
-        return []
+        return [], []
     from blog.news_verify import verify_event
     warnings = []
+    evidence = []
     for claim in claims:
         result = verify_event(claim)
         if not result["verified"]:
@@ -745,7 +747,24 @@ def _verify_claims(claims: list[str]) -> list[str]:
                 f"The claim '{claim}' is UNVERIFIED. Do NOT state it as fact. "
                 "Reframe to the durable pattern or economics."
             )
-    return warnings
+        else:
+            snippets = result.get("snippets") or []
+            src = ""
+            if snippets:
+                first = snippets[0]
+                src = first.get("url") or first.get("title") or ""
+            evidence.append(f"'{claim}'" + (f" — verified via {src}" if src else " — web-verified"))
+    return warnings, evidence
+
+
+def _verify_claims(claims: list[str]) -> list[str]:
+    """Run news_verify on a list of claim strings.
+
+    Returns a list of warning strings to inject into the retry feedback for
+    claims that could not be verified. Verified claims are noted as confirmed
+    context. Unverified claims get a reframe instruction.
+    """
+    return _verify_claims_detailed(claims)[0]
 
 
 def write_with_gate(plan: dict, stream: str = "ai",
@@ -826,20 +845,41 @@ def write_with_gate(plan: dict, stream: str = "ai",
     # --- Collect all issues for the retry ---
     all_issues = list(gate_issues) + list(review_issues)
     # Verify any claims the reviewer flagged.
-    claim_warnings = _verify_claims(claims)
+    claim_warnings, verified_evidence = _verify_claims_detailed(claims)
     all_issues.extend(claim_warnings)
+    # If every flagged claim verified, the stream rule (named events must be
+    # news_verify-sourced) is satisfied by attaching the sources to the SAME
+    # draft — re-review it instead of gambling on a regeneration, which tends
+    # to trade claim issues for fresh style nits and end in None.
+    if claims and not claim_warnings and verified_evidence:
+        draft_with_evidence = dict(draft)
+        draft_with_evidence["verified_sources"] = list(verified_evidence)
+        review_same = _review(draft_with_evidence, stream)
+        _check_strict(review_same, post_title)
+        if review_same.get("passed") and not review_same.get("issues"):
+            _redact_draft(draft)
+            return draft
     # Dead links from source grounding go into retry feedback.
     if _dead_links:
         all_issues.append(
             "Dead links to fix: " + ", ".join(_dead_links[:3])
         )
     feedback = "; ".join(all_issues) or "rejected by quality gate"
+    if verified_evidence:
+        # Verified claims may be kept; the reviewer will see the sources.
+        feedback += (
+            "; KEEP these web-verified claims (sources supplied to the "
+            "reviewer): " + "; ".join(verified_evidence)
+        )
 
     # --- Single retry with combined feedback ---
     draft2 = write(plan, stream=stream, max_retries=max_retries,
                    retry_feedback=feedback, verification=verification)
     if not draft2:
         return None
+    if verified_evidence:
+        # Make the verified sourcing visible to the second review.
+        draft2["verified_sources"] = list(verified_evidence)
 
     status2, gate_issues2 = gate_check(draft2)
     review_result2 = _review(draft2, stream)

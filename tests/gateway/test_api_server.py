@@ -612,6 +612,9 @@ class TestDisconnectedAgentReap:
 
         request = MagicMock()
         request.match_info = {"run_id": "run_x"}
+        monkeypatch.setattr(adapter, "_room_grant_token", lambda _request: "")
+        monkeypatch.setattr(adapter, "_run_idempotency_scope", lambda _request: "test-scope")
+        adapter._run_owners["run_x"] = "test-scope"
         resp = await adapter._handle_stop_run(request)
         assert resp.status == 200
 

@@ -472,6 +472,7 @@ def load_hermes_dotenv(
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
     load_external_secrets: bool = True,
+    load_dotenv_files: bool | None = None,
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
@@ -486,56 +487,65 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
+    if load_dotenv_files is None:
+        load_dotenv_files = os.environ.get("HERMES_DISABLE_DOTENV", "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
-    # Normalize safe formatting and remove invalid NUL bytes before parsing.
-    if user_env.exists():
-        _sanitize_env_file_if_needed(user_env)
-    if project_env_path and project_env_path.exists():
-        _sanitize_env_file_if_needed(project_env_path)
+    if load_dotenv_files:
+        # Normalize safe formatting and remove invalid NUL bytes before parsing.
+        if user_env.exists():
+            _sanitize_env_file_if_needed(user_env)
+        if project_env_path and project_env_path.exists():
+            _sanitize_env_file_if_needed(project_env_path)
 
-    if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
-        loaded.append(user_env)
-        # Mirror reload_env() known-key cleanup so inherited Hermes keys
-        # absent from this profile's .env do not leak into the runtime.
-        _clear_known_keys_missing_from_dotenv(user_env)
+        if user_env.exists():
+            _load_dotenv_with_fallback(user_env, override=True)
+            loaded.append(user_env)
+            # Mirror reload_env() known-key cleanup so inherited Hermes keys
+            # absent from this profile's .env do not leak into the runtime.
+            _clear_known_keys_missing_from_dotenv(user_env)
 
-    # Load .op.env AFTER .env so that .env values win, but the bootstrap
-    # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
-    # apply_onepassword_secrets() even in cron / subprocess environments
-    # that inherit no shell state (no systemd EnvironmentFile, no op run).
-    # .op.env is gitignored — the service-account token never enters the
-    # committed .env file.
-    # Users on systemd can alternatively use:
-    #   EnvironmentFile=-/path/to/.hermes/.op.env
-    # in their gateway unit, which takes precedence (override=False below
-    # ensures .op.env never clobbers a token already in the environment).
-    op_env = home_path / ".op.env"
-    if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False)
+        # Load .op.env AFTER .env so that .env values win, but the bootstrap
+        # token (OP_SERVICE_ACCOUNT_TOKEN) becomes available for
+        # apply_onepassword_secrets() even in cron / subprocess environments
+        # that inherit no shell state (no systemd EnvironmentFile, no op run).
+        # .op.env is gitignored — the service-account token never enters the
+        # committed .env file.
+        # Users on systemd can alternatively use:
+        #   EnvironmentFile=-/path/to/.hermes/.op.env
+        # in their gateway unit, which takes precedence (override=False below
+        # ensures .op.env never clobbers a token already in the environment).
+        op_env = home_path / ".op.env"
+        if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
+            _load_dotenv_with_fallback(op_env, override=False)
 
-    if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
-        loaded.append(project_env_path)
+        if project_env_path and project_env_path.exists():
+            _load_dotenv_with_fallback(project_env_path, override=not loaded)
+            loaded.append(project_env_path)
 
-    # External secret sources are skipped in two updater situations:
-    # 1. ``load_external_secrets=False`` — the caller is an ``update``
-    #    invocation that must not import optional secret-manager libraries
-    #    (Bitwarden → cryptography → ``_rust.pyd``) into the process that
-    #    replaces that same environment on Windows (#73381, #86735).
-    # 2. A fresh ``hermes update`` retry just completed a deferred dependency
-    #    install before importing this module.  Do not remap native
-    #    secret-source dependencies in that same updater process or the
-    #    self-lock preflight will recreate the marker and exit 2 again.
-    # Dotenv and managed env still load in both cases; only external source
-    # resolution is unnecessary for the updater.
-    from hermes_cli import _early_recovery
+        # External secret sources are skipped in two updater situations:
+        # 1. ``load_external_secrets=False`` — the caller is an ``update``
+        #    invocation that must not import optional secret-manager libraries
+        #    (Bitwarden → cryptography → ``_rust.pyd``) into the process that
+        #    replaces that same environment on Windows (#73381, #86735).
+        # 2. A fresh ``hermes update`` retry just completed a deferred dependency
+        #    install before importing this module.  Do not remap native
+        #    secret-source dependencies in that same updater process or the
+        #    self-lock preflight will recreate the marker and exit 2 again.
+        # Dotenv and managed env still load in both cases; only external source
+        # resolution is unnecessary for the updater.
+        from hermes_cli import _early_recovery
 
-    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
-        _apply_external_secret_sources(home_path)
+        if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
+            _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
     # config.yaml is the documented source of truth for terminal.* settings,
@@ -599,6 +609,14 @@ def _apply_managed_env() -> None:
     Fail-open: a missing managed dir or .env is the common case and a no-op; any
     error here is swallowed so managed scope can never block startup.
     """
+    if os.environ.get("HERMES_DISABLE_DOTENV", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+
     try:
         from hermes_cli import managed_scope
 

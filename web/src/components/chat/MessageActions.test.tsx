@@ -42,8 +42,49 @@ describe("MessageActions", () => {
     await act(async () => copyButton?.click());
 
     expect(clipboard.copyTextToClipboard).toHaveBeenCalledWith("## Answer\n\nKeep this exact text.");
-    expect(copyButton?.textContent).toContain("Copied");
+    expect(copyButton?.textContent).toBe("");
+    expect(copyButton?.title).toBe("Copied");
     expect(host.querySelector("[role='status']")?.textContent).toContain("Copied");
+  });
+
+  it("uses readable action colors for both message bubble variants", async () => {
+    await act(async () => root.render(createElement(MessageActions, {
+      message: "assistant message",
+      messageRole: "assistant",
+      onUseAsPrompt: vi.fn(),
+    })));
+    const assistantActions = host.querySelector<HTMLElement>("[data-slot='message-actions']");
+    expect(assistantActions?.className).toContain("text-foreground");
+    expect(assistantActions?.className).toContain("text-midground");
+    expect(assistantActions?.className).not.toContain("text-current/70");
+    expect(assistantActions?.querySelector("button")?.className).toContain("border-current/50");
+    expect(assistantActions?.querySelector("button")?.className).toContain("focus-visible:ring-2");
+
+    await act(async () => root.render(createElement(MessageActions, {
+      message: "user message",
+      messageRole: "user",
+      onUseAsPrompt: vi.fn(),
+    })));
+    expect(host.querySelector<HTMLElement>("[data-slot='message-actions']")?.className).toContain("text-primary-foreground");
+  });
+
+  it("renders every assistant action as an icon-only accessible button", async () => {
+    await act(async () => root.render(createElement(MessageActions, {
+      message: "assistant message",
+      messageRole: "assistant",
+      onUseAsPrompt: vi.fn(),
+      onRegenerate: vi.fn(),
+      onSpeak: vi.fn(),
+    })));
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>("[data-slot='message-actions'] button")];
+    expect(buttons).toHaveLength(4);
+    expect(buttons.every((button) => button.textContent === "" && button.title.length > 0 && button.getAttribute("aria-label"))).toBe(true);
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Copy assistant message",
+      "Use assistant message as prompt",
+      "Run assistant message again",
+      "Read assistant message aloud",
+    ]);
   });
 
   it("passes the exact user message to the draft callback and announces it", async () => {
@@ -83,7 +124,9 @@ describe("MessageActions", () => {
       onEdit: vi.fn(),
       editLabel: "Edit",
     })));
-    expect(host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']")?.textContent).toContain("Edit");
+    const editButton = host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']");
+    expect(editButton?.textContent).toBe("");
+    expect(editButton?.title).toBe("Edit");
     expect(host.querySelector<HTMLButtonElement>("button[aria-label='Edit user message']")?.textContent).not.toContain("draft");
   });
 
@@ -96,7 +139,7 @@ describe("MessageActions", () => {
       onSpeak,
     })));
 
-    const speak = host.querySelector<HTMLButtonElement>("button[aria-label='Speak assistant message']");
+    const speak = host.querySelector<HTMLButtonElement>("button[aria-label='Read assistant message aloud']");
     expect(speak).toBeTruthy();
     await act(async () => speak?.click());
     expect(onSpeak).toHaveBeenCalledWith("Read this aloud");

@@ -132,6 +132,7 @@ from gateway.platforms.qqbot.keyboards import (
     build_approval_keyboard,
     build_update_prompt_keyboard,
     parse_approval_button_data,
+    parse_approval_button_data_exact,
     parse_interaction_event,
     parse_update_prompt_button_data,
 )
@@ -841,6 +842,12 @@ class QQAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
             return loop.create_task(coro)
         except RuntimeError:
+            # The caller has already created the coroutine.  Close it when
+            # there is no running loop so synchronous/test dispatch does not
+            # leak an un-awaited coroutine (and its captured state).
+            close = getattr(coro, "close", None)
+            if callable(close):
+                close()
             return None
 
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
@@ -1149,7 +1156,7 @@ class QQAdapter(BasePlatformAdapter):
     ) -> None:
         """Route ``INTERACTION_CREATE`` button clicks to the right subsystem.
 
-        - ``approve:<session_key>:<decision>`` →
+        - ``approve:<session_key>:rid:<request_id>:<decision>`` →
           :func:`tools.approval.resolve_gateway_approval`
           (unblocks the agent thread waiting on a dangerous-command approval).
         - ``update_prompt:<answer>`` →
@@ -1166,9 +1173,9 @@ class QQAdapter(BasePlatformAdapter):
         if not button_data:
             return
 
-        approval = parse_approval_button_data(button_data)
-        if approval is not None:
-            session_key, decision = approval
+        approval_exact = parse_approval_button_data_exact(button_data)
+        if approval_exact:
+            session_key, request_id, decision = approval_exact
             choice = self._APPROVAL_BUTTON_TO_CHOICE.get(decision)
             if choice is None:
                 logger.warning(
@@ -1187,7 +1194,11 @@ class QQAdapter(BasePlatformAdapter):
                 # Import lazily to keep the adapter importable in tests that
                 # don't exercise the approval subsystem.
                 from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(session_key, choice)
+                count = resolve_gateway_approval(
+                    session_key,
+                    choice,
+                    request_id=request_id,
+                )
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s "
                     "(choice=%s, operator=%s)",
@@ -2670,6 +2681,7 @@ class QQAdapter(BasePlatformAdapter):
             chat_id: str,
             req: ApprovalRequest,
             reply_to: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a 3-button approval request (``allow-once / allow-always / deny``).
 
@@ -2687,8 +2699,10 @@ class QQAdapter(BasePlatformAdapter):
             build_approval_keyboard(
                 req.session_key,
                 allow_permanent=getattr(req, "allow_permanent", True),
+                request_id=(metadata or {}).get("approval_request_id") or req.request_id,
             ),
             reply_to=reply_to,
+            metadata=metadata,
         )
 
     # ------------------------------------------------------------------
@@ -2718,7 +2732,6 @@ class QQAdapter(BasePlatformAdapter):
         :func:`tools.approval.resolve_gateway_approval` — dispatched by the
         adapter's interaction callback (:meth:`_default_interaction_dispatch`).
         """
-        del metadata  # QQ doesn't have thread_id / DM targeting overrides.
         del allow_session  # QQ's 3-button keyboard has no session tier (once/always/deny).
         if smart_denied:
             description += " Owner override applies to this one operation only."
@@ -2734,10 +2747,11 @@ class QQAdapter(BasePlatformAdapter):
             description=description,
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
+            request_id=str((metadata or {}).get("approval_request_id") or ""),
             allow_permanent=allow_permanent and not smart_denied,
         )
         return await self.send_approval_request(
-            chat_id, req, reply_to=msg_id,
+            chat_id, req, reply_to=msg_id, metadata=metadata,
         )
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout

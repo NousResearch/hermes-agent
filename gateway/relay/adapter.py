@@ -2939,7 +2939,11 @@ class RelayAdapter(BasePlatformAdapter):
 
         prompt_id = self._mint_prompt(
             "exec_approval",
-            {"session_key": session_key, "chat_id": str(chat_id)},
+            {
+                "session_key": session_key,
+                "request_id": str((metadata or {}).get("approval_request_id") or ""),
+                "chat_id": str(chat_id),
+            },
         )
         result = await self._send_prompt(
             chat_id,
@@ -3113,6 +3117,7 @@ class RelayAdapter(BasePlatformAdapter):
         kind = state.get("kind")
         chat_id = str(state.get("chat_id") or getattr(event.source, "chat_id", ""))
         session_key = str(state.get("session_key") or "")
+        request_id = str(state.get("request_id") or "") or None
         try:
             if kind == "exec_approval":
                 from tools.approval import resolve_gateway_approval
@@ -3122,7 +3127,11 @@ class RelayAdapter(BasePlatformAdapter):
                     if option_id in {"once", "session", "always", "deny"}
                     else "deny"
                 )
-                count = resolve_gateway_approval(session_key, choice)
+                count = resolve_gateway_approval(
+                    session_key,
+                    choice,
+                    request_id=request_id,
+                ) if request_id else 0
                 label = {
                     "once": "✅ Approved once",
                     "session": "✅ Approved for session",

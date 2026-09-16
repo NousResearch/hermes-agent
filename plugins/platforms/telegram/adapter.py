@@ -6417,8 +6417,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
-            self._approval_state[approval_id] = session_key
+            # Store the exact server-owned request id when available. Keep a
+            # string fallback for older persisted/test state; new prompts never
+            # fall back to FIFO when multiple approvals are pending.
+            request_id = (metadata or {}).get("approval_request_id")
+            self._approval_state[approval_id] = (
+                session_key,
+                str(request_id) if request_id else None,
+            ) if request_id else session_key
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -7368,10 +7374,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                approval_state = self._approval_state.pop(approval_id, None)
+                if not approval_state:
                     await query.answer(text="This approval has already been resolved.")
                     return
+                if isinstance(approval_state, tuple):
+                    session_key, request_id = approval_state
+                else:
+                    session_key, request_id = approval_state, None
 
                 user_display = getattr(query.from_user, "first_name", "User")
 
@@ -7383,7 +7393,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # regression follow-up: 60s waits made stale taps common).
                 try:
                     from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
+                    count = resolve_gateway_approval(
+                        session_key,
+                        choice,
+                        request_id=request_id,
+                    ) if request_id else 0
                     logger.info(
                         "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                         count, session_key, choice, user_display,

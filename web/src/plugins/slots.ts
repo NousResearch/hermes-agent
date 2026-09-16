@@ -75,7 +75,6 @@ export const KNOWN_SLOT_NAMES = [
   "sessions:bottom",
   "analytics:top",
   "analytics:bottom",
-  "usage-quota:providers",
   "logs:top",
   "logs:bottom",
   "cron:top",

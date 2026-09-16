@@ -15781,11 +15781,97 @@ async def get_usage_quota(profile: Optional[str] = None):
     return await asyncio.to_thread(_get_usage_quota, profile)
 
 
+def _ninerouter_scope(profile: Optional[str]) -> str:
+    from agent.ninerouter_usage import sanitize_scope
+
+    return sanitize_scope(f"profile:{profile or 'current'}")
+
+
+def _ninerouter_profile_settings(
+    profile: Optional[str],
+    *,
+    profile_home: Optional[Path] = None,
+) -> dict[str, Optional[str] | bool]:
+    """Resolve quota-management settings from the selected profile only.
+
+    A Dashboard process can serve more than one profile.  Reading a management
+    cookie or data-directory override from ``os.environ`` here could therefore
+    bind a named profile to another profile's credential.  The current profile
+    may use the provider's documented default local install; named profiles
+    must explicitly bind their own data directory in their profile secret scope.
+    """
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_constants import get_hermes_home
+
+    normalized_profile = (profile or "current").strip().lower()
+    allow_default_data_dir = normalized_profile == "current"
+    if not allow_default_data_dir and profile_home is not None:
+        try:
+            allow_default_data_dir = (
+                profile_home.resolve() == get_process_hermes_home().resolve()
+            )
+        except (OSError, RuntimeError, ValueError):
+            allow_default_data_dir = False
+    if not allow_default_data_dir and profile_home is None:
+        return {
+            "management_base_url": None,
+            "auth_cookie": None,
+            "data_dir": None,
+            "allow_default_data_dir": False,
+        }
+
+    selected_home = profile_home or get_hermes_home()
+    try:
+        values = build_profile_secret_scope(selected_home)
+    except Exception:
+        values = {}
+
+    def value(name: str) -> Optional[str]:
+        raw = values.get(name) if isinstance(values, dict) else None
+        if not isinstance(raw, str):
+            return None
+        text = raw.strip()
+        return text or None
+
+    return {
+        "management_base_url": value("HERMES_9ROUTER_MANAGEMENT_URL"),
+        "auth_cookie": value("HERMES_9ROUTER_AUTH_COOKIE"),
+        "data_dir": value("HERMES_9ROUTER_DATA_DIR"),
+        "allow_default_data_dir": allow_default_data_dir,
+    }
+
+
 def _get_usage_quota(profile: Optional[str] = None) -> dict:
     from agent.account_usage import AccountUsageSnapshot, fetch_account_usage
+    from agent.ninerouter_usage import (
+        fetch_ninerouter_account_usage,
+        resolve_ninerouter_cli_token,
+        sanitize_scope,
+    )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    with _config_profile_scope(profile):
+    with _config_profile_scope(profile) as scoped_profile_home:
+        from hermes_constants import get_hermes_home
+
+        profile_name = (profile or "").strip().lower()
+        is_current_profile = not profile_name or profile_name == "current"
+        if not is_current_profile and scoped_profile_home is not None:
+            try:
+                is_current_profile = (
+                    scoped_profile_home.resolve() == get_process_hermes_home().resolve()
+                )
+            except (OSError, RuntimeError, ValueError):
+                is_current_profile = False
+        request_scope = _ninerouter_scope(profile)
+        profile_home = (
+            scoped_profile_home
+            if scoped_profile_home is not None
+            else (get_hermes_home() if is_current_profile else None)
+        )
+        ninerouter_settings = _ninerouter_profile_settings(
+            profile,
+            profile_home=profile_home,
+        )
         cfg = load_config() or {}
         model_cfg = cfg.get("model") or {}
         configured: list[str] = []
@@ -15801,6 +15887,68 @@ def _get_usage_quota(profile: Optional[str] = None) -> dict:
         snapshots: list[dict] = []
         for provider in providers:
             snapshot: Optional[AccountUsageSnapshot] = None
+            response_provider = provider
+            if provider == "openai-api":
+                response_provider = "9router"
+                profile_binding_missing = (
+                    not is_current_profile and scoped_profile_home is None
+                )
+                if profile_binding_missing:
+                    snapshot = AccountUsageSnapshot(
+                        provider=response_provider,
+                        source="unavailable",
+                        fetched_at=datetime.now(timezone.utc),
+                        title="9Router usage & quota",
+                        unavailable_reason=(
+                            "The selected profile has no bound quota-management home."
+                        ),
+                        scope=request_scope,
+                    )
+                else:
+                    try:
+                        runtime = resolve_runtime_provider(requested=provider)
+                        management_base_url = ninerouter_settings["management_base_url"]
+                        data_dir = ninerouter_settings["data_dir"]
+                        auth_cookie = ninerouter_settings["auth_cookie"]
+                        cli_token = resolve_ninerouter_cli_token(
+                            runtime.get("base_url"),
+                            management_base_url,
+                            data_dir=data_dir,
+                            use_process_env=False,
+                            allow_default_data_dir=bool(
+                                ninerouter_settings["allow_default_data_dir"]
+                            ),
+                        )
+                        has_profile_cookie = (
+                            isinstance(auth_cookie, str)
+                            and bool(auth_cookie.strip())
+                            and len(auth_cookie) <= 4096
+                            and not any(
+                                ord(char) < 32 or 127 <= ord(char) <= 159
+                                for char in auth_cookie
+                            )
+                        )
+                        if not is_current_profile and not (has_profile_cookie or cli_token):
+                            snapshot = AccountUsageSnapshot(
+                                provider=response_provider,
+                                source="unavailable",
+                                fetched_at=datetime.now(timezone.utc),
+                                title="9Router usage & quota",
+                                unavailable_reason=(
+                                    "The selected profile has no bound quota-management credential."
+                                ),
+                                scope=request_scope,
+                            )
+                        else:
+                            snapshot = fetch_ninerouter_account_usage(
+                                base_url=runtime.get("base_url"),
+                                management_base_url=management_base_url,
+                                auth_cookie=auth_cookie,
+                                cli_token=cli_token,
+                                scope=request_scope,
+                            )
+                    except Exception:
+                        snapshot = None
             if provider in {"openai-codex", "anthropic", "openrouter"}:
                 try:
                     runtime = resolve_runtime_provider(requested=provider)
@@ -15813,13 +15961,17 @@ def _get_usage_quota(profile: Optional[str] = None) -> dict:
                     snapshot = None
             if snapshot is None:
                 snapshots.append({
-                    "provider": provider,
+                    "provider": response_provider,
                     "source": "unavailable",
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
-                    "title": "Account limits",
+                    "title": "9Router usage & quota" if response_provider == "9router" else "Account limits",
                     "plan": None,
                     "windows": [],
                     "details": [],
+                    "routes": [],
+                    "scope": request_scope if response_provider == "9router" else None,
+                    "stale": False,
+                    "partial": False,
                     "unavailable_reason": "No quota data was returned. The provider may be unsupported, credentials may be unavailable, or the request may have failed.",
                     "available": False,
                 })
@@ -15835,6 +15987,26 @@ def _get_usage_quota(profile: Optional[str] = None) -> dict:
                     for w in snapshot.windows
                 ],
                 "details": list(snapshot.details),
+                "routes": [
+                    {
+                        "route": route.route,
+                        "provider": route.provider,
+                        "account": route.account,
+                        "usage": route.usage,
+                        "limit": route.limit,
+                        "remaining": route.remaining,
+                        "remaining_percent": route.remaining_percent,
+                        "unit": route.unit,
+                        "reset_at": route.reset_at.isoformat() if route.reset_at else None,
+                        "status": route.status,
+                        "source": route.source,
+                        "detail": route.detail,
+                    }
+                    for route in snapshot.routes
+                ],
+                "scope": sanitize_scope(snapshot.scope) if response_provider == "9router" else None,
+                "stale": snapshot.stale,
+                "partial": snapshot.partial,
                 "unavailable_reason": snapshot.unavailable_reason,
                 "available": snapshot.available,
             })

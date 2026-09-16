@@ -518,6 +518,7 @@ class _MatrixApprovalPrompt:
         message_id: str,
         resolved: bool = False,
         requester_user_id: str | None = None,
+        request_id: str | None = None,
         expires_at: float | None = None,
     ):
         self.session_key = session_key
@@ -525,6 +526,7 @@ class _MatrixApprovalPrompt:
         self.message_id = message_id
         self.resolved = resolved
         self.requester_user_id = requester_user_id
+        self.request_id = request_id
         self.expires_at = expires_at
         self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
 
@@ -2662,15 +2664,17 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
-        scope_choices = ""
+        request_id = str((metadata or {}).get("approval_request_id") or "") or None
+        approve_cmd = f"!approve {request_id}" if request_id else "!approve <request_id>"
+        deny_cmd = f"!deny {request_id}" if request_id else "!deny <request_id>"
         if smart_denied:
             scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
         else:
             scope_choices = ""
             if allow_session:
-                scope_choices += "Reply `!approve session` to approve this pattern for the session, "
+                scope_choices += f"Reply `{approve_cmd} session` to approve this pattern for the session, "
             if allow_permanent:
-                scope_choices += "`!approve always` to approve permanently, "
+                scope_choices += f"`{approve_cmd} always` to approve permanently, "
         reaction_legend_parts = ["✅ = approve once"]
         if allow_session:
             reaction_legend_parts.append("🌀 = approve for this session")
@@ -2679,7 +2683,7 @@ class MatrixAdapter(BasePlatformAdapter):
         reaction_legend_parts.append("❎ = deny")
         text = (
             f"{self._format_exec_approval(command, description)}\n\n"
-            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
+            f"{scope_choices}Reply `{approve_cmd}` to execute once, or `{deny_cmd}` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             + "\n".join(reaction_legend_parts)
         )
@@ -2693,6 +2697,7 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=chat_id,
             message_id=result.message_id,
             requester_user_id=requester_user_id,
+            request_id=(metadata or {}).get("approval_request_id"),
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
         )
         old_event = self._approval_prompt_by_session.get(session_key)
@@ -4063,7 +4068,11 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     from tools.approval import resolve_gateway_approval
 
-                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    count = resolve_gateway_approval(
+                        prompt.session_key,
+                        choice,
+                        request_id=prompt.request_id,
+                    ) if prompt.request_id else 0
                     if count:
                         prompt.resolved = True
                         self._approval_prompts_by_event.pop(reacts_to, None)

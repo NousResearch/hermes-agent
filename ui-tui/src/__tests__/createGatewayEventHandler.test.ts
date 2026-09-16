@@ -1161,7 +1161,7 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { line: 'Traceback: noisy but non-fatal' }, type: 'gateway.stderr' } as any)
     onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
     onEvent({
-      payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command' },
+      payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command', request_id: 'approval-noise-1' },
       type: 'approval.request'
     } as any)
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
@@ -1178,7 +1178,33 @@ describe('createGatewayEventHandler', () => {
     ])
   })
 
-  it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
+  it('defaults approval overlays to deny-only capabilities when the backend omits the fields', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { command: 'rm -rf /tmp/x', description: 'dangerous command', request_id: 'approval-default-1' },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ allowPermanent: false, allowSession: false })
+  })
+
+  it('retains the server-owned approval request id on the overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        command: 'rm -rf /tmp/x',
+        description: 'dangerous command',
+        request_id: 'approval-tui-1'
+      },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ requestId: 'approval-tui-1' })
+  })
+
+  it('rejects approval events without a non-empty server request id', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     onEvent({
@@ -1186,14 +1212,14 @@ describe('createGatewayEventHandler', () => {
       type: 'approval.request'
     } as any)
 
-    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
+    expect(getOverlayState().approval).toBeNull()
   })
 
   it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     onEvent({
-      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
+      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning', request_id: 'approval-warning-1' },
       type: 'approval.request'
     } as any)
 
@@ -1213,6 +1239,7 @@ describe('createGatewayEventHandler', () => {
         choices: ['once', 'deny'],
         command: 'rm -rf /tmp/x',
         description: 'smart deny override',
+        request_id: 'approval-smart-1',
         smart_denied: true
       },
       type: 'approval.request'

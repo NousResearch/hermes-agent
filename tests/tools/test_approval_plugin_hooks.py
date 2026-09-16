@@ -160,6 +160,20 @@ class TestSmartModeFiresHooks:
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
         monkeypatch.setattr(approval_module, "_smart_approve", lambda *_: verdict)
+        if verdict == "deny":
+            monkeypatch.setattr(
+                approval_module,
+                "prompt_dangerous_approval",
+                lambda *args, **kwargs: "deny",
+            )
+
+            def _deny_cb(command, description, *, allow_permanent=True):
+                return "deny"
+
+            monkeypatch.setattr(
+                "tools.terminal_tool._get_approval_callback",
+                lambda: _deny_cb,
+            )
         monkeypatch.setattr(
             "tools.tirith_security.check_command_security",
             lambda _: {"action": "allow", "findings": [], "summary": ""},
@@ -189,12 +203,27 @@ class TestSmartModeFiresHooks:
             result = guard(value, "local")
 
         assert result["approved"] is approved
-        assert result[f"smart_{'approved' if approved else 'denied'}"] is True
-        assert [name for name, _ in captured] == [
+        if approved:
+            assert result["smart_approved"] is True
+        else:
+            assert result["approved"] is False
+            assert result.get("outcome") == "denied"
+        smart_events = [
+            (name, kwargs)
+            for name, kwargs in captured
+            if kwargs.get("surface") == "smart"
+        ]
+        assert [name for name, _ in smart_events] == [
             "pre_approval_request",
             "post_approval_response",
         ]
-        pre, post = (kwargs for _, kwargs in captured)
+        if not approved:
+            assert [
+                name
+                for name, kwargs in captured
+                if kwargs.get("surface") == "cli"
+            ] == ["pre_approval_request", "post_approval_response"]
+        pre, post = (kwargs for _, kwargs in smart_events)
         assert pre["surface"] == post["surface"] == "smart"
         assert post["choice"] == choice
         assert post["decided_by"] == "aux_llm"
@@ -245,7 +274,7 @@ class TestSmartModeFiresHooks:
         self._configure(monkeypatch, "approve")
         force_values = []
 
-        def redact(text, *, force=False):
+        def redact(text, *, force=False, **_kwargs):
             force_values.append(force)
             return f"redacted:{text}"
 
@@ -256,7 +285,9 @@ class TestSmartModeFiresHooks:
             result = guard(value, "local")
 
         assert result["approved"] is True
-        assert force_values == [True, True]
+        assert force_values
+        assert len(force_values) >= 2
+        assert all(force_values)
 
     @pytest.mark.parametrize("guard,value", [
         (check_all_command_guards, "rm -rf /tmp/smart-hook-crash"),
@@ -285,7 +316,7 @@ class TestSmartModeFiresHooks:
         self._configure(monkeypatch, verdict)
         captured = []
 
-        def fail_observer_redaction(text, *, force=False):
+        def fail_observer_redaction(text, *, force=False, **_kwargs):
             if force:
                 raise RuntimeError("observer redactor failed")
             return text
@@ -299,7 +330,16 @@ class TestSmartModeFiresHooks:
         ):
             result = guard(value, "local")
         assert result["approved"] is approved
-        assert captured == []
+        if approved:
+            assert captured == []
+        else:
+            assert [name for name, _ in captured] == [
+                "pre_approval_request",
+                "post_approval_response",
+            ]
+            for _, kwargs in captured:
+                assert kwargs["command"] == "[REDACTED]"
+                assert kwargs["description"] == "[REDACTED]"
 
     @pytest.mark.parametrize("guard,first_value,second_value", [
         (
@@ -327,6 +367,14 @@ class TestSmartModeFiresHooks:
             "tools.tirith_security.check_command_security",
             lambda _: {"action": "allow", "findings": [], "summary": ""},
         )
+
+        def _deny_cb(command, description, *, allow_permanent=True):
+            return "deny"
+
+        monkeypatch.setattr(
+            "tools.terminal_tool._get_approval_callback",
+            lambda: _deny_cb,
+        )
         captured = []
         with patch(
             "hermes_cli.plugins.invoke_hook",
@@ -337,7 +385,11 @@ class TestSmartModeFiresHooks:
 
         assert first["approved"] is True
         assert second["approved"] is False
-        assert [kwargs["choice"] for name, kwargs in captured if name == "post_approval_response"] == [
+        assert [
+            kwargs["choice"]
+            for name, kwargs in captured
+            if name == "post_approval_response" and kwargs.get("surface") == "smart"
+        ] == [
             "smart_approve",
             "smart_deny",
         ]

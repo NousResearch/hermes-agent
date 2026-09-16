@@ -204,6 +204,21 @@ class TestApproveCommand:
         assert e1.result == "session"
         assert e2.result == "session"
 
+    @pytest.mark.asyncio
+    async def test_approve_without_request_id_is_rejected(self):
+        """Legacy text approval must not fall back to FIFO."""
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+        entry = _ApprovalEntry({"command": "cmd"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_approve_command(_make_event("/approve"))
+        assert "request ID required" in result
+        assert entry.result is None
+
 
 # ------------------------------------------------------------------
 # /deny command
@@ -229,7 +244,7 @@ class TestDenyCommand:
         _gateway_queues[session_key] = [entry]
 
         result = await runner._handle_deny_command(
-            _make_event("/deny that path is still in use")
+            _make_event(f"/deny {entry.data['request_id']} that path is still in use")
         )
         assert entry.result == "deny"
         assert entry.reason == "that path is still in use"

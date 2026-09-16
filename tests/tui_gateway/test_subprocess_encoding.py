@@ -108,6 +108,49 @@ def test_shell_exec_uses_utf8_replace():
         )
 
 
+def test_remote_exec_requires_server_owned_session(monkeypatch):
+    """A WebSocket execution request cannot run without a live session binding."""
+    class _RemoteTransport:
+        auth_identity = {"user_id": "operator", "provider": "dashboard"}
+
+    monkeypatch.setattr(server, "current_transport", lambda: _RemoteTransport())
+    with patch("subprocess.run") as mock_run:
+        for method, params in (
+            ("shell.exec", {"command": "echo remote"}),
+            ("cli.exec", {"argv": ["--version"]}),
+        ):
+            response = server._methods[method]("remote-no-session", params)
+            assert response["error"]["code"] == 4001
+        mock_run.assert_not_called()
+
+
+def test_remote_exec_rejects_profile_not_owned_by_session(monkeypatch):
+    """A client-selected profile cannot execute through another profile's session."""
+    class _RemoteTransport:
+        auth_identity = {"user_id": "operator", "provider": "dashboard"}
+
+    sid = "remote-session-for-profile-test"
+    server._sessions[sid] = {
+        "session_key": "stored-remote-session",
+        "profile_name": "work",
+        "profile_home": "/tmp/hermes_test/profiles/work",
+        "owner_principal": "dashboard:operator",
+        "history": [],
+    }
+    monkeypatch.setattr(server, "current_transport", lambda: _RemoteTransport())
+    with patch("subprocess.run") as mock_run:
+        response = server._methods["shell.exec"](
+            "remote-wrong-profile",
+            {
+                "session_id": sid,
+                "profile": "default",
+                "command": "echo remote",
+            },
+        )
+    assert response["error"]["code"] == 4031
+    mock_run.assert_not_called()
+
+
 # ── quick-command exec path (via command.dispatch) ───────────────────────
 
 def test_quick_command_exec_uses_utf8_replace():

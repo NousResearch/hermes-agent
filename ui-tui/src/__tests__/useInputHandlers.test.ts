@@ -149,7 +149,7 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1', profile: 'default', session_id: '' })
     await pending
   })
 
@@ -163,7 +163,7 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
-    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '', profile: 'default', session_id: '' })
     await pending
   })
 })

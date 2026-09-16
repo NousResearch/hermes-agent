@@ -255,6 +255,21 @@ def is_titleable_user_message(user_message: str) -> bool:
     return bool(_summarize_user_message(user_message).strip())
 
 
+
+def _strict_title_redact(text: str) -> str:
+    """Redact title text before model, persistence, or platform egress."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(
+            str(text or ""),
+            force=True,
+            redact_url_credentials=True,
+        )
+    except Exception:
+        return "[REDACTED]" if text else ""
+
+
 def derive_title(user_message: str) -> Optional[str]:
     """Build an instant title from the user's message. No model, never fails.
 
@@ -271,7 +286,7 @@ def derive_title(user_message: str) -> Optional[str]:
     line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     if not line:
         return None
-    line = " ".join(line.split())
+    line = _strict_title_redact(" ".join(line.split()))
     if len(line) > MAX_DERIVED_TITLE_CHARS:
         cut = line[:MAX_DERIVED_TITLE_CHARS]
         # Prefer a word boundary so the title doesn't end mid-token.
@@ -325,7 +340,7 @@ def _extract_title_text(content: str) -> str:
 
 def _clean_title(text: str) -> Optional[str]:
     """Normalize a model-produced title, or None when nothing usable remains."""
-    title = " ".join((text or "").split())
+    title = _strict_title_redact(" ".join((text or "").split()))
     title = title.strip("\"'").strip()
     if title.lower().startswith("title:"):
         title = title[6:].strip()
@@ -380,7 +395,9 @@ def generate_title(
             # Fail open: a broken validator must not disable titling.
             logger.debug("Title runtime validator raised; proceeding", exc_info=True)
 
-    user_snippet = _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
+    user_snippet = _strict_title_redact(
+        _summarize_user_message(user_message)[:MAX_TITLE_INPUT_CHARS]
+    )
     if not user_snippet.strip():
         return None
 
@@ -461,6 +478,7 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
     Returns the title actually persisted, or None when a higher-authority
     title already held the row (nothing was written).
     """
+    title = _strict_title_redact(title)
     auto_fn = getattr(session_db, "set_auto_title", None)
 
     def _set(candidate):

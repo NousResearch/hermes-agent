@@ -64,6 +64,32 @@ describe("MarkdownMessage", () => {
     expect(container.querySelector("pre")?.className).toContain("overflow-x-auto");
   });
 
+  it("uses high-contrast text for code and code metadata", async () => {
+    await renderMessage("Inline `path`\n\n```typescript\nconst x = 1;\n```");
+    expect(container.querySelector("p code")?.className).toContain("text-secondary-foreground");
+    expect(container.querySelector("pre")?.className).toContain("text-secondary-foreground");
+    expect(container.querySelector("pre code")?.className).toContain("text-midground");
+    expect(container.querySelector("pre code")?.className).toContain("bg-transparent");
+    expect(container.querySelector("[data-slot='code-block']")?.className).toContain("border-midground/40");
+    expect(container.querySelector("[data-code-language]")?.parentElement?.className).toContain("text-secondary-foreground");
+  });
+
+  it("adds scoped contrast hooks for inline code", async () => {
+    await renderMessage("Inline `path`");
+    expect(container.querySelector("[data-slot='markdown-message']")).toBeTruthy();
+    expect(container.querySelector("[data-slot='inline-code']")?.className).toContain("text-midground");
+    expect(container.querySelector("[data-slot='inline-code']")?.className).toContain("border-0");
+    expect(container.querySelector("[data-slot='inline-code']")?.className).toContain("rounded-sm");
+  });
+
+  it("adds readable syntax token hooks for supported code", async () => {
+    await renderMessage("```css\nbackground-color: color-mix(in srgb, currentColor 50%); /* readable */\n```");
+    expect(container.querySelector("[data-syntax-token='property']")?.textContent).toBe("background-color");
+    expect(container.querySelector("[data-syntax-token='function']")?.textContent).toBe("color-mix");
+    expect(container.querySelector("[data-syntax-token='number']")?.textContent).toBe("50%");
+    expect(container.querySelector("[data-syntax-token='comment']")?.textContent).toBe("/* readable */");
+  });
+
   it("promotes a substantial HTML fence to an artifact card with preview and download actions", async () => {
     const html = `<!doctype html><html><head><title>Demo app</title></head><body><main>${"content ".repeat(30)}</main></body></html>`;
     await renderMessage(`\`\`\`html\n${html}\n\`\`\``);

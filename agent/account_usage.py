@@ -31,6 +31,29 @@ class AccountUsageWindow:
 
 
 @dataclass(frozen=True)
+class AccountUsageRoute:
+    """One independently reported route quota.
+
+    The values are deliberately optional.  A provider response is not allowed
+    to turn a missing field into a derived value, because route limits may use
+    different units or billing windows.
+    """
+
+    route: str
+    provider: Optional[str] = None
+    account: Optional[str] = None
+    usage: Optional[float] = None
+    limit: Optional[float] = None
+    remaining: Optional[float] = None
+    remaining_percent: Optional[float] = None
+    unit: Optional[str] = None
+    reset_at: Optional[datetime] = None
+    status: str = "unknown"
+    source: str = ""
+    detail: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class AccountUsageSnapshot:
     provider: str
     source: str
@@ -40,10 +63,14 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    routes: tuple[AccountUsageRoute, ...] = ()
+    scope: Optional[str] = None
+    stale: bool = False
+    partial: bool = False
 
     @property
     def available(self) -> bool:
-        return bool(self.windows or self.details) and not self.unavailable_reason
+        return bool(self.windows or self.details or self.routes) and not self.unavailable_reason
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:

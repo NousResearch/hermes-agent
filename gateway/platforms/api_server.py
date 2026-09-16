@@ -51,6 +51,7 @@ from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from functools import wraps
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -229,8 +230,11 @@ def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
             def observe_late_send(completed):
                 try:
                     completed.result()
-                except Exception:
-                    logger.exception("browser-controller websocket send failed after wait timeout")
+                except Exception as exc:
+                    logger.error(
+                        "browser-controller websocket send failed after wait timeout type=%s",
+                        type(exc).__name__,
+                    )
 
             future.add_done_callback(observe_late_send)
 
@@ -983,15 +987,28 @@ class ResponseStore:
             """CREATE TABLE IF NOT EXISTS responses (
                 response_id TEXT PRIMARY KEY,
                 data TEXT NOT NULL,
-                accessed_at REAL NOT NULL
+                accessed_at REAL NOT NULL,
+                owner_scope TEXT NOT NULL DEFAULT 'default'
             )"""
         )
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS conversations (
                 name TEXT PRIMARY KEY,
-                response_id TEXT NOT NULL
+                response_id TEXT NOT NULL,
+                owner_scope TEXT NOT NULL DEFAULT 'default'
             )"""
         )
+        # Existing response stores predate profile/owner binding.  Migrate
+        # them fail-closed: legacy rows receive the local default scope and
+        # are never visible to a named/profile-key scope.
+        for table in ("responses", "conversations"):
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN owner_scope TEXT NOT NULL DEFAULT 'default'"
+                )
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
         self._conn.commit()
         # response_store.db contains conversation history (tool payloads,
         # prompts, results). Tighten to owner-only after creation so other
@@ -1019,16 +1036,27 @@ class ResponseStore:
                     exc_info=True,
                 )
 
-    def get(self, response_id: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _scope(owner_scope: str | None) -> str:
+        return str(owner_scope or "default")
+
+    @staticmethod
+    def _conversation_key(name: str, owner_scope: str | None) -> str:
+        scope = ResponseStore._scope(owner_scope)
+        return name if scope == "default" else f"{scope}\x00{name}"
+
+    def get(self, response_id: str, *, owner_scope: str | None = None) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
+        scope = self._scope(owner_scope)
         row = self._conn.execute(
-            "SELECT data FROM responses WHERE response_id = ?", (response_id,)
+            "SELECT data FROM responses WHERE response_id = ? AND owner_scope = ?",
+            (response_id, scope),
         ).fetchone()
         if row is None:
             return None
         self._conn.execute(
-            "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
-            (time.time(), response_id),
+            "UPDATE responses SET accessed_at = ? WHERE response_id = ? AND owner_scope = ?",
+            (time.time(), response_id, scope),
         )
         self._conn.commit()
         try:
@@ -1039,17 +1067,18 @@ class ResponseStore:
                 response_id,
             )
             self._conn.execute(
-                "DELETE FROM responses WHERE response_id = ?",
-                (response_id,),
+                "DELETE FROM responses WHERE response_id = ? AND owner_scope = ?",
+                (response_id, scope),
             )
             self._conn.commit()
             return None
 
-    def put(self, response_id: str, data: Dict[str, Any]) -> None:
+    def put(self, response_id: str, data: Dict[str, Any], *, owner_scope: str | None = None) -> None:
         """Store a response, evicting the oldest if at capacity."""
+        scope = self._scope(owner_scope)
         self._conn.execute(
-            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
-            (response_id, json.dumps(data, default=str), time.time()),
+            "INSERT OR REPLACE INTO responses (response_id, data, accessed_at, owner_scope) VALUES (?, ?, ?, ?)",
+            (response_id, json.dumps(data, default=str), time.time(), scope),
         )
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
@@ -1076,30 +1105,42 @@ class ResponseStore:
                 )
         self._conn.commit()
 
-    def delete(self, response_id: str) -> bool:
+    def delete(self, response_id: str, *, owner_scope: str | None = None) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
+        scope = self._scope(owner_scope)
         # Clear conversation mappings pointing to this response
         self._conn.execute(
-            "DELETE FROM conversations WHERE response_id = ?", (response_id,)
+            "DELETE FROM conversations WHERE response_id = ? AND owner_scope = ?",
+            (response_id, scope),
         )
         cursor = self._conn.execute(
-            "DELETE FROM responses WHERE response_id = ?", (response_id,)
+            "DELETE FROM responses WHERE response_id = ? AND owner_scope = ?",
+            (response_id, scope),
         )
         self._conn.commit()
         return cursor.rowcount > 0
 
-    def get_conversation(self, name: str) -> Optional[str]:
+    def get_conversation(self, name: str, *, owner_scope: str | None = None) -> Optional[str]:
         """Get the latest response_id for a conversation name."""
+        key = self._conversation_key(name, owner_scope)
+        scope = self._scope(owner_scope)
         row = self._conn.execute(
-            "SELECT response_id FROM conversations WHERE name = ?", (name,)
+            "SELECT response_id FROM conversations WHERE name = ? AND owner_scope = ?",
+            (key, scope),
         ).fetchone()
         return row[0] if row else None
 
-    def set_conversation(self, name: str, response_id: str) -> None:
+    def set_conversation(self, name: str, response_id: str, *, owner_scope: str | None = None) -> None:
         """Map a conversation name to its latest response_id."""
+        key = self._conversation_key(name, owner_scope)
+        scope = self._scope(owner_scope)
         self._conn.execute(
-            "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
-            (name, response_id),
+            "DELETE FROM conversations WHERE name = ? AND owner_scope = ?",
+            (key, scope),
+        )
+        self._conn.execute(
+            "INSERT INTO conversations (name, response_id, owner_scope) VALUES (?, ?, ?)",
+            (key, response_id, scope),
         )
         self._conn.commit()
 
@@ -1215,10 +1256,72 @@ def _resolve_media_to_data_urls(text: str) -> str:
 
 def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
     """Redact API-bound error text before it crosses the HTTP boundary."""
-    redacted = redact_sensitive_text(str(value), force=True)
+    redacted = redact_sensitive_text(
+        str(value), force=True, redact_url_credentials=True
+    )
     if limit is not None:
         return redacted[:limit]
     return redacted
+
+
+_SAFE_RESPONSE_KEYS = frozenset({
+    "id", "object", "status", "created_at", "model", "output", "usage", "error",
+    "incomplete_details", "response", "type", "role", "name", "call_id", "arguments",
+    "content", "text", "result", "message", "command", "description", "title",
+    "item", "item_id", "output_index", "content_index", "sequence_number", "delta",
+    "logprobs", "status_details", "code", "input_tokens", "output_tokens",
+    "total_tokens", "reasoning_tokens", "prompt_tokens", "completion_tokens",
+})
+
+
+def _safe_response_value(value: Any, *, depth: int = 0) -> Any:
+    """Redact and allowlist nested JSON values at an API response boundary."""
+    if depth > 7:
+        return "[REDACTED]"
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return _redact_api_error_text(value)
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(float(value)) else None
+    if isinstance(value, (list, tuple)):
+        return [_safe_response_value(item, depth=depth + 1) for item in value[:100]]
+    if isinstance(value, dict):
+        return {
+            key: _safe_response_value(item, depth=depth + 1)
+            for key, item in value.items()
+            if isinstance(key, str) and key in _SAFE_RESPONSE_KEYS
+        }
+    return "[REDACTED]"
+
+
+def _safe_response_payload(response: Any) -> Dict[str, Any]:
+    """Return the strict public shape for a stored Responses object."""
+    if not isinstance(response, dict):
+        return {}
+    allowed = {
+        "id", "object", "status", "created_at", "model", "output", "usage",
+        "error", "incomplete_details",
+    }
+    result = {
+        key: _safe_response_value(value)
+        for key, value in response.items()
+        if key in allowed
+    }
+    usage = result.get("usage")
+    if isinstance(usage, dict):
+        result["usage"] = {
+            key: value
+            for key, value in usage.items()
+            if key in {
+                "input_tokens", "output_tokens", "total_tokens", "reasoning_tokens",
+                "prompt_tokens", "completion_tokens",
+            }
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        }
+    return result
 
 
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
@@ -1913,6 +2016,15 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             return ""
 
+    def _response_store_scope(self) -> str:
+        """Return an opaque profile+credential owner scope for Responses state."""
+        profile = _api_request_profile.get() or "default"
+        key = self._expected_api_key()
+        if not key and profile == "default":
+            return "default"
+        digest = hashlib.sha256(f"{profile}\x00{key}".encode("utf-8")).hexdigest()
+        return f"{profile}:{digest[:32]}"
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
         Validate Bearer token from Authorization header.
@@ -2046,10 +2158,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 # Platform verifiers may do blocking network I/O (e.g. Google
                 # signing-cert fetches) — keep that off the event loop.
                 ok, code = await asyncio.to_thread(verifier, auth_header)
-        except Exception:
+        except Exception as exc:
             # Fail closed: a crashing verifier must never admit the event.
-            logger.exception(
-                "Platform HTTP event verifier failed for %s", platform_name
+            logger.error(
+                "Platform HTTP event verifier failed for %s type=%s",
+                platform_name,
+                type(exc).__name__,
             )
             ok, code = False, "platform_event_verifier_error"
         if not ok:
@@ -2080,8 +2194,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             result = await dispatcher(payload)
-        except Exception:
-            logger.exception("Platform HTTP event dispatch failed for %s", platform_name)
+        except Exception as exc:
+            logger.error(
+                "Platform HTTP event dispatch failed for %s type=%s",
+                platform_name,
+                type(exc).__name__,
+            )
             return web.json_response(
                 _openai_error(
                     "Platform event dispatch failed",
@@ -3299,8 +3417,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # Keep all synchronous picker work off aiohttp's event loop.
             payload = await asyncio.to_thread(_build_payload)
             return web.json_response(payload)
-        except Exception:
-            logger.exception("[%s] GET /api/model/options failed", self.name)
+        except Exception as exc:
+            logger.error("[%s] GET /api/model/options failed type=%s", self.name, type(exc).__name__)
             return web.json_response(
                 _openai_error(
                     "Failed to list model options.",
@@ -3636,8 +3754,8 @@ class APIServerAdapter(BasePlatformAdapter):
             scope = self._browser_control_broker.consume_ticket(ticket_value)
         except ControllerTicketInvalid:
             raise web.HTTPUnauthorized() from None
-        except Exception:
-            logger.exception("browser-control WS ticket consumption failed")
+        except Exception as exc:
+            logger.error("browser-control WS ticket consumption failed type=%s", type(exc).__name__)
             raise web.HTTPUnauthorized() from None
 
         ws = web.WebSocketResponse(
@@ -4080,8 +4198,8 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from tools.skills_tool import _find_all_skills, _sort_skills
             skills = _sort_skills(_find_all_skills(skip_disabled=False))
-        except Exception:
-            logger.exception("GET /v1/skills failed")
+        except Exception as exc:
+            logger.error("GET /v1/skills failed type=%s", type(exc).__name__)
             return web.json_response(
                 _openai_error("Failed to enumerate skills", err_type="server_error"),
                 status=500,
@@ -4137,8 +4255,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     "configured": _toolset_has_keys(name, config, features=features),
                     "tools": tools,
                 })
-        except Exception:
-            logger.exception("GET /v1/toolsets failed")
+        except Exception as exc:
+            logger.error("GET /v1/toolsets failed type=%s", type(exc).__name__)
             return web.json_response(
                 _openai_error("Failed to enumerate toolsets", err_type="server_error"),
                 status=500,
@@ -4915,7 +5033,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
                 raise
             except Exception as exc:
-                logger.exception("[api_server] session chat stream failed")
+                logger.error("[api_server] session chat stream failed type=%s", type(exc).__name__)
                 self._set_run_status(
                     run_id,
                     "failed",
@@ -5703,7 +5821,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            await response.write(_sse_frame(data, event=event_type))
+            await response.write(
+                _sse_frame(_safe_response_value(data), event=event_type)
+            )
 
         def _envelope(status: str) -> Dict[str, Any]:
             env: Dict[str, Any] = {
@@ -5732,13 +5852,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history_snapshot = list(conversation_history)
                 conversation_history_snapshot.append({"role": "user", "content": user_message})
             self._response_store.put(response_id, {
-                "response": response_env,
+                "response": _safe_response_payload(response_env),
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
                 "session_id": session_id_snapshot or session_id,
-            })
+            }, owner_scope=self._response_store_scope())
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    conversation, response_id, owner_scope=self._response_store_scope()
+                )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -6258,7 +6380,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Resolve conversation name to latest response_id
         if conversation:
-            previous_response_id = self._response_store.get_conversation(conversation)
+            previous_response_id = self._response_store.get_conversation(
+                conversation, owner_scope=self._response_store_scope()
+            )
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
@@ -6307,7 +6431,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stored_session_id = None
         if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
+            stored = self._response_store.get(
+                previous_response_id, owner_scope=self._response_store_scope()
+            )
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
@@ -6528,6 +6654,8 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
+        response_data = _safe_response_payload(response_data)
+
         # Store the complete response object for future chaining / GET retrieval
         if store:
             self._response_store.put(response_id, {
@@ -6535,11 +6663,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "conversation_history": full_history,
                 "instructions": instructions,
                 "session_id": _effective_session_id,
-            })
+            }, owner_scope=self._response_store_scope())
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    conversation, response_id, owner_scope=self._response_store_scope()
+                )
 
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
@@ -6557,11 +6687,13 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         response_id = request.match_info["response_id"]
-        stored = self._response_store.get(response_id)
+        stored = self._response_store.get(
+            response_id, owner_scope=self._response_store_scope()
+        )
         if stored is None:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
-        return web.json_response(stored["response"])
+        return web.json_response(_safe_response_payload(stored.get("response")))
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/responses/{response_id} — delete a stored response."""
@@ -6570,7 +6702,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         response_id = request.match_info["response_id"]
-        deleted = self._response_store.delete(response_id)
+        deleted = self._response_store.delete(
+            response_id, owner_scope=self._response_store_scope()
+        )
         if not deleted:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
@@ -6881,10 +7015,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 # adapter sharing this loop. Same hardening the platform HTTP
                 # event verifier already got.
                 claims = await asyncio.to_thread(verifier, **verify_kwargs)
-        except Exception:
+        except Exception as exc:
             # Fail closed: a crashing verifier must never admit a fire — this
             # is the only inbound that can trigger remote job execution.
-            logger.exception("cron fire: verifier crashed; rejecting token")
+            logger.error("cron fire: verifier crashed; rejecting token type=%s", type(exc).__name__)
             claims = None
         if claims is None:
             logger.warning(

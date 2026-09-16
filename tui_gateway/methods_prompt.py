@@ -1761,24 +1761,236 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "value", allow_expired=True)
 
 
-@method("approval.pending")
+
+def _approval_profile_scope(params: dict, rid):
+    try:
+        profile = _canonical_profile_request(params.get("profile"))
+    except (TypeError, ValueError) as exc:
+        return None, _err(rid, 4001, str(exc))
+    return profile or str(_current_profile_name() or "default").strip() or "default", None
+
+
+def _approval_profile_home_for_name(profile: str | None):
+    """Resolve the canonical home used to scope approval records.
+
+    ``_profile_home`` intentionally returns ``None`` for the launch profile,
+    because that value means "do not override HERMES_HOME" to normal session
+    handlers. Approval ownership cannot use that implicit convention: a row
+    with no canonical home must be rejected rather than guessed into the
+    current profile.
+    """
+    name = str(profile or "").strip()
+    if not name:
+        return None
+    try:
+        from hermes_cli import profiles as profiles_mod
+        from hermes_constants import named_profile_is_deleted
+
+        name = profiles_mod.normalize_profile_name(name)
+        profiles_mod.validate_profile_name(name)
+        home = Path(profiles_mod.get_profile_dir(name))
+        if name != "default" and named_profile_is_deleted(home):
+            return None
+        resolved = home.resolve(strict=True)
+        if not resolved.is_dir():
+            return None
+        if name != "default":
+            root = Path(profiles_mod._get_profiles_root()).resolve(strict=True)
+            if resolved.parent != root or resolved.is_symlink():
+                return None
+        return resolved
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _approval_session_profile(session: dict) -> str:
+    explicit = str(session.get("profile_name") or "").strip()
+    # Legacy sessions may lack profile_name. Do not infer a profile from the
+    # basename of an arbitrary path; the basename is not a profile identity and
+    # can be attacker-controlled in a malformed/stale session record.
+    profile_home = str(
+        session.get("approval_profile_home") or session.get("profile_home") or ""
+    ).strip()
+    if not profile_home:
+        return ""
+    try:
+        actual = Path(profile_home).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return ""
+    if not actual.is_dir():
+        return ""
+    if explicit:
+        expected = _approval_profile_home_for_name(explicit)
+        return explicit if expected is not None and actual == expected else ""
+    if profile_home:
+        try:
+            from hermes_cli import profiles as profiles_mod
+
+            root = Path(profiles_mod._get_profiles_root()).resolve()
+            if root not in actual.parents and actual != root:
+                return ""
+            for candidate in profiles_mod.list_profiles():
+                if isinstance(candidate, dict):
+                    name = str(candidate.get("name") or "").strip()
+                else:
+                    name = str(getattr(candidate, "name", "") or "").strip()
+                if not name:
+                    continue
+                expected = Path(profiles_mod.get_profile_dir(name)).resolve()
+                if actual == expected:
+                    return name
+        except Exception:
+            return ""
+        return ""
+    return ""
+
+
+def _approval_session_matches_profile(session: dict, profile: str) -> bool:
+    session_profile = _approval_session_profile(session)
+    if not session_profile or session_profile != profile:
+        return False
+    profile_home = str(
+        session.get("approval_profile_home") or session.get("profile_home") or ""
+    ).strip()
+    expected = _approval_profile_home_for_name(profile)
+    if not profile_home or expected is None:
+        return False
+    try:
+        return Path(profile_home).resolve(strict=True) == expected
+    except (OSError, RuntimeError):
+        return False
+
+
+def _approval_session_is_dashboard_owned(session: dict) -> bool:
+    source = str(_session_source(session) or "").strip().lower()
+    if source not in {"tui", "cli", "desktop", "webui", "dashboard"}:
+        return False
+    transport = current_transport()
+    # Direct in-process calls and stdio TUI sessions have no network identity;
+    # they retain the trusted local contract. A non-stdio transport must carry
+    # a valid server-minted principal — missing/malformed legacy identities are
+    # never treated as "same user".
+    if transport is None or transport is _stdio_transport:
+        return True
+    if not hasattr(transport, "auth_identity"):
+        return False
+    principal = _authenticated_transport_principal()
+    owner = str(session.get("owner_principal") or "").strip()
+    return bool(principal and owner and owner == principal)
+
+
+def _safe_approval_snapshot(data: dict) -> dict:
+    payload = _approval_request_payload(data)
+    fields = (
+        "allow_permanent",
+        "choices",
+        "command",
+        "created_at",
+        "description",
+        "expires_at",
+        "request_id",
+        "smart_denied",
+    )
+    return {key: payload[key] for key in fields if key in payload}
+
+
+def _approval_inbox_row(sid: str, session: dict, data: dict, profile: str) -> dict | None:
+    safe = _safe_approval_snapshot(data)
+    request_id = safe.get("request_id")
+    session_key = str(session.get("session_key") or "").strip()
+    if not isinstance(request_id, str) or not request_id or not session_key:
+        return None
+    title = str(session.get("pending_title") or "").strip()
+    if not title:
+        try:
+            title = _session_live_title(session, session_key)
+        except Exception:
+            title = ""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        title = redact_sensitive_text(title, force=True, redact_url_credentials=True)
+    except Exception:
+        title = "[redacted]" if title else ""
+    return {
+        **safe,
+        "profile": profile,
+        "session_id": sid,
+        "session_key": session_key,
+        "source": str(session.get("source") or "unknown"),
+        "status": "waiting_approval",
+        "stored_session_id": session_key,
+        "title": title,
+    }
+
+
+@method("approval.pending.all")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        return err
+    """Return redacted pending gateway approvals for the selected profile."""
+    profile, scope_err = _approval_profile_scope(params, rid)
+    if scope_err:
+        return scope_err
     try:
         from tools.approval import list_gateway_approvals
 
-        return _ok(rid, {"approvals": list_gateway_approvals(session["session_key"])})
+        with _sessions_lock:
+            sessions = list(_sessions.items())
+        rows = []
+        for sid, session in sessions:
+            if (
+                session.get("_finalized")
+                or not _approval_session_is_dashboard_owned(session)
+                or not _approval_session_matches_profile(session, profile)
+            ):
+                continue
+            session_key = str(session.get("session_key") or "").strip()
+            if not session_key:
+                continue
+            for pending in list_gateway_approvals(session_key):
+                row = _approval_inbox_row(sid, session, pending, profile)
+                if row is not None:
+                    rows.append(row)
+        rows.sort(key=lambda row: (float(row.get("created_at") or 0), row["request_id"]))
+        return _ok(rid, {"approvals": rows, "profile": profile})
+    except Exception as e:
+        return _err(rid, 5004, str(e))
+
+
+@method("approval.pending")
+def _(rid, params: dict) -> dict:
+    profile, scope_err = _approval_profile_scope(params, rid)
+    if scope_err:
+        return scope_err
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    if not _approval_session_is_dashboard_owned(session):
+        return _err(rid, 4001, "approval session is not dashboard-owned")
+    if not _approval_session_matches_profile(session, profile):
+        return _err(rid, 4001, "approval session is outside selected profile")
+    try:
+        from tools.approval import list_gateway_approvals
+
+        return _ok(
+            rid,
+            {"approvals": [_approval_request_payload(item) for item in list_gateway_approvals(session["session_key"])]},
+        )
     except Exception as e:
         return _err(rid, 5004, str(e))
 
 
 @method("approval.received")
 def _(rid, params: dict) -> dict:
+    profile, scope_err = _approval_profile_scope(params, rid)
+    if scope_err:
+        return scope_err
     session, err = _sess(params, rid)
     if err:
         return err
+    if not _approval_session_is_dashboard_owned(session):
+        return _err(rid, 4001, "approval session is not dashboard-owned")
+    if not _approval_session_matches_profile(session, profile):
+        return _err(rid, 4001, "approval session is outside selected profile")
     request_id = params.get("request_id")
     if not isinstance(request_id, str) or not request_id:
         return _err(rid, 4006, "request_id required")
@@ -1793,7 +2005,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5004, str(e))
 
 
-def _approval_respond_session_fallback(params: dict):
+def _approval_respond_session_fallback(params: dict, profile: str | None = None):
     """Durable-identity fallback for ``approval.respond`` (#91684).
 
     The desktop can answer an approval prompt with a stale live sid (its
@@ -1802,11 +2014,16 @@ def _approval_respond_session_fallback(params: dict):
 
     1. by the approval ``request_id`` — unique across sessions — scanning
        every live session's pending gateway approvals;
-    2. by treating ``session_id`` as a STORED session id and mapping it to
-       the live runtime record for that stored id.
+    2. by treating ``session_id`` as a STORED session id and mapping it to the
+       live runtime record for that stored id.
 
-    Returns the live session record or None.
+    Returns the live session record or None. The scan is restricted to the
+    requested management profile so a request ID cannot cross profile bounds.
     """
+    if profile is None:
+        profile, scope_err = _approval_profile_scope(params, None)
+        if scope_err:
+            return None
     request_id = str(params.get("request_id") or "")
     if request_id:
         try:
@@ -1815,6 +2032,11 @@ def _approval_respond_session_fallback(params: dict):
             with _sessions_lock:
                 live = list(_sessions.items())
             for sid, session in live:
+                if (
+                    not _approval_session_is_dashboard_owned(session)
+                    or not _approval_session_matches_profile(session, profile)
+                ):
+                    continue
                 key = str(session.get("session_key") or "")
                 if not key:
                     continue
@@ -1829,7 +2051,11 @@ def _approval_respond_session_fallback(params: dict):
     if target:
         try:
             live = _find_live_session_by_key(target)
-            if live is not None:
+            if (
+                live is not None
+                and _approval_session_is_dashboard_owned(live[1])
+                and _approval_session_matches_profile(live[1], profile)
+            ):
                 return live[1]
         except Exception:
             logger.debug(
@@ -1840,34 +2066,99 @@ def _approval_respond_session_fallback(params: dict):
 
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
+    request_id = params.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return _err(rid, 4006, "request_id required")
+    profile, scope_err = _approval_profile_scope(params, rid)
+    if scope_err:
+        return scope_err
+    sid = str(params.get("session_id") or "").strip()
+    parent_session = _sessions.get(sid) if sid else None
+    if parent_session is not None and _session_uses_compute_host(parent_session):
+        if not _approval_session_is_dashboard_owned(parent_session):
+            return _err(rid, 4001, "approval session is not dashboard-owned")
+        if not _approval_session_matches_profile(parent_session, profile):
+            return _err(rid, 4001, "approval session is outside selected profile")
+        choice = params.get("choice")
+        if not isinstance(choice, str) or choice not in {"once", "session", "always", "deny"}:
+            return _err(rid, 4003, "invalid approval choice")
+        resolve_all = params.get("all", False)
+        if not isinstance(resolve_all, bool):
+            return _err(rid, 4003, "all must be boolean")
+        try:
+            child_frame = _send_compute_host_control(
+                sid,
+                route_name="approval.respond",
+                payload={
+                    "type": "control",
+                    "params": dict(params),
+                    "request_id": rid,
+                },
+                wait=True,
+            )
+        except Exception:
+            return _err(rid, 5004, "compute-host approval response failed")
+        if not isinstance(child_frame, dict):
+            return _err(rid, 5004, "compute-host approval response was invalid")
+        if child_frame.get("type") == "control.error":
+            return _err(rid, 4009, "compute-host approval response was rejected")
+        result = child_frame.get("result")
+        if not isinstance(result, dict):
+            return _err(rid, 5004, "compute-host approval response was invalid")
+        return _ok(rid, result)
     session, err = _sess(params, rid)
+    if not err and session is not None:
+        if not _approval_session_is_dashboard_owned(session):
+            return _err(rid, 4001, "approval session is not dashboard-owned")
+        if not _approval_session_matches_profile(session, profile):
+            return _err(rid, 4001, "approval session is outside selected profile")
     if err:
         # Session-not-found (4001) only: the client may hold a stale live
         # sid for a session whose runtime was re-minted after a reconnect.
-        # Resolve by durable identity before failing (#91684).
+        # Resolve by durable identity before failing (#91684), but keep the
+        # lookup inside the selected profile.
         code = (err.get("error") or {}).get("code")
         if code != 4001:
             return err
-        session = _approval_respond_session_fallback(params)
+        session = _approval_respond_session_fallback(params, profile)
         if session is None:
             return err
+    if not _approval_session_is_dashboard_owned(session):
+        return _err(rid, 4001, "approval session is not dashboard-owned")
     try:
         from tools.approval import resolve_gateway_approval
 
+        choice = params.get("choice")
+        if not isinstance(choice, str) or choice not in {"once", "session", "always", "deny"}:
+            return _err(rid, 4003, "invalid approval choice")
+        resolve_all = params.get("all", False)
+        if not isinstance(resolve_all, bool):
+            return _err(rid, 4003, "all must be boolean")
+        logger.info(
+            "approval response received: profile=%s session=%s request=%s choice=%s",
+            profile,
+            session.get("session_key"),
+            params.get("request_id"),
+            choice,
+        )
+        resolve_kwargs = {
+            "resolve_all": resolve_all,
+            "request_id": params.get("request_id"),
+        }
+        if "reason" in params:
+            resolve_kwargs["reason"] = params.get("reason")
         return _ok(
             rid,
             {
                 "resolved": resolve_gateway_approval(
                     session["session_key"],
-                    params.get("choice", "deny"),
-                    resolve_all=params.get("all", False),
-                    request_id=params.get("request_id"),
+                    choice,
+                    **resolve_kwargs,
                 )
             },
         )
     except Exception as e:
         return _err(rid, 5004, str(e))
-
 
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
@@ -1886,6 +2177,13 @@ def register(server) -> None:
         _coerce_truncate_int,
         _reconcile_client_ordinal,
         _pending_reaction_notes,
+        _approval_profile_scope,
+        _approval_profile_home_for_name,
+        _approval_session_profile,
+        _approval_session_matches_profile,
+        _approval_session_is_dashboard_owned,
+        _safe_approval_snapshot,
+        _approval_inbox_row,
         _approval_respond_session_fallback,
     ):
         setattr(

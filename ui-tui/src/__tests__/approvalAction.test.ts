@@ -72,6 +72,23 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
     expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'noop' })
   })
 
+  it('filters unsupported choices and falls back to deny', () => {
+    expect(
+      approvalOptions({
+        allowPermanent: false,
+        choices: ['always', 'unknown'],
+        command: 'rm -rf /',
+        description: 'blocked'
+      })
+    ).toEqual(['deny'])
+    expect(
+      approvalOptions({
+        choices: [],
+        command: 'rm -rf /',
+        description: 'blocked'
+      })
+    ).toEqual(['deny'])
+  })
   it('uses explicit gateway choices as the prompt contract', () => {
     expect(
       approvalOptions({

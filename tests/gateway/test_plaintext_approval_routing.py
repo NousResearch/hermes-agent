@@ -110,6 +110,55 @@ def test_plaintext_yes_resolves_approval(reply):
     _clear_approval_state()
 
 
+def test_plaintext_yes_with_multiple_pending_requires_request_id():
+    """A bare approval must not choose one of several pending requests."""
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+
+    from tools.approval import _ApprovalEntry, _gateway_queues
+    first = _ApprovalEntry({"command": "rm -rf /tmp/first"})
+    second = _ApprovalEntry({"command": "rm -rf /tmp/second"})
+    _gateway_queues[session_key] = [first, second]
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event("yes"), session_key)
+    )
+
+    assert handled is True
+    assert not first.event.is_set()
+    assert not second.event.is_set()
+    assert first.result is None
+    assert second.result is None
+    _clear_approval_state()
+
+
+def test_plaintext_yes_with_mixed_identified_pending_requires_request_id():
+    """A malformed second entry must not be ignored by ID counting."""
+    _clear_approval_state()
+    runner, _adapter = _make_runner()
+    source = _make_source()
+    session_key = runner._session_key_for_source(source)
+
+    from tools.approval import _ApprovalEntry, _gateway_queues
+    identified = _ApprovalEntry({"command": "rm -rf /tmp/identified"})
+    malformed = _ApprovalEntry({"command": "rm -rf /tmp/malformed"})
+    malformed.data.pop("request_id", None)
+    _gateway_queues[session_key] = [identified, malformed]
+
+    handled = asyncio.run(
+        runner._handle_active_session_busy_message(_make_event("yes"), session_key)
+    )
+
+    assert handled is True
+    assert not identified.event.is_set()
+    assert not malformed.event.is_set()
+    assert identified.result is None
+    assert malformed.result is None
+    _clear_approval_state()
+
+
 def test_no_pending_approval_does_not_consume_conversational_yes():
     """A bare 'yes' with NO blocking approval must NOT be treated as an
     approval — it falls through to normal busy handling (design intent:

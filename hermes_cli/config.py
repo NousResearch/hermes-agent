@@ -4175,6 +4175,14 @@ def load_env() -> Dict[str, str]:
     menu paint on top of the OAuth-refresh slowness. The mtime check
     invalidates the cache when the user edits .env mid-process.
     """
+    if os.environ.get("HERMES_DISABLE_DOTENV", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return {}
+
     global _env_cache
     env_path = get_env_path()
 

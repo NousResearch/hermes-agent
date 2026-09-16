@@ -59,6 +59,7 @@ class TestTuiApprovalEmitRedaction:
             {
                 "allow_permanent": allow_permanent,
                 "allow_session": allow_session,
+                "request_id": "fixture-server-request-id",
                 "command": "<write to AGENTS.md>",
             },
         )

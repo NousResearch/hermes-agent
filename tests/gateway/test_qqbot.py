@@ -663,9 +663,17 @@ class TestChunkedUploaderFlow:
 
 class TestApprovalButtonData:
     def test_parse_allow_once(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data_exact
+        result = parse_approval_button_data_exact(
+            "approve:agent:main:qqbot:c2c:UID:rid:req-qq-1:allow-once"
+        )
+        assert result == ("agent:main:qqbot:c2c:UID", "req-qq-1", "allow-once")
+
+    def test_legacy_idless_approval_is_rejected(self):
         from gateway.platforms.qqbot.keyboards import parse_approval_button_data
-        result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
-        assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
+        assert parse_approval_button_data(
+            "approve:agent:main:qqbot:c2c:UID:allow-once"
+        ) is None
 
 
     def test_parse_empty_returns_none(self):
@@ -683,17 +691,22 @@ class TestUpdatePromptButtonData:
 class TestBuildApprovalKeyboard:
     def test_three_buttons_in_single_row(self):
         from gateway.platforms.qqbot.keyboards import build_approval_keyboard
-        kb = build_approval_keyboard("session-1")
+        kb = build_approval_keyboard("session-1", request_id="req-qq-0")
         assert len(kb.content.rows) == 1
         assert len(kb.content.rows[0].buttons) == 3
 
     def test_button_data_embeds_session_key(self):
         from gateway.platforms.qqbot.keyboards import build_approval_keyboard
-        kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
+        kb = build_approval_keyboard("agent:main:qqbot:c2c:UID", request_id="req-qq-1")
         datas = [b.action.data for b in kb.content.rows[0].buttons]
-        assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
-        assert datas[1] == "approve:agent:main:qqbot:c2c:UID:allow-always"
-        assert datas[2] == "approve:agent:main:qqbot:c2c:UID:deny"
+        assert datas[0] == "approve:agent:main:qqbot:c2c:UID:rid:req-qq-1:allow-once"
+        assert datas[1] == "approve:agent:main:qqbot:c2c:UID:rid:req-qq-1:allow-always"
+        assert datas[2] == "approve:agent:main:qqbot:c2c:UID:rid:req-qq-1:deny"
+
+    def test_builder_requires_request_id(self):
+        from gateway.platforms.qqbot.keyboards import build_approval_keyboard
+        with pytest.raises(ValueError, match="request_id"):
+            build_approval_keyboard("agent:main:qqbot:c2c:UID")
 
 
 class TestBuildUpdatePromptKeyboard:
@@ -900,13 +913,13 @@ class TestDefaultInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_approval_click_once_maps_to_once(self):
-        """'allow-once' button → resolve_gateway_approval(session, 'once')."""
+        """'allow-once' button → exact request-bound resolver call."""
         adapter = self._make_adapter()
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
-            resolve_calls.append((session_key, choice, resolve_all))
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
+            resolve_calls.append((session_key, choice, resolve_all, request_id))
             return 1
 
         # Patch the *module-level* function that _default_interaction_dispatch
@@ -920,13 +933,13 @@ class TestDefaultInteractionDispatch:
                 "id": "i",
                 "chat_type": 2,
                 "user_openid": "u-42",
-                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u-42:allow-once"}},
+                "data": {"resolved": {"button_data": "approve:agent:main:qqbot:c2c:u-42:rid:req-qq-1:allow-once"}},
             })
             await adapter._default_interaction_dispatch(event)
         finally:
             tools.approval.resolve_gateway_approval = orig
 
-        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False)]
+        assert resolve_calls == [("agent:main:qqbot:c2c:u-42", "once", False, "req-qq-1")]
 
 
     @pytest.mark.asyncio
@@ -991,9 +1004,14 @@ class TestSendExecApproval:
 
         calls = []
 
-        async def fake_send_approval(chat_id, req, reply_to=None):
+        async def fake_send_approval(chat_id, req, reply_to=None, metadata=None):
             from gateway.platforms.base import SendResult
-            calls.append({"chat_id": chat_id, "req": req, "reply_to": reply_to})
+            calls.append({
+                "chat_id": chat_id,
+                "req": req,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            })
             return SendResult(success=True, message_id="m-1")
 
         adapter.send_approval_request = fake_send_approval  # type: ignore[assignment]
@@ -1005,6 +1023,7 @@ class TestSendExecApproval:
             command="rm -rf /tmp/demo",
             session_key="sess:abc",
             description="delete temp dir",
+            metadata={"approval_request_id": "qq-req-1"},
         )
         assert result.success
         assert len(calls) == 1
@@ -1013,6 +1032,7 @@ class TestSendExecApproval:
         assert req.command_preview == "rm -rf /tmp/demo"
         assert req.description == "delete temp dir"
         assert calls[0]["reply_to"] == "inbound-42"
+        assert calls[0]["metadata"] == {"approval_request_id": "qq-req-1"}
 
 
 class TestSendUpdatePrompt:
@@ -1173,6 +1193,16 @@ class TestOp7ServerReconnect:
     def _make_adapter(self):
         from gateway.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    def test_create_task_closes_coroutine_without_running_loop(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+
+        async def never_started():
+            return None
+
+        coro = never_started()
+        assert QQAdapter._create_task(coro) is None
+        assert coro.cr_frame is None
 
     def test_op7_closes_websocket(self):
         adapter = self._make_adapter()

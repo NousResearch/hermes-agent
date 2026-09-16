@@ -4762,17 +4762,26 @@ def test_session_resume_does_not_rebind_after_client_gone_interrupt_claim(monkey
     class _DB:
         def get_session(self, session_id):
             assert session_id == "stored-sid"
-            return {"id": session_id, "cwd": "/tmp"}
+            return {
+                "id": session_id,
+                "cwd": "/tmp",
+                "owner_principal": "dashboard:operator",
+                "profile_name": "default",
+            }
 
         def resolve_resume_session_id(self, session_id):
             return session_id
 
-    live_transport = object()
+    live_transport = types.SimpleNamespace(
+        auth_identity={"user_id": "operator", "provider": "dashboard"}
+    )
     session = _session(
         session_key="stored-sid",
         transport=server._detached_ws_transport,
         running=True,
         _client_gone_interrupt_requested=True,
+        owner_principal="dashboard:operator",
+        profile_name="default",
     )
     server._sessions["live-sid"] = session
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -5533,6 +5542,8 @@ def test_lazy_unpersisted_resume_rebinds_transport_and_cancels_reap(monkeypatch)
             cancelled.append(self)
 
     class _LiveTransport:
+        auth_identity = {"user_id": "operator", "provider": "dashboard"}
+
         def write(self, *a, **k):
             return True
 
@@ -5556,6 +5567,8 @@ def test_lazy_unpersisted_resume_rebinds_transport_and_cancels_reap(monkeypatch)
         running=False,
         history=[],
         profile_home=None,
+        owner_principal="dashboard:operator",
+        profile_name="default",
     )
     server._sessions["lazy-sid"] = session
 
@@ -13673,6 +13686,7 @@ def test_respond_unpacks_sid_tuple_correctly():
     """After the (sid, Event) tuple change, _respond must still work."""
     ev = threading.Event()
     server._pending["rid-x"] = ("sid_x", ev)
+    server._pending_prompt_payloads["rid-x"] = ("clarify.request", {})
     try:
         resp = server.handle_request(
             {
@@ -13686,6 +13700,7 @@ def test_respond_unpacks_sid_tuple_correctly():
         assert server._answers.get("rid-x") == "the answer"
     finally:
         server._pending.pop("rid-x", None)
+        server._pending_prompt_payloads.pop("rid-x", None)
         server._answers.pop("rid-x", None)
 
 
@@ -15879,6 +15894,7 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
         "message_count": 1,
         "model": "model-a",
         "preview": "find docs",
+        "profile": "default",
         "session_key": "key-a",
         "started_at": 10.0,
         "status": "idle",
@@ -18099,17 +18115,23 @@ def test_slash_exec_concurrent_first_use_spawns_single_worker(monkeypatch):
 def test_session_close_rpc_claims_then_tears_down(monkeypatch):
     seen = []
     claimed = {"session_key": "k"}
-    monkeypatch.setattr(server, "_pop_session_by_id", lambda sid: seen.append(sid) or claimed)
+    server._sessions["s9"] = claimed
     monkeypatch.setattr(
         server,
         "_teardown_popped_session",
         lambda session, *, end_reason: seen.append((session, end_reason)) or True,
     )
-    resp = server.handle_request(
-        {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
-    )
-    assert resp["result"] == {"closed": True}
-    assert seen == ["s9", (claimed, "tui_close")]
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
+        )
+        assert resp["result"] == {"closed": True}
+        assert seen == [(claimed, "tui_close")]
+        assert claimed["_closing"] is True
+        assert claimed["_sid"] == "s9"
+        assert "s9" not in server._sessions
+    finally:
+        server._sessions.pop("s9", None)
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):

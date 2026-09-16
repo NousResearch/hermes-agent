@@ -1022,9 +1022,26 @@ def set_profile_display_name(profile_name: str, display_name: str) -> str:
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# CRUD operations
-# ---------------------------------------------------------------------------
+def _safe_named_profile_entry(entry: Path, profiles_root: Path) -> Path | None:
+    """Return a canonical named-profile home only when it is safe to serve."""
+    try:
+        root = profiles_root.resolve(strict=True)
+        if entry.parent.resolve(strict=True) != root:
+            return None
+        if not entry.is_dir():
+            return None
+        # Reject symlinked/reparse-like entries even when they happen to point
+        # back inside the root; profile identity must be a real direct child.
+        if entry.is_symlink():
+            return None
+        unresolved = entry.absolute()
+        resolved = entry.resolve(strict=True)
+        if resolved != unresolved or root not in resolved.parents:
+            return None
+        return resolved
+    except (OSError, RuntimeError):
+        return None
+
 
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
@@ -1062,33 +1079,34 @@ def list_profiles() -> List[ProfileInfo]:
         # wrapper dir each time — O(N*M), the dominant cost in this function).
         alias_map = build_alias_map()
         for entry in sorted(profiles_root.iterdir()):
-            if not entry.is_dir():
+            safe_entry = _safe_named_profile_entry(entry, profiles_root)
+            if safe_entry is None:
                 continue
             name = entry.name
             if name == "default":
                 continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
-            if named_profile_is_deleted(entry):
+            if named_profile_is_deleted(safe_entry):
                 continue
-            model, provider = _read_config_model(entry)
+            model, provider = _read_config_model(safe_entry)
             alias_name = alias_map.get(normalize_profile_name(name))
             if alias_name:
                 is_windows = sys.platform == "win32"
                 alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
             else:
                 alias_path = None
-            dist_name, dist_version, dist_source = _read_distribution_meta(entry)
-            meta = read_profile_meta(entry)
+            dist_name, dist_version, dist_source = _read_distribution_meta(safe_entry)
+            meta = read_profile_meta(safe_entry)
             profiles.append(ProfileInfo(
                 name=name,
-                path=entry,
+                path=safe_entry,
                 is_default=False,
-                gateway_running=_check_gateway_running(entry),
+                gateway_running=_check_gateway_running(safe_entry),
                 model=model,
                 provider=provider,
-                has_env=(entry / ".env").exists(),
-                skill_count=_count_skills(entry),
+                has_env=(safe_entry / ".env").exists(),
+                skill_count=_count_skills(safe_entry),
                 alias_path=alias_path if (alias_path and alias_path.exists()) else None,
                 alias_name=alias_name,
                 distribution_name=dist_name,
@@ -1129,7 +1147,16 @@ def profiles_to_serve(
     """
     active = get_active_profile_name() or "default"
     if not multiplex:
-        return [(active, get_profile_dir(active))]
+        if active == "default":
+            default_home = _get_default_hermes_home()
+            return [("default", default_home)] if default_home.is_dir() else []
+        profiles_root = _get_profiles_root()
+        active_entry = profiles_root / active
+        safe_active = _safe_named_profile_entry(active_entry, profiles_root)
+        if safe_active is None or named_profile_is_deleted(safe_active):
+            logger.error("Refusing to serve unsafe or missing active profile: %s", active)
+            return []
+        return [(active, safe_active)]
 
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
     allowed: Optional[set[str]] = None
@@ -1149,18 +1176,19 @@ def profiles_to_serve(
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
-            if not entry.is_dir():
+            safe_entry = _safe_named_profile_entry(entry, profiles_root)
+            if safe_entry is None:
                 continue
             name = entry.name
             if name == "default":
                 continue  # default is the built-in entry already added above
             if not _PROFILE_ID_RE.match(name):
                 continue
-            if named_profile_is_deleted(entry):
+            if named_profile_is_deleted(safe_entry):
                 continue
             if allowed is not None and name not in allowed:
                 continue
-            serve.append((name, entry))
+            serve.append((name, safe_entry))
 
     if allowed is not None:
         missing = tuple(sorted(allowed - {name for name, _ in serve}))

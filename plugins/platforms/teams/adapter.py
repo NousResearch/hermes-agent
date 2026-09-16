@@ -1204,7 +1204,8 @@ class TeamsAdapter(BasePlatformAdapter):
         action = ctx.activity.value.action
         data = action.data or {}
         hermes_action = data.get("hermes_action", "")
-        session_key = data.get("session_key", "")
+        session_key = str(data.get("session_key") or "")
+        request_id = str(data.get("request_id") or "") or None
 
         if not hermes_action or not session_key:
             return InvokeResponse(
@@ -1265,7 +1266,20 @@ class TeamsAdapter(BasePlatformAdapter):
                 ),
             )
 
-        resolve_gateway_approval(session_key, choice)
+        count = (
+            resolve_gateway_approval(session_key, choice, request_id=request_id)
+            if request_id
+            else 0
+        )
+        if not count:
+            return InvokeResponse(
+                status=200,
+                body=AdaptiveCardActionCardResponse(
+                    value=AdaptiveCard()
+                    .with_version("1.4")
+                    .with_body([TextBlock(text="⌛ Approval expired or already resolved; command was not run.", wrap=True)])
+                ),
+            )
 
         label_map = {
             "once": "✅ Allowed (once)",
@@ -1309,6 +1323,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # Truncated for button data payload — just enough to reconstruct the card body.
         btn_data_base = {
             "session_key": session_key,
+            "request_id": (metadata or {}).get("approval_request_id"),
             "cmd": command[:200] + "..." if len(command) > 200 else command,
             "desc": description,
         }

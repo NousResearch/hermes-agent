@@ -5930,6 +5930,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         parent_session_id: str = None,
         cwd: str = None,
         profile_name: str = None,
+        owner_principal: str = None,
         git_repo_root: str = None,
         origin_json: str = None,
         display_name: str = None,
@@ -5975,10 +5976,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root,
+                   parent_session_id, cwd, profile_name, owner_principal, git_repo_root,
                    origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
@@ -6017,6 +6018,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
                        cwd = COALESCE(sessions.cwd, excluded.cwd),
                        profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
+                       owner_principal = COALESCE(sessions.owner_principal, excluded.owner_principal),
                        git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root),
                        origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
                        display_name = COALESCE(sessions.display_name, excluded.display_name)""",
@@ -6034,6 +6036,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     parent_session_id,
                     cwd,
                     profile_name,
+                    owner_principal,
                     git_repo_root,
                     origin_json,
                     display_name,

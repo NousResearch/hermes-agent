@@ -253,3 +253,82 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+/* Conversation-critical contrast overrides. The Nous base stylesheet gives
+   every <code> element a selection-oriented foreground, which is too dark for
+   the chat canvas. Keep the correction scoped to chat components and inherit
+   the user's message role for action buttons. */
+[data-slot="markdown-message"] code {
+  color: var(--midground) !important;
+}
+
+[data-slot="markdown-message"] [data-slot="inline-code"] {
+  color: var(--midground) !important;
+  background-color: color-mix(in srgb, var(--midground-base) 10%, var(--background-base)) !important;
+  border: 0 !important;
+}
+
+[data-slot="code-block"] {
+  border-color: color-mix(in srgb, var(--midground-base) 40%, transparent) !important;
+}
+
+[data-slot="code-block"] > div:first-child {
+  border-bottom-color: color-mix(in srgb, var(--midground-base) 28%, transparent) !important;
+}
+
+[data-slot="code-block"] code[data-slot="code-content"] {
+  color: var(--midground) !important;
+  background-color: transparent !important;
+}
+
+[data-slot="code-block"] .code-token-comment {
+  color: #9fb3c4 !important;
+  font-style: italic;
+}
+
+[data-slot="code-block"] .code-token-string {
+  color: #86efac !important;
+}
+
+[data-slot="code-block"] .code-token-number {
+  color: #fcd34d !important;
+}
+
+[data-slot="code-block"] .code-token-keyword {
+  color: #c4b5fd !important;
+  font-weight: 600;
+}
+
+[data-slot="code-block"] .code-token-property {
+  color: #7dd3fc !important;
+}
+
+[data-slot="code-block"] .code-token-function {
+  color: #67e8f9 !important;
+}
+
+[data-slot="code-block"] .code-token-value {
+  color: #a5b4fc !important;
+}
+
+[data-slot="code-block"] .code-token-tag {
+  color: #f0abfc !important;
+}
+
+[data-slot="code-block"] .code-token-operator {
+  color: #fda4af !important;
+}
+
+[data-slot="message-actions"][data-actions-role="assistant"] {
+  color: var(--midground) !important;
+}
+
+[data-slot="message-actions"] button {
+  color: inherit !important;
+  border-color: color-mix(in srgb, currentColor 50%, transparent) !important;
+  background-color: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+[data-slot="message-actions"] button:hover {
+  background-color: color-mix(in srgb, currentColor 20%, transparent);
+}
+

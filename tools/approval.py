@@ -14,6 +14,7 @@ import fnmatch
 import functools
 import hashlib
 import logging
+import math
 import os
 import re
 import shlex
@@ -105,6 +106,20 @@ def _is_interactive_cli() -> bool:
     return env_var_enabled("HERMES_INTERACTIVE")
 
 
+def _safe_approval_text(value: str | None) -> str:
+    """Redact approval text at every non-queue egress boundary."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(
+            str(value or ""),
+            force=True,
+            redact_url_credentials=True,
+        )
+    except Exception:
+        return "[REDACTED]"
+
+
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     """Invoke a plugin lifecycle hook for the approval system.
 
@@ -121,6 +136,31 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         # Plugin system not available in this execution context
         # (e.g. bare tool-only imports, minimal test environments).
         return
+    safe_kwargs = dict(kwargs)
+    for field in (
+        "command",
+        "description",
+        "title",
+        "message",
+        "reason",
+        "detail",
+        "user_snippet",
+    ):
+        value = safe_kwargs.get(field)
+        if not isinstance(value, str):
+            continue
+        try:
+            from agent.redact import redact_sensitive_text
+
+            safe_kwargs[field] = redact_sensitive_text(
+                value,
+                force=True,
+                redact_url_credentials=True,
+            )
+        except Exception:
+            # Observability must never become a secret egress path when the
+            # redactor is unavailable.
+            safe_kwargs[field] = "[REDACTED]"
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
@@ -130,7 +170,11 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         _session_id = _approval_session_id.get()
         if _session_id:
             kwargs.setdefault("session_id", _session_id)
-        invoke_hook(hook_name, **kwargs)
+        safe_kwargs.setdefault("turn_id", _approval_turn_id.get())
+        safe_kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
+        if _session_id:
+            safe_kwargs.setdefault("session_id", _session_id)
+        invoke_hook(hook_name, **safe_kwargs)
     except Exception as exc:
         # invoke_hook() already swallows per-callback errors, so reaching here
         # means the dispatch layer itself failed. Log and move on -- approval
@@ -155,8 +199,8 @@ def _prepare_smart_approval_observer(
     try:
         from agent.redact import redact_sensitive_text
 
-        hook_command = redact_sensitive_text(command, force=True)
-        hook_description = redact_sensitive_text(description, force=True)
+        hook_command = redact_sensitive_text(command, force=True, redact_url_credentials=True)
+        hook_description = redact_sensitive_text(description, force=True, redact_url_credentials=True)
     except Exception as exc:
         logger.debug("Smart approval hook redaction failed: %s", exc)
         return
@@ -868,13 +912,14 @@ def _save_blocked_payload(command: str) -> Optional[str]:
             except OSError:
                 pass
         path = script_dir / f"blocked-{int(_time.time())}-{_uuid.uuid4().hex[:8]}.sh"
+        safe_command = _safe_approval_text(command)
         path.write_text(
             "#!/bin/bash\n"
             "# Auto-saved by Hermes: this command exceeded the inline command\n"
             "# parser limit and was blocked from direct execution. Review it,\n"
             "# then run it via: bash " + str(path) + "\n"
-            + command
-            + ("\n" if not command.endswith("\n") else ""),
+            + safe_command
+            + ("\n" if not safe_command.endswith("\n") else ""),
             encoding="utf-8", errors="replace",
         )
         return str(path)
@@ -2495,13 +2540,36 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
         return False
 
     operand = argv[2]
-    temp_dir = os.path.realpath(tempfile.gettempdir())
+    configured_temp_dir = os.fspath(tempfile.gettempdir())
+    canonical_temp_dir = os.path.realpath(configured_temp_dir)
     basename = os.path.basename(operand)
-    if operand != os.path.join(temp_dir, basename):
+
+    def _path_text(value: str) -> str:
+        # Compare slash styles/case without normalizing `..`: traversal must
+        # remain distinguishable from the one-file canonical form.
+        return os.path.normcase(os.fspath(value).replace("\\", "/"))
+
+    canonical_configured = _path_text(canonical_temp_dir) == _path_text(
+        os.path.abspath(configured_temp_dir)
+    )
+    allowed_operands = {
+        _path_text(os.path.join(canonical_temp_dir, basename)),
+    }
+    if canonical_configured:
+        # Keep the lexical temp-dir spelling as an allowed alias for platform
+        # paths such as Git Bash's `/tmp` on Windows. A symlinked temp dir is
+        # intentionally restricted to its canonical target below.
+        allowed_operands.add(
+            _path_text(os.path.join(configured_temp_dir, basename))
+        )
+        allowed_operands.add(
+            _path_text(os.path.join(os.path.abspath(configured_temp_dir), basename))
+        )
+    if _path_text(operand) not in allowed_operands:
         return False
 
     target = os.path.realpath(operand)
-    if os.path.dirname(target) != temp_dir:
+    if _path_text(os.path.dirname(target)) != _path_text(canonical_temp_dir):
         return False
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
@@ -2572,7 +2640,7 @@ def detect_dangerous_command(command: str) -> tuple:
 # =========================================================================
 
 _lock = threading.Lock()
-_pending: dict[str, dict] = {}
+_pending: dict[str, list[dict]] = {}  # legacy headless approvals, session_key → queue
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
@@ -2817,14 +2885,91 @@ def _denial_breaker_addendum(session_key: str) -> str:
 # resolves every pending approval in the session.
 
 
+def _approval_data_coalesce_key(data: dict) -> str:
+    """Return a private identity for coalescing identical approval waits."""
+    material = (
+        data.get("command"),
+        data.get("description"),
+        data.get("pattern_key"),
+        tuple(data.get("pattern_keys") or ()),
+        tuple(data.get("choices") or ()),
+        data.get("allow_session"),
+        data.get("allow_permanent"),
+        data.get("smart_denied"),
+    )
+    return hashlib.sha256(repr(material).encode("utf-8", "replace")).hexdigest()
+
+
+_APPROVAL_MAX_TIMEOUT_SECONDS = 86400.0
+
+
+def _bounded_approval_timeout(timeout_seconds: float | None = None) -> float:
+    """Return the one timeout used for queue expiry and all blocking waits."""
+    raw = _get_approval_timeout() if timeout_seconds is None else timeout_seconds
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError("approval timeout must be finite")
+    return min(max(value, 0.0), _APPROVAL_MAX_TIMEOUT_SECONDS)
+
+
+def _normalize_gateway_approval_data(data: dict) -> dict:
+    """Normalize untrusted approval data once at queue insertion."""
+    normalized = dict(data or {})
+    for key in ("command", "description", "title"):
+        if key not in normalized:
+            continue
+        if isinstance(normalized[key], str):
+            normalized[key] = _safe_approval_text(normalized[key])
+        else:
+            normalized.pop(key, None)
+    for key in ("allow_session", "allow_permanent", "smart_denied"):
+        if key in normalized and not isinstance(normalized[key], bool):
+            normalized[key] = False
+    if "choices" in normalized:
+        raw_choices = normalized.get("choices")
+        allowed = {"once", "session", "always", "deny"}
+        choices = [choice for choice in (raw_choices if isinstance(raw_choices, (list, tuple)) else ()) if choice in allowed]
+        if normalized.get("smart_denied"):
+            choices = [choice for choice in choices if choice in {"once", "deny"}]
+        else:
+            if normalized.get("allow_session") is False:
+                choices = [choice for choice in choices if choice != "session"]
+            if normalized.get("allow_permanent") is False:
+                choices = [choice for choice in choices if choice != "always"]
+        if "deny" not in choices:
+            choices.append("deny")
+        normalized["choices"] = choices or ["deny"]
+    return normalized
+
+
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged", "coalesce_key")
 
-    def __init__(self, data: dict):
+    def __init__(
+        self,
+        data: dict,
+        coalesce_key: str | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        request_id: str | None = None,
+    ):
         self.event = threading.Event()
-        self.data = dict(data)
-        self.data.setdefault("request_id", uuid.uuid4().hex)
+        self.data = _normalize_gateway_approval_data(data)
+        for _display_key in ("command", "description", "title"):
+            if isinstance(self.data.get(_display_key), str):
+                self.data[_display_key] = _safe_approval_text(self.data[_display_key])
+        self.coalesce_key = coalesce_key or _approval_data_coalesce_key(data)
+        # The resolver always mints the binding; caller-supplied IDs are
+        # untrusted display/transport data and must never become authoritative.
+        self.data["request_id"] = uuid.uuid4().hex
+        created_at = time.time()
+        self.data["created_at"] = created_at
+        effective_timeout = _bounded_approval_timeout(timeout_seconds)
+        # The server owns the approval deadline. Never preserve a caller-
+        # supplied timestamp: a stale/future replay payload must not extend
+        # the resolver's lifetime or keep an expired UI card actionable.
+        self.data["expires_at"] = created_at + max(float(effective_timeout), 0.0)
         self.acknowledged = False
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
@@ -2870,49 +3015,114 @@ def resolve_gateway_approval(session_key: str, choice: str,
     waiting agent thread(s).
 
     When *resolve_all* is True every pending approval in the session is
-    resolved at once (``/approve all``).  Otherwise only the oldest one
-    is resolved (FIFO).
+    resolved at once (``/approve all``).  Otherwise only the oldest one is
+    resolved (FIFO).
 
     *reason* is an optional free-text explanation attached to an explicit
     deny (``/deny <reason>``).  It is relayed back to the agent in the
     BLOCKED message so it can adapt instead of only hearing "denied".
 
-    Returns the number of approvals resolved (0 means nothing was pending).
+    Returns the number of approvals resolved (0 means nothing was pending or
+    the requested choice was not authorized by the pending entry).
     """
+    if choice == "approve":
+        # Legacy WhatsApp button payload; canonical approval choice is once.
+        choice = "once"
+    if choice not in {"once", "session", "always", "deny"}:
+        return 0
+
+    def _choice_allowed(entry) -> bool:
+        if "choices" in entry.data:
+            explicit_choices = entry.data.get("choices")
+            if not isinstance(explicit_choices, (list, tuple)):
+                return choice == "deny"
+            if choice not in explicit_choices:
+                return False
+        if choice == "session":
+            return entry.data.get("allow_session") is not False and not entry.data.get("smart_denied")
+        if choice == "always":
+            return entry.data.get("allow_permanent") is not False and not entry.data.get("smart_denied")
+        return True
+
     with _lock:
+        now = time.time()
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
         if request_id:
-            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
-            if not targets:
+            candidates = [entry for entry in queue if entry.data.get("request_id") == request_id]
+            if not candidates:
                 return 0
-            queue[:] = [entry for entry in queue if entry not in targets]
         elif resolve_all:
-            targets = list(queue)
-            queue.clear()
+            candidates = list(queue)
         else:
-            targets = [queue.pop(0)]
+            candidates = [queue[0]]
+
+        expired = [
+            entry
+            for entry in candidates
+            if isinstance(entry.data.get("expires_at"), (int, float))
+            and not isinstance(entry.data.get("expires_at"), bool)
+            and now >= float(entry.data["expires_at"])
+        ]
+        eligible = [
+            entry
+            for entry in candidates
+            if not entry.event.is_set()
+            and entry not in expired
+            and _choice_allowed(entry)
+        ]
+
+        # Remove only requests this call is authoritative for. Disallowed
+        # requests remain visible so the client can choose a permitted action;
+        # expired requests are retired and unblocked without granting consent.
+        retired = expired + eligible
+        queue[:] = [entry for entry in queue if entry not in retired]
         if not queue:
             _gateway_queues.pop(session_key, None)
+        for entry in expired:
+            entry.event.set()
+        for entry in eligible:
+            entry.result = choice
+            if reason:
+                entry.reason = _safe_approval_text(reason)
+            entry.event.set()
+    return len(eligible)
 
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
-    return len(targets)
+
+def _prune_expired_gateway_approvals_locked(session_key: str | None = None) -> None:
+    """Retire expired entries and wake their waiters without granting consent."""
+    now = time.time()
+    keys = [session_key] if session_key is not None else list(_gateway_queues)
+    for key in keys:
+        queue = _gateway_queues.get(key)
+        if not queue:
+            continue
+        keep = []
+        for entry in queue:
+            expires_at = entry.data.get("expires_at")
+            expired = isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool) and now >= float(expires_at)
+            if expired and not entry.event.is_set():
+                entry.event.set()
+            if not expired and not entry.event.is_set():
+                keep.append(entry)
+        if keep:
+            _gateway_queues[key] = keep
+        else:
+            _gateway_queues.pop(key, None)
 
 
 def list_gateway_approvals(session_key: str) -> list[dict]:
     """Return replay-safe snapshots of unresolved approvals for one session."""
     with _lock:
+        _prune_expired_gateway_approvals_locked(session_key)
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
+        _prune_expired_gateway_approvals_locked(session_key)
         for entry in _gateway_queues.get(session_key, []):
             if entry.data.get("request_id") == request_id:
                 entry.acknowledged = True
@@ -2923,6 +3133,7 @@ def ack_gateway_approval(session_key: str, request_id: str) -> bool:
 def has_blocking_approval(session_key: str) -> bool:
     """Check if a session has one or more blocking gateway approvals waiting."""
     with _lock:
+        _prune_expired_gateway_approvals_locked(session_key)
         return bool(_gateway_queues.get(session_key))
 
 
@@ -2936,16 +3147,63 @@ def get_pending_gateway_approval(session_key: str) -> dict | None:
     if not session_key:
         return None
     with _lock:
+        _prune_expired_gateway_approvals_locked(session_key)
         queue = _gateway_queues.get(session_key)
         if not queue:
             return None
         return dict(queue[0].data)
 
 
-def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
+def submit_pending(session_key: str, approval: dict) -> dict:
+    """Store a headless approval in the same exact-ID queue as gateway approvals."""
+    entry = _ApprovalEntry(approval, timeout_seconds=approval.get("timeout_seconds"))
     with _lock:
-        _pending[session_key] = approval
+        _gateway_queues.setdefault(session_key, []).append(entry)
+    return dict(entry.data)
+
+
+def wait_for_pending_gateway_approval(
+    session_key: str,
+    request_id: str,
+    *,
+    timeout_seconds: float | None = None,
+) -> dict:
+    """Wait for one headless approval entry to resolve by exact request ID."""
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        entry = next(
+            (candidate for candidate in queue if candidate.data.get("request_id") == request_id),
+            None,
+        )
+        if entry is None:
+            return {"resolved": False, "choice": None, "reason": None}
+        expires_at = entry.data.get("expires_at")
+
+    deadlines = []
+    if timeout_seconds is not None:
+        try:
+            deadlines.append(max(float(timeout_seconds), 0.0))
+        except (TypeError, ValueError):
+            deadlines.append(0.0)
+    if isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool):
+        deadlines.append(max(float(expires_at) - time.time(), 0.0))
+    wait_timeout = min(deadlines) if deadlines else None
+    entry.event.wait(wait_timeout)
+
+    with _lock:
+        resolved = entry.result is not None and entry.event.is_set()
+        if not resolved:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+            entry.event.set()
+        return {
+            "resolved": resolved,
+            "choice": entry.result if resolved else None,
+            "reason": entry.reason if resolved else None,
+        }
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -3269,9 +3527,8 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
     # `command` is still what executes after approval; only the displayed
     # copy is scrubbed. Reuses the same redaction module used for memory
     # and log sanitization so tokens mask consistently across surfaces.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_description = redact_sensitive_text(description)
+    display_command = _safe_approval_text(command)
+    display_description = _safe_approval_text(description)
 
     # Smart DENY and a session-less gate both reduce the menu to
     # once/deny; the rendered strings are the same either way.
@@ -3288,7 +3545,7 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
                 display_command, display_description, **callback_kwargs
             )
         except Exception as e:
-            logger.error("Approval callback failed: %s", e, exc_info=True)
+            logger.error("Approval callback failed (%s)", type(e).__name__)
             return "deny"
 
     # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
@@ -3309,7 +3566,8 @@ def _prompt_dangerous_approval_inner(command: str, description: str,
                 "Dangerous-command approval requested on a thread with no "
                 "approval callback while prompt_toolkit is active; denying "
                 "to avoid stdin deadlock. command=%r description=%r",
-                command, description,
+                display_command,
+                display_description,
             )
             return "deny"
     except Exception:
@@ -3674,7 +3932,8 @@ def _smart_approve(command: str, description: str) -> str:
         )
 
         # Strip shell comments to remove the easiest injection vector.
-        sanitized_command = _strip_shell_comments(command)
+        sanitized_command = _safe_approval_text(_strip_shell_comments(command))
+        safe_description = _safe_approval_text(description)
 
         system_prompt = (
             "You are a security reviewer for an AI coding agent. "
@@ -3711,7 +3970,7 @@ def _smart_approve(command: str, description: str) -> str:
             )
 
         user_prompt = (
-            f"The following command was flagged as: {description}\n\n"
+            f"The following command was flagged as: {safe_description}\n\n"
             f"<command>\n{sanitized_command}\n</command>\n\n"
             "Assess the ACTUAL risk of the shell operations in this command. "
             "Many flagged commands are false positives — for example, "
@@ -3752,7 +4011,6 @@ def _smart_approve(command: str, description: str) -> str:
             "Smart approvals: LLM call failed after %.1fs (%s: %s), escalating",
             time.monotonic() - _smart_t0,
             type(e).__name__,
-            e,
         )
         return "escalate"
 
@@ -3762,6 +4020,7 @@ def _run_approval_gate(
     pattern_key: str,
     description: str,
     display_target: str,
+    coalesce_target: str | None = None,
     approval_callback=None,
     cron_deny_message: str,
     single_query_deny_message: str,
@@ -3790,6 +4049,11 @@ def _run_approval_gate(
         description: Human-facing reason shown in the prompt.
         display_target: The command string or synthetic tool label shown
             to the user (redacted by ``prompt_dangerous_approval``).
+        coalesce_target: Private, unredacted identity used only for
+            coalescing identical concurrent requests. Defaults to
+            ``display_target`` for synthetic tool approvals; dangerous-command
+            callers pass the raw command so redaction cannot merge distinct
+            scripts into one approval.
         approval_callback: Optional CLI prompt callback. When ``None`` the
             per-thread callback registered via
             ``tools.terminal_tool.set_approval_callback`` is used.
@@ -3812,6 +4076,13 @@ def _run_approval_gate(
         ``{"approved": bool, "message": str|None, ...}`` — shape shared with
         ``check_dangerous_command`` so all callers handle it uniformly.
     """
+    safe_description = _safe_approval_text(description)
+    safe_display_target = _safe_approval_text(display_target)
+    safe_cron_deny_message = _safe_approval_text(cron_deny_message)
+    safe_single_query_deny_message = _safe_approval_text(single_query_deny_message)
+    safe_unattended_deny_message = _safe_approval_text(unattended_deny_message)
+    safe_no_human_block_message = _safe_approval_text(no_human_block_message)
+
     # --yolo bypasses all approval prompts (session- or process-scoped).
     # Hardline blocks are handled by the caller BEFORE this gate, so yolo
     # here only skips the recoverable approval layer.
@@ -3841,9 +4112,9 @@ def _run_approval_gate(
             if _get_single_query_approval_mode() == "deny":
                 return {
                     "approved": False,
-                    "message": single_query_deny_message,
+                    "message": safe_single_query_deny_message,
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                 }
             # single_query_mode: approve — auto-approve. Unlike cron, this must
             # return here rather than fall through: the plugin-escalation
@@ -3852,7 +4123,7 @@ def _run_approval_gate(
             logger.warning(
                 "%s (pattern: %s): %s — single-query auto-approve "
                 "(approvals.single_query_mode: approve).",
-                autoapprove_log_prefix, pattern_key, description,
+                autoapprove_log_prefix, pattern_key, safe_description,
             )
             return {"approved": True, "message": None}
         # Cron sessions: respect cron_mode config
@@ -3860,9 +4131,9 @@ def _run_approval_gate(
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
-                    "message": cron_deny_message,
+                    "message": safe_cron_deny_message,
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                 }
             # cron_mode: approve — fall through to auto-approve below.
         elif _is_unattended_platform_approval_context():
@@ -3872,8 +4143,8 @@ def _run_approval_gate(
             if _get_unattended_approval_mode() == "deny":
                 return {
                     "approved": False,
-                    "message": unattended_deny_message or (
-                        f"BLOCKED: approval required ({description}) but this "
+                    "message": safe_unattended_deny_message or (
+                        f"BLOCKED: approval required ({safe_description}) but this "
                         "session runs on an unattended platform "
                         f"({_get_session_platform()}) with no user present to "
                         "approve it. Find an alternative approach that avoids "
@@ -3882,7 +4153,7 @@ def _run_approval_gate(
                         "config.yaml."
                     ),
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                 }
             # unattended_mode: approve — fall through to auto-approve below.
         elif fail_closed_when_no_human:
@@ -3894,21 +4165,21 @@ def _run_approval_gate(
                 "%s (pattern: %s): %s — no interactive user/gateway present; "
                 "BLOCKED (fail-closed). Set HERMES_INTERACTIVE or "
                 "HERMES_GATEWAY_SESSION to answer the prompt.",
-                autoapprove_log_prefix, pattern_key, description,
+                autoapprove_log_prefix, pattern_key, safe_description,
             )
             return {
                 "approved": False,
-                "message": no_human_block_message or (
-                    f"BLOCKED: approval required ({description}) but no "
+                "message": safe_no_human_block_message or (
+                    f"BLOCKED: approval required ({safe_description}) but no "
                     "interactive user or gateway is present to approve it."
                 ),
                 "pattern_key": pattern_key,
-                "description": description,
+                "description": _safe_approval_text(description),
             }
         logger.warning(
             "%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
             "HERMES_GATEWAY_SESSION to require approval.",
-            autoapprove_log_prefix, pattern_key, description,
+            autoapprove_log_prefix, pattern_key, safe_description,
         )
         return {"approved": True, "message": None}
 
@@ -3924,30 +4195,42 @@ def _run_approval_gate(
             notify_cb = _gateway_notify_cbs.get(session_key)
 
         if notify_cb is not None:
-            from agent.redact import redact_sensitive_text
-            approval_data = {
-                "command": redact_sensitive_text(display_target),
+            coalesce_key = _approval_data_coalesce_key({
+                "command": display_target if coalesce_target is None else coalesce_target,
+                "description": description,
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
-                "description": redact_sensitive_text(description),
+                "allow_permanent": True,
+                "allow_session": True,
+            })
+            approval_data = {
+                "command": _safe_approval_text(display_target),
+                "pattern_key": pattern_key,
+                "pattern_keys": [pattern_key],
+                "description": _safe_approval_text(description),
                 "allow_permanent": True,
                 "allow_session": True,
             }
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface="gateway"
+                session_key,
+                notify_cb,
+                approval_data,
+                surface="gateway",
+                coalesce_key=coalesce_key,
             )
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                     "outcome": "notify_failed",
                     "user_consent": False,
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
             deny_reason = decision.get("reason")
+            safe_deny_reason = _safe_approval_text(deny_reason) if deny_reason else ""
 
             if not resolved or choice is None or choice == "deny":
                 if not resolved:
@@ -3959,8 +4242,8 @@ def _run_approval_gate(
                     timeout_addendum = ""
                     outcome = "denied"
                 reason_addendum = ""
-                if resolved and deny_reason:
-                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                if resolved and safe_deny_reason:
+                    reason_addendum = f' Reason given by the user: "{safe_deny_reason}".'
                 return {
                     "approved": False,
                     "message": (
@@ -3970,10 +4253,10 @@ def _run_approval_gate(
                         f"outcome via a different path.{timeout_addendum}"
                     ),
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                     "outcome": outcome,
                     "user_consent": False,
-                    "deny_reason": deny_reason,
+                    "deny_reason": safe_deny_reason,
                 }
 
             if choice == "session":
@@ -3992,39 +4275,43 @@ def _run_approval_gate(
             approval_callback=approval_callback,
             notify_cb=notify_cb,
         ):
+            safe_display_target = _safe_approval_text(display_target)
+            safe_description = _safe_approval_text(description)
             # No notify callback (e.g. API server without an attached chat):
             # queue for /approve /deny review, agent sees approval_required.
-            submit_pending(session_key, {
-                "command": display_target,
+            pending = submit_pending(session_key, {
+                "command": safe_display_target,
                 "pattern_key": pattern_key,
-                "description": description,
+                "description": _safe_approval_text(description),
             })
             return {
                 "approved": False,
                 "pattern_key": pattern_key,
                 "status": "approval_required",
-                "command": display_target,
-                "description": description,
+                "command": safe_display_target,
+                "description": _safe_approval_text(description),
+                "request_id": pending["request_id"],
+                "expires_at": pending["expires_at"],
                 "message": (
-                    f"⚠️ This action is potentially dangerous ({description}). "
-                    f"Asking the user for approval.\n\n**Target:**\n```\n{display_target}\n```"
+                    f"⚠️ This action is potentially dangerous ({safe_description}). "
+                    f"Asking the user for approval.\n\n**Target:**\n```\n{safe_display_target}\n```"
                 ),
             }
 
     _fire_approval_hook(
         "pre_approval_request",
-        command=display_target,
+        command=safe_display_target,
         description=description,
         pattern_key=pattern_key,
         pattern_keys=[pattern_key],
         session_key=session_key,
         surface="cli",
     )
-    choice = prompt_dangerous_approval(display_target, description,
+    choice = prompt_dangerous_approval(safe_display_target, safe_description,
                                        approval_callback=approval_callback)
     _fire_approval_hook(
         "post_approval_response",
-        command=display_target,
+        command=safe_display_target,
         description=description,
         pattern_key=pattern_key,
         pattern_keys=[pattern_key],
@@ -4043,7 +4330,7 @@ def _run_approval_gate(
                 f"different path. Silence is not consent."
             ),
             "pattern_key": pattern_key,
-            "description": description,
+            "description": safe_description,
             "outcome": "timeout",
             "user_consent": False,
         }
@@ -4053,11 +4340,11 @@ def _run_approval_gate(
             "approved": False,
             "message": (
                 f"BLOCKED: User denied this potentially dangerous action "
-                f"(matched '{description}'). Do NOT retry — the user has "
+                f"(matched '{safe_description}'). Do NOT retry — the user has "
                 "explicitly rejected it."
             ),
             "pattern_key": pattern_key,
-            "description": description,
+            "description": safe_description,
             "outcome": "denied",
             "user_consent": False,
         }
@@ -4114,7 +4401,11 @@ def check_dangerous_command(command: str, env_type: str,
     # to wipe the disk or power the box off.
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        logger.warning(
+            "Hardline block: %s (command: %s)",
+            _safe_approval_text(hardline_desc),
+            _safe_approval_text(command)[:200],
+        )
         return _hardline_block_result(hardline_desc, command)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
@@ -4122,8 +4413,11 @@ def check_dangerous_command(command: str, env_type: str,
     # user saying "never, even under yolo".
     deny_pattern = _match_user_deny_rule(command)
     if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s",
-                       deny_pattern, command[:200])
+        logger.warning(
+            "User deny rule %r blocked command: %s",
+            deny_pattern,
+            _safe_approval_text(command)[:200],
+        )
         return _user_deny_block_result(deny_pattern)
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
@@ -4142,6 +4436,7 @@ def check_dangerous_command(command: str, env_type: str,
         pattern_key=pattern_key,
         description=description,
         display_target=command,
+        coalesce_target=command,
         approval_callback=approval_callback,
         cron_deny_message=(
             f"BLOCKED: Command flagged as dangerous ({description}) "
@@ -4354,8 +4649,8 @@ def _present_with_selected_transport(
 
         timeout_seconds = _get_approval_timeout()
         request = ApprovalRequest.create(
-            command=redact_sensitive_text(command, force=True),
-            description=redact_sensitive_text(description, force=True),
+            command=redact_sensitive_text(command, force=True, redact_url_credentials=True),
+            description=redact_sensitive_text(description, force=True, redact_url_credentials=True),
             pattern_key=pattern_key,
             pattern_keys=tuple(pattern_keys),
             session_key=session_key,
@@ -4407,6 +4702,26 @@ def _present_with_selected_transport(
             on_poll=_poll,
             is_interrupted=is_interrupted,
         )
+    if result.failure is None and result.choice not in {"once", "session", "always", "deny"}:
+        _fire_approval_hook(
+            "post_approval_response",
+            command=request.command,
+            description=request.description,
+            pattern_key=pattern_key,
+            pattern_keys=list(pattern_keys),
+            session_key=session_key,
+            surface=hook_surface,
+            choice="transport_invalid_choice",
+            request_id=request.request_id,
+            request_digest=request.digest,
+        )
+        return {
+            "selected": True,
+            "choice": "deny",
+            "failure": "invalid_choice",
+            "fallback": None,
+            "name": name,
+        }
     hook_choice = result.choice if result.failure is None else f"transport_{result.failure}"
     _fire_approval_hook(
         "post_approval_response",
@@ -4449,7 +4764,8 @@ def _transport_denied_result(
 
 
 def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
-                            *, surface: str = "gateway"):
+                            *, surface: str = "gateway",
+                            timeout_seconds: float | None = None):
     """Wait on an already-pending identical approval instead of re-prompting.
 
     Called by ``_await_gateway_decision`` when an identical approval (same
@@ -4485,7 +4801,7 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
         coalesced=True,
     )
 
-    timeout = _get_approval_timeout()
+    timeout = _bounded_approval_timeout(timeout_seconds)
     try:
         from tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover
@@ -4547,7 +4863,9 @@ def _await_coalesced_leader(session_key: str, leader, approval_data: dict,
 
 
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
-                            *, surface: str = "gateway") -> dict:
+                            *, surface: str = "gateway",
+                            coalesce_key: str | None = None,
+                            timeout_seconds: float | None = None) -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
     thread until the request is resolved or the gateway approval timeout
     elapses — firing pre/post approval hooks and cleaning up the queue entry.
@@ -4582,28 +4900,41 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     #     command the user just declined is prompt spam and an evasion path).
     #   once             → single-use consent; it covers ONLY the leader's
     #     execution, so the follower falls through to a fresh prompt.
-    leader = None
-    with _lock:
-        for existing in _gateway_queues.get(session_key, []):
-            data = existing.data
-            if (
-                data.get("command") == approval_data.get("command")
-                and list(data.get("pattern_keys") or [])
-                == list(approval_data.get("pattern_keys") or [])
-            ):
-                leader = existing
-                break
-    if leader is not None:
+    requested_coalesce_key = coalesce_key or _approval_data_coalesce_key(approval_data)
+    timeout = _bounded_approval_timeout(timeout_seconds)
+
+    def claim_or_join():
+        with _lock:
+            queue = _gateway_queues.setdefault(session_key, [])
+            for existing in queue:
+                data = existing.data
+                if (
+                    existing.coalesce_key == requested_coalesce_key
+                ):
+                    return existing, None
+            entry = _ApprovalEntry(
+                approval_data,
+                requested_coalesce_key,
+                timeout_seconds=timeout,
+            )
+            queue.append(entry)
+            return None, entry
+
+    while True:
+        leader, entry = claim_or_join()
+        if leader is None:
+            break
         adopted = _await_coalesced_leader(
-            session_key, leader, approval_data, surface=surface
+            session_key,
+            leader,
+            approval_data,
+            surface=surface,
+            timeout_seconds=timeout_seconds,
         )
         if adopted is not None:
             return adopted
-        # Leader resolved "once" — fall through to a fresh prompt below.
-
-    entry = _ApprovalEntry(approval_data)
-    with _lock:
-        _gateway_queues.setdefault(session_key, []).append(entry)
+        # Leader resolved "once" — re-check atomically before creating a
+        # fresh prompt so concurrent followers cannot create duplicate leaders.
 
     def _drop_entry() -> None:
         with _lock:
@@ -4630,7 +4961,21 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         notify_cb(dict(entry.data))
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
-        _drop_entry()
+        # Publish a fail-closed result before removing the entry and signaling
+        # it. Coalesced followers hold the same entry reference; dropping it
+        # without signaling leaves them blocked until their independent
+        # timeout even though the leader already knows the request could not
+        # reach a user.
+        with _lock:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+            if not entry.event.is_set():
+                entry.result = "deny"
+                entry.reason = "approval notification failed"
+                entry.event.set()
         _fire_approval_hook(
             "post_approval_response",
             command=command,
@@ -4648,8 +4993,6 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # every ~10s to the agent's inactivity tracker — otherwise the gateway
     # watchdog kills the agent while the user is still responding. Mirrors
     # _wait_for_process() cadence.
-    timeout = _get_approval_timeout()
-
     try:
         from tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover
@@ -4694,15 +5037,33 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                     "returning deny for session %s",
                     session_key,
                 )
-                entry.result = "deny"
-                entry.event.set()
-                resolved = True
+                with _lock:
+                    if entry.event.is_set():
+                        resolved = entry.result is not None
+                    else:
+                        entry.result = "deny"
+                        entry.event.set()
+                        resolved = True
                 break
             _remaining = _deadline - time.monotonic()
             if _remaining <= 0:
+                # Claim timeout under the same lock used by the resolver. If
+                # resolution won the race, its event/result are authoritative;
+                # otherwise retire and signal this entry so coalesced followers
+                # cannot observe an ambiguous half-resolved state.
+                with _lock:
+                    if entry.event.is_set():
+                        resolved = entry.result is not None
+                    else:
+                        queue = _gateway_queues.get(session_key, [])
+                        if entry in queue:
+                            queue.remove(entry)
+                            if not queue:
+                                _gateway_queues.pop(session_key, None)
+                        entry.event.set()
                 break
             if entry.event.wait(timeout=min(1.0, _remaining)):
-                resolved = True
+                resolved = entry.result is not None
                 break
             if touch_activity_if_due is not None:
                 touch_activity_if_due(_activity_state, "waiting for user approval")
@@ -4752,7 +5113,11 @@ def check_all_command_guards(command: str, env_type: str,
     # no session-level setting can bypass it.
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
-        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        logger.warning(
+            "Hardline block: %s (command: %s)",
+            _safe_approval_text(hardline_desc),
+            _safe_approval_text(command)[:200],
+        )
         return _hardline_block_result(hardline_desc, command)
 
     # == Sudo stdin guard ==
@@ -4762,8 +5127,11 @@ def check_all_command_guards(command: str, env_type: str,
     # check so even yolo/smart approval/mode=off cannot bypass it.
     is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
     if is_sudo_guess:
-        logger.warning("Sudo stdin guard block: %s (command: %s)",
-                       sudo_guess_desc, command[:200])
+        logger.warning(
+            "Sudo stdin guard block: %s (command: %s)",
+            _safe_approval_text(sudo_guess_desc),
+            _safe_approval_text(command)[:200],
+        )
         return _sudo_stdin_block_result(sudo_guess_desc)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
@@ -4771,8 +5139,11 @@ def check_all_command_guards(command: str, env_type: str,
     # rule is the user saying "never, even under yolo".
     deny_pattern = _match_user_deny_rule(command)
     if deny_pattern is not None:
-        logger.warning("User deny rule %r blocked command: %s",
-                       deny_pattern, command[:200])
+        logger.warning(
+            "User deny rule %r blocked command: %s",
+            deny_pattern,
+            _safe_approval_text(command)[:200],
+        )
         return _user_deny_block_result(deny_pattern)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
@@ -4819,7 +5190,7 @@ def check_all_command_guards(command: str, env_type: str,
                             "approvals.single_query_mode: approve in config.yaml."
                         ),
                         "pattern_key": _pk,
-                        "description": description,
+                        "description": _safe_approval_text(description),
                     }
                 # Also run tirith check in single-query-deny mode so content-level
                 # threats (homograph URLs, pipe-to-interpreter, terminal
@@ -5076,23 +5447,29 @@ def check_all_command_guards(command: str, env_type: str,
     # (openai/codex#13860).
     smart_denied_for_owner = False
     if approval_mode == "smart":
-        combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        safe_command_for_llm = _safe_approval_text(command)
+        combined_desc_for_llm = _safe_approval_text(
+            "; ".join(desc for _, desc, _ in warnings)
+        )
         observer_payload = _prepare_smart_approval_observer(
-            command=command,
+            command=safe_command_for_llm,
             description=combined_desc_for_llm,
             pattern_key=warnings[0][0],
             pattern_keys=[key for key, _, _ in warnings],
             session_key=session_key,
         )
-        verdict = _smart_approve(command, combined_desc_for_llm)
+        verdict = _smart_approve(safe_command_for_llm, combined_desc_for_llm)
         _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             # Approve this command only. Pattern-level persistence would let one
             # benign command suppress review of later commands that happen to
             # match the same broad detector category.
             _reset_denials(session_key)
-            logger.debug("Smart approval: auto-approved '%s' (%s)",
-                         command[:60], combined_desc_for_llm)
+            logger.debug(
+                "Smart approval: auto-approved '%s' (%s)",
+                safe_command_for_llm[:60],
+                combined_desc_for_llm,
+            )
             return {"approved": True, "message": None,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
@@ -5118,7 +5495,9 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 3: Approval ---
 
     # Combine descriptions for a single approval prompt
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    combined_desc = _safe_approval_text(
+        "; ".join(desc for _, desc, _ in warnings)
+    )
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     # "Always" is offered when at least one warning is a dangerous-pattern
@@ -5216,12 +5595,20 @@ def check_all_command_guards(command: str, env_type: str,
             # via the closure below, so redaction is display-only. Approval
             # persistence keys off pattern_key (not the command text), so the
             # allowlist is unaffected.
-            from agent.redact import redact_sensitive_text
-            approval_data = {
-                "command": redact_sensitive_text(command),
+            coalesce_key = _approval_data_coalesce_key({
+                "command": command,
+                "description": combined_desc,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
-                "description": redact_sensitive_text(combined_desc),
+                "allow_permanent": has_permanent_capable and not smart_denied_for_owner,
+                "allow_session": not smart_denied_for_owner,
+                "smart_denied": smart_denied_for_owner,
+            })
+            approval_data = {
+                "command": _safe_approval_text(command),
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "description": _safe_approval_text(combined_desc),
                 # Smart DENY overrides are one-operation decisions, so the UI
                 # must not offer a permanent scope.  Otherwise offer Always
                 # whenever any dangerous-pattern warning can actually be
@@ -5236,7 +5623,11 @@ def check_all_command_guards(command: str, env_type: str,
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface="gateway"
+                session_key,
+                notify_cb,
+                approval_data,
+                surface="gateway",
+                coalesce_key=coalesce_key,
             )
             if decision.get("notify_failed"):
                 return {
@@ -5250,6 +5641,7 @@ def check_all_command_guards(command: str, env_type: str,
             resolved = decision["resolved"]
             choice = decision["choice"]
             deny_reason = decision.get("reason")
+            safe_deny_reason = _safe_approval_text(deny_reason) if deny_reason else ""
 
             if not resolved or choice is None or choice == "deny":
                 # Consent contract: silence is NOT consent, and an explicit
@@ -5269,8 +5661,8 @@ def check_all_command_guards(command: str, env_type: str,
                 # (``/deny <reason>``) so the agent can adapt rather than only
                 # hearing "denied". Relayed verbatim; generic attribution.
                 reason_addendum = ""
-                if outcome == "denied" and deny_reason:
-                    reason_addendum = f' Reason given by the user: "{deny_reason}".'
+                if outcome == "denied" and safe_deny_reason:
+                    reason_addendum = f' Reason given by the user: "{safe_deny_reason}".'
                 breaker_addendum = _denial_breaker_addendum(session_key)
                 return {
                     "approved": False,
@@ -5287,7 +5679,7 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                     "outcome": outcome,
                     "user_consent": False,
-                    "deny_reason": deny_reason,
+                    "deny_reason": safe_deny_reason,
                 }
 
             # A smart-DENY owner override is always one operation, even if an
@@ -5321,18 +5713,80 @@ def check_all_command_guards(command: str, env_type: str,
             # Return approval_required for backward compat. Redact secrets in the
             # user-facing copy — the raw `command` is preserved for execution and
             # the allowlist keys off pattern_key, so redaction is display-only.
-            from agent.redact import redact_sensitive_text
-            _disp_command = redact_sensitive_text(command)
-            _disp_combined_desc = redact_sensitive_text(combined_desc)
+            _disp_command = _safe_approval_text(command)
+            _disp_combined_desc = _safe_approval_text(combined_desc)
             pending_data = {
                 "command": _disp_command,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": _disp_combined_desc,
+                "choices": (
+                    ["once", "deny"]
+                    if smart_denied_for_owner
+                    else ["once", "session", "always", "deny"]
+                    if has_permanent_capable
+                    else ["once", "session", "deny"]
+                ),
+                "allow_session": not smart_denied_for_owner,
+                "allow_permanent": has_permanent_capable and not smart_denied_for_owner,
             }
             if smart_denied_for_owner:
-                pending_data.update(smart_denied=True, allow_permanent=False)
-            submit_pending(session_key, pending_data)
+                pending_data["smart_denied"] = True
+            pending = submit_pending(session_key, pending_data)
+            if _approval_session_key.get():
+                from tools.approval import wait_for_pending_gateway_approval
+
+                decision = wait_for_pending_gateway_approval(
+                    session_key,
+                    pending["request_id"],
+                )
+                resolved = decision.get("resolved") is True
+                choice = decision.get("choice")
+                safe_reason = _safe_approval_text(decision.get("reason"))
+                if not resolved or choice not in {"once", "session", "always"}:
+                    outcome = "denied" if resolved and choice == "deny" else "timeout"
+                    reason = (
+                        "denied by user" if outcome == "denied"
+                        else "timed out without user response"
+                    )
+                    addendum = (
+                        f' Reason given by the user: "{safe_reason}".'
+                        if outcome == "denied" and safe_reason else ""
+                    )
+                    return {
+                        "approved": False,
+                        "pattern_key": primary_key,
+                        "description": _safe_approval_text(combined_desc),
+                        "outcome": outcome,
+                        "user_consent": False,
+                        "deny_reason": safe_reason,
+                        "message": (
+                            f"BLOCKED: Command {reason}.{addendum} The user has "
+                            "NOT consented to this action. Do NOT retry or use "
+                            "another route. Silence is not consent."
+                            if outcome == "timeout"
+                            else (
+                                f"BLOCKED: Command {reason}.{addendum} The user has "
+                                "NOT consented to this action. Do NOT retry or use "
+                                "another route."
+                            )
+                        ),
+                    }
+                if not smart_denied_for_owner:
+                    for key, _, is_tirith in warnings:
+                        if choice == "session" or (choice == "always" and is_tirith):
+                            approve_session(session_key, key)
+                        elif choice == "always":
+                            approve_session(session_key, key)
+                            approve_permanent(key)
+                            save_permanent_allowlist(_permanent_approved)
+                _reset_denials(session_key)
+                return {
+                    "approved": True,
+                    "message": None,
+                    "user_approved": True,
+                    "description": _safe_approval_text(combined_desc),
+                }
             result = {
                 "approved": False,
                 "pattern_key": primary_key,
@@ -5340,6 +5794,8 @@ def check_all_command_guards(command: str, env_type: str,
                 "approval_pending": True,
                 "command": _disp_command,
                 "description": _disp_combined_desc,
+                "request_id": pending["request_id"],
+                "expires_at": pending["expires_at"],
                 "message": (
                     f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```\n\n"
                     "STOP: do NOT re-run, rephrase, or re-issue this command — each "
@@ -5497,7 +5953,7 @@ def check_execute_code_guard(code: str, env_type: str,
                     "single-query run is intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
-                "description": description,
+                "description": _safe_approval_text(description),
                 "outcome": "blocked",
                 "user_consent": False,
             }
@@ -5517,7 +5973,7 @@ def check_execute_code_guard(code: str, env_type: str,
                     "is intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
-                "description": description,
+                "description": _safe_approval_text(description),
                 "outcome": "blocked",
                 "user_consent": False,
             }
@@ -5540,7 +5996,7 @@ def check_execute_code_guard(code: str, env_type: str,
                     "this surface are intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
-                "description": description,
+                "description": _safe_approval_text(description),
                 "outcome": "blocked",
                 "user_consent": False,
             }
@@ -5593,7 +6049,7 @@ def check_execute_code_guard(code: str, env_type: str,
             logger.debug("Smart approval: auto-approved execute_code for session %s",
                          session_key)
             return {"approved": True, "message": None,
-                    "smart_approved": True, "description": description}
+                    "smart_approved": True, "description": _safe_approval_text(description)}
         if verdict == "deny" and not (is_gateway or is_ask):
             _record_denial(session_key)
             breaker_addendum = _denial_breaker_addendum(session_key)
@@ -5604,7 +6060,7 @@ def check_execute_code_guard(code: str, env_type: str,
                             f"Do NOT retry.{breaker_addendum}"),
                 "smart_denied": True,
                 "pattern_key": pattern_key,
-                "description": description,
+                "description": _safe_approval_text(description),
                 "outcome": "denied",
                 "user_consent": False,
             }
@@ -5623,14 +6079,13 @@ def check_execute_code_guard(code: str, env_type: str,
     # screenshottable. The raw `command`/`code` are still what get assessed by
     # smart approval and executed; redaction is display-only. Approval
     # persistence keys off pattern_key, so the allowlist is unaffected.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_code = redact_sensitive_text(code)
-    display_description = redact_sensitive_text(description)
+    display_command = _safe_approval_text(command)
+    display_code = _safe_approval_text(code)
+    display_description = _safe_approval_text(description)
 
     transport_attempt = _present_with_selected_transport(
-        command=command,
-        description=description,
+        command=display_command,
+        description=display_description,
         pattern_key=pattern_key,
         pattern_keys=[pattern_key],
         session_key=session_key,
@@ -5649,7 +6104,7 @@ def check_execute_code_guard(code: str, env_type: str,
         elif transport_failure:
             return _transport_denied_result(
                 pattern_key=pattern_key,
-                description=description,
+                description=display_description,
                 failure=transport_failure,
             )
         else:
@@ -5663,7 +6118,7 @@ def check_execute_code_guard(code: str, env_type: str,
                         "approval transport. The user has NOT consented."
                     ),
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                     "outcome": "denied",
                     "user_consent": False,
                 }
@@ -5679,7 +6134,7 @@ def check_execute_code_guard(code: str, env_type: str,
                 "approved": True,
                 "message": None,
                 "user_approved": True,
-                "description": description,
+                "description": display_description,
             }
 
     notify_cb = None
@@ -5738,7 +6193,7 @@ def check_execute_code_guard(code: str, env_type: str,
                         f"consent.{breaker_addendum}"
                     ),
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                     "outcome": "timeout",
                     "user_consent": False,
                 }
@@ -5754,11 +6209,11 @@ def check_execute_code_guard(code: str, env_type: str,
                     "approved": False,
                     "message": (
                         "BLOCKED: User denied execute_code script execution "
-                        f"(matched '{description}'). Do NOT retry — the user "
+                        f"(matched '{display_description}'). Do NOT retry — the user "
                         f"has explicitly rejected it.{breaker_addendum}"
                     ),
                     "pattern_key": pattern_key,
-                    "description": description,
+                    "description": _safe_approval_text(description),
                     "outcome": "denied",
                     "user_consent": False,
                 }
@@ -5774,7 +6229,7 @@ def check_execute_code_guard(code: str, env_type: str,
                 "approved": True,
                 "message": None,
                 "user_approved": True,
-                "description": description,
+                "description": display_description,
             }
 
         # No gateway callback registered (e.g. ask-mode without a notifier):
@@ -5784,10 +6239,55 @@ def check_execute_code_guard(code: str, env_type: str,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
             "description": display_description,
+            "choices": ["once", "deny"] if smart_denied_for_owner else ["once", "session", "always", "deny"],
+            "allow_session": not smart_denied_for_owner,
+            "allow_permanent": not smart_denied_for_owner,
         }
         if smart_denied_for_owner:
             pending_data.update(smart_denied=True, allow_permanent=False)
-        submit_pending(session_key, pending_data)
+        pending = submit_pending(session_key, pending_data)
+        if _approval_session_key.get():
+            decision = wait_for_pending_gateway_approval(
+                session_key,
+                pending["request_id"],
+            )
+            resolved = decision.get("resolved") is True
+            choice = decision.get("choice")
+            safe_reason = _safe_approval_text(decision.get("reason"))
+            if not resolved or choice not in {"once", "session", "always"}:
+                outcome = "denied" if resolved and choice == "deny" else "timeout"
+                reason = "denied by user" if outcome == "denied" else "timed out without user response"
+                addendum = (
+                    f' Reason given by the user: "{safe_reason}".'
+                    if outcome == "denied" and safe_reason else ""
+                )
+                return {
+                    "approved": False,
+                    "pattern_key": pattern_key,
+                    "description": display_description,
+                    "outcome": outcome,
+                    "user_consent": False,
+                    "deny_reason": safe_reason,
+                    "message": (
+                        f"BLOCKED: execute_code script {reason}.{addendum} The user "
+                        "has NOT consented. Do NOT retry or use another route."
+                        + (" Silence is not consent." if outcome == "timeout" else "")
+                    ),
+                }
+            if not smart_denied_for_owner:
+                if choice == "session":
+                    approve_session(session_key, pattern_key)
+                elif choice == "always":
+                    approve_session(session_key, pattern_key)
+                    approve_permanent(pattern_key)
+                    save_permanent_allowlist(_permanent_approved)
+            _reset_denials(session_key)
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": display_description,
+            }
         result = {
             "approved": False,
             "pattern_key": pattern_key,
@@ -5795,6 +6295,8 @@ def check_execute_code_guard(code: str, env_type: str,
             "approval_pending": True,
             "command": display_command,
             "description": display_description,
+            "request_id": pending["request_id"],
+            "expires_at": pending["expires_at"],
             "message": (
                 f"⚠️ {display_description}. Asking the user for approval.\n\n"
                 f"**Code:**\n```python\n{display_code}\n```\n\n"
@@ -5819,7 +6321,19 @@ def check_execute_code_guard(code: str, env_type: str,
     if smart_denied_for_owner:
         approval_data["smart_denied"] = True
     decision = _await_gateway_decision(
-        session_key, notify_cb, approval_data, surface="gateway"
+        session_key,
+        notify_cb,
+        approval_data,
+        surface="gateway",
+        coalesce_key=_approval_data_coalesce_key({
+            "command": command,
+            "description": description,
+            "pattern_key": pattern_key,
+            "pattern_keys": [pattern_key],
+            "allow_permanent": not smart_denied_for_owner,
+            "allow_session": not smart_denied_for_owner,
+            "smart_denied": smart_denied_for_owner,
+        }),
     )
     if decision.get("notify_failed"):
         return {
@@ -5827,7 +6341,7 @@ def check_execute_code_guard(code: str, env_type: str,
             "message": ("BLOCKED: Failed to send execute_code approval request "
                         "to user. Do NOT retry."),
             "pattern_key": pattern_key,
-            "description": description,
+            "description": display_description,
             "outcome": "notify_failed",
             "user_consent": False,
         }
@@ -5852,7 +6366,7 @@ def check_execute_code_guard(code: str, env_type: str,
                 f"outcome via a different tool.{addendum}{breaker_addendum}"
             ),
             "pattern_key": pattern_key,
-            "description": description,
+            "description": display_description,
             "outcome": "timeout" if not resolved else "denied",
             "user_consent": False,
             "deny_reason": deny_reason,
@@ -5873,7 +6387,7 @@ def check_execute_code_guard(code: str, env_type: str,
     # A human approval resets the consecutive-denial tally.
     _reset_denials(session_key)
     return {"approved": True, "message": None,
-            "user_approved": True, "description": description}
+            "user_approved": True, "description": display_description}
 
 
 # =========================================================================
@@ -5904,7 +6418,7 @@ def request_elicitation_consent(
     try:
         session_key = get_current_session_key()
     except Exception as exc:  # pragma: no cover -- defensive
-        logger.warning("Elicitation consent: session lookup failed: %s", exc)
+        logger.warning("Elicitation consent: session lookup failed (%s)", type(exc).__name__)
         return "decline"
 
     if _is_gateway_approval_context():
@@ -5918,19 +6432,36 @@ def request_elicitation_consent(
             )
             return "decline"
 
-        approval_data = {
+        coalesce_key = _approval_data_coalesce_key({
             "command": message,
             "description": description,
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],
+            "choices": ["once", "deny"],
+            "allow_session": False,
+            "allow_permanent": False,
+        })
+        approval_data = {
+            "command": _safe_approval_text(message),
+            "description": _safe_approval_text(description),
+            "pattern_key": "mcp_elicitation",
+            "pattern_keys": ["mcp_elicitation"],
+            "choices": ["once", "deny"],
+            "allow_session": False,
+            "allow_permanent": False,
         }
         try:
             decision = _await_gateway_decision(
-                session_key, notify_cb, approval_data, surface=surface,
+                session_key,
+                notify_cb,
+                approval_data,
+                surface=surface,
+                coalesce_key=coalesce_key,
+                timeout_seconds=timeout_seconds,
             )
         except Exception as exc:
             logger.error(
-                "Elicitation gateway dispatch failed: %s", exc, exc_info=True,
+                "Elicitation gateway dispatch failed (%s)", type(exc).__name__,
             )
             return "decline"
 
@@ -5939,7 +6470,7 @@ def request_elicitation_consent(
         if not decision.get("resolved"):
             return "cancel"
         choice = decision.get("choice")
-        if choice in ("once", "session", "always"):
+        if choice == "once":
             return "accept"
         return "decline"
 
@@ -5947,18 +6478,19 @@ def request_elicitation_consent(
     # per-call confirmation — there is no pattern to remember.
     try:
         choice = prompt_dangerous_approval(
-            message,
-            description,
+            _safe_approval_text(message),
+            _safe_approval_text(description),
             timeout_seconds=timeout_seconds,
             allow_permanent=False,
+            allow_session=False,
         )
     except Exception as exc:
         logger.error(
-            "Elicitation CLI prompt failed: %s", exc, exc_info=True,
+            "Elicitation CLI prompt failed (%s)", type(exc).__name__,
         )
         return "decline"
 
-    if choice in ("once", "session", "always"):
+    if choice == "once":
         return "accept"
     if choice == "timeout":
         # Prompt expired without a user response — mirror the gateway's

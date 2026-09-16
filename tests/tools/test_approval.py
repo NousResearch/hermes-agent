@@ -112,7 +112,12 @@ class TestDetectDangerousRm:
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()
         linked_temp = tmp_path / "linked-temp"
-        linked_temp.symlink_to(real_temp, target_is_directory=True)
+        try:
+            linked_temp.symlink_to(real_temp, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows symlink privilege is unavailable")
+            raise
         basename = "hermes-verify-example.py"
 
         with mock_patch("tempfile.gettempdir", return_value=str(linked_temp)):
@@ -1546,6 +1551,106 @@ class TestApprovalTimeoutIsNotConsent:
         thread.join(timeout=5)
         assert result_holder["result"]["approved"] is True
 
+    def test_internal_fifo_compatibility_remains_explicit(self):
+        from tools import approval as mod
+
+        first = mod._ApprovalEntry({"command": "first", "pattern_keys": ["dangerous"]})
+        second = mod._ApprovalEntry({"command": "second", "pattern_keys": ["dangerous"]})
+        mod._gateway_queues[self.SESSION_KEY] = [first, second]
+
+        # Local/internal callers retain the historical FIFO primitive. External
+        # messaging adapters and slash handlers must not call this path without
+        # a request_id; they reject the legacy action before reaching here.
+        assert mod.resolve_gateway_approval(self.SESSION_KEY, "once") == 1
+        assert len(mod._gateway_queues[self.SESSION_KEY]) == 1
+
+    def test_pending_entry_mints_server_owned_request_id(self):
+        from tools import approval as mod
+
+        entry = mod._ApprovalEntry({"request_id": "caller-controlled"})
+
+        assert entry.data["request_id"]
+        assert entry.data["request_id"] != "caller-controlled"
+
+
+    def test_resolver_rejects_a_choice_not_authorized_by_the_pending_entry(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        result_holder = {}
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result",
+                mod._await_gateway_decision(
+                    self.SESSION_KEY,
+                    lambda data: notified.append(data),
+                    {
+                        "command": "rm -rf .git",
+                        "description": "delete repository",
+                        "pattern_key": "dangerous",
+                        "pattern_keys": ["dangerous"],
+                        "choices": ["once", "deny"],
+                        "allow_permanent": True,
+                        "allow_session": True,
+                    },
+                ),
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.005)
+
+        request_id = mod.list_gateway_approvals(self.SESSION_KEY)[0]["request_id"]
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "always", request_id=request_id
+        ) == 0
+        assert mod.list_gateway_approvals(self.SESSION_KEY)
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "deny", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+        assert result_holder["result"]["choice"] == "deny"
+
+
+    def test_pending_entry_exposes_a_bounded_expiration_timestamp(self, monkeypatch):
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=2)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+        result_holder = {}
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault(
+                "result", mod._await_gateway_decision(
+                    self.SESSION_KEY,
+                    lambda data: notified.append(data),
+                    {"command": "rm -rf .git", "description": "delete"},
+                )
+            )
+        )
+        thread.start()
+        for _ in range(200):
+            if notified:
+                break
+            time.sleep(0.005)
+
+        assert notified
+        created_at = notified[0]["created_at"]
+        expires_at = notified[0]["expires_at"]
+        assert isinstance(created_at, (int, float))
+        assert isinstance(expires_at, (int, float))
+        assert 1.5 <= expires_at - created_at <= 2.5
+        request_id = notified[0]["request_id"]
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "deny", request_id=request_id
+        ) == 1
+        thread.join(timeout=5)
+
+
     def test_stale_request_id_cannot_resolve_current_approval(self, monkeypatch):
         from tools import approval as mod
 
@@ -1652,6 +1757,49 @@ class TestConcurrentApprovalCoalescing:
             assert r is not None and r["resolved"] and r["choice"] == "session"
         # Followers are marked as coalesced adoptions.
         assert sum(1 for r in results if r.get("coalesced")) == 2
+
+    def test_private_coalesce_keys_keep_distinct_raw_requests_separate(self, monkeypatch):
+        from tools import approval as mod
+
+        monkeypatch.setattr(mod, "_get_approval_timeout", lambda: 30)
+        notified = []
+        results = [None, None]
+        data = {
+            "command": "[redacted]",
+            "description": "[redacted]",
+            "pattern_key": "dangerous",
+            "pattern_keys": ["dangerous"],
+        }
+
+        threads = [
+            threading.Thread(
+                target=lambda idx=idx, key=key: results.__setitem__(
+                    idx,
+                    mod._await_gateway_decision(
+                        self.SESSION_KEY,
+                        notified.append,
+                        data,
+                        coalesce_key=key,
+                    ),
+                )
+            )
+            for idx, key in enumerate(("raw-a", "raw-b"))
+        ]
+        for thread in threads:
+            thread.start()
+        for _ in range(400):
+            if (
+                len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 2
+                and len(notified) == 2
+            ):
+                break
+            time.sleep(0.005)
+        assert len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 2
+        assert len(notified) == 2
+        assert mod.resolve_gateway_approval(self.SESSION_KEY, "deny", resolve_all=True) == 2
+        for thread in threads:
+            thread.join(timeout=5)
+        assert all(result and result["choice"] == "deny" for result in results)
 
     def test_deny_propagates_to_followers(self, monkeypatch):
         from tools import approval as mod

@@ -25,7 +25,7 @@ export type MarkdownMessageProps = {
 export function MarkdownMessage({ content, className = "", sessionId, streaming = false }: MarkdownMessageProps) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
   return (
-    <div className={`space-y-3 text-sm leading-relaxed text-foreground ${className}`.trim()}>
+    <div data-slot="markdown-message" className={`space-y-3 text-sm leading-relaxed text-foreground ${className}`.trim()}>
       {blocks.map((block, index) => <BlockView key={index} block={block} sessionId={sessionId} streaming={streaming} />)}
     </div>
   );
@@ -115,7 +115,7 @@ function inline(text: string): ReactNode {
   while ((match = pattern.exec(text))) {
     if (match.index > last) output.push(text.slice(last, match.index));
     if (match[1]) output.push("\n", <br key={match.index} />);
-    else if (match[2]) output.push(<code key={match.index} className="rounded bg-secondary px-1 font-mono text-xs">{match[2].slice(1, -1)}</code>);
+    else if (match[2]) output.push(<code key={match.index} data-slot="inline-code" className="rounded-sm border-0 bg-secondary px-1 font-mono text-xs font-medium text-midground text-secondary-foreground">{match[2].slice(1, -1)}</code>);
     else if (match[3]) {
       const href = safeHref(match[5]);
       output.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">{match[4]}</a> : match[4]);

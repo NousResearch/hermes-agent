@@ -2081,7 +2081,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": label},
                     "type": btn_type,
-                    "value": {"hermes_action": action_name, "approval_id": approval_id},
+                    "value": {
+                        "hermes_action": action_name,
+                        "approval_id": approval_id,
+                        "request_id": (metadata or {}).get("approval_request_id"),
+                    },
                 }
 
             actions = [_btn("✅ Allow Once", "approve_once", "primary")]
@@ -2121,6 +2125,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if result.success:
                 self._approval_state[approval_id] = {
                     "session_key": session_key,
+                    "request_id": (metadata or {}).get("approval_request_id"),
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
                 }
@@ -2944,7 +2949,11 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
+            count = resolve_gateway_approval(
+                state["session_key"],
+                choice,
+                request_id=state.get("request_id"),
+            ) if state.get("request_id") else 0
             logger.info(
                 "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                 count, state["session_key"], choice, user_name,

@@ -23,7 +23,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
+import type { ApprovalReq, Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -1249,17 +1249,48 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'approval.request': {
+        const requestId = ev.payload.request_id
+        if (typeof requestId !== 'string' || !requestId.trim()) {
+          setStatus('approval unavailable')
+          return
+        }
         const description = String(ev.payload.description ?? 'dangerous command')
-        // Only an explicit false (tirith warning) drops the permanent-allow option.
-        const allowPermanent = ev.payload.allow_permanent !== false
+        const rawChoices = Array.isArray(ev.payload.choices)
+          ? ev.payload.choices.filter((choice): choice is string => typeof choice === 'string')
+          : undefined
+        const allowPermanent = ev.payload.allow_permanent === true
+        const allowSession = ev.payload.allow_session === true
+        const createdAt = typeof ev.payload.created_at === 'number' && Number.isFinite(ev.payload.created_at)
+          ? ev.payload.created_at
+          : undefined
+        const expiresAt = typeof ev.payload.expires_at === 'number' && Number.isFinite(ev.payload.expires_at)
+          ? ev.payload.expires_at
+          : undefined
+        const nextApproval: ApprovalReq = {
+          allowPermanent,
+          allowSession,
+          choices: rawChoices,
+          command: String(ev.payload.command ?? ''),
+          createdAt,
+          description,
+          expiresAt,
+          requestId,
+          smartDenied: ev.payload.smart_denied === true
+        }
 
-        patchOverlayState({
-          approval: {
-            allowPermanent,
-            choices: ev.payload.choices,
-            command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
+        patchOverlayState(prev => {
+          const queue = prev.approvalQueue?.length
+            ? prev.approvalQueue
+            : prev.approval
+              ? [prev.approval]
+              : []
+          if (queue.some(item => item.requestId === requestId)) {
+            return prev
+          }
+          return {
+            ...prev,
+            approval: prev.approval ?? nextApproval,
+            approvalQueue: [...queue, nextApproval]
           }
         })
         setStatus('approval needed')

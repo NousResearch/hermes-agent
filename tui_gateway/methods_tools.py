@@ -11,6 +11,20 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
+def _redact_remote_text(value: str) -> str:
+    """Redact text returned by a remote execution handler."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(
+            str(value or ""),
+            force=True,
+            redact_url_credentials=True,
+        )
+    except Exception:
+        return "[REDACTED]"
+
+
 @method("system.battery")
 def _(rid, params: dict) -> dict:
     """Return the host battery status for the status-bar read-out.
@@ -38,6 +52,9 @@ def _(rid, params: dict) -> dict:
 
 @method("process.stop")
 def _(rid, params: dict) -> dict:
+    transport = current_transport()
+    if transport is not None and transport is not _stdio_transport:
+        return _err(rid, 4032, "process.stop is not available on remote transports; use process.kill")
     try:
         from tools.process_registry import process_registry
 
@@ -83,7 +100,9 @@ def _(rid, params: dict) -> dict:
 
 @method("reload.mcp")
 def _(rid, params: dict) -> dict:
-    session = _sessions.get(params.get("session_id", ""))
+    session, session_err = _require_remote_mutation_session(params, rid)
+    if session_err:
+        return session_err
     try:
         # Gate: /reload-mcp invalidates the prompt cache for this session.
         # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
@@ -405,19 +424,70 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5020, str(e))
 
 
+def _remote_exec_session(params: dict, rid):
+    """Require a server-owned session for execution over a WS transport."""
+    transport = current_transport()
+    # Stdio/TUI callers retain the local execution contract. Every WS caller,
+    # including legacy token-authenticated sockets, must bind execution to a
+    # live server-owned session instead of supplying only command/argv.
+    if transport is None or transport is _stdio_transport:
+        return None, None
+    if not hasattr(transport, "auth_identity"):
+        return None, _err(rid, 4032, "authenticated transport principal required")
+    sid = str(params.get("session_id") or "").strip()
+    if not sid:
+        return None, _err(rid, 4001, "session_id required for remote execution")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return None, err
+    principal = _authenticated_transport_principal()
+    owner_principal = str(session.get("owner_principal") or "").strip()
+    if not principal or not owner_principal or owner_principal != principal:
+        return None, _err(rid, 4032, "execution session is not owned by authenticated principal")
+    requested_profile = str(params.get("profile") or "").strip()
+    owner = str(session.get("profile_name") or "").strip()
+    if not owner:
+        return None, _err(rid, 4031, "execution session has no canonical profile")
+    if not requested_profile and owner != _current_profile_name():
+        return None, _err(rid, 4001, "profile required for non-default execution session")
+    if requested_profile:
+        requested = _canonical_profile_request(requested_profile)
+        if requested != owner:
+            return None, _err(rid, 4031, "execution profile does not own session")
+    return session, None
+
+
+@_profile_scoped
 @method("cli.exec")
 def _(rid, params: dict) -> dict:
     """Run `python -m hermes_cli.main` with argv; capture stdout/stderr (non-interactive only)."""
+    session, exec_err = _remote_exec_session(params, rid)
+    if exec_err:
+        return exec_err
     argv = params.get("argv", [])
     if not isinstance(argv, list) or not all(isinstance(x, str) for x in argv):
         return _err(rid, 4003, "argv must be list[str]")
     hint = _cli_exec_blocked(argv)
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
+    if session is not None:
+        cli_command = "hermes" + (" " + " ".join(json.dumps(x, ensure_ascii=False) for x in argv) if argv else "")
+        guard = _run_remote_command_guard(session, cli_command)
+        if guard.get("approved") is not True:
+            message = _redact_remote_text(
+                str(guard.get("message") or "remote CLI execution was not approved")
+            )
+            return _err(rid, 4005, message)
     try:
         # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless
         # parent, this spawn otherwise flashes a console (#56747).
         from hermes_cli._subprocess_compat import windows_hide_flags
+
+        child_env = (
+            hermes_remote_subprocess_env()
+            if session is not None
+            else hermes_subprocess_env(inherit_credentials=True)
+        )
 
         r = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", *argv],
@@ -428,22 +498,21 @@ def _(rid, params: dict) -> dict:
             encoding="utf-8",
             errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
-            cwd=os.getcwd(),
-            # cli.exec runs `python -m hermes_cli.main` (can drive the agent) →
-            # needs provider credentials. Tier-1 secrets still stripped (#29157).
-            env=hermes_subprocess_env(inherit_credentials=True),
+            cwd=(session.get("cwd") if session else os.getcwd()) or os.getcwd(),
+            env=child_env,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
+        out = _redact_remote_text(out) if session else out
         return _ok(
             rid, {"blocked": False, "code": r.returncode, "output": out[:48_000]}
         )
     except subprocess.TimeoutExpired:
         return _err(rid, 5016, "cli.exec: timeout")
     except Exception as e:
-        return _err(rid, 5017, str(e))
+        return _err(rid, 5017, _redact_remote_text(str(e)))
 
 
 @method("command.resolve")
@@ -467,27 +536,51 @@ def _(rid, params: dict) -> dict:
 
 
 @method("command.dispatch")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
     resolved = _resolve_name(name)
     if resolved != name:
         name = resolved
     session = _sessions.get(params.get("session_id", ""))
+    transport = current_transport()
+    if transport is not None and transport is not _stdio_transport:
+        session, session_err = _remote_session_required(params, rid)
+        if session_err:
+            return session_err
 
     qcmds = _load_cfg().get("quick_commands", {})
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            exec_session, exec_err = _remote_exec_session(params, rid)
+            if exec_err:
+                return exec_err
+            quick_command = qc.get("command", "")
+            if not isinstance(quick_command, str) or not quick_command.strip():
+                return _err(rid, 4004, "quick command has an empty exec command")
+            if exec_session is not None:
+                guard = _run_remote_command_guard(exec_session, quick_command)
+                if guard.get("approved") is not True:
+                    message = _redact_remote_text(
+                        str(guard.get("message") or "remote quick-command execution was not approved")
+                    )
+                    return _err(rid, 4005, message)
             # Sanitize env to prevent credential leakage —
             # quick commands run in the TUI server process which
             # has all API keys in os.environ.
-            from tools.environments.local import build_subprocess_env
-            sanitized_env = build_subprocess_env()
+            if exec_session is None:
+                from tools.environments.local import build_subprocess_env
+                sanitized_env = build_subprocess_env()
+                exec_cwd = None
+            else:
+                sanitized_env = hermes_remote_subprocess_env()
+                exec_cwd = (exec_session.get("cwd") or os.getcwd())
             from hermes_cli._subprocess_compat import windows_hide_flags
 
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                _shell_exec_argv(quick_command),
+                shell=False,
                 capture_output=True,
                 text=True,
                 # Force UTF-8 + lossy decode so non-UTF-8 child output can't
@@ -496,16 +589,20 @@ def _(rid, params: dict) -> dict:
                 timeout=30,
                 stdin=subprocess.DEVNULL,
                 env=sanitized_env,
+                cwd=exec_cwd,
                 creationflags=windows_hide_flags(),
             )
             output = (
                 (r.stdout or "")
                 + ("\n" if r.stdout and r.stderr else "")
                 + (r.stderr or "")
-            ).strip()[:4000]
-            if output:
+            ).strip()
+            if exec_session is not None:
+                output = _redact_remote_text(output)
+            else:
                 from agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)
+            output = output[:4000]
             if r.returncode != 0:
                 return _err(
                     rid,
@@ -524,8 +621,27 @@ def _(rid, params: dict) -> dict:
 
         handler = get_plugin_command_handler(name)
         if handler:
+            exec_session, exec_err = _remote_exec_session(params, rid)
+            if exec_err:
+                return exec_err
+            if exec_session is not None:
+                guard = _run_remote_command_guard(
+                    exec_session,
+                    f"plugin command /{name} {arg}".strip(),
+                )
+                if guard.get("approved") is not True:
+                    return _err(
+                        rid,
+                        4005,
+                        _redact_remote_text(
+                            str(guard.get("message") or "remote plugin command was not approved")
+                        ),
+                    )
             result = resolve_plugin_command_result(handler(arg))
-            return _ok(rid, {"type": "plugin", "output": str(result or "")})
+            output = str(result or "")
+            if exec_session is not None:
+                output = _redact_remote_text(output)
+            return _ok(rid, {"type": "plugin", "output": output})
     except Exception:
         pass
 
@@ -1609,6 +1725,9 @@ def _(rid, params: dict) -> dict:
 
 @method("tools.configure")
 def _(rid, params: dict) -> dict:
+    mutation_session, session_err = _require_remote_mutation_session(params, rid)
+    if session_err:
+        return session_err
     action = str(params.get("action", "") or "").strip().lower()
     targets = [
         str(name).strip() for name in params.get("names", []) or [] if str(name).strip()
@@ -1645,7 +1764,7 @@ def _(rid, params: dict) -> dict:
         )
         save_config(cfg)
 
-        session = _sessions.get(params.get("session_id", ""))
+        session = mutation_session
         info = (
             _reset_session_agent(params.get("session_id", ""), session)
             if session
@@ -2623,51 +2742,93 @@ def _(rid, params: dict) -> dict:
         _mcp_reset_profile(token)
 
 
+@_profile_scoped
 @method("shell.exec")
 def _(rid, params: dict) -> dict:
+    session, exec_err = _remote_exec_session(params, rid)
+    if exec_err:
+        return exec_err
     cmd = params.get("command", "")
-    if not cmd:
+    if not isinstance(cmd, str) or not cmd.strip():
         return _err(rid, 4004, "empty command")
-    try:
-        from tools.approval import detect_dangerous_command, detect_hardline_command
+    if session is not None:
+        guard = _run_remote_command_guard(session, cmd)
+        if guard.get("approved") is not True:
+            message = _redact_remote_text(
+                str(guard.get("message") or "remote shell execution was not approved")
+            )
+            return _err(rid, 4005, message)
+    else:
+        try:
+            from tools.approval import detect_dangerous_command, detect_hardline_command
 
-        is_hardline, hardline_desc = detect_hardline_command(cmd)
-        if is_hardline:
-            return _err(
-                rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands."
-            )
-        is_dangerous, _, desc = detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(
-                rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
-            )
-    except ImportError:
-        return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
+            is_hardline, hardline_desc = detect_hardline_command(cmd)
+            if is_hardline:
+                return _err(
+                    rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands."
+                )
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            if is_dangerous:
+                return _err(
+                    rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
+                )
+        except ImportError:
+            return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         from hermes_cli._subprocess_compat import windows_hide_flags
 
+        child_env = (
+            hermes_remote_subprocess_env()
+            if session is not None
+            else hermes_subprocess_env(inherit_credentials=True)
+        )
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            _shell_exec_argv(cmd),
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=(session.get("cwd") if session else os.getcwd()) or os.getcwd(),
             # Force UTF-8 + lossy decode so non-UTF-8 child output can't crash
             # the gateway thread on locale-mismatched Windows (#53137).
             encoding="utf-8", errors="replace",
+            env=child_env,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
         )
+        stdout = _redact_remote_text(r.stdout or "")[-4000:] if session else (r.stdout or "")[-4000:]
+        stderr = _redact_remote_text(r.stderr or "")[-2000:] if session else (r.stderr or "")[-2000:]
         return _ok(
             rid,
             {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
+                "stdout": stdout,
+                "stderr": stderr,
                 "code": r.returncode,
             },
         )
     except subprocess.TimeoutExpired:
         return _err(rid, 5002, "command timed out (30s)")
     except Exception as e:
-        return _err(rid, 5003, str(e))
+        return _err(rid, 5003, _redact_remote_text(str(e)))
 
 
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
+    import types
+
+    server._redact_remote_text = types.FunctionType(
+        _redact_remote_text.__code__,
+        vars(server),
+        _redact_remote_text.__name__,
+        _redact_remote_text.__defaults__,
+        _redact_remote_text.__closure__,
+    )
+
+    server._remote_exec_session = types.FunctionType(
+        _remote_exec_session.__code__,
+        vars(server),
+        _remote_exec_session.__name__,
+        _remote_exec_session.__defaults__,
+        _remote_exec_session.__closure__,
+    )
     _registry.install(server)

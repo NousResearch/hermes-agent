@@ -6110,7 +6110,7 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, has_blocking_approval, list_gateway_approvals,
         )
 
         if not has_blocking_approval(session_key):
@@ -6119,9 +6119,19 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.approval_expired")
             return t("gateway.approve.no_pending")
 
-        # Parse args: support "all", "all session", "all always", "session", "always"
+        # Parse args: support "all", "<request_id>", "all session", "session", "always"
         args = event.get_command_args().strip().lower().split()
+        pending_request_ids = {
+            str(item.get("request_id") or "")
+            for item in list_gateway_approvals(session_key)
+            if item.get("request_id")
+        }
+        request_id = None
+        if args and args[0] in pending_request_ids:
+            request_id = args.pop(0)
         resolve_all = "all" in args
+        if request_id is None and not resolve_all:
+            return "Approval request ID required. Use /approve <request_id> [once|session|always]."
         remaining = [a for a in args if a != "all"]
 
         if any(a in {"always", "permanent", "permanently"} for a in remaining):
@@ -6131,7 +6141,12 @@ class GatewaySlashCommandsMixin:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            session_key,
+            choice,
+            resolve_all=resolve_all,
+            request_id=request_id,
+        )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -6187,7 +6202,7 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            resolve_gateway_approval, has_blocking_approval, list_gateway_approvals,
         )
 
         if not has_blocking_approval(session_key):
@@ -6196,22 +6211,32 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.deny.stale")
             return t("gateway.deny.no_pending")
 
-        # Parse args: a leading "all" token denies every pending command;
-        # anything after it (or the whole arg string when "all" is absent) is
-        # captured verbatim as the optional deny reason relayed to the agent.
+        # Parse args: ``all [reason]`` or ``<request_id> [reason]``.
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
+        pending_request_ids = {
+            str(item.get("request_id") or "")
+            for item in list_gateway_approvals(session_key)
+            if item.get("request_id")
+        }
+        request_id = None
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
         if resolve_all:
             reason = raw_args[len(tokens[0]):].strip()
+        elif tokens and tokens[0] in pending_request_ids:
+            request_id = tokens[0]
+            reason = raw_args[len(tokens[0]):].strip()
         else:
-            reason = raw_args
+            return "Approval request ID required. Use /deny <request_id> [reason], or /deny all [reason]."
         # Cap to a sane one-liner; the agent only needs a short hint.
         if reason:
             reason = reason[:280].strip()
 
         count = resolve_gateway_approval(
-            session_key, "deny", resolve_all=resolve_all,
+            session_key,
+            "deny",
+            resolve_all=resolve_all,
+            request_id=request_id,
             reason=reason or None,
         )
         if not count:

@@ -18,6 +18,12 @@ def _(rid, params: dict) -> dict:
     cols = int(params.get("cols", 80))
     history = _coerce_seed_history(params.get("messages"))
     title = str(params.get("title") or "").strip()
+    try:
+        from agent.title_generator import _strict_title_redact
+
+        title = _strict_title_redact(title).strip()
+    except Exception:
+        title = "[REDACTED]" if title else ""
     # When set, this is a branch: the new chat copies an existing conversation's
     # history and links back to it so list_sessions_rich keeps it visible and the
     # sidebar can nest it under its parent. Mirrors the TUI /branch marker.
@@ -32,15 +38,25 @@ def _(rid, params: dict) -> dict:
     except Exception:
         explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
-    source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+    try:
+        source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+    except (TypeError, ValueError) as exc:
+        return _err(rid, 4001, str(exc))
     _enable_gateway_prompts()
 
     # ``profile`` (app-global remote mode): a new chat started under a non-launch
     # profile must build its agent + persist against THAT profile's home/state.db,
     # not the dashboard's launch profile. Stored on the session so _start_agent_build
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
-    profile = (params.get("profile") or "").strip() or None
+    try:
+        profile = _canonical_profile_request(params.get("profile"))
+    except (TypeError, ValueError) as exc:
+        return _err(rid, 4001, str(exc))
     profile_home = _profile_home(profile)
+    approval_profile_name = str(
+        profile or _current_profile_name() or "default"
+    ).strip() or "default"
+    approval_profile_home = _approval_profile_home_for_name(approval_profile_name)
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -98,11 +114,16 @@ def _(rid, params: dict) -> dict:
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
+            "owner_principal": _authenticated_transport_principal(),
+            "approval_profile_home": (
+                str(approval_profile_home) if approval_profile_home is not None else None
+            ),
             "pending_title": title or None,
             "pending_hidden": is_truthy_value(params.get("hidden", False)),
             "room_plumbing": is_truthy_value(params.get("room_plumbing", False)),
             "follow_profile_config": is_truthy_value(params.get("follow_profile_config", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile_name": _response_profile_name(profile),
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
@@ -164,7 +185,9 @@ def _(rid, params: dict) -> dict:
 
 
 @method("session.list")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
+    remote_visible_ids = _remote_owned_session_ids(params, rid)
     with _profile_db(params) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5006)
@@ -215,6 +238,10 @@ def _(rid, params: dict) -> dict:
                     not row
                     or row.get("archived")
                     or (row.get("source") or "").strip().lower() in deny
+                    or (remote_visible_ids is not None and not any(
+                        str(row.get(key) or "") in remote_visible_ids
+                        for key in ("id", "session_key", "stored_session_id")
+                    ))
                 ):
                     return _ok(rid, {"sessions": []})
                 try:
@@ -259,6 +286,10 @@ def _(rid, params: dict) -> dict:
                     include_hidden=include_hidden,
                 )
                 if (s.get("source") or "").strip().lower() not in deny
+                and (remote_visible_ids is None or any(
+                    str(s.get(key) or "") in remote_visible_ids
+                    for key in ("id", "session_key", "stored_session_id")
+                ))
             ][:limit]
             return _ok(
                 rid,
@@ -281,6 +312,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("session.most_recent")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Return the most recent human-facing session id, or ``None``.
 
@@ -298,6 +330,7 @@ def _(rid, params: dict) -> dict:
     Honors ``params.profile`` so app-global remote mode lists from the
     focused profile's ``state.db`` (mirrors ``session.resume``).
     """
+    remote_visible_ids = _remote_owned_session_ids(params, rid)
     with _profile_db(params) as db:
         if db is None:
             return _ok(rid, {"session_id": None})
@@ -313,6 +346,11 @@ def _(rid, params: dict) -> dict:
             for row in rows:
                 src = (row.get("source") or "").strip().lower()
                 if src in deny:
+                    continue
+                if remote_visible_ids is not None and not any(
+                    str(row.get(key) or "") in remote_visible_ids
+                    for key in ("id", "session_key", "stored_session_id")
+                ):
                     continue
                 return _ok(
                     rid,
@@ -383,7 +421,10 @@ def _(rid, params: dict) -> dict:
         cols = 80
     # ``profile`` (app-global remote mode): resume a session that lives in another
     # local profile's state.db. None/own profile → the launch profile (unchanged).
-    profile = (params.get("profile") or "").strip() or None
+    try:
+        profile = _canonical_profile_request(params.get("profile"))
+    except (TypeError, ValueError) as exc:
+        return _err(rid, 4001, str(exc))
     profile_home = _profile_home(profile)
     defer_history = is_truthy_value(params.get("defer_history", False))
     # Desktop hydrates persisted transcripts through the authenticated REST
@@ -455,6 +496,8 @@ def _(rid, params: dict) -> dict:
                 live_sid = _find_live_unpersisted(target, profile_home)
                 live = _sessions.get(live_sid) if live_sid else None
                 if live is not None:
+                    if not _session_resume_owner_matches(live):
+                        return _err(rid, 4001, "session is not owned by authenticated principal")
                     if owns_db:
                         with contextlib.suppress(Exception):
                             db.close()
@@ -527,6 +570,11 @@ def _(rid, params: dict) -> dict:
                         # the conversation into two "canonical" stores.
                         if donor_row and donor_row.get("archived"):
                             donor_row = None
+                        if donor_row and (
+                            str(donor_row.get("source") or "").strip().lower() != "tui"
+                            or str(donor_row.get("title") or "").strip() != "Bot Chat"
+                        ):
+                            donor_row = None
                         if donor_row:
                             adoption = db.adopt_session_lineage_from(
                                 default_db, donor_row["id"]
@@ -549,6 +597,9 @@ def _(rid, params: dict) -> dict:
                         )
                 if not found:
                     return _err(rid, 4007, "session not found")
+
+        if found and not _session_resume_owner_matches(found):
+            return _err(rid, 4001, "session is not owned by authenticated principal")
 
         # Follow the compression-continuation chain to the live tip so a resume on
         # a rotated-out parent id binds to the descendant that actually holds the
@@ -667,7 +718,10 @@ def _(rid, params: dict) -> dict:
         # (resume_session_id keeps the upgrade on the stored conversation).
         if is_truthy_value(params.get("lazy", False)):
             sid = uuid.uuid4().hex[:8]
-            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            try:
+                source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            except (TypeError, ValueError) as exc:
+                return _err(rid, 4001, str(exc))
             lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
             try:
                 db.reopen_session(target)
@@ -695,6 +749,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                 profile_home=profile_home,
+                profile_name=profile or _current_profile_name(),
                 lazy=True,
                 todo_state=_todo_state_from_history(history),
             )
@@ -751,7 +806,10 @@ def _(rid, params: dict) -> dict:
         # governs the response shape of the non-deferred paths.
         if defer_history and not is_truthy_value(params.get("eager_build", False)):
             sid = uuid.uuid4().hex[:8]
-            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            try:
+                source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            except (TypeError, ValueError) as exc:
+                return _err(rid, 4001, str(exc))
             lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
             _enable_gateway_prompts()
             overrides = _stored_session_runtime_overrides(found) or {}
@@ -767,6 +825,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                 profile_home=profile_home,
+                profile_name=profile or _current_profile_name(),
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
@@ -822,7 +881,10 @@ def _(rid, params: dict) -> dict:
         # session's persisted runtime identity, and is a real (upgradable) session.
         if not is_truthy_value(params.get("eager_build", False)):
             sid = uuid.uuid4().hex[:8]
-            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            try:
+                source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+            except (TypeError, ValueError) as exc:
+                return _err(rid, 4001, str(exc))
             lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
             # Interactive resume routes approvals/clarify through gateway prompts;
             # the deferred build wires the remaining per-session callbacks.
@@ -867,6 +929,7 @@ def _(rid, params: dict) -> dict:
                 continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                 display_history_prefix=prefix,
                 profile_home=profile_home,
+                profile_name=profile or _current_profile_name(),
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
                 todo_state=_todo_state_from_history(history),
@@ -906,7 +969,10 @@ def _(rid, params: dict) -> dict:
         # _session_resume_lock across it would stall session.close on the main
         # dispatch thread (it's not a _LONG_HANDLER), blocking fast-path RPCs.
         sid = uuid.uuid4().hex[:8]
-        source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+        try:
+            source = _resolve_session_source(str(params.get("source") or "").strip() or None)
+        except (TypeError, ValueError) as exc:
+            return _err(rid, 4001, str(exc))
         lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
         _enable_gateway_prompts()
         home_token = (
@@ -1004,6 +1070,7 @@ def _(rid, params: dict) -> dict:
                         cwd=profile_resume_cwd,
                         session_db=db,
                         source=source,
+                        profile_name=profile or _current_profile_name(),
                         continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                     )
                     # Ownership TRANSFER — the registered session's agent now
@@ -1131,6 +1198,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("session.workspace.move")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Re-home a STORED session's workspace into another folder/project.
 
@@ -1151,6 +1219,9 @@ def _(rid, params: dict) -> dict:
     target = str(params.get("session_key") or "").strip()
     if not target:
         return _err(rid, 4007, "session_key required")
+    remote_visible_ids = _remote_owned_session_ids(params, rid)
+    if remote_visible_ids is not None and target not in remote_visible_ids:
+        return _err(rid, 4032, "session is not owned by authenticated principal")
     raw = str(params.get("cwd", "") or "").strip()
     if not raw:
         return _err(rid, 4016, "cwd required")
@@ -1215,6 +1286,23 @@ def _(rid, params: dict) -> dict:
     """
     current = str(params.get("current_session_id") or "")
     try:
+        requested_profile = _canonical_profile_request(params.get("profile")) or _current_profile_name()
+    except (TypeError, ValueError) as exc:
+        return _err(rid, 4001, str(exc))
+
+    def matches_profile(session: dict) -> bool:
+        if _remote_session_access_error(params, rid, session) is not None:
+            return False
+        stored_profile = str(session.get("profile_name") or "").strip()
+        if stored_profile:
+            return stored_profile == requested_profile
+        profile_home = str(session.get("profile_home") or "").strip()
+        if not profile_home:
+            return requested_profile == _current_profile_name()
+        requested_home = _profile_home(requested_profile)
+        return requested_home is not None and Path(requested_home).resolve() == Path(profile_home).resolve()
+
+    try:
         with _sessions_lock:
             snapshot = list(_sessions.items())
     except Exception as e:
@@ -1238,7 +1326,7 @@ def _(rid, params: dict) -> dict:
     rows = [
         _session_live_item(sid, session, current)
         for sid, session in snapshot
-        if not session.get("_finalized")
+        if not session.get("_finalized") and matches_profile(session)
     ]
     return _ok(rid, {"sessions": rows})
 
@@ -1251,10 +1339,30 @@ def _(rid, params: dict) -> dict:
     returns enough state for Ink to redraw around another live session id.
     """
     sid = str(params.get("session_id") or "")
-    session, err = _sess_nowait({"session_id": sid}, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     assert session is not None
+
+    try:
+        requested_profile = _canonical_profile_request(params.get("profile")) or _current_profile_name()
+    except (TypeError, ValueError) as exc:
+        return _err(rid, 4001, str(exc))
+    stored_profile = str(session.get("profile_name") or "").strip()
+    if stored_profile:
+        profile_matches = stored_profile == requested_profile
+    else:
+        profile_home = str(session.get("profile_home") or "").strip()
+        requested_home = _profile_home(requested_profile)
+        profile_matches = (
+            requested_profile == _current_profile_name() and not profile_home
+        ) or (
+            requested_home is not None
+            and bool(profile_home)
+            and Path(requested_home).resolve() == Path(profile_home).resolve()
+        )
+    if not profile_matches:
+        return _err(rid, 4001, "session is outside selected profile")
 
     if is_truthy_value(params.get("continue_on_disconnect", False)):
         with _sessions_lock:
@@ -1290,6 +1398,9 @@ def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
     if not target:
         return _err(rid, 4006, "session_id required")
+    remote_visible_ids = _remote_owned_session_ids(params, rid)
+    if remote_visible_ids is not None and str(target) not in remote_visible_ids:
+        return _err(rid, 4032, "session is not owned by authenticated principal")
     # Block deletion of any session currently bound to a live TUI session
     # in this process.  The picker hides the active session anyway, but a
     # racing caller could still target it.  Snapshot via ``list(...)``
@@ -1305,7 +1416,10 @@ def _(rid, params: dict) -> dict:
     active = {s.get("session_key") for s in snapshot if s.get("session_key")}
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
-    profile = (params.get("profile") or "").strip() or None
+    try:
+        profile = _canonical_profile_request(params.get("profile"))
+    except (TypeError, ValueError) as exc:
+        return _err(rid, 4001, str(exc))
     profile_home = _profile_home(profile)
     with _profile_db(params) as db:
         if db is None:
@@ -1361,6 +1475,12 @@ def _(rid, params: dict) -> dict:
                 },
             )
         title = (params.get("title", "") or "").strip()
+        try:
+            from agent.title_generator import _strict_title_redact
+
+            title = _strict_title_redact(title).strip()
+        except Exception:
+            title = "[REDACTED]" if title else ""
         if not title:
             return _err(rid, 4021, "title required")
         try:
@@ -1427,6 +1547,8 @@ def _(rid, params: dict) -> dict:
     """
     hidden = is_truthy_value(params.get("hidden", True))
     session, err = _sess_nowait(params, rid)
+    if err and current_transport() not in (None, _stdio_transport):
+        return err
     if session is not None:
         with _session_db(session) as db:
             if db is None:
@@ -3168,11 +3290,21 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    # Serialize only the ownership claim against session.resume / the orphan
+    if not isinstance(sid, str) or not sid.strip():
+        return _err(rid, 4006, "session_id required")
+    sid = sid.strip()
     # reaper. Finalization may run arbitrary plugin/agent cleanup and must not
     # keep every unrelated session.resume waiting behind it.
     with _session_resume_lock:
-        session = _pop_session_by_id(sid)
+        with _sessions_lock:
+            session = _sessions.get(sid)
+            if session is not None:
+                access_err = _remote_session_access_error(params, rid, session)
+                if access_err:
+                    return access_err
+                session["_closing"] = True
+                _sessions.pop(sid, None)
+                session["_sid"] = sid
     closed = _teardown_popped_session(session, end_reason="tui_close")
     return _ok(rid, {"closed": closed})
 
@@ -3729,6 +3861,11 @@ def _(rid, params: dict) -> dict:
     the client knows to refetch history instead of silently accepting a gap.
     """
     sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    if session is None:
+        return _err(rid, 4001, "session not found")
     try:
         last_seen = int(params.get("last_seen", 0))
     except (TypeError, ValueError):

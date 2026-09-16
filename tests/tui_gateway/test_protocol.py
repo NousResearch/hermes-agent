@@ -213,6 +213,11 @@ def test_live_session_payload_replays_pending_approval(server, monkeypatch):
     # request_id is injected by _ApprovalEntry so reconnecting clients can
     # correlate their approval.respond with the exact queued request.
     assert replayed.pop("request_id")
+    created_at = replayed.pop("created_at")
+    expires_at = replayed.pop("expires_at")
+    assert isinstance(created_at, (int, float))
+    assert isinstance(expires_at, (int, float))
+    assert expires_at > created_at
     assert replayed == first
 
 
@@ -558,10 +563,334 @@ def test_clarify_block_helper_builds_batch_payload(capture):
     assert "id" not in sent and "choices_offered" not in sent
 
 
+def test_approval_pending_all_is_profile_scoped_redacted_and_owner_bound(server, monkeypatch):
+    """The inbox must enumerate only the selected profile and never leak raw command data."""
+    from tools import approval
+
+    server._sessions["ui-default"] = {
+        "session_key": "stored-default",
+        "history": [],
+        "created_at": 100.0,
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+        "profile_home": None,
+    }
+    server._sessions["ui-work"] = {
+        "session_key": "stored-work",
+        "history": [],
+        "created_at": 101.0,
+        "source": "desktop",
+        "profile_home": "/tmp/hermes_test/profiles/work",
+    }
+    pending = {
+        "stored-default": [{
+            "request_id": "req-default",
+            "command": "curl -H 'Authorization: Bearer fixture-redacted-token' https://example.test",
+            "description": "network request",
+            "allow_permanent": False,
+            "created_at": 100.0,
+            "expires_at": 400.0,
+        }],
+        "stored-work": [{
+            "request_id": "req-work",
+            "command": "rm -rf /tmp/work",
+            "description": "delete work files",
+        }],
+    }
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: pending.get(key, []),
+    )
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda name: Path("/tmp/hermes_test/profiles/work") if name == "work" else None,
+    )
+    response = server.handle_request({
+        "id": "r-all",
+        "method": "approval.pending.all",
+        "params": {"profile": "default"},
+    })
+    expected_row = {
+        "request_id": "req-default",
+        "description": "network request",
+        "allow_permanent": False,
+        "choices": ["once", "deny"],
+        "session_id": "ui-default",
+        "session_key": "stored-default",
+        "stored_session_id": "stored-default",
+        "profile": "default",
+        "source": "cli",
+        "status": "waiting_approval",
+        "title": "",
+        "created_at": 100.0,
+        "expires_at": 400.0,
+    }
+    actual_row = response["result"]["approvals"][0]
+    command = actual_row["command"]
+    raw_command = pending["stored-default"][0]["command"]
+    prefix = "curl -H 'Authorization: "
+    suffix = "' https://example.test"
+    assert command.startswith(prefix)
+    assert command.endswith(suffix)
+    masked_header = command[len(prefix) : -len(suffix)]
+    raw_header = raw_command[len(prefix) : -len(suffix)]
+    scheme, _, masked_token = masked_header.partition(" ")
+    _, _, raw_token = raw_header.partition(" ")
+    assert scheme.lower() == "bearer"
+    assert masked_token
+    assert masked_token != raw_token
+    assert raw_token not in command
+    assert {key: value for key, value in actual_row.items() if key != "command"} == expected_row
+
+
+def test_ws_source_is_derived_from_authenticated_transport(server, monkeypatch):
+    class _RemoteTransport:
+        auth_identity = {"user_id": "operator", "provider": "dashboard"}
+
+    monkeypatch.setattr(server, "current_transport", lambda: _RemoteTransport())
+    assert server._resolve_session_source(None) == "dashboard"
+    assert server._resolve_session_source("dashboard") == "dashboard"
+    with pytest.raises(ValueError, match="source is not owned"):
+        server._resolve_session_source("telegram")
+
+
+
+
+def test_approval_pending_redacts_command_before_replay(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {
+        "session_key": "agent-1",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
+    raw_command = "curl -H 'Authorization: Bearer fixture-redacted-token' https://example.test"
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{"request_id": "req-1", "command": raw_command}] if key == "agent-1" else [],
+    )
+
+    response = server.handle_request({
+        "id": "r-redact",
+        "method": "approval.pending",
+        "params": {"session_id": "ui-1"},
+    })
+
+    command = response["result"]["approvals"][0]["command"]
+    assert raw_command not in command
+    assert "fixture-redacted-token" not in command
+
+
+def test_approval_pending_redacts_description_before_replay(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-description"] = {
+        "session_key": "agent-description",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
+    raw_description = "Authorization: Bearer fixture-redacted-token"
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{"request_id": "req-description", "description": raw_description}]
+        if key == "agent-description" else [],
+    )
+
+    response = server.handle_request({
+        "id": "r-description-redact",
+        "method": "approval.pending",
+        "params": {"session_id": "ui-description"},
+    })
+
+    description = response["result"]["approvals"][0]["description"]
+    assert raw_description not in description
+    assert "fixture-redacted-token" not in description
+
+
+def test_approval_pending_filters_choices_at_the_backend_boundary(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {
+        "session_key": "agent-1",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{
+            "request_id": "req-1",
+            "command": "danger",
+            "choices": ["once", "session", "always", "deny", "unexpected"],
+            "allow_session": False,
+            "allow_permanent": False,
+        }] if key == "agent-1" else [],
+    )
+
+    response = server.handle_request({
+        "id": "r-choice-filter",
+        "method": "approval.pending",
+        "params": {"session_id": "ui-1"},
+    })
+
+    assert response["result"]["approvals"][0]["choices"] == ["once", "deny"]
+
+
+def test_approval_respond_rejects_a_session_from_another_profile(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-work"] = {
+        "session_key": "agent-work",
+        "history": [],
+        "profile_home": "/tmp/hermes_test/profiles/work",
+    }
+    monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        server,
+        "_profile_home",
+        lambda name: Path("/tmp/hermes_test/profiles/work") if name == "work" else None,
+    )
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda *args, **kwargs: pytest.fail("cross-profile approval must not resolve"),
+    )
+
+    response = server.handle_request({
+        "id": "r-cross-profile",
+        "method": "approval.respond",
+        "params": {
+            "session_id": "ui-work",
+            "request_id": "req-work",
+            "choice": "once",
+            "profile": "default",
+        },
+    })
+
+    assert response["error"]["code"] == 4001
+
+
+def test_profile_scope_rejects_invalid_and_unknown_names(server):
+    invalid = server.handle_request({
+        "id": "invalid-profile",
+        "method": "approval.pending.all",
+        "params": {"profile": "../../default"},
+    })
+    assert invalid["error"]["code"] == 4001
+
+    unknown = server.handle_request({
+        "id": "unknown-profile",
+        "method": "approval.pending.all",
+        "params": {"profile": "does-not-exist"},
+    })
+    assert unknown["error"]["code"] == 4001
+
+
+def test_gateway_owned_sessions_cannot_enter_dashboard_approval_inbox(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["bot-room"] = {
+        "profile_name": "default",
+        "source": "bot_room",
+        "session_key": "bot-room-key",
+        "history": [],
+    }
+    monkeypatch.setattr(
+        approval,
+        "list_gateway_approvals",
+        lambda key: [{"request_id": "bot-request", "command": "rm -rf /"}] if key == "bot-room-key" else [],
+    )
+
+    pending = server.handle_request({
+        "id": "bot-pending",
+        "method": "approval.pending.all",
+        "params": {"profile": "default"},
+    })
+    assert pending.get("result"), pending
+
+    response = server.handle_request({
+        "id": "bot-respond",
+        "method": "approval.respond",
+        "params": {
+            "profile": "default",
+            "session_id": "bot-room",
+            "request_id": "bot-request",
+            "choice": "deny",
+        },
+    })
+    assert response["error"]["code"] == 4001
+
+
+def test_active_session_listing_and_activation_are_profile_scoped(server):
+    server._sessions["live-work"] = {
+        "profile_name": "work",
+        "history": [],
+        "_finalized": False,
+        "session_key": "stored-work",
+    }
+
+    listed = server.handle_request({
+        "id": "active-default",
+        "method": "session.active_list",
+        "params": {"profile": "default"},
+    })
+    assert listed["result"]["sessions"] == []
+
+    activated = server.handle_request({
+        "id": "activate-default",
+        "method": "session.activate",
+        "params": {"profile": "default", "session_id": "live-work"},
+    })
+    assert activated["error"]["code"] == 4001
+
+
+def test_approval_respond_requires_an_exact_request_id(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {
+        "session_key": "agent-1",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda *args, **kwargs: pytest.fail("missing request_id must not resolve FIFO"),
+    )
+
+    for request_id in (None, ""):
+        params = {"session_id": "ui-1", "choice": "once", "all": True}
+        if request_id is not None:
+            params["request_id"] = request_id
+        response = server.handle_request({"id": f"missing-{request_id}", "method": "approval.respond", "params": params})
+        assert response["error"]["code"] == 4006
+
+
+
 def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
     from tools import approval
 
-    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    server._sessions["ui-1"] = {
+        "session_key": "agent-1",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
     pending = [{"request_id": "req-1", "command": "danger"}]
     monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: pending if key == "agent-1" else [])
 
@@ -569,13 +898,25 @@ def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
         {"id": "r1", "method": "approval.pending", "params": {"session_id": "ui-1"}}
     )
 
-    assert response["result"] == {"approvals": pending}
+    assert response["result"] == {
+        "approvals": [{
+            "request_id": "req-1",
+            "command": "danger",
+            "choices": ["once", "deny"],
+        }]
+    }
 
 
 def test_approval_received_acknowledges_exact_request(server, monkeypatch):
     from tools import approval
 
-    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    server._sessions["ui-1"] = {
+        "session_key": "agent-1",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
     calls = []
     monkeypatch.setattr(
         approval,
@@ -598,7 +939,13 @@ def test_approval_received_acknowledges_exact_request(server, monkeypatch):
 def test_approval_response_correlates_request_id(server, monkeypatch):
     from tools import approval
 
-    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    server._sessions["ui-1"] = {
+        "session_key": "agent-1",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
     calls = []
     monkeypatch.setattr(
         approval,
@@ -623,7 +970,13 @@ def test_approval_respond_falls_back_to_request_id_lookup(server, monkeypatch):
     resolves to a live session (durable-identity fallback, #91684)."""
     from tools import approval
 
-    live = {"session_key": "agent-live", "history": []}
+    live = {
+        "session_key": "agent-live",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
     server._sessions["ui-live"] = live
     calls = []
     monkeypatch.setattr(
@@ -659,7 +1012,13 @@ def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
     """session_id holding a STORED id maps to the live runtime record."""
     from tools import approval
 
-    live = {"session_key": "stored-91684", "history": []}
+    live = {
+        "session_key": "stored-91684",
+        "history": [],
+        "source": "cli",
+        "profile_name": "default",
+        "approval_profile_home": str(server._approval_profile_home_for_name("default")),
+    }
     server._sessions["ui-stored"] = live
     calls = []
     monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: [])
@@ -673,13 +1032,13 @@ def test_approval_respond_falls_back_to_stored_session_id(server, monkeypatch):
         {
             "id": "r-stored",
             "method": "approval.respond",
-            "params": {"session_id": "stored-91684", "choice": "deny"},
+            "params": {"session_id": "stored-91684", "choice": "deny", "request_id": "request-stored"},
         }
     )
 
     assert response["result"] == {"resolved": 1}
     assert calls == [
-        ("stored-91684", "deny", {"resolve_all": False, "request_id": None})
+        ("stored-91684", "deny", {"resolve_all": False, "request_id": "request-stored"})
     ]
 
 

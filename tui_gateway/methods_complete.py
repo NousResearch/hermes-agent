@@ -467,11 +467,22 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.options")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.inventory import build_model_options_payload
 
         session = _sessions.get(params.get("session_id", ""))
+        remote_session, remote_err = _remote_session_required(params, rid)
+        if remote_err:
+            return remote_err
+        if remote_session is not None:
+            session = remote_session
+        if session is not None:
+            requested_profile = str(params.get("profile") or _current_profile_name()).strip()
+            session_profile = str(session.get("profile_name") or _current_profile_name()).strip()
+            if requested_profile != session_profile:
+                return _err(rid, 4001, "model options session is outside selected profile")
         agent = session.get("agent") if session else None
         # Layer agent-session state on top of disk config — once an agent
         # is spawned, IT owns the live provider/model/base_url. Empty
@@ -490,6 +501,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.save_key")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Save an API key for a provider, then return its refreshed model list.
 
@@ -501,6 +513,17 @@ def _(rid, params: dict) -> dict:
     model.options entries) on success.
     """
     try:
+        session = _sessions.get(params.get("session_id", ""))
+        remote_session, remote_err = _remote_session_required(params, rid)
+        if remote_err:
+            return remote_err
+        if remote_session is not None:
+            session = remote_session
+        if session is not None:
+            requested_profile = str(params.get("profile") or _current_profile_name()).strip()
+            session_profile = str(session.get("profile_name") or _current_profile_name()).strip()
+            if requested_profile != session_profile:
+                return _err(rid, 4001, "model key session is outside selected profile")
         from hermes_cli.auth import PROVIDER_REGISTRY
         from hermes_cli.config import is_managed
         from hermes_cli.inventory import build_models_payload
@@ -533,10 +556,10 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
         save_provider_env_credential(env_var, api_key)
-        # Also set in current process so the refreshed inventory sees it.
-        import os
-
-        os.environ[env_var] = api_key
+        # Do not copy the key into process-global os.environ: another
+        # profile's concurrent model.options request could observe it. The
+        # credential lifecycle has already persisted the profile-scoped secret;
+        # the response below marks this provider authenticated explicitly.
 
         # Refresh provider data via the shared inventory builder so this
         # surface stays in lock-step with model.options + dashboard
@@ -570,6 +593,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("model.disconnect")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Remove credentials for a provider.
 
@@ -579,6 +603,17 @@ def _(rid, params: dict) -> dict:
     Returns success status and the provider's slug.
     """
     try:
+        session = _sessions.get(params.get("session_id", ""))
+        remote_session, remote_err = _remote_session_required(params, rid)
+        if remote_err:
+            return remote_err
+        if remote_session is not None:
+            session = remote_session
+        if session is not None:
+            requested_profile = str(params.get("profile") or _current_profile_name()).strip()
+            session_profile = str(session.get("profile_name") or _current_profile_name()).strip()
+            if requested_profile != session_profile:
+                return _err(rid, 4001, "model disconnect session is outside selected profile")
         from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 

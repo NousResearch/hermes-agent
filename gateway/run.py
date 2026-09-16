@@ -842,14 +842,22 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     try:
         from agent.redact import redact_sensitive_text
 
-        redacted = redact_sensitive_text(redacted, force=True)
+        redacted = redact_sensitive_text(redacted, force=True, redact_url_credentials=True)
     except Exception:
-        # Fail-soft: fall back to the local pattern pass below rather than
-        # letting a redactor import/error leak the raw text to chat.
-        pass
+        # Fail closed: an authoritative redactor failure must never send the
+        # original text. Preserve only a fixed safe placeholder.
+        return "[REDACTED]"
     for pattern in _GATEWAY_SECRET_PATTERNS:
         redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
     return redacted
+
+
+def _redact_clarify_choices(choices) -> list[str] | None:
+    if not choices:
+        return None
+    if not isinstance(choices, (list, tuple)):
+        return ["[REDACTED]"]
+    return [_redact_gateway_user_facing_secrets(str(choice)) for choice in choices]
 
 
 def _redact_approval_command(cmd: "str | None") -> str:
@@ -865,7 +873,7 @@ def _redact_approval_command(cmd: "str | None") -> str:
     """
     from agent.redact import redact_sensitive_text
 
-    return redact_sensitive_text(str(cmd or ""), force=True)
+    return redact_sensitive_text(str(cmd or ""), force=True, redact_url_credentials=True)
 
 
 def _format_exec_approval_fallback(
@@ -873,6 +881,7 @@ def _format_exec_approval_fallback(
     description: str,
     command_prefix: str,
     *,
+    request_id: str = "",
     allow_permanent: bool = True,
     allow_session: bool = True,
     smart_denied: bool = False,
@@ -883,14 +892,15 @@ def _format_exec_approval_fallback(
     if smart_denied:
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
 
-    choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
+    request_token = f" {request_id}" if request_id else ""
+    choices = [f"Reply `{command_prefix}approve{request_token}` to execute this one operation"]
     if not smart_denied and allow_session:
         choices.append(
-            f"`{command_prefix}approve session` to approve this pattern for the session"
+            f"`{command_prefix}approve{request_token} session` to approve this pattern for the session"
         )
         if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to approve permanently")
-    choices.append(f"`{command_prefix}deny` to cancel")
+            choices.append(f"`{command_prefix}approve{request_token} always` to approve permanently")
+    choices.append(f"`{command_prefix}deny{request_token}` to cancel")
     return (
         f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
@@ -5824,7 +5834,7 @@ class TurnRunner:
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
-            display_text = text
+            display_text = _redact_gateway_user_facing_secrets(text)
             if _stream_consumer is not None:
                 if already_streamed:
                     _stream_consumer.on_segment_break()
@@ -6236,7 +6246,7 @@ class TurnRunner:
             safe_schedule_threadsafe(
                 ctx._status_adapter.send(
                     ctx._status_chat_id,
-                    message,
+                    _redact_gateway_user_facing_secrets(message),
                     metadata=_interim_metadata(_non_conversational_metadata(ctx._status_thread_metadata, platform=ctx.source.platform)),
                 ),
                 ctx._loop_for_step,
@@ -6350,11 +6360,13 @@ class TurnRunner:
                 return ""
 
             clarify_id = _uuid.uuid4().hex[:10]
+            safe_choices = _redact_clarify_choices(choices)
+            safe_question = _redact_gateway_user_facing_secrets(question)
             _clarify_mod.register(
                 clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
-                question=question,
-                choices=list(choices) if choices else None,
+                question=safe_question,
+                choices=safe_choices,
                 multi_select=bool(multi_select),
             )
 
@@ -6404,8 +6416,8 @@ class TurnRunner:
             fut = safe_schedule_threadsafe(
                 ctx._status_adapter.send_clarify(
                     chat_id=ctx._status_chat_id,
-                    question=question,
-                    choices=list(choices) if choices else None,
+                    question=safe_question,
+                    choices=safe_choices,
                     clarify_id=clarify_id,
                     session_key=ctx.session_key or "",
                     metadata=ctx._status_thread_metadata,
@@ -6575,6 +6587,9 @@ class TurnRunner:
             # (send_exec_approval) and plain-text fallback paths below use
             # the redacted value.
             cmd = _redact_approval_command(cmd)
+            desc = _redact_gateway_user_facing_secrets(desc)
+            _approval_metadata = dict(ctx._status_thread_metadata or {})
+            _approval_metadata["approval_request_id"] = approval_data.get("request_id")
 
             # Prefer button-based approval when the adapter supports it.
             # Check the *class* for the method, not the instance — avoids
@@ -6587,7 +6602,7 @@ class TurnRunner:
                             command=cmd,
                             session_key=_approval_session_key,
                             description=desc,
-                            metadata=ctx._status_thread_metadata,
+                            metadata=_approval_metadata,
                             allow_permanent=approval_data.get("allow_permanent", True),
                             allow_session=approval_data.get("allow_session", True),
                             smart_denied=approval_data.get("smart_denied", False),
@@ -6633,13 +6648,13 @@ class TurnRunner:
                 cmd,
                 desc,
                 _p,
+                request_id=str(approval_data.get("request_id") or ""),
                 allow_permanent=approval_data.get("allow_permanent", True),
                 allow_session=approval_data.get("allow_session", True),
                 smart_denied=approval_data.get("smart_denied", False),
             )
             try:
                 # Mark as approval prompt so WeCom routes through control lane
-                _approval_metadata = dict(ctx._status_thread_metadata or {})
                 _approval_metadata["is_approval_prompt"] = True
 
                 _approval_send_fut = safe_schedule_threadsafe(
@@ -10758,7 +10773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # string.  The busy-handler path does not auto-send that return, so
         # we deliver it ourselves (mirroring the draining-case send above).
         try:
-            from tools.approval import has_blocking_approval
+            from tools.approval import has_blocking_approval, list_gateway_approvals
             if event.allow_gateway_control and has_blocking_approval(session_key):
                 _raw_text = (event.text or "").strip().lower()
                 _approve_words = {"approve", "yes", "ok", "okay", "confirm", "y", "👍"}
@@ -10784,6 +10799,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # prefix ("!" on Slack/Matrix).
                     _verb = "approve" if _approval_handler is self._handle_approve_command else "deny"
                     _synth = f"/{_verb}"
+                    # Bare-word replies may safely auto-bind only when the
+                    # session has exactly one server-owned pending request.
+                    # Multiple pending approvals must require an explicit ID;
+                    # never guess FIFO from an unbound text response.
+                    _pending_items = list_gateway_approvals(session_key)
+                    if len(_pending_items) == 1:
+                        _text_request_id = str(
+                            _pending_items[0].get("request_id") or ""
+                        ).strip()
+                        if _text_request_id:
+                            _synth = f"{_synth} {_text_request_id}"
                     if _normalized_args:
                         _synth = f"{_synth} {_normalized_args}"
                     event.text = _synth
@@ -24285,7 +24311,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _sanitize_telegram_topic_title(self, title: str) -> str:
         """Return a Bot API-safe forum topic name from a generated session title."""
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        cleaned = _redact_gateway_user_facing_secrets(
+            re.sub(r"\s+", " ", str(title or "")).strip()
+        ).strip()
         if not cleaned:
             return "Hermes Chat"
         # Telegram forum topic names are short (currently 1-128 chars). Keep
@@ -24400,7 +24428,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         code units (emoji count double), so truncate with the UTF-16 helpers
         rather than Python code-point slices.
         """
-        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        cleaned = _redact_gateway_user_facing_secrets(
+            re.sub(r"\s+", " ", str(title or "")).strip()
+        ).strip()
         if not cleaned:
             return "Hermes Chat"
         if utf16_len(cleaned) > 80:

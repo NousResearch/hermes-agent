@@ -717,7 +717,11 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
 })
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    *,
+    inherit_credentials: bool = False,
+    allowed_keys: frozenset[str] | set[str] | None = None,
+) -> dict[str, str]:
     """Build a sanitized environment dict for a spawned subprocess.
 
     Centralized helper for the **non-terminal** spawn surface (browser,
@@ -750,6 +754,9 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     ``os.environ`` into the returned dict.
     """
     env = os.environ.copy()
+    if allowed_keys is not None:
+        allowed = {str(key) for key in allowed_keys}
+        env = {key: value for key, value in env.items() if key in allowed}
 
     # Tier 1 — always strip.
     for key in _ALWAYS_STRIP_KEYS:
@@ -799,6 +806,25 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     # still see the parent's HERMES_HOME but lose the DB mutation guard.
     env = _scrub_delegated_child_kanban_env(env)
 
+    return env
+
+
+_REMOTE_CHILD_ENV_KEYS = frozenset({
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP",
+    "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH",
+    "HERMES_HOME", "PYTHONUTF8", "PYTHONIOENCODING", "LANG", "LC_ALL", "TERM",
+    "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERMINAL_ENV", "TERMINAL_BACKEND",
+    "TERMINAL_CWD", "NO_COLOR",
+})
+
+
+def hermes_remote_subprocess_env() -> dict[str, str]:
+    """Build the minimal environment for a remote command child."""
+    env = hermes_subprocess_env(
+        inherit_credentials=False,
+        allowed_keys=_REMOTE_CHILD_ENV_KEYS,
+    )
+    env["HERMES_DISABLE_DOTENV"] = "1"
     return env
 
 

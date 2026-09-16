@@ -53,20 +53,20 @@ export function ToolActivity({ item }: { item: ToolActivityItem }) {
       data-tool-id={item.id}
       data-tool-state={item.state}
       aria-label={`${item.name} tool ${item.state}`}
-      className="rounded-md border border-border bg-background px-3 py-2 text-xs"
+      className="rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground"
     >
-      <div className="flex items-center gap-2 font-medium">
+      <div className="flex items-center gap-2 font-medium text-foreground">
         <span role="status" aria-label={`${item.name} ${item.state}`} className={cn("inline-block h-2 w-2 rounded-full", item.state === "running" ? "motion-safe:animate-pulse bg-primary" : "bg-success")} />
         <span>{item.name}</span>
-        <span className="text-muted-foreground">{stateLabel}</span>
-        {elapsed && <span className="ml-auto font-mono text-muted-foreground">{elapsed}</span>}
+        <span className="text-foreground/90">{stateLabel}</span>
+        {elapsed && <span className="ml-auto font-mono text-foreground/80">{elapsed}</span>}
       </div>
-      {item.context && <div className="mt-1">{item.context}</div>}
-      {item.progress && <div className="mt-1 text-muted-foreground" aria-label="Tool progress">{item.progress}</div>}
-      {item.summary && <div className="mt-1 text-muted-foreground">{item.summary}</div>}
+      {item.context && <div className="mt-1 text-foreground/80">{item.context}</div>}
+      {item.progress && <div className="mt-1 text-foreground/80" aria-label="Tool progress">{item.progress}</div>}
+      {item.summary && <div className="mt-1 text-foreground/80">{item.summary}</div>}
       {hasDetails && (
         <details className="mt-2">
-          <summary className="cursor-pointer text-muted-foreground">Details</summary>
+          <summary className="cursor-pointer text-foreground/90">Details</summary>
           <div className="mt-2 space-y-2">
             {item.args !== undefined && <div><div className="font-medium">Arguments</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{formatDetail(item.args)}</pre></div>}
             <div><div className="font-medium">Result</div><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words">{item.result === undefined ? "No result" : formatDetail(item.result)}</pre></div>

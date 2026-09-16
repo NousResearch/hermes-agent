@@ -284,6 +284,8 @@ export interface OverlayState {
   agents: boolean
   agentsInitialHistoryIndex: number
   approval: ApprovalReq | null
+  /** Pending approvals are queued by server request ID; approval is the head. */
+  approvalQueue?: ApprovalReq[]
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null

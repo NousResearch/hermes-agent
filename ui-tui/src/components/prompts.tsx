@@ -10,8 +10,6 @@ import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
-// tirith warning present → backend downgrades "always" to session scope, so drop it.
-const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
@@ -19,15 +17,24 @@ const CMD_PREVIEW_LINES = 10
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
-  if (req.choices) {
-    return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
-  }
+  const hasExplicitChoices = Array.isArray(req.choices)
+  const raw = hasExplicitChoices
+    ? req.choices!
+    : req.smartDenied
+      ? APPROVAL_OPTS_SMART_DENY
+      : req.allowSession === true && req.allowPermanent === true
+        ? APPROVAL_OPTS
+        : req.allowSession === true
+          ? ['once', 'session', 'deny'] as const
+          : ['once', 'deny'] as const
+  const filtered = raw.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
+    .filter(choice => choice !== 'session' || (req.allowSession === true && req.smartDenied !== true))
+    .filter(choice => choice !== 'always' || (req.allowPermanent === true && req.smartDenied !== true))
+  return filtered.length > 0 ? filtered : ['deny']
+}
 
-  if (req.smartDenied) {
-    return APPROVAL_OPTS_SMART_DENY
-  }
-
-  return req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+export function isApprovalExpired(req: ApprovalReq, nowSeconds = Date.now() / 1000): boolean {
+  return typeof req.expiresAt === 'number' && Number.isFinite(req.expiresAt) && nowSeconds >= req.expiresAt;
 }
 
 type ApprovalKey = {
@@ -83,9 +90,13 @@ export function approvalAction(
 
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
-  const opts = approvalOptions(req)
+  const expired = isApprovalExpired(req)
+  const opts = expired ? [] : approvalOptions(req)
 
   useInput((ch, key) => {
+    if (expired) {
+      return
+    }
     const action = approvalAction(ch, key, sel, opts)
 
     if (action.kind === 'choose') {
@@ -129,7 +140,9 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
 
       <Text />
 
-      {opts.map((o, i) => (
+      {expired ? (
+        <Text color={t.color.muted}>approval expired · no action available</Text>
+      ) : opts.map((o, i) => (
         <Text key={o}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
@@ -138,7 +151,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
+      {!expired ? <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text> : null}
     </Box>
   )
 }

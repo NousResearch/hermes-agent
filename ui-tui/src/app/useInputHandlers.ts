@@ -25,7 +25,7 @@ import {
   type InputHandlerResult,
   type OverlayState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, dismissApproval, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
@@ -144,15 +144,21 @@ export function applyVoiceRecordResponse(
 export function dismissSensitivePrompt(
   overlay: Pick<OverlayState, 'secret' | 'sudo'>,
   rpc: GatewayRpc,
-  sys: (text: string) => void
+  sys: (text: string) => void,
+  scope: { profile?: string; sessionId?: string } = {}
 ) {
+  const responseScope = {
+    profile: scope.profile || 'default',
+    session_id: scope.sessionId || ''
+  }
+
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
 
     patchOverlayState({ sudo: null })
     sys('sudo cancelled')
 
-    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId, ...responseScope })
   }
 
   if (overlay.secret) {
@@ -161,7 +167,7 @@ export function dismissSensitivePrompt(
     patchOverlayState({ secret: null })
     sys('secret entry cancelled')
 
-    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '', ...responseScope })
   }
 }
 
@@ -214,13 +220,30 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.approval) {
+      const requestId = overlay.approval.requestId
+      const uiState = getUiState()
       return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
-        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+        .rpc<ApprovalRespondResponse>('approval.respond', {
+          choice: 'deny',
+          profile: uiState.info?.profile_name || 'default',
+          request_id: requestId,
+          session_id: uiState.sid
+        })
+        .then(r => {
+          if (r?.resolved === 1) {
+            dismissApproval(requestId)
+            patchTurnState({ outcome: 'denied' })
+          }
+          return r
+        })
     }
 
     if (overlay.sudo || overlay.secret) {
-      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
+      const uiState = getUiState()
+      return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys, {
+        profile: uiState.info?.profile_name || 'default',
+        sessionId: uiState.sid || ''
+      })
     }
 
     if (overlay.modelPicker) {

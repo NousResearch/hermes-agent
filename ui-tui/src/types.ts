@@ -92,11 +92,16 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  // false when the backend won't honor a session-scoped allow.
+  allowSession?: boolean
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
   command: string
+  createdAt?: number
   description: string
+  expiresAt?: number
+  requestId: string
   smartDenied?: boolean
 }
 

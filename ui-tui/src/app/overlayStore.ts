@@ -7,6 +7,7 @@ const buildOverlayState = (): OverlayState => ({
   agents: false,
   agentsInitialHistoryIndex: 0,
   approval: null,
+  approvalQueue: [],
   billing: null,
   clarify: null,
   confirm: null,
@@ -31,6 +32,7 @@ export const $isBlocked = computed(
   ({
     agents,
     approval,
+    approvalQueue,
     billing,
     clarify,
     confirm,
@@ -49,6 +51,7 @@ export const $isBlocked = computed(
     Boolean(
       agents ||
       approval ||
+      Boolean(approvalQueue?.length) ||
       billing ||
       clarify ||
       confirm ||
@@ -161,3 +164,20 @@ export const resetFlowOverlays = () =>
     sessions: $overlayState.get().sessions,
     skillsHub: $overlayState.get().skillsHub
   })
+
+/** Remove one resolved approval and promote the next server request, if any. */
+export const dismissApproval = (requestId?: string) =>
+  $overlayState.set((() => {
+    const current = $overlayState.get()
+    const queue = current.approvalQueue?.length
+      ? current.approvalQueue
+      : current.approval
+        ? [current.approval]
+        : []
+    const remaining = requestId ? queue.filter(item => item.requestId !== requestId) : queue.slice(1)
+    return {
+      ...current,
+      approval: remaining[0] ?? null,
+      approvalQueue: remaining
+    }
+  })())

@@ -20,6 +20,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
 // initialisms ("/mcp" → "Mcp") and can't match multi-word labels.
 const BUILTIN_LITERAL: Record<string, string> = {
   "/files": "Files",
+  "/approvals": "Pending approvals",
   "/mcp": "MCP",
   "/channels": "Channels",
   "/webhooks": "Webhooks",

@@ -71,6 +71,7 @@ import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
+import { RemoteApprovalsProvider, useRemoteApprovals } from "@/contexts/RemoteApprovals";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
@@ -88,6 +89,7 @@ const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const LogsPage = lazy(() => import("@/pages/LogsPage"));
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const UsageQuotaPage = lazy(() => import("@/pages/UsageQuotaPage"));
+const PendingApprovalsPage = lazy(() => import("@/pages/PendingApprovalsPage"));
 const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
 const CronPage = lazy(() => import("@/pages/CronPage"));
 const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
@@ -120,6 +122,7 @@ import {
 } from "@/lib/dashboard-shell";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+import { isRemoteApprovalExpired } from "@/lib/remote-approvals";
 
 function RouteFallback({ label = "Loading…" }: { label?: string }) {
   return (
@@ -173,6 +176,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/artifacts": ArtifactsPage,
   "/analytics": AnalyticsPage,
   "/usage-quota": UsageQuotaPage,
+  "/approvals": PendingApprovalsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
@@ -217,6 +221,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     path: "/usage-quota",
     label: "Usage & Quota",
     icon: Gauge,
+  },
+  {
+    path: "/approvals",
+    label: "Pending approvals",
+    icon: ShieldCheck,
   },
   {
     path: "/models",
@@ -549,6 +558,7 @@ export default function App() {
 
   return (
     <ProfileProvider>
+    <RemoteApprovalsProvider>
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -873,6 +883,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </RemoteApprovalsProvider>
     </ProfileProvider>
   );
 }
@@ -900,6 +911,10 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
+  const { approvals } = useRemoteApprovals();
+  const pendingApprovalCount = path === "/approvals"
+    ? approvals.filter((approval) => !isRemoteApprovalExpired(approval)).length
+    : 0;
   const [hovered, setHovered] = useState(false);
   const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
@@ -955,6 +970,19 @@ function SidebarNavLink({
             >
               {navLabel}
             </span>
+
+            {pendingApprovalCount > 0 && (
+              <span
+                aria-label={`${pendingApprovalCount} pending approval${pendingApprovalCount === 1 ? "" : "s"}`}
+                className={cn(
+                  "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[0.65rem] leading-none",
+                  "bg-warning text-background",
+                  collapsed && "lg:hidden",
+                )}
+              >
+                {pendingApprovalCount}
+              </span>
+            )}
 
             <span
               aria-hidden

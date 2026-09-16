@@ -24,5 +24,11 @@ export default defineConfig({
     // Two workers still parallelizes the suite while avoiding dynamic-import
     // timeouts in the dashboard page suites.
     maxWorkers: 2,
+    // jsdom page tests use module-level API/plugin mocks; running files in
+    // parallel can leak async module state between those tests.
+    fileParallelism: false,
+    // Full-suite transforms can exceed the default on Windows; avoid a
+    // timeout cascade that leaves later module mocks in a broken state.
+    testTimeout: 15000,
   },
 });

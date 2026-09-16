@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
+import threading
 import time
 import uuid
 from contextlib import suppress
@@ -19,6 +21,128 @@ except ImportError:
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
+
+
+def _safe_api_text(value: Any) -> str:
+    """Force-redact text before API status, replay, or SSE egress."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(
+            str(value or ""), force=True, redact_url_credentials=True
+        )
+    except Exception:
+        return "[REDACTED]"
+
+
+_SAFE_API_NESTED_KEYS = frozenset({
+    "id", "type", "status", "role", "name", "model", "tool", "tool_name",
+    "run_id", "session_id", "child_session_id", "subagent_id", "parent_id",
+    "call_id", "request_id", "preview", "text", "message", "output", "result",
+    "error", "command", "description", "title", "content", "arguments", "choices",
+    "created_at", "expires_at", "duration", "duration_seconds", "task_count",
+    "task_index", "depth", "tool_count", "input_tokens", "output_tokens",
+    "reasoning_tokens", "api_calls", "cost_usd", "files_read", "files_written",
+    "safe", "logprobs", "output_index", "content_index", "item_id", "delta",
+    "sequence_number", "unavailable_reason", "available",
+})
+
+
+def _safe_api_value(value: Any, *, depth: int = 0) -> Any:
+    """Recursively sanitize allowlisted JSON-shaped API values."""
+    if depth > 6:
+        return "[REDACTED]"
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return _safe_api_text(value)
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(float(value)) else None
+    if isinstance(value, (list, tuple)):
+        return [_safe_api_value(item, depth=depth + 1) for item in value[:100]]
+    if isinstance(value, dict):
+        return {
+            key: _safe_api_value(item, depth=depth + 1)
+            for key, item in value.items()
+            if isinstance(key, str) and key in _SAFE_API_NESTED_KEYS
+        }
+    return "[REDACTED]"
+
+
+def _safe_api_status(status: Dict[str, Any]) -> Dict[str, Any]:
+    """Allowlist and sanitize status fields before any API/replay egress."""
+    raw = dict(status or {})
+    allowed = {
+        "object", "run_id", "status", "updated_at", "created_at", "last_event",
+        "session_id", "model", "usage", "output", "error", "pending_steer",
+        "output_tail", "approval",
+    }
+    result: Dict[str, Any] = {}
+    text_fields = {"output", "error", "pending_steer", "output_tail"}
+    string_fields = {"object", "run_id", "status", "last_event", "session_id", "model"}
+    numeric_fields = {"updated_at", "created_at"}
+    for key in allowed - {"approval", "usage"}:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key in text_fields:
+            if isinstance(value, (str, list, tuple, dict)):
+                result[key] = _safe_api_value(value)
+        elif key in string_fields:
+            if isinstance(value, str):
+                result[key] = _safe_api_text(value) if key == "model" else value
+        elif key in numeric_fields:
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+                result[key] = value
+    if isinstance(raw.get("usage"), dict):
+        usage_keys = {
+            "prompt_tokens", "completion_tokens", "total_tokens",
+            "input_tokens", "output_tokens", "reasoning_tokens",
+        }
+        result["usage"] = {
+            key: value
+            for key, value in raw["usage"].items()
+            if key in usage_keys
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+        }
+    approval = raw.get("approval")
+    if isinstance(approval, dict):
+        approval_allowed = {
+            "request_id", "command", "description", "title", "choices",
+            "allow_session", "allow_permanent", "smart_denied", "created_at", "expires_at",
+        }
+        approval = {key: approval[key] for key in approval_allowed if key in approval}
+        request_id = approval.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            approval.pop("request_id", None)
+        for key in ("command", "description", "title"):
+            if isinstance(approval.get(key), str):
+                approval[key] = _safe_api_text(approval[key])
+            elif key in approval:
+                approval.pop(key, None)
+        for key in ("allow_session", "allow_permanent", "smart_denied"):
+            if key in approval and not isinstance(approval[key], bool):
+                approval.pop(key, None)
+        for key in ("created_at", "expires_at"):
+            value = approval.get(key)
+            if key in approval and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+            ):
+                approval.pop(key, None)
+        raw_choices = approval.get("choices")
+        approval["choices"] = [
+            choice
+            for choice in (raw_choices if isinstance(raw_choices, (list, tuple)) else [])
+            if isinstance(choice, str)
+            and choice in {"once", "session", "always", "deny"}
+        ] or ["deny"]
+        result["approval"] = approval
+    return result
+
 _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float)
     if RequestKey is not None
@@ -73,6 +197,8 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
     # Stop is cooperative: the executor thread may outlive the HTTP request.
     self._stopping_run_ids: set[str] = set()
+    # Protect stop-vs-agent-registration transitions.
+    self._run_lifecycle_lock = threading.RLock()
     # Pollable run status for dashboards and external control-plane UIs.
     self._run_statuses: Dict[str, Dict[str, Any]] = {}
     # Active approval session key for each run_id. The approval core resolves
@@ -89,6 +215,31 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
     ]
+
+
+def _safe_api_approval_event(
+    approval_data: Dict[str, Any] | None,
+    *,
+    run_id: str,
+    timestamp: float | None = None,
+) -> Dict[str, Any]:
+    """Build the allowlisted API/SSE approval event."""
+    from tui_gateway.server import _approval_request_payload
+
+    event = _approval_request_payload(approval_data)
+    event.update(
+        {
+            "event": "approval.request",
+            "run_id": run_id,
+            "timestamp": time.time() if timestamp is None else timestamp,
+        }
+    )
+    # ``_approval_request_payload`` always derives a safe choice list, but keep
+    # this final boundary deny-only if a future serializer returns malformed
+    # data.
+    if not isinstance(event.get("choices"), list) or not event["choices"]:
+        event["choices"] = ["deny"]
+    return event
 
 
 def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
@@ -131,7 +282,12 @@ def _set_run_status(
         "updated_at": now,
     })
     current.setdefault("created_at", fields.pop("created_at", now))
-    current.update(fields)
+    safe_fields = dict(fields)
+    for key in ("output", "error", "pending_steer"):
+        if isinstance(safe_fields.get(key), str):
+            safe_fields[key] = _safe_api_text(safe_fields[key])
+    current.update(safe_fields)
+    current = _safe_api_status(current)
     if status != "waiting_for_approval":
         current.pop("approval", None)
     self._run_statuses[run_id] = current
@@ -146,9 +302,11 @@ def _set_run_status(
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
-        except Exception:
-            logger.exception(
-                "[api_server] failed to persist idempotent run status %s", run_id
+        except Exception as exc:
+            logger.error(
+                "[api_server] failed to persist idempotent run status %s type=%s",
+                run_id,
+                type(exc).__name__,
             )
     return current
 
@@ -191,7 +349,7 @@ def _make_run_event_callback(
                 "run_id": run_id,
                 "timestamp": ts,
                 "tool": tool_name,
-                "preview": preview,
+                "preview": _safe_api_text(preview) if preview is not None else None,
             })
         elif event_type == "tool.completed":
             _push({
@@ -207,7 +365,7 @@ def _make_run_event_callback(
                 "event": "reasoning.available",
                 "run_id": run_id,
                 "timestamp": ts,
-                "text": preview or "",
+                "text": _safe_api_text(preview or ""),
             })
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = {
@@ -216,9 +374,7 @@ def _make_run_event_callback(
                 "timestamp": ts,
             }
             if preview is not None:
-                event["preview"] = redact_sensitive_text(
-                    str(preview), force=True
-                )
+                event["preview"] = _safe_api_text(preview)
             for key in (
                 "goal",
                 "task_count",
@@ -247,10 +403,8 @@ def _make_run_event_callback(
                 # Free-text fields can carry child terminal/tool output —
                 # force the same secret redaction the API applies to error
                 # text before it leaves the process on a public stream.
-                if key in ("goal", "summary", "output_tail") and isinstance(
-                    value, str
-                ):
-                    value = redact_sensitive_text(value, force=True)
+                if key in ("goal", "summary", "output_tail"):
+                    value = _safe_api_value(value)
                 event[key] = value
             _push(event)
         # _thinking, subagent.tool, and subagent_progress are intentionally
@@ -351,7 +505,7 @@ def _durable_run_status(
                 run_id,
                 _room_retention_until(request),
             )
-        return status
+        return _safe_api_status(status)
 
     scope = self._run_idempotency_scope(request)
     record = self._run_idempotency_store.status_for_run(
@@ -362,7 +516,7 @@ def _durable_run_status(
     if record is None:
         return None
 
-    status = dict(record["status"])
+    status = _safe_api_status(dict(record["status"]))
     owner_pid = int(record.get("owner_pid") or 0)
     owner_started = int(record.get("owner_started") or 0)
     nonterminal = status.get("status") not in {
@@ -637,7 +791,7 @@ async def _handle_runs(
                 "event": "message.delta",
                 "run_id": run_id,
                 "timestamp": time.time(),
-                "delta": delta,
+                "delta": _safe_api_text(delta),
             })
         except Exception:
             pass
@@ -704,18 +858,19 @@ async def _handle_runs(
     async def _run_and_close():
         try:
             self._set_run_status(run_id, "running")
-            if run_id in self._stopping_run_ids:
-                _put_event_if_active({
-                    "event": "run.cancelled",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                })
-                self._set_run_status(
-                    run_id,
-                    "cancelled",
-                    last_event="run.cancelled",
-                )
-                return
+            with self._run_lifecycle_lock:
+                if run_id in self._stopping_run_ids:
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                    return
             with self._profile_scope(request_profile):
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
@@ -730,28 +885,34 @@ async def _handle_runs(
                     room_dispatch=room_dispatch,
                     room_execution_policy=room_execution_policy,
                 )
-            self._active_run_agents[run_id] = agent
+            with self._run_lifecycle_lock:
+                if run_id in self._stopping_run_ids:
+                    request_hard_interrupt = getattr(agent, "interrupt", None)
+                    if callable(request_hard_interrupt):
+                        with suppress(Exception):
+                            request_hard_interrupt()
+                    self._set_run_status(
+                        run_id,
+                        "cancelled",
+                        last_event="run.cancelled",
+                    )
+                    _put_event_if_active({
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
+                    return
+                self._active_run_agents[run_id] = agent
 
             def _approval_notify(approval_data: Dict[str, Any]) -> None:
-                event = dict(approval_data or {})
-                # Redact credentials from the command before it enters the
-                # SSE/API event stream — same egress bug as #48456, second
-                # transport: API/desktop clients would otherwise receive the
-                # raw command Tirith flagged. Reuse the gateway seam.
-                if "command" in event:
-                    from gateway.run import _redact_approval_command
+                from gateway.run import _redact_approval_command
 
-                    event["command"] = _redact_approval_command(event.get("command"))
-                event.update({
-                    "event": "approval.request",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "choices": _approval_event_choices(
-                        smart_denied=bool(event.get("smart_denied")),
-                        allow_session=event.get("allow_session") is not False,
-                        allow_permanent=event.get("allow_permanent") is not False,
-                    ),
-                })
+                redacted_command = _redact_approval_command(
+                    str(approval_data.get("command") or "")
+                )
+                safe_approval_data = dict(approval_data)
+                safe_approval_data["command"] = redacted_command
+                event = _safe_api_approval_event(safe_approval_data, run_id=run_id)
                 self._set_run_status(
                     run_id,
                     "waiting_for_approval",
@@ -901,11 +1062,11 @@ async def _handle_runs(
                     "event": "run.completed",
                     "run_id": run_id,
                     "timestamp": time.time(),
-                    "output": final_response,
+                    "output": _safe_api_text(final_response),
                     "usage": usage,
                 }
                 if pending_steer:
-                    completed_event["pending_steer"] = pending_steer
+                    completed_event["pending_steer"] = _safe_api_text(pending_steer)
                 _put_event_if_active(completed_event)
                 self._set_run_status(
                     run_id,
@@ -938,8 +1099,13 @@ async def _handle_runs(
             # message the other endpoints give a provider auth/credential
             # failure, instead of falling through to the generic
             # except-Exception branch below.
-            logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-            error_msg = f"⚠️ Provider authentication failed: {exc}"
+            safe_exc = _redact_api_error_text(exc)
+            logger.warning(
+                "Provider authentication failed for run=%s type=%s",
+                run_id,
+                type(exc).__name__,
+            )
+            error_msg = f"⚠️ Provider authentication failed: {safe_exc}"
             self._set_run_status(
                 run_id,
                 "failed",
@@ -956,7 +1122,7 @@ async def _handle_runs(
             except Exception:
                 pass
         except Exception as exc:
-            logger.exception("[api_server] run %s failed", run_id)
+            logger.error("[api_server] run %s failed type=%s", run_id, type(exc).__name__)
             self._set_run_status(
                 run_id,
                 "failed",
@@ -1017,22 +1183,26 @@ async def _handle_runs(
 def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
     scope = self._run_idempotency_scope(request)
     owner = self._run_owners.get(run_id)
+    if owner is None:
+        # A durable idempotency record is an authenticated ownership proof for
+        # this exact scope after an adapter restart. Do not extend the same
+        # fallback to arbitrary in-memory registries: legacy ownerless runs
+        # remain unaddressable.
+        try:
+            record = self._run_idempotency_store.status_for_run(
+                scope,
+                run_id,
+                retention_until=_room_retention_until(request),
+            )
+        except Exception:
+            record = None
+        if record is None:
+            return False
+        owner = scope
+        self._run_owners[run_id] = scope
     if self._room_grant_token(request):
-        return owner == scope or (
-            owner is None
-            and self._run_idempotency_store.owns_run(scope, run_id)
-        )
-    if owner is None and (
-        run_id in self._run_statuses
-        or run_id in self._active_run_agents
-        or run_id in self._active_run_tasks
-    ):
-        # Backward compatibility for statuses created by older/in-process
-        # integrations before ownership tracking was introduced.
-        return True
-    return owner == scope or (
-        owner is None and self._run_idempotency_store.owns_run(scope, run_id)
-    )
+        return owner == scope
+    return owner == scope
 
 
 async def _handle_get_run(
@@ -1079,7 +1249,7 @@ async def _handle_run_events(
     _openai_error = _api_server._openai_error
     _sse_frame = _api_server._sse_frame
 
-    auth_err = self._check_auth(request)
+    auth_err = self._check_run_auth(request, permission="status")
     if auth_err:
         return auth_err
 
@@ -1125,7 +1295,7 @@ async def _handle_run_events(
             payload = _sse_frame(event)
             await response.write(payload)
     except Exception as exc:
-        logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
+        logger.debug("[api_server] SSE stream error for run %s type=%s", run_id, type(exc).__name__)
     finally:
         self._run_stream_subscribers.discard(run_id)
         self._run_streams.pop(run_id, None)
@@ -1208,10 +1378,10 @@ async def _handle_run_approval(
             ),
             status=400,
         )
-    if room_scoped and not request_id:
+    if not request_id and not resolve_all:
         return web.json_response(
             _openai_error(
-                "Room approvals require the exact request_id.",
+                "Approval request_id is required unless resolve_all is explicit.",
                 code="approval_request_required",
             ),
             status=400,
@@ -1236,8 +1406,8 @@ async def _handle_run_approval(
             request_id=request_id or None,
         )
     except Exception as exc:
-        logger.exception("[api_server] approval resolution failed for run %s", run_id)
-        return web.json_response(_openai_error(str(exc)), status=500)
+        logger.error("[api_server] approval resolution failed for run %s type=%s", run_id, type(exc).__name__)
+        return web.json_response(_openai_error("Approval resolution failed"), status=500)
 
     if resolved <= 0:
         return web.json_response(
@@ -1329,8 +1499,8 @@ async def _handle_steer_run(
     try:
         accepted = bool(agent.steer(steer_text))
     except Exception as exc:
-        logger.exception("[api_server] steer failed for run %s", run_id)
-        return web.json_response(_openai_error(_redact_api_error_text(exc), code="steer_failed"), status=500)
+        logger.error("[api_server] steer failed for run %s type=%s", run_id, type(exc).__name__)
+        return web.json_response(_openai_error("Steer failed", code="steer_failed"), status=500)
     if not accepted:
         return web.json_response(
             _openai_error(f"Run did not accept steer text: {run_id}", code="steer_not_accepted"),
@@ -1402,8 +1572,9 @@ async def _handle_stop_run(
             status=409,
         )
 
-    self._set_run_status(run_id, "stopping", last_event="run.stopping")
-    self._stopping_run_ids.add(run_id)
+    with self._run_lifecycle_lock:
+        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        self._stopping_run_ids.add(run_id)
 
     if agent is not None:
         try:

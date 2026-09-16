@@ -1,3 +1,4 @@
+import { Check, Copy as CopyIcon, MessageSquarePlus, Pencil, RotateCcw, Volume2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
@@ -16,6 +17,7 @@ export interface MessageActionsProps {
 type FeedbackState = "copied" | "copy-failed" | "prompt-filled" | "spoken" | "speak-failed";
 
 const FEEDBACK_DURATION_MS = 1800;
+const iconClassName = "h-4 w-4";
 
 export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak, onEdit, editLabel, onRegenerate }: MessageActionsProps) {
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
@@ -72,53 +74,60 @@ export function MessageActions({ message, messageRole, onUseAsPrompt, onSpeak, o
           : feedback === "speak-failed"
             ? "Speak failed"
             : "";
+  const actionTextClass = messageRole === "user" ? "text-primary-foreground" : "text-foreground text-midground";
+  const actionButtonClass = "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded border border-current/50 bg-current/10 p-0 text-inherit hover:bg-current/20 hover:text-inherit focus-visible:outline-2 focus-visible:outline-ring focus-visible:ring-2 focus-visible:ring-current/70 focus-visible:ring-offset-1";
 
   return (
-    <div data-slot="message-actions" className="mt-2 flex items-center gap-1 text-xs text-current/70">
+    <div data-slot="message-actions" data-actions-role={messageRole} className={`mt-2 flex items-center gap-1 text-xs ${actionTextClass}`}>
       <button
         type="button"
         aria-label={`Copy ${messageRole} message`}
-        className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+        title={feedback === "copied" ? "Copied" : "Copy message"}
+        className={actionButtonClass}
         onClick={() => void copyMessage()}
       >
-        {feedback === "copied" ? "Copied" : "Copy"}
+        {feedback === "copied" ? <Check aria-hidden="true" className={iconClassName} /> : <CopyIcon aria-hidden="true" className={iconClassName} />}
       </button>
       <button
         type="button"
         aria-label={`Use ${messageRole} message as prompt`}
-        className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+        title="Use as prompt"
+        className={actionButtonClass}
         onClick={useAsPrompt}
       >
-        Use as prompt
+        <MessageSquarePlus aria-hidden="true" className={iconClassName} />
       </button>
       {messageRole === "user" && onEdit && (
         <button
           type="button"
           aria-label="Edit user message"
-          className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+          title={editLabel ?? "Edit message"}
+          className={actionButtonClass}
           onClick={() => onEdit(message)}
         >
-          {editLabel ?? "Edit draft"}
+          <Pencil aria-hidden="true" className={iconClassName} />
         </button>
       )}
       {messageRole === "assistant" && onRegenerate && (
         <button
           type="button"
           aria-label="Run assistant message again"
-          className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+          title="Run again"
+          className={actionButtonClass}
           onClick={onRegenerate}
         >
-          Run again
+          <RotateCcw aria-hidden="true" className={iconClassName} />
         </button>
       )}
       {messageRole === "assistant" && onSpeak && (
         <button
           type="button"
-          aria-label="Speak assistant message"
-          className="rounded px-1.5 py-0.5 hover:bg-current/10 hover:text-current focus-visible:outline-2 focus-visible:outline-ring"
+          aria-label="Read assistant message aloud"
+          title="Read aloud"
+          className={actionButtonClass}
           onClick={() => void speakMessage()}
         >
-          Speak
+          <Volume2 aria-hidden="true" className={iconClassName} />
         </button>
       )}
       {feedbackText && (

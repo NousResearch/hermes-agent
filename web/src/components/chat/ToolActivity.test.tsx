@@ -31,6 +31,13 @@ describe("ToolActivity", () => {
     expect(host.textContent).toContain("Complete");
   });
 
+  it("uses readable contrast for tool labels and details", async () => {
+    await render({ id: "contrast-tool", name: "terminal", state: "complete", result: { ok: true } });
+    const header = host.querySelector<HTMLElement>("[data-tool-state] > div");
+    expect(header?.className).toContain("text-foreground");
+    expect(host.querySelector("details summary")?.className).toContain("text-foreground/90");
+  });
+
   it("shows progress, context, summary, elapsed time, and expandable details", async () => {
     await render({ id: "t2", name: "search", state: "complete", context: "Finding docs", progress: "3/5", summary: "Found 5 results", elapsedMs: 1250, args: { query: "docs" }, result: { count: 5 } });
     expect(host.textContent).toContain("Finding docs");

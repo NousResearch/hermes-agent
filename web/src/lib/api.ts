@@ -2166,6 +2166,23 @@ export interface UsageQuotaWindow {
   detail: string | null;
 }
 
+export type UsageQuotaRouteStatus = "reported" | "unknown" | "unavailable";
+
+export interface UsageQuotaRoute {
+  route: string;
+  provider: string | null;
+  account?: string | null;
+  usage: number | null;
+  limit: number | null;
+  remaining: number | null;
+  remaining_percent?: number | null;
+  unit: string | null;
+  reset_at: string | null;
+  status: UsageQuotaRouteStatus;
+  source: string;
+  detail: string | null;
+}
+
 export interface UsageQuotaSnapshot {
   provider: string;
   source: string;
@@ -2174,12 +2191,13 @@ export interface UsageQuotaSnapshot {
   plan: string | null;
   windows: UsageQuotaWindow[];
   details: string[];
+  routes?: UsageQuotaRoute[];
   unavailable_reason: string | null;
   available: boolean;
-  /** Optional provider metadata; absent means the backend did not supply it. */
-  scope?: string | null;
-  stale?: boolean;
-  partial?: boolean;
+  /** Provider metadata is always present on the quota response. */
+  scope: string | null;
+  stale: boolean;
+  partial: boolean;
 }
 
 export interface UsageQuotaResponse {

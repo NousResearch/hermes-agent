@@ -181,7 +181,9 @@ const approval: Handler = ctx => {
   void receiveApprovalRequest(null, {
     // false only when a tirith warning forbids it; backend omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
-    choices: Array.isArray(p.choices) ? p.choices.filter((choice): choice is string => typeof choice === 'string') : undefined,
+    choices: Array.isArray(p.choices)
+      ? p.choices.filter((choice): choice is string => typeof choice === 'string')
+      : undefined,
     command,
     description,
     // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
@@ -195,8 +197,14 @@ const approval: Handler = ctx => {
   if (!request.replayed) {
     dispatchNativeNotification({
       actions: [
-        { id: 'approve', text: translateNow('notifications.native.approveAction') },
-        { id: 'reject', text: translateNow('notifications.native.rejectAction') }
+        {
+          id: str(p.request_id) ? `approve:${str(p.request_id)}` : 'approve',
+          text: translateNow('notifications.native.approveAction')
+        },
+        {
+          id: str(p.request_id) ? `reject:${str(p.request_id)}` : 'reject',
+          text: translateNow('notifications.native.rejectAction')
+        }
       ],
       body: command || description,
       kind: 'approval',

@@ -39,6 +39,12 @@ export const BACKEND_RESTARTING =
 
 export const BACKEND_RESTARTING_ACTIVITY = 'Hermes stopped unexpectedly · restarting…'
 
+// Attached (dashboard / embedded) mode: only the socket dropped; Hermes and any
+// reply in progress are still alive on the backend and come back on reconnect.
+export const CONNECTION_LOST = 'Connection to Hermes lost — reconnecting and reopening your chat…'
+
+export const CONNECTION_LOST_ACTIVITY = 'connection lost · reconnecting…'
+
 export const backendGaveUp = (code: null | number, lastLine?: string): string => {
   const exit = code === null ? '' : ` (exit code ${code})`
   const detail = detailLine(lastLine)

@@ -238,6 +238,8 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     try:
         import httpx
+        from hermes_constants import mkdir_under_hermes_home
+
         resp = httpx.get(LIVE_CATALOG_URL, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
         resp.raise_for_status()
         if len(resp.content) > _MAX_LIVE_BYTES:
@@ -245,7 +247,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         data = resp.json()
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
             raise ValueError("unexpected live catalog payload")
-        cache.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(cache.parent)
         cache.write_text(json.dumps(data), encoding="utf-8")
         return data
     except Exception as exc:

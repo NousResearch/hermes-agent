@@ -195,6 +195,27 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         _notif_loop_status(sid, decision["message"])
 
 
+def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
+    """Whether the gateway's heartbeat poller owns this session's due tick.
+
+    Desktop/TUI can attach to a messaging conversation, but its session-owner poller has no adapter
+    route for the reply. Ownership is the gateway's LIVE routing index, not the row's immutable
+    ``source``: ``gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
+    origin-bearing key whose current ``session_id`` is this one, so a row archived by /reset,
+    auto-reset or compression rotation belongs to nobody there and must keep firing here. The index
+    lives in the gateway's home store (the launch handle for a multiplexed gateway, the profile's
+    own store for a per-profile gateway), so both are consulted; no entry is fail-open.
+    """
+    try:
+        with _session_db(session) as db:
+            for store in {id(d): d for d in (db, _get_db()) if d is not None}.values():
+                if (entry := store.gateway_routing_entry_for_session(session_key)) is not None:
+                    return bool(entry.get("origin")) and not entry.get("suspended")
+        return False
+    except Exception:
+        return False
+
+
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     """Fire a due /heartbeat prompt for an idle TUI/Desktop/dashboard session (#102056, #103044).
 
@@ -212,8 +233,10 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
-        return  # not due, or busy — the tick coalesces to the next idle poll
+    if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
@@ -230,6 +253,14 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _loop_route_is_gateway_chat(state) -> bool:
+    """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
+    (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
+    so a Desktop viewer of the same session never consumes the tick and strands the reply off the chat."""
+    route = getattr(state, "route", None) or {}
+    return bool(route.get("platform") and route.get("chat_id"))
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -240,7 +271,9 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or _loop_route_is_gateway_chat(mgr.state):
+        return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
+    if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
     if not (wakeup := mgr.fire_tick()):
         _notif_release_turn(session)
@@ -512,9 +545,13 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
-    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner
+    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
 
     home = _session_home(session)
+    # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
+    # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
+    if not has_mailbox(home):
+        return False
     with session["history_lock"]:
         if any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
@@ -562,6 +599,35 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     return started
 
 
+# A failing mailbox poll (typically the active-session registry lock unavailable under contention) retries
+# every ``queue.get`` slice; back off between attempts and log the failure once per window, not per attempt.
+_BOT_POLL_FAILURE_BACKOFF_S = 5.0
+_BOT_POLL_WARN_INTERVAL_S = 60.0
+
+
+def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None:
+    """One poller-loop pass of the mailbox poll: skipped while backing off after a failure; a failure is
+    logged at WARNING once per ``_BOT_POLL_WARN_INTERVAL_S`` (with the count of suppressed repeats) and at
+    DEBUG otherwise. An unthrottled poll logged ``Bot live-owner delivery poll failed`` ~2×/minute per session
+    for days, 91% of an install's WARNING output (#111719)."""
+    if now < session.get("_bot_poll_retry_at", 0.0):
+        return
+    try:
+        _poll_bot_live_delivery_once(sid, session)
+    except Exception:
+        session["_bot_poll_retry_at"] = now + _BOT_POLL_FAILURE_BACKOFF_S
+        suppressed = int(session.get("_bot_poll_warn_suppressed", 0))
+        if now - session.get("_bot_poll_warned_at", -_BOT_POLL_WARN_INTERVAL_S) < _BOT_POLL_WARN_INTERVAL_S:
+            session["_bot_poll_warn_suppressed"] = suppressed + 1
+            logger.debug("Bot live-owner delivery poll failed (repeat)", exc_info=True)
+            return
+        session["_bot_poll_warned_at"], session["_bot_poll_warn_suppressed"] = now, 0
+        logger.warning("Bot live-owner delivery poll failed (%d repeat(s) suppressed since the last report)",
+                       suppressed, exc_info=True)
+        return
+    session["_bot_poll_warn_suppressed"] = 0
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     """Daemon thread (started by _init_session()) that drains the process-global completion_queue for this session
     (ownership routing: _notif_handle_event) and polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` — the
@@ -580,10 +646,7 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        try:
-            _poll_bot_live_delivery_once(sid, session)
-        except Exception:
-            logger.warning("Bot live-owner delivery poll failed", exc_info=True)
+        _poll_bot_live_delivery_guarded(sid, session, now)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:

@@ -180,3 +180,18 @@ def test_interrupt_without_tool_tail_adds_nothing():
     _finalize(agent, messages, interrupted=True, final_response="partial reply")
     assert len(messages) == before
     assert messages[-1]["role"] == "assistant"
+
+
+def test_interrupted_turn_with_diagnostic_text_is_not_completed():
+    """An interrupt mid-call leaves a diagnostic ``final_response`` ("Operation interrupted:
+    waiting for model response"); the result must still say ``completed=False`` like the
+    sibling producers (turn_recovery, codex_runtime) — the gateway stream gate and the API run
+    status trust that flag (#111770)."""
+    agent = _StubAgent()
+    result = _finalize(
+        agent, [{"role": "user", "content": "hi"}], interrupted=True,
+        final_response="Operation interrupted: waiting for model response (0.1s elapsed).",
+    )
+    assert result["interrupted"] is True
+    assert result["completed"] is False
+    assert result["failed"] is False

@@ -278,6 +278,8 @@ export const en: Translations = {
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable',
       liveEnded: 'Live voice session ended',
+      liveEndedConnectionLost: 'The live voice session lost its connection.',
+      liveEndedClosed: 'The live voice session was closed by the service.',
       liveError: 'Live voice',
       liveDelegationFailed: 'Could not hand the request to Hermes',
       liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`

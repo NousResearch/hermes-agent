@@ -147,6 +147,13 @@ default home's `gateway_state.json`), so it stays correct when the multiplexer w
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
 environment, or when profiles were added after the gateway started.
 
+The setup flows follow the same rule: `hermes -p coder setup gateway`, `hermes -p coder setup`,
+`hermes -p coder gateway setup` and `hermes -p coder import` configure the profile's bots but
+skip the "install the gateway background service" step for a served profile, printing
+*"Profile 'coder' is already served by the default multiplexer"* instead of registering a
+stray unit or plist that could only sit dead. Add the bot token and the running multiplexer
+picks it up.
+
 The multiplexer is the single inbound process; a second profile gateway would
 double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
 `install` and `restart`) only if you deliberately want a separate process for that
@@ -462,8 +469,10 @@ turn, the cron ticker or log routing.
 
 The served set controls `/p/<profile>/` API and webhook prefixes, runtime
 status, profile-route eligibility, and which profiles the in-process cron
-scheduler ticks (the Desktop backend's ticker enumerates the same set and stands
-down for any profile a running multiplexer or its own gateway already serves). A
+scheduler ticks (the Desktop backend's ticker re-enumerates the same set on
+every cycle — a profile created or deleted while Desktop runs joins or leaves
+the ticked set without a restart — and stands down for any profile a running
+multiplexer or its own gateway already serves). A
 multiplexer started as `hermes -p <name> gateway run` always ticks its own
 profile's cron store as well.
 

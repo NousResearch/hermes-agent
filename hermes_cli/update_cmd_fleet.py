@@ -1200,6 +1200,7 @@ def _recover_after_restart_phase_abort(
     e, _pre_update_plan, out: _GatewayRestartOutcome, *, gateway_mode, restarted_scoped_units
 ) -> None:
     """Phase-abort recovery: fresh-child restart + fail-closed verdict; updates ``out`` in place."""
+    from hermes_cli.update_abort_recovery import _owed_stale_serve_rows
     from hermes_cli.update_cmd import (
         _abort_recovery_is_complete, _recover_gateway_restart_after_abort, _surviving_pre_update_serve_runtimes,
         _warn_stale_serve_runtimes, _write_gateway_update_exit_code,
@@ -1253,11 +1254,13 @@ def _recover_after_restart_phase_abort(
         stale_runtime_rows=_stale_runtime_rows,
     ):
         # Fresh child is terminal; the fleet-version matrix stays the authoritative
-        # read-back before success is declared.
+        # read-back before success is declared. Desktop-owned survivors (the only rows
+        # that can remain here) are named, not owed. See #111494.
         out.incomplete = False
+        _warn_stale_serve_runtimes(_stale_runtime_rows)
     elif (
         _restart_phase_failure_is_incomplete(_surviving, out.pre_restart_gateway_pids)
-        or _stale_runtime_rows
+        or _owed_stale_serve_rows(_stale_runtime_rows)
         or _serve_units_failed
     ):
         out.incomplete = True

@@ -1254,9 +1254,9 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
 
 def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
-    """Delete all ``legacy-*`` archive directories.  Returns ``{"bytes_freed": N, "deleted": count}``."""
+    """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
-    out = {"bytes_freed": 0, "deleted": 0}
+    out = {"bytes_freed": 0, "deleted": 0, "errors": 0}
     if not base.exists():
         return out
     for child in _legacy_archives(base):

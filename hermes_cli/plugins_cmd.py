@@ -1274,9 +1274,14 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
     if not base.is_dir():
         return
     for d in sorted(base.iterdir()):
-        if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+        try:
+            if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+                continue
+            info = _read_manifest_info(d, prefix)
+        except OSError as exc:
+            # Mirrors scan_directory: an unsearchable plugin dir (WinError 5 / mode 000) is skipped, not fatal.
+            logger.warning("Skipping unreadable plugin directory %s: %s", d, exc)
             continue
-        info = _read_manifest_info(d, prefix)
         if info is None:
             if depth == 0:
                 _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen)

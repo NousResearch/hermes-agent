@@ -348,6 +348,7 @@ def _append_file_mutation_footer(agent, final_response, logger):
         # Empty/interrupted turns already have other surface text that shouldn't be augmented.
         _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
         if _failed and agent._file_mutation_verifier_enabled():
+            _failed = agent._file_mutations_still_failed(_failed)
             footer = agent._format_file_mutation_failure_footer(_failed)
             if footer:
                 final_response = final_response.rstrip() + "\n\n" + footer
@@ -462,9 +463,12 @@ def finalize_turn(
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
 
+    # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
+    # interrupted turn; the gateway stream gate and the API run status rely on that contract.
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 

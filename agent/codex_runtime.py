@@ -77,7 +77,8 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        agent._session_db.queue_token_counts(agent.session_id, **counts())
+        from agent.turn_usage import _agent_session_source
+        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 

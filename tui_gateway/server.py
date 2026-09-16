@@ -39,7 +39,8 @@ from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
-    AGENT_STILL_STARTING, agent_init_failed_message, busy_message, resume_failed_message, turn_error_text)
+    AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
+    resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -1109,12 +1110,18 @@ def _start_agent_build(sid: str, session: dict) -> None:
         with _sessions_lock:
             current = _sessions.get(sid)
         if current is None:
+            # Closed/reaped before the build started: nothing will ever attach an agent to this
+            # record, yet ``agent_ready`` must be set so a prompt waiting on it fails instead of hanging.
+            session["agent_error"] = AGENT_BUILD_ABANDONED
             ready.set()
             return
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
         try:
             if not _await_resume_history(sid, current):
+                # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
+                # why — a turn admitted against this record refuses with the real reason (#111531).
+                current["agent_error"] = AGENT_BUILD_ABANDONED
                 return
             tokens = _set_session_context(key)
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —

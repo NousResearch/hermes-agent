@@ -789,8 +789,12 @@ def _task_prefers_fast_model(task: Optional[str]) -> bool:
         _get_auxiliary_task_config(task).get("prefer_fast_model"), default=False)
 
 
-# Dedicated vision models for direct providers whose main chat model differs.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5v-turbo"}
+# Dedicated vision models for direct providers whose main chat model differs. zai: glm-5.3-flash
+# is the only image-capable GLM id served on every Z.AI surface (pay-as-you-go and Coding Plan,
+# global and CN); the former glm-5v-turbo pin 404s / 1211 "Unknown Model" on the coding endpoints
+# (#111429). ZaiProfile has no default_vision_model(), so dropping the pin would route vision to
+# the user's text-only chat model and skip Z.AI entirely.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
 
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:
@@ -2646,8 +2650,15 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint like the main CLI (env OPENAI_BASE_URL or config-saved)."""
     try:
+        from hermes_cli.auth import AuthError
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested="custom")
+    except AuthError as exc:
+        # Bare 'custom' with nothing configured fails fast in the main resolver: there is no
+        # custom endpoint, so do NOT fall through to a stale env OPENAI_BASE_URL that the main
+        # resolver deliberately never consults.
+        logger.debug("Auxiliary client: no custom endpoint configured: %s", exc)
+        return None, None, None
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
@@ -6150,7 +6161,14 @@ def _merge_aux_extra_body(
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
+            # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
             merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
+    # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
+    # OpenAI-compat wire from any aux task (#112010).
+    if isinstance(merged_extra.get("reasoning"), dict):
+        from agent.reasoning_effort import clamp_reasoning_config
+        merged_extra["reasoning"] = clamp_reasoning_config(merged_extra["reasoning"])
     # Portal tags + sticky session_id fallback when the profile didn't supply them; session_id
     # keeps aux calls on the main turn's upstream instance (cache warmth) — tags alone are not
     # enough on /v1/messages.
@@ -6195,7 +6213,11 @@ def _build_call_kwargs(
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
     # or extra_body.reasoning); providers without a reasoning-aware profile keep the generic
-    # ``extra_body.reasoning`` fallback.
+    # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
+    # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
+    # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
+    from agent.reasoning_effort import clamp_reasoning_config
+    reasoning_config = clamp_reasoning_config(reasoning_config)
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
     if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):

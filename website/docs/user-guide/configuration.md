@@ -47,7 +47,7 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 ```
 
 :::tip
-The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
+The `hermes config set` command automatically routes values to the right file — API keys and the environment settings Hermes registers (`DISCORD_HOME_CHANNEL`, `TELEGRAM_ALLOWED_USERS`, …) are saved to `.env`; other bare ALL-CAPS names are written to `config.yaml` as top-level scalars with a notice, dotted settings to `config.yaml`. A misspelled path under a known section (`gateway.discord.foo`) is refused with a did-you-mean before anything is written; pass `--force` to write it anyway.
 :::
 
 ## Configuration Precedence
@@ -122,6 +122,12 @@ Hermes also warns (once per process per database) when an existing
 database's on-disk journal mode is silently flipped to WAL on open — for
 example a database an operator had manually converted to `delete` — and
 names `database.journal_mode` as the setting that makes the choice stick.
+The reverse never happens automatically: a database that is already in WAL
+mode is not live-downgraded when you set `journal_mode: delete` (a downgrade
+under open connections can corrupt it). `hermes doctor` warns
+`<db> is in WAL mode despite database.journal_mode=delete` until you stop
+every Hermes process for the profile and run a one-time offline
+`PRAGMA journal_mode=DELETE` on the file.
 
 ## Environment Variable Substitution
 
@@ -990,6 +996,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. It exists to break a death spiral: when API calls keep disconnecting on an oversized session, the gateway never receives token-usage data, so the token-based threshold can't fire, so the transcript keeps growing and disconnects get worse. This count-based floor fires on message count alone (always known, regardless of API failures) to force compression and recover the session. Default `5000` — far above any normal session, including large-context (1M+) models doing thousands of short turns, which compress on the token threshold long before this. Raise it further for unusual platforms, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
 
+The same limit is also a **fail-closed bound on what the model is sent** whenever hygiene does not land by the time a turn starts — the turn-hold budget expired, the summary timed out or failed, a failure cooldown is active, another compression is still in flight, or compression is disabled. In that case the gateway keeps the leading system/setup rows plus the newest messages, total at most `hygiene_hard_message_limit`, and never starts the kept tail on an orphaned tool result. Only the payload of that one turn is clipped: the transcript on disk is untouched, nothing is deleted, and a summary that lands later is adopted as-is. This is what keeps a week-long DM from feeding the model the full uncompressed history when a compression pass keeps missing.
+
 `hygiene_timeout_seconds` is the gateway's **inactivity budget** for this pre-agent compression pass — not a total wall-clock cap. The compression summary call streams from the model, and each arriving token counts as forward progress: a slow reasoning model that is still generating keeps extending its own deadline, so slow-but-healthy summary models are never cut off mid-generation. Only when the summary model produces **no output** for this many seconds (backend down, hung connection, silent provider) does the gateway warn the user, continue the incoming message without compression, and record a temporary per-session failure cooldown instead of appearing stuck.
 
 `hygiene_total_ceiling_seconds` (default `600`) bounds the total wait even while tokens are still moving, so a degenerate trickle stream can't hold a turn hostage indefinitely. It is clamped to at least `hygiene_timeout_seconds`.
@@ -1251,6 +1259,8 @@ Cron jobs and delegated subagents stream too. They run the request inline on the
 ### Disabling API streaming
 
 `model.streaming: false` forces non-streaming requests for the whole session — parent and subagents alike. It is an escape hatch for self-hosted OpenAI-compatible servers whose *streaming* tool-call path is broken (for example vLLM with `--tool-call-parser qwen3_xml` plus a reasoning parser can leak tool-call markup into plain text and return zero `tool_calls`, so delegated tasks silently no-op). Default is `true`; leave it unless you hit that class of bug, since non-streaming calls lose the liveness properties described above. This is separate from `display.streaming`, which only controls token rendering in the terminal.
+
+Hermes also switches a session to non-streaming on its own when streaming cannot make progress: the provider reports that streaming is not supported, or an OpenAI-compatible gateway answers a streaming request with a contentless SSE frame (a bare `data:` / `event: ping` keepalive with no payload, typical of a degraded relay). The turn is retried without streaming, a warning is shown, and streaming stays off for the rest of that session.
 
 ```yaml
 model:
@@ -2057,12 +2067,12 @@ Both keys are display-only and CLI-only: they are suppressed in quiet mode, when
 
 ### File-mutation verifier
 
-When `display.file_mutation_verifier` is `true` (default), Hermes appends a one-line advisory to the assistant's final response whenever a `write_file` or `patch` call failed during the turn and was never superseded by a successful write to the same path. This catches the "batch of parallel patches, half silently fail, model summarises success" class of over-claim without requiring you to manually run `git status` after every edit.
+When `display.file_mutation_verifier` is `true` (default), Hermes appends a one-line advisory to the assistant's final response whenever a `write_file` or `patch` call failed during the turn and the target file was neither written successfully afterwards (under any spelling of its path) nor otherwise changed on disk before the turn ended. This catches the "batch of parallel patches, half silently fail, model summarises success" class of over-claim without requiring you to manually run `git status` after every edit.
 
 Example footer:
 
 ```
-⚠️ File-mutation verifier: 3 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 3 file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.
   • concepts/automatic-organization.md — [patch] Could not find match for old_string
   • concepts/lora.md — [patch] Could not find match for old_string
   • concepts/rag-pipeline.md — [patch] Could not find match for old_string
@@ -2070,7 +2080,7 @@ Example footer:
 
 Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to suppress the footer. The verifier only fires when real failures are outstanding at turn end — a model that retries a failed patch and succeeds within the same turn will not trigger it for that file.
 
-**Trust the verifier over the model's summary.** The footer means the listed files were **not** modified on disk, even if the assistant's closing message says the task is done. Common causes:
+**Trust the verifier over the model's summary.** The footer means the listed edit calls **failed** and Hermes saw no later change to those files, even if the assistant's closing message says the task is done. It only tracks `write_file`/`patch` receipts plus a modification-time check at turn end, so run `git status` or `read_file` to confirm what actually landed. Common causes:
 
 - **Write denied** — path is on the credential denylist or outside `HERMES_WRITE_SAFE_ROOT` (see [File write safety](./security.md#file-write-safety))
 - **Patch mismatch** — `old_string` did not match the file on disk
@@ -2079,7 +2089,7 @@ Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to su
 Example footer when writes are blocked:
 
 ```
-⚠️ File-mutation verifier: 2 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 2 file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.
   • ~/.hermes/cron/jobs.json — [patch] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
   • ~/.hermes/scripts/monitor.py — [write_file] Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (/path/to/project)
 ```
@@ -2592,6 +2602,8 @@ timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)
 
 Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe/London`, `Asia/Kolkata`, `UTC`). Leave empty or omit for server-local time.
 
+`hermes doctor` (and the startup config check) reports a value the runtime cannot load — a typo such as `Asia/Tokio` would otherwise silently put the agent clock and every cron schedule on server-local time. `HERMES_TIMEZONE` overrides this key when set.
+
 ## Discord
 
 Configure Discord-specific behavior for the messaging gateway:
@@ -2886,4 +2898,4 @@ dashboard:
 - `ssh_isolated_idle_grace_s` (default `900`) — a Desktop-owned `hermes serve --isolated` backend reached over SSH is detached from the SSH session on purpose, so a laptop that sleeps mid-connection cannot tear it down; each dark-wake reconnect used to leave another backend holding `state.db`. The backend now retires itself once no client WebSocket has been connected for this long and no agent turn is running (a turn keeps it alive; an unreadable turn state keeps it alive too). Set high if you rely on a detached backend finishing long work after the laptop sleeps. Such backends also send a slow WebSocket ping (60 s, 10 min timeout) so a half-open tunnel is noticed.
 - `ws_orphan_reap_grace_s` — how long a WS-detached session waits before the orphan reaper collects it. Raise alongside the keepalive values if clients reconnect slowly. Periodic session maintenance also completes cleanup for closed sockets and re-arms a missing orphan timer, so a detached chat cannot keep its ownership lease solely because its initial cleanup or timer was lost. Reconnecting cancels that timer; active delegated work and healthy running turns remain protected by the normal orphan-reaper checks. (`HERMES_TUI_WS_ORPHAN_REAP_GRACE_S` remains as an internal override.)
 - `ws_orphan_activity_stale_s` (default `600`) — how long a detached **running** turn's activity clock (the same clock the `agent.turn_liveness` watchdog samples: API waits, stream tokens, tool heartbeats) must be idle before the orphan reaper interrupts it. A client-absent turn that is still actively producing keeps running to completion detached — closing the laptop, backgrounding the mobile app, or a desktop update no longer cancels healthy long turns; only a genuinely wedged turn is interrupted. Set `0` to interrupt at the grace window regardless of activity (old behavior).
-- `startup_orphan_sweep` (default `true`) — the WS-orphan reap timer above is in-process, so a gateway restart (update, crash, systemd) before it fires leaves the session row open forever — phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.
+- `startup_orphan_sweep` (default `true`) — the WS-orphan reap timer above is in-process, so a gateway restart (update, crash, systemd) before it fires leaves the session row open forever — phantom "active" work in `/resume` and dashboards. On every gateway boot — both the stdio TUI (`entry.main`) and the desktop/dashboard WebSocket sidecar (`handle_ws`) — rows with source `tui` / `desktop` / `subagent` / `unknown` (a row the token-accounting guard had to materialize itself) whose start time **and** newest message are both older than the session TTL (`HERMES_TUI_SESSION_TTL_S`, default 6 hours) are closed with `end_reason: startup_orphan_reap`. Messaging-platform sessions (Telegram, Discord, …) are never touched, live in-memory sessions (a client that already resumed) are excluded, and swept sessions remain resumable.

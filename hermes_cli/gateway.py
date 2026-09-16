@@ -2562,6 +2562,8 @@ def ensure_gateway_service(context: str = "setup") -> bool:
     try:
         if _is_service_running():
             return True
+        if _served_profile_needs_no_service():
+            return True
         if not _is_service_installed():
             if supports_systemd and has_conflicting_systemd_units():
                 # Both units would fight over bot tokens; don't pile a fresh install onto a conflicted state.
@@ -4471,6 +4473,22 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
 
+def _served_profile_needs_no_service() -> bool:
+    """Print the "already served" note and return True when a setup flow must not install a standalone
+    service: a live multiplexing default gateway already serves this named profile, so the unit/plist it
+    would register can only sit dead (the start guard refuses it) or double-bind its platforms.
+    Shared by ``hermes setup gateway`` / ``hermes setup`` / ``hermes import`` (``ensure_gateway_service``)
+    and the ``hermes gateway setup`` wizard. See #111958."""
+    if not named_profile_served_by_running_multiplexer():
+        return False
+    print_success(
+        f"Profile '{_current_profile_name()}' is already served by the default multiplexer."
+    )
+    print_info("  (served now by the running multiplexed gateway — add its bot token and it connects)")
+    print_info("  No standalone gateway service was installed or started.")
+    return True
+
+
 def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
     """Print the served-profile refusal and return True when a named-profile gateway must not start:
     a multiplexing default gateway already serves it (a second one would double-bind its platforms: two
@@ -5783,6 +5801,8 @@ def _wizard_post_setup() -> None:
     """Offer to install/start/restart the gateway once at least one platform has progress."""
     print()
     print(color("─" * 58, Colors.DIM))
+    if _served_profile_needs_no_service():
+        return
     service_installed = _is_service_installed()
     service_running = _is_service_running()
 
@@ -5841,7 +5861,8 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     """Dispatch start/stop/restart via s6 inside an s6 container; True iff dispatched (caller returns).
     Profile defaults to the current one; missing slot / s6 errors become actionable CLI messages."""
     from hermes_cli.service_manager import (
-        GatewayNotRegisteredError, S6CommandError, detect_service_manager, get_service_manager,
+        GatewayNotRegisteredError, detect_service_manager, get_service_manager,
+        register_unregistered_profile_gateway,
     )
 
     if detect_service_manager() != "s6":
@@ -5851,9 +5872,19 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     mgr = get_service_manager()
     if action not in ("start", "stop", "restart"):
         return False
+    service = f"gateway-{profile}"
     try:
-        getattr(mgr, action)(f"gateway-{profile}")
-    except (GatewayNotRegisteredError, S6CommandError) as exc:
+        try:
+            getattr(mgr, action)(service)
+        except GatewayNotRegisteredError:
+            # A profile created from the HOST against a bind-mounted home has a directory but no
+            # slot (`profile create` cannot reach the container's /run/service). Only `start`
+            # repairs that; stop/restart on a missing slot stay an error.
+            if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
+                raise
+            print(f"✓ registered the s6 gateway slot for profile {profile!r}")
+            mgr.start(service)
+    except (RuntimeError, ValueError, OSError) as exc:  # S6Error is a RuntimeError
         print(f"✗ {exc}")
         sys.exit(1)
     return True

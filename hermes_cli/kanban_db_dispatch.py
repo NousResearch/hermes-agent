@@ -20,6 +20,7 @@ from dataclasses import field
 from pathlib import Path
 from typing import Any
 from typing import Callable
+from typing import Iterable
 from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
@@ -39,6 +40,12 @@ DEFAULT_LOG_BACKUP_COUNT = 1
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.
 KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
+
+# A healthy worker is still alive for a while after kanban_complete /
+# kanban_request_review returns (final assistant turn, session persistence), so
+# a run's retained worker is only reaped once ended_at is at least this old
+# (two default dispatch ticks).
+TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 
 # ---------------------------------------------------------------------------
 # Respawn guard constants
@@ -92,6 +99,9 @@ class DispatchResult:
     reconciled_orphans: list[str] = field(default_factory=list)
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
+    reaped_terminal_workers: list[str] = field(default_factory=list)
+    """Task ids whose worker outlived its closed run and was terminated by
+    :func:`reap_terminal_workers`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -133,6 +143,35 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+
+
+def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
+    """One line naming why the tick(s) held ready work back, or ``""``.
+
+    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
+    memory_pressure=critical`` — the respawn-guard reasons counted per task
+    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
+    CLI daemon and the embedded gateway dispatcher, which otherwise report a
+    bare zero-spawn count while ``hermes kanban tail`` is the only place the
+    guard reason is written (#111910).
+    """
+    counts: dict[str, int] = {}
+    pressure: Optional[str] = None
+    for res in results:
+        if res is None:
+            continue
+        for _task_id, reason in res.respawn_guarded:
+            counts[reason] = counts.get(reason, 0) + 1
+        if res.rate_limited:
+            counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skipped_locked:
+            counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.memory_pressure:
+            pressure = res.memory_pressure
+    parts = [f"{k}={v}" for k, v in sorted(counts.items())]
+    if pressure:
+        parts.append(f"memory_pressure={pressure}")
+    return ", ".join(parts)
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -357,6 +396,62 @@ def _terminate_reclaimed_worker(
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
     return info
+
+
+def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+    """End host-local workers that outlived their run (issue #111791) — a worker
+    that called ``kanban_complete`` and then hung keeps its ``state.db`` sidecar
+    fds open and no ``running``-only sweep can see it once ``tasks.worker_pid`` is
+    cleared. Keys on the closed ``task_runs`` row's retained pid + spawn
+    fingerprint: a legacy row (NULL fingerprint) or a recycled PID is never
+    signalled; a pid that is simply gone just has its evidence cleared. A run
+    that ended less than ``TERMINAL_WORKER_REAP_GRACE_SECONDS`` ago is left
+    alone so a worker still finalising after its own transition is not killed.
+    One row's failure (signal, /proc probe) is logged and skips only that row.
+    Returns the task ids whose worker was terminated."""
+    rows = conn.execute(
+        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
+        "WHERE ended_at IS NOT NULL AND ended_at <= ? "
+        "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
+        (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
+    ).fetchall()
+    host_prefix = _kb._host_prefix()
+    reaped: list[str] = []
+    for row in rows:
+        try:
+            _reap_terminal_worker_row(conn, row, host_prefix, signal_fn, reaped)
+        except Exception:
+            _kb._log.debug(
+                "kanban dispatch: terminal worker reap failed for run %s (task %s)",
+                row["id"], row["task_id"], exc_info=True,
+            )
+    return reaped
+
+
+def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
+    pid, fingerprint = int(row["worker_pid"]), int(row["worker_started_at"])
+    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+        return
+    alive = _worker_alive(pid, fingerprint)
+    termination = None
+    if alive:
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
+        if not termination["terminated"]:
+            return  # still alive: try again next tick
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
+            "WHERE id = ? AND worker_pid = ? AND worker_started_at = ?",
+            (row["id"], pid, fingerprint),
+        )
+        if alive:
+            _kb._append_event(
+                conn, row["task_id"], "terminal_worker_reaped",
+                {"pid": pid, "worker_started_at": fingerprint, **termination}, run_id=row["id"],
+            )
+    if alive:
+        reaped.append(row["task_id"])
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -1294,7 +1389,8 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                      (int(pid), started_at, task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
+            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
 
 
@@ -1877,6 +1973,7 @@ def _run_reclaim_phase(
     # ``reap_worker_zombies`` moved into ``_reclaim_dead_workers`` (right before
     # it reads run rows) so the reap-then-classify race stays closed — see
     # that function's docstring. Do not restore a call here.
+    result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
@@ -2215,12 +2312,16 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then ``which("hermes")`` (Windows: safe PATH search,
-    batch shims fall back to the module form), then ``sys.executable -m
-    hermes_cli.main`` for shim-less environments (cron, systemd ``User=``,
-    launchd). Mirrors ``gateway.run._resolve_hermes_bin``; local because
-    ``hermes_cli`` sits below ``gateway`` in the dependency order.
+    same-directory file), then the running interpreter's ``sys.executable -m
+    hermes_cli.main`` (exactly this install; also covers shim-less cron,
+    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
+    search, batch shims fall back to the module form) only when ``hermes_cli``
+    is not importable. The module argv must win over PATH: a PATH-first lookup
+    lets an attacker-planted ``hermes`` shadow the running install (#111569).
+    Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
+    sits below ``gateway`` in the dependency order.
     """
+    import importlib.util
     import shutil
 
     env_bin = os.environ.get("HERMES_BIN", "").strip()
@@ -2231,6 +2332,12 @@ def _resolve_hermes_argv() -> list[str]:
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
+
+    try:
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return _module_hermes_argv()
+    except Exception:
+        pass
 
     hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
     if hermes_bin:

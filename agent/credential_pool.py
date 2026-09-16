@@ -2566,16 +2566,25 @@ _ENV_BASE_URL_RESOLVERS = {
 }
 
 
-def _with_on_disk_env_sources(env_vars: List[str], entries: List[PooledCredential]) -> List[str]:
-    """*env_vars* plus the ``env:VAR`` names already persisted in the pool.
+def _env_key_var_candidates(env_vars: List[str], entries: List[PooledCredential]) -> List[str]:
+    """*env_vars*, their numbered siblings, and the ``env:VAR`` names already persisted.
+
+    ``VAR_2``, ``VAR_3``, ... are tried for every declared VAR until the first
+    one that does not resolve, so a `.env` or secret-manager project can back a
+    whole rotation pool with no config: setting ``NVIDIA_API_KEY_2`` is the
+    whole opt-in (#76593).
 
     Env-backed rows are written to auth.json without their secret and
     re-hydrated on every load; a row whose VAR the registry does not
-    declare (a second key the user pointed at ``env:PROVIDER_API_KEY_2``)
-    would otherwise stay empty forever and be silently dropped from
-    rotation by ``_available_entries``.
+    declare would otherwise stay empty forever and be silently dropped
+    from rotation by ``_available_entries``.
     """
     names = list(env_vars)
+    for base in env_vars:
+        n = 2
+        while get_env_prefer_dotenv(f"{base}_{n}"):
+            names.append(f"{base}_{n}")
+            n += 1
     for entry in entries:
         if entry.source.startswith("env:"):
             env_name = entry.source.split(":", 1)[1].strip()
@@ -2594,7 +2603,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         return seed.result
 
     if provider == "openrouter":
-        for env_var in _with_on_disk_env_sources(["OPENROUTER_API_KEY"], entries):
+        for env_var in _env_key_var_candidates(["OPENROUTER_API_KEY"], entries):
             token = get_env_prefer_dotenv(env_var)
             if token and seed.upsert(
                 f"env:{env_var}",
@@ -2614,7 +2623,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     env_vars = list(pconfig.api_key_env_vars)
     if provider == "anthropic":
         env_vars = ["ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
-    env_vars = _with_on_disk_env_sources(env_vars, entries)
+    env_vars = _env_key_var_candidates(env_vars, entries)
 
     resolve_base_url = _ENV_BASE_URL_RESOLVERS.get(provider)
     for env_var in env_vars:

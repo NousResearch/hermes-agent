@@ -83,7 +83,7 @@ Examples:
 | `/loop stop` | End the loop. |
 | `/proactive …` | Alias for `/loop` (Claude Code parity). |
 
-Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies.
+Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
 ## Mixing with `/goal`
 

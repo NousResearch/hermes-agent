@@ -552,16 +552,33 @@ def _managed_runtime_path_entries() -> list[str]:
         return []
 
 
+def _user_local_bin_entries() -> list[str]:
+    """``~/.local/bin`` when it exists — the pip --user / pipx / uv-tool install
+    target. A backend launched by a non-interactive SSH session, systemd or a GUI
+    launcher inherits a PATH without it (only the login shell adds it), so CLIs
+    installed there were ``command not found`` from the terminal tool (#111778)."""
+    local_bin = Path.home() / ".local" / "bin"
+    try:
+        return [str(local_bin)] if local_bin.is_dir() else []
+    except OSError:
+        # HOME can point at a directory this process may not traverse (CI runs
+        # with HOME=/root as an unprivileged user); such a home has no usable
+        # ~/.local/bin either.
+        return []
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Normalised POSIX PATH with missing sane entries appended: empty entries
     dropped (shells read them as cwd), duplicates collapsed (first wins), then
-    missing ``_SANE_PATH`` / managed-runtime dirs appended so user entries keep
-    precedence. Windows is a no-op passthrough (native ``;`` PATH untouched)."""
+    missing ``_SANE_PATH`` / managed-runtime / ``~/.local/bin`` dirs appended so
+    user entries keep precedence. Windows is a no-op passthrough (native ``;``
+    PATH untouched)."""
     if _IS_WINDOWS:
         return existing_path
     # dict preserves first-occurrence order; empty entries dropped.
     ordered = dict.fromkeys(entry for entry in existing_path.split(":") if entry)
-    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries()]))
+    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries(),
+                                  *_user_local_bin_entries()]))
     return ":".join(ordered)
 
 

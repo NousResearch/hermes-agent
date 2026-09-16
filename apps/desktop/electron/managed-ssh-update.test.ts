@@ -288,7 +288,9 @@ test('POSIX managed launcher executes the updater command and atomically publish
       {
         ssh: { exec: async () => '' },
         platform: 'Linux',
-        hermesPath: '/bin/true',
+        // `/bin/true` is absent on macOS; `/usr/bin/true` is portable across
+        // macOS and Linux for this no-op updater subprocess.
+        hermesPath: '/usr/bin/true',
         hermesHome: home
       },
       CORRELATION

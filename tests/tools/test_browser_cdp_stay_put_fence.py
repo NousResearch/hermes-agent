@@ -26,9 +26,8 @@ def _install_fake_lease(monkeypatch, *, human: bool, epoch: int = 1):
     state = {"human": human, "epoch": epoch}
 
     class Lease:
-        @property
-        def epoch(self):
-            return state["epoch"]
+        def __init__(self):
+            self.epoch = state["epoch"]
 
     def assert_agent_may_act():
         if state["human"]:

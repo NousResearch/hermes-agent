@@ -1842,3 +1842,53 @@ class TestGoogleChatStandaloneSend:
         assert kwargs["headers"]["Authorization"] == "Bearer the-token"
         assert kwargs["json"] == {"text": "hello cron"}
 
+
+
+class TestSetupFilesTokenKey:
+    """#75492: ``/setup-files`` must key the per-user OAuth token under the
+    sender email (user_id), not the Chat resource name (user_id_alt), because
+    the send path looks tokens up by the email cached in _last_sender_by_chat.
+    """
+
+    def _setup_files_message(self):
+        msg = {
+            "name": "spaces/AAA/messages/MMM",
+            "sender": {"name": "users/123", "email": "Alice@Example.com", "displayName": "Alice"},
+            "space": {"name": "spaces/AAA", "type": "DM"},
+            "text": "/setup-files start",
+            "argumentText": "/setup-files start",
+        }
+        return msg, {}
+
+    async def _dispatch_capturing_sender_email(self, adapter):
+        """Route a /setup-files message and capture the sender_email kwarg the
+        setup path stores the token under."""
+        from plugins.platforms.google_chat import setup_files as _sf
+
+        captured = {}
+
+        async def _fake_handle(a, chat_id, thread_id, raw_text, sender_email=None):
+            captured["sender_email"] = sender_email
+            return True
+
+        msg, envelope = self._setup_files_message()
+        with patch.object(_sf, "handle_setup_files_command", _fake_handle):
+            await adapter._dispatch_message(msg, envelope)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_setup_receives_sender_email_not_resource_name(self, adapter):
+        """The setup path receives the canonical identity (user_id, the email),
+        not the "users/{id}" resource name (user_id_alt)."""
+        captured = await self._dispatch_capturing_sender_email(adapter)
+        assert captured["sender_email"] == "Alice@Example.com"
+
+    @pytest.mark.asyncio
+    async def test_stored_token_key_matches_send_lookup(self, adapter):
+        """The normalized store key must equal the _last_sender_by_chat key that
+        _send_file hands to _acquire_user_chat_api, or the token is unfindable."""
+        captured = await self._dispatch_capturing_sender_email(adapter)
+        # Same normalization setup_files applies to sender_email before storing.
+        store_key = captured["sender_email"].strip().lower()
+        send_key = adapter._last_sender_by_chat["spaces/AAA"]
+        assert store_key == send_key == "alice@example.com"

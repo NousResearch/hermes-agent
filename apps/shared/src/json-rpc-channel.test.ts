@@ -216,4 +216,44 @@ describe('JsonRpcRequestChannel', () => {
     await expect(resume).resolves.toMatchObject({ session_id: 's1' })
     expect(delivered).toEqual([{ id: 'srq-9', replayed: true }])
   })
+
+  // Regression (2026-09-15 clarify spinner): a throwing handler used to escape
+  // deliverRequest inside the socket listener — no response frame at all, so
+  // the backend (clarify_tool: 3600s deadline) waited out the whole block.
+  it('answers -32603 when a handler throws, keeps later frames working, and still answers -32601 otherwise', () => {
+    const channel = new JsonRpcRequestChannel()
+    const { sent, transport } = spyTransport()
+
+    channel.attach(transport)
+    channel.onRequest(req => {
+      if (req.method === 'boom') {
+        throw new Error('handler exploded')
+      }
+
+      if (req.method === 'clarify') {
+        req.respond({ answer: 'yes' })
+
+        return true
+      }
+
+      return false
+    })
+
+    channel.handleFrame(JSON.stringify({ id: 'srq-1', jsonrpc: '2.0', method: 'boom', params: { session_id: 's1' } }))
+    channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'nobody', params: { session_id: 's1' } }))
+
+    const frames = sent.map(f => JSON.parse(f) as { id: string; error?: { code: number; message?: string } })
+
+    expect(frames[0].id).toBe('srq-1')
+    expect(frames[0].error?.code).toBe(-32603)
+    expect(frames[0].error?.message).toContain('boom')
+    expect(frames[1].id).toBe('srq-2')
+    expect(frames[1].error?.code).toBe(-32601)
+
+    // The channel survives: a normal request after the crash still routes.
+    channel.handleFrame(JSON.stringify({ id: 'srq-3', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))
+    const third = sent.at(-1)!
+    expect((JSON.parse(third) as { id: string }).id).toBe('srq-3')
+    expect((JSON.parse(third) as { result?: { answer?: string } }).result?.answer).toBe('yes')
+  })
 })

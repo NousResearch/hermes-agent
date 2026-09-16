@@ -192,8 +192,20 @@ export class JsonRpcGatewayClient {
 
       const text = wireFrameText(message.data)
 
-      if (text !== null) {
+      if (text === null) {
+        return
+      }
+
+      try {
         this.channel.handleFrame(text)
+      } catch (error) {
+        // handleFrame dispatches server→client requests into feature handlers;
+        // a throw here must never escape into the socket listener as an
+        // uncaught error (the backend would wait out its full request
+        // deadline — e.g. clarify's 3600s — with no answer frame at all).
+        // deliverRequest already fails crashed handlers with -32603; this
+        // catches everything else (event handlers, response resolution).
+        console.error('[json-rpc-gateway] frame handling crashed', error)
       }
     })
 

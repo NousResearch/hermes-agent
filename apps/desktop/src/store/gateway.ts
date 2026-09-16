@@ -1,6 +1,7 @@
 import {
   type ConnectionState,
   type GatewayEvent,
+  JSON_RPC_METHOD_NOT_FOUND,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -291,9 +292,18 @@ export interface ScopedServerRequest extends ServerRequest {
 
 /** Fan a primary-socket server request into the registry handler with the active source tags. */
 export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): void {
-  const connectionId = g.config?.activeConnectionId?.() ?? null
+  // Fail fast, never swallow: the backend blocks on this answer (clarify waits
+  // its full 3600s deadline). Without a registry there is nobody to answer —
+  // -32601 tells the tool immediately instead of stalling the turn.
+  if (!g.config?.onServerRequest) {
+    request.fail(JSON_RPC_METHOD_NOT_FOUND, 'Hermes Desktop has no server-request registry yet')
 
-  g.config?.onServerRequest?.({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+    return
+  }
+
+  const connectionId = g.config.activeConnectionId?.() ?? null
+
+  g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile })
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
@@ -863,7 +873,18 @@ function createSecondary(profile: string, connectionId: null | string = null): S
   })
   entry.offRequest =
     gateway.onRequest?.(request => {
-      g.config?.onServerRequest?.({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+      // Same contract as dispatchPrimaryServerRequest: no registry = fail fast
+      // with -32601 (the backend blocks on the answer; silent drops stall the
+      // tool for its whole deadline).
+      if (!g.config?.onServerRequest) {
+        request.fail(JSON_RPC_METHOD_NOT_FOUND, 'Hermes Desktop has no server-request registry yet')
+
+        return
+      }
+
+      const scopedConnectionId = connectionId ?? (g.config.activeConnectionId?.() ?? null)
+
+      g.config.onServerRequest({ ...request, ...(scopedConnectionId ? { connectionId: scopedConnectionId } : {}), profile })
     }) ?? (() => {})
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)

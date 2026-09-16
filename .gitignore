@@ -184,6 +184,7 @@ docs/superpowers/*
 # gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
 # the checkout, where the `.hermes/` rule above already applies.
 /*.db
+/*.db.*
 /*.db-wal
 /*.db-shm
 /*.db-journal

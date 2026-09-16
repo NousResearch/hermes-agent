@@ -33,6 +33,20 @@ const releasePointer = () => {
   pointerDownTarget = null
 }
 
+/** A non-collapsed selection anchored outside the composer editor is the user
+ * selecting transcript text: focusing the composer must not clear it. */
+function selectionOutsideComposer(): boolean {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return false
+  }
+
+  const anchorEl = selection.anchorNode instanceof Node ? selection.anchorNode.parentElement : null
+
+  return !anchorEl?.closest('[data-slot="composer-rich-input"]')
+}
+
 function focusSelectedComposer() {
   const owner = $floatingComposerOwner.get()
 
@@ -136,7 +150,7 @@ function trackPointer(event: PointerEvent) {
     active.dataset.slot === 'composer-rich-input' &&
     active.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner === id
 
-  if (event.type === 'pointermove' && !alreadyTyping) {
+  if (event.type === 'pointermove' && !alreadyTyping && !selectionOutsideComposer()) {
     focusSelectedComposer()
   }
 }

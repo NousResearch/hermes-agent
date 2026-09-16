@@ -1871,6 +1871,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
         self._last_summary_route_provider = self._last_summary_route_model = ""
+        self._last_summary_route_has_task_endpoint = False
         self._summary_force_main_route = self._summary_model_fallen_back = False
         # A terminal length stop is deterministic for an unchanged route and prompt. Keep
         # automatic compaction disabled until a manual retry or runtime switch changes the inputs.
@@ -3269,6 +3270,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
             self._last_summary_route_provider = _aux_route.get("provider") or self.provider or ""
             self._last_summary_route_model = _aux_model
+            self._last_summary_route_has_task_endpoint = (
+                _aux_route.get("task_endpoint_override") == "true"
+            )
             self._record_aux_compression_call(
                 prompt_messages=call_kwargs["messages"],
                 # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
@@ -3543,6 +3547,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             bool(self.summary_model and self.summary_model != self.model)
             or bool(routed_model and routed_model != self.model)
             or bool(routed_provider and routed_provider != (self.provider or "auto"))
+            or getattr(self, "_last_summary_route_has_task_endpoint", False)
         )
         if distinct_aux_route and not getattr(self, "_summary_model_fallen_back", False):
             self._fallback_to_main_for_compression(e, kind.fallback_reason(), routed_model)

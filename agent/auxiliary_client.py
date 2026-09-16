@@ -2458,12 +2458,15 @@ def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode
 
 
 def _record_route_info(
-    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str]
+    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str],
+    *, task_endpoint_override: bool = False,
 ) -> None:
     """Expose the concrete route selected for one auxiliary call."""
     if route_info is not None:
         route_info["provider"] = provider or "auto"
         route_info["model"] = model or "default"
+        # Do not expose endpoint URLs: custom URLs can contain embedded credentials.
+        route_info["task_endpoint_override"] = "true" if task_endpoint_override else "false"
 
 
 def _relay_auxiliary_metadata(
@@ -6842,7 +6845,14 @@ def _prepare_aux_request(
             extra_body=effective_extra_body,
         )
     _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
-    _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
+    _record_route_info(
+        route_info,
+        _fallback_provider_from_label(request_provider),
+        final_model,
+        task_endpoint_override=bool(
+            task and not bypass_task_route and resolved_base_url and resolved_base_url != base_url
+        ),
+    )
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
     else:

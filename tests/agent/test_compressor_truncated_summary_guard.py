@@ -164,6 +164,36 @@ class TestGenerateSummaryTruncationGuard:
         assert calls[1]["model"] == "shared-model"
         assert calls[1]["bypass_task_route"] is True
 
+    def test_same_provider_model_on_task_endpoint_still_falls_back(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="anthropic",
+                base_url="https://main.example/v1", quiet_mode=True,
+            )
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            bypass = kwargs.get("bypass_task_route", False)
+            kwargs["route_info"].update(
+                provider="anthropic",
+                model="main-model",
+                task_endpoint_override="false" if bypass else "true",
+            )
+            return _mock_response(
+                "full summary" if bypass else "partial summary",
+                "stop" if bypass else "length",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert len(calls) == 2
+        assert calls[1]["base_url"] == "https://main.example/v1"
+        assert calls[1]["bypass_task_route"] is True
+
     def test_auto_main_runtime_retry_bypasses_configured_auxiliary_route(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="main-model", provider="", base_url="", quiet_mode=True)

@@ -3,7 +3,7 @@
 The shared update marker is the coordination primitive: every dispatcher stops
 claiming new work while its live owner is replacing the install.  The Desktop
 then calls :func:`quiesce_all_workers` before testing the Windows venv lock so
-already-running workers are reclaimed without consuming their crash budget.
+already-running workers are settled without changing their crash budget.
 """
 
 from __future__ import annotations
@@ -14,15 +14,65 @@ from typing import Any
 
 
 def update_dispatch_paused() -> bool:
-    """Return whether a live updater owns the shared install marker."""
+    """Fail closed unless the shared update marker is proven absent or stale."""
     try:
-        from hermes_cli.update_lock import read_live_update
+        from hermes_cli.update_lock import read_update_marker_state
 
-        return read_live_update() is not None
+        return read_update_marker_state() != "absent"
     except Exception:
-        # The update lock is an availability gate, not a reason to brick normal
-        # dispatch when an old/broken install cannot import the helper.
+        return True
+
+
+def _quiesce_task_for_update(conn, task_id: str) -> bool:
+    """Release one local claim only after whole-tree termination is proven."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    row = conn.execute(
+        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or (row["status"] != "running" and row["claim_lock"] is None):
         return False
+    prev_lock = row["claim_lock"]
+    if not str(prev_lock or "").startswith(kb._host_prefix()):
+        return False
+
+    termination = dispatch._terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, started_at=row["worker_started_at"]
+    )
+    if row["worker_pid"] is not None and not (
+        termination.get("host_local")
+        and termination.get("terminated")
+        and termination.get("tree_terminated")
+    ):
+        return False
+
+    with kb.write_txn(conn):
+        retry_status = kb._retry_status_for_run(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, worker_started_at = NULL WHERE id = ? "
+            "AND status IN ('running', 'ready', 'blocked') AND claim_lock IS ? "
+            "AND worker_pid IS ?",
+            (retry_status, task_id, prev_lock, row["worker_pid"]),
+        )
+        if cur.rowcount != 1:
+            return False
+        kb._record_reclaim(
+            conn,
+            task_id,
+            termination,
+            error="update_handoff",
+            payload={
+                "manual": False,
+                "reason": "Windows desktop update hand-off",
+                "prev_lock": prev_lock,
+                "retry_status": retry_status,
+                "neutral": True,
+            },
+        )
+    return True
 
 
 def quiesce_all_workers() -> dict[str, Any]:
@@ -30,9 +80,8 @@ def quiesce_all_workers() -> dict[str, Any]:
 
     The caller must write the live update marker first.  Holding each board's
     dispatch lock closes the last race with a tick that started before the
-    marker appeared; reclaim restores the task's source phase and resets its
-    failure budget instead of misclassifying an updater-requested stop as a
-    crash.
+    marker appeared; the updater-specific settlement restores the task's source
+    phase only after whole-tree termination and preserves its failure budget.
     """
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -71,7 +120,7 @@ def quiesce_all_workers() -> dict[str, Any]:
                         if str(row["claim_lock"] or "").startswith(host_prefix)
                     ]
                     for task_id in task_ids:
-                        if kb.reclaim_task(conn, task_id, reason="Windows desktop update hand-off"):
+                        if _quiesce_task_for_update(conn, task_id):
                             reclaimed.append({"board": board, "task_id": task_id})
                         else:
                             row = conn.execute(
@@ -79,7 +128,11 @@ def quiesce_all_workers() -> dict[str, Any]:
                             ).fetchone()
                             if row is None or (row["status"] != "running" and row["claim_lock"] is None):
                                 continue
-                            failed.append({"board": board, "task_id": task_id, "error": "reclaim raced"})
+                            failed.append({
+                                "board": board,
+                                "task_id": task_id,
+                                "error": "worker did not quiesce or reclaim raced",
+                            })
         except Exception as exc:
             failed.append({"board": board, "error": f"{type(exc).__name__}: {exc}"})
 

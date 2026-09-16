@@ -325,6 +325,8 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "tree_termination_attempted": False,
+        "tree_terminated": False,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -341,6 +343,10 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    if signal_fn is None:
+        info["tree_termination_attempted"] = True
+        from agent.deadline import kill_process_tree
+        kill = lambda target, sig: kill_process_tree(target, sig=sig)
     try:
         kill(int(pid), signal.SIGTERM)
     except ProcessLookupError:
@@ -353,12 +359,14 @@ def _terminate_reclaimed_worker(
 
     if _poll_worker_exit(pid, started_at):
         info["terminated"] = True
+        info["tree_terminated"] = info["tree_termination_attempted"]
         return info
     if _worker_alive(pid, started_at):
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
+    info["tree_terminated"] = bool(info["tree_termination_attempted"] and info["terminated"])
     return info
 
 

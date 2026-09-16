@@ -19,7 +19,8 @@ def test_live_update_pauses_dispatch_and_quiesce_reclaims_without_failure(tmp_pa
         queued = kb.create_task(conn, title="queued", assignee="dev")
         assert kb.claim_task(conn, running, claimer=f"{kb._host_prefix()}update-test") is not None
         conn.execute(
-            "UPDATE tasks SET worker_pid = ?, worker_started_at = NULL WHERE id = ?",
+            "UPDATE tasks SET worker_pid = ?, worker_started_at = NULL, consecutive_failures = 2 "
+            "WHERE id = ?",
             (999_999_999, running),
         )
         conn.commit()
@@ -42,8 +43,58 @@ def test_live_update_pauses_dispatch_and_quiesce_reclaims_without_failure(tmp_pa
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, running)
         assert task.status == "ready"
-        assert task.consecutive_failures == 0
+        assert task.consecutive_failures == 2
         assert task.worker_pid is None
+
+
+def test_unknown_update_marker_state_keeps_dispatch_paused(monkeypatch):
+    from hermes_cli import kanban_update_coordination as coordination
+    from hermes_cli import update_lock
+
+    monkeypatch.setattr(update_lock, "read_update_marker_state", lambda: "unknown")
+
+    assert coordination.update_dispatch_paused() is True
+
+
+def test_quiesce_retains_claim_when_worker_tree_survives(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as dispatch
+    from hermes_cli import kanban_update_coordination as coordination
+
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="surviving worker", assignee="dev")
+        claim = f"{kb._host_prefix()}update-test"
+        assert kb.claim_task(conn, task_id, claimer=claim) is not None
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (12345, task_id))
+        conn.commit()
+
+    monkeypatch.setattr(coordination, "update_dispatch_paused", lambda: True)
+    monkeypatch.setattr(
+        dispatch,
+        "_terminate_reclaimed_worker",
+        lambda *_args, **_kwargs: {
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "tree_termination_attempted": True,
+            "tree_terminated": False,
+        },
+    )
+
+    outcome = coordination.quiesce_all_workers()
+
+    assert outcome["ok"] is False
+    assert outcome["failed"][0]["task_id"] == task_id
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "running"
+        assert task.claim_lock == claim
 
 
 def test_quiesce_leaves_foreign_host_claims_owned(tmp_path, monkeypatch):

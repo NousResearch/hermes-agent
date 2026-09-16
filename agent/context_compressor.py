@@ -30,7 +30,7 @@ from agent.model_metadata import (
     CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
 )
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_derived_text
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
@@ -1002,7 +1002,7 @@ def _redact_compaction_text(text: Any) -> str:
     """Redact text that crosses a compaction summary boundary (strict mode).
     ``force=True`` overrides ``security.redact_secrets: false``; URL credentials are redacted too, since
     summaries persist and re-enter every later prompt."""
-    return redact_sensitive_text(text or "", force=True, redact_url_credentials=True)
+    return redact_derived_text(text)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:

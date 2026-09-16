@@ -63,43 +63,42 @@ def _failure_discriminators(api_error: Optional[Exception], classified: Any) -> 
         errno_value = _errno_of(api_error)
         if errno_value is not None:
             discriminators["failure_errno"] = errno_value
-        from agent.error_classifier import _error_obj, _extract_error_body, _extract_error_code
+        from agent.error_classifier import _extract_error_body
 
         try:
             body = _extract_error_body(api_error)
         except Exception:
             body = {}
-        try:
-            code = _extract_error_code(body or {})
-        except Exception:
-            code = ""
-        if not code and isinstance(body, dict):
-            for payload in (body, _error_obj(body)):
-                top_type = payload.get("type") if isinstance(payload, dict) else None
-                if isinstance(top_type, str) and top_type and top_type != "error":
-                    code = top_type
-                    break
-        raw_code_is_exact = False
-        for payload in (body, _error_obj(body)):
-            if not isinstance(payload, dict):
-                continue
-            candidates = (payload, payload.get("error"))
-            for candidate in candidates:
-                if not isinstance(candidate, dict):
-                    continue
-                for field in ("code", "type", "error_code", "errorCode"):
-                    raw_value = candidate.get(field)
-                    if type(raw_value) is str and raw_value == code:
-                        raw_code_is_exact = True
+
+        code = None
+        code_is_type = False
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                for field, is_type in (("code", False), ("type", True)):
+                    raw_value = error_obj.get(field)
+                    if raw_value:
+                        code, code_is_type = raw_value, is_type
                         break
-                if raw_code_is_exact:
-                    break
-            if raw_code_is_exact:
-                break
+            if code is None:
+                for field in ("code", "error_code", "errorCode"):
+                    raw_value = body.get(field)
+                    if raw_value:
+                        code, code_is_type = raw_value, False
+                        break
+            if code is None:
+                raw_type = body.get("type")
+                if raw_type:
+                    code, code_is_type = raw_type, True
         # Extraction is not validation: preserve unknown identifiers, but omit
-        # diagnostic prose, normalized values, and oversized values rather than
-        # rewriting them.
-        if raw_code_is_exact and isinstance(code, str) and code != "error" and _PROVIDER_CODE_PATTERN.fullmatch(code):
+        # diagnostic prose, generic envelope markers, and oversized values rather
+        # than rewriting them. A real provider ``code: "error"`` remains valid;
+        # only a generic ``type: "error"`` marker is omitted.
+        if (
+            type(code) is str
+            and not (code_is_type and code == "error")
+            and _PROVIDER_CODE_PATTERN.fullmatch(code)
+        ):
             discriminators["failure_provider_code"] = code
     return discriminators
 

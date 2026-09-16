@@ -183,6 +183,26 @@ class TestFailureDiscriminators:
         )
         assert out["failure_provider_code"] == code
 
+    def test_provider_code_preserves_actual_error_code(self, tmp_path):
+        from hermes_cli.oneshot import _write_usage_file
+
+        result = _run_max_retries(
+            _BodyError("provider code", body={"error": {"code": "error"}}),
+            _classified(FailoverReason.billing, 400, retryable=False),
+        )
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), result)
+        report = json.loads(path.read_text())
+        assert result["failure_provider_code"] == "error"
+        assert report["failure_provider_code"] == "error"
+
+    def test_provider_code_does_not_fall_back_from_malformed_preferred_code(self):
+        out = _failure_discriminators(
+            _BodyError("provider code", body={"error": {"code": " bad\n", "type": "bad"}}),
+            _classified(FailoverReason.billing, 400, retryable=False),
+        )
+        assert "failure_provider_code" not in out
+
 
 def _run_max_retries(api_error, classified):
     agent = _FakeAgent()

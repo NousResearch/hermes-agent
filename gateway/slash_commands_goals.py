@@ -36,9 +36,16 @@ class GatewayGoalCommandsMixin:
 
     async def _handle_goal_command(self, event: MessageEvent) -> str:
         from hermes_cli.goal_command import dispatch_goal_command
-        from hermes_cli.goals import last_user_message_from_db
+        from hermes_cli.goals import (
+            GoalPersistenceError,
+            goal_status_failure_message,
+            last_user_message_from_db,
+        )
 
-        mgr, _session_entry = await self._get_goal_manager_for_event(event)
+        try:
+            mgr, _session_entry = await self._get_goal_manager_for_event(event)
+        except GoalPersistenceError:
+            return goal_status_failure_message()
         if mgr is None:
             return t("gateway.goal.unavailable")
 
@@ -90,6 +97,9 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
+                    internal=False,
+                    allow_gateway_control=kickoff,
+                    goal_continuation=not kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
@@ -227,13 +237,25 @@ class GatewayGoalCommandsMixin:
         mid-loop. They modify state read at the next turn boundary, so this is safe while the
         agent is running."""
         args = (event.get_command_args() or "").strip()
-        mgr, _session_entry = await self._get_goal_manager_for_event(event)
+        from hermes_cli.goals import (
+            GoalPersistenceError,
+            goal_mutation_failure_message,
+            goal_status_failure_message,
+        )
+
+        try:
+            mgr, _session_entry = await self._get_goal_manager_for_event(event)
+        except GoalPersistenceError:
+            return goal_status_failure_message()
         if mgr is None:
             return t("gateway.goal.unavailable")
-        if not mgr.has_goal():
-            return "No active goal. Set one with /goal <text>."
-        if not args:
-            return f"{mgr.status_line()}\n{mgr.render_subgoals()}"
+        try:
+            if not mgr.has_goal():
+                return "No active goal. Set one with /goal <text>."
+            if not args:
+                return f"{mgr.status_line()}\n{mgr.render_subgoals()}"
+        except GoalPersistenceError:
+            return goal_status_failure_message()
         tokens = args.split(None, 1)
         verb = tokens[0].lower()
         rest = tokens[1].strip() if len(tokens) > 1 else ""
@@ -244,18 +266,27 @@ class GatewayGoalCommandsMixin:
                 idx = int(rest.split()[0])
             except ValueError:
                 return "/subgoal remove: <n> must be an integer (1-based index)."
-            removed, err = _mgr_call(
-                "/subgoal remove", mgr.remove_subgoal, idx, errors=(IndexError, RuntimeError)
-            )
-            return err or f"✓ Removed subgoal {idx}: {removed}"
+            try:
+                removed = mgr.remove_subgoal(idx)
+            except GoalPersistenceError as exc:
+                return goal_mutation_failure_message(exc)
+            except (IndexError, RuntimeError) as exc:
+                return f"/subgoal remove: {exc}"
+            return f"✓ Removed subgoal {idx}: {removed}"
         if verb == "clear":
-            prev, err = _mgr_call("/subgoal clear", mgr.clear_subgoals, errors=(RuntimeError,))
-            if err:
-                return err
+            try:
+                prev = mgr.clear_subgoals()
+            except GoalPersistenceError as exc:
+                return goal_mutation_failure_message(exc)
+            except RuntimeError as exc:
+                return f"/subgoal clear: {exc}"
             return f"✓ Cleared {_plural(prev, 'subgoal')}." if prev else "No subgoals to clear."
-        text, err = _mgr_call("/subgoal", mgr.add_subgoal, args)
-        if err:
-            return err
+        try:
+            text = mgr.add_subgoal(args)
+        except GoalPersistenceError as exc:
+            return goal_mutation_failure_message(exc)
+        except (ValueError, RuntimeError) as exc:
+            return f"/subgoal: {exc}"
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
 

@@ -1260,29 +1260,77 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     re.IGNORECASE)
 
 
-def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
+def _match_extensionless_path(
+    scan_text: str,
+    match: "re.Match",
+    *,
+    include_unavailable: bool = False,
+) -> Optional[Tuple[str, int]]:
     """Extensionless MEDIA tag match -> validated on-disk ``(safe_path, end_offset)`` or None: the
     captured path first, then extended across single spaces (max 8 tokens, never past a newline
     or the next ``MEDIA:``).
 
     When that fails validation, the candidate is progressively extended forward across single spaces
-    (validation-gated, bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so
-    unknown-extension paths containing spaces deliver (#24032). Returns ``(safe_path, end_offset)`` where
-    ``end_offset`` is the index in ``scan_text`` just past the matched path, or ``None`` when nothing
-    validates.
+    (bounded at 8 tokens, never past a newline or a subsequent ``MEDIA:`` keyword) so unknown-extension
+    paths containing spaces deliver (#24032). Claimed-result planning may set ``include_unavailable``
+    to resolve the same bounded grammar without filesystem or policy checks; send-time validation remains
+    authoritative.
     """
-    path = _normalize_media_tag_path(match.group("path"))
+    raw = match.group("path")
+    path = _normalize_media_tag_path(raw)
     if not path:
         return None
-    safe = validate_media_delivery_path(path)
-    if safe:
-        return safe, match.end("path")
+    quoted = len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "`\"'"
+    if not include_unavailable:
+        safe = validate_media_delivery_path(path)
+        if safe:
+            return safe, match.end("path")
     start = match.start("path")
     segment = scan_text[start:].split("\n", 1)[0]
     nxt = segment.find("MEDIA:", 1)
     if nxt != -1:
         segment = segment[:nxt]
     pos = match.end("path") - start
+    if include_unavailable:
+        if quoted:
+            return path, match.end("path")
+        candidate = path
+        candidate_end = match.end("path")
+        prose_boundaries = {"is", "are", "was", "were"}
+        for _ in range(8):
+            while pos < len(segment) and segment[pos] in " \t":
+                pos += 1
+            if pos >= len(segment):
+                break
+            tok_end = pos
+            while tok_end < len(segment) and segment[tok_end] not in " \t":
+                tok_end += 1
+            token = segment[pos:tok_end]
+            if token.casefold().strip(",;:)]}") in prose_boundaries:
+                break
+            extended = _normalize_media_tag_path(segment[:tok_end])
+            if not extended:
+                break
+            candidate = extended
+            candidate_end = start + tok_end
+            lookahead = tok_end
+            while lookahead < len(segment) and segment[lookahead] in " \t":
+                lookahead += 1
+            following_end = lookahead
+            while following_end < len(segment) and segment[following_end] not in " \t":
+                following_end += 1
+            following = segment[lookahead:following_end]
+            suffix = Path(candidate.replace("\\", "/")).suffix
+            if (
+                tok_end == len(segment)
+                or "/" in token
+                or "\\" in token
+                or bool(suffix)
+                or following.casefold().strip(",;:)]}") in prose_boundaries
+            ):
+                return candidate, candidate_end
+            pos = tok_end
+        return candidate, candidate_end
     for _ in range(8):
         token = re.match(r"[ \t]*[^ \t]+", segment[pos:])
         if not token:
@@ -1347,32 +1395,57 @@ def _mask_media_scan_text(text: str) -> str:
     return masked
 
 
-def _deliverable_tag_spans(text: str) -> list:
+def _deliverable_tag_spans(
+    text: str,
+    *,
+    include_unavailable: bool = False,
+) -> list:
     """Spans to delete from ``text``: its deliverable MEDIA tags (located on the masked copy)
     plus a terminal ``<|eos|>`` sentinel, which is a control token and never user content."""
-    spans = _real_media_tag_spans(_mask_media_scan_text(text))
+    spans = _real_media_tag_spans(
+        _mask_media_scan_text(text),
+        include_unavailable=include_unavailable,
+    )
     start = _terminal_sentinel_start(text)
     if spans and start >= 0:
         spans.append((start, len(text.rstrip())))
     return spans
 
 
-def _extensionless_media_matches(masked: str):
+def _extensionless_media_matches(
+    masked: str,
+    *,
+    include_unavailable: bool = False,
+):
     """Yield ``(match, safe_path, end_offset)`` for every extension-less / unknown-extension
     MEDIA tag in ``masked`` that ``validate_media_delivery_path`` accepts."""
     for match in MEDIA_EXTENSIONLESS_TAG_RE.finditer(masked):
         path = _normalize_media_tag_path(match.group("path"))
         if path and _path_lacks_deliverable_extension(path):
-            resolved = _match_extensionless_path(masked, match)
+            resolved = _match_extensionless_path(
+                masked,
+                match,
+                include_unavailable=include_unavailable,
+            )
             if resolved is not None:
                 yield match, resolved[0], resolved[1]
 
 
-def _real_media_tag_spans(masked: str) -> list:
+def _real_media_tag_spans(
+    masked: str,
+    *,
+    include_unavailable: bool = False,
+) -> list:
     """(start, end) spans of deliverable MEDIA tags on a masked copy: known-extension tags
     unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts."""
     spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
-    spans.extend((match.start(), end) for match, _, end in _extensionless_media_matches(masked))
+    spans.extend(
+        (match.start(), end)
+        for match, _, end in _extensionless_media_matches(
+            masked,
+            include_unavailable=include_unavailable,
+        )
+    )
     return spans
 
 
@@ -1694,6 +1767,19 @@ class EphemeralReply(str):
     def text(self) -> str:
         """The underlying text (explicit form of ``str(reply)``)."""
         return str.__str__(self)
+
+
+class DeliveryOwnedReply(str):
+    """Final reply whose publication is already owned by the durable ledger."""
+
+    obligation_id: str
+
+    def __new__(cls, text: str, obligation_id: str):
+        if not obligation_id:
+            raise ValueError("delivery-owned reply requires an obligation id")
+        instance = super().__new__(cls, text)
+        instance.obligation_id = obligation_id
+        return instance
 
 
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
@@ -2777,6 +2863,42 @@ class BasePlatformAdapter(ABC):
             success=delivered,
             error=None if delivered else "all images failed to send")
 
+    async def _send_claimed_image_part(
+        self,
+        chat_id: str,
+        image_url: str,
+        alt_text: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one claim-owned image without the batch path's swallowing.
+
+        A single logical part gets one real adapter result so its durable state
+        can be acknowledged independently. Ordinary responses retain the
+        platform batching path.
+        """
+        from urllib.parse import unquote as _unquote
+
+        if image_url.startswith("file://"):
+            return await self.send_image_file(
+                chat_id=chat_id,
+                image_path=_unquote(image_url[7:]),
+                caption=alt_text or None,
+                metadata=metadata,
+            )
+        if self._is_animation_url(image_url):
+            return await self.send_animation(
+                chat_id=chat_id,
+                animation_url=image_url,
+                caption=alt_text or None,
+                metadata=metadata,
+            )
+        return await self.send_image(
+            chat_id=chat_id,
+            image_url=image_url,
+            caption=alt_text or None,
+            metadata=metadata,
+        )
+
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -3009,11 +3131,18 @@ class BasePlatformAdapter(ABC):
         return _blank_spans(content, spans)
 
     @staticmethod
-    def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
+    def extract_media(
+        content: str,
+        *,
+        include_unavailable: bool = False,
+    ) -> Tuple[List[Tuple[str, bool]], str]:
         """Extract ``MEDIA:<path>`` tags and strip ``[[audio_as_voice]]`` / ``[[as_document]]`` ->
         ``([(path, is_voice), ...], cleaned)``. Both directives are message-global;
         ``[[as_document]]`` (unmodified sendDocument for large images) is detected by dispatch sites
-        on the ORIGINAL response and only stripped here."""
+        on the ORIGINAL response and only stripped here. Claimed-result planning may set
+        ``include_unavailable`` to retain bounded explicit attachment intents until send-time
+        validation.
+        """
         media = []
         has_voice_tag = "[[audio_as_voice]]" in content
         cleaned = content.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
@@ -3039,12 +3168,18 @@ class BasePlatformAdapter(ABC):
                     _add(os.path.expanduser(path))
                 except (OSError, RuntimeError, ValueError):
                     continue  # crafted ~\x00 path: skip it, keep the rest
-        for _, safe_path, _ in _extensionless_media_matches(scan_content):
+        for _, safe_path, _ in _extensionless_media_matches(
+            scan_content,
+            include_unavailable=include_unavailable,
+        ):
             _add(safe_path)
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans
         # survive).
         if media:
-            spans = _deliverable_tag_spans(cleaned)
+            spans = _deliverable_tag_spans(
+                cleaned,
+                include_unavailable=include_unavailable,
+            )
             if spans:
                 cleaned = re.sub(r'\n{3,}', '\n\n', _delete_spans(cleaned, spans)).strip()
         return media, cleaned
@@ -3059,11 +3194,20 @@ class BasePlatformAdapter(ABC):
         return re.sub(r'\n{3,}', '\n\n', _strip_media_tag_directives(text)).rstrip()
 
     @staticmethod
-    def extract_local_files(content: str) -> Tuple[List[str], str]:
+    def extract_local_files(
+        content: str,
+        *,
+        include_unavailable: bool = False,
+    ) -> Tuple[List[str], str]:
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
+        mutilated. Dispatch by type lives in ``gateway/run.py``.
+
+        ``include_unavailable`` is reserved for durable claimed-result planning. It snapshots
+        intended attachments even when they are currently missing or unsafe, so the durable part
+        fails and remains retryable instead of disappearing after text cleanup.
+        """
         ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
@@ -3079,7 +3223,7 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
-            if os.path.isfile(expanded):
+            if include_unavailable or os.path.isfile(expanded):
                 unique.setdefault(expanded, raw)
             else:
                 # Most common reason a promised file never arrives — log the gap.
@@ -3996,6 +4140,8 @@ class BasePlatformAdapter(ABC):
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
         reply_to: Optional[str], is_ephemeral_response: bool = False,
+        delivery_obligation_id: Optional[str] = None,
+        delivery_adapter: Optional["BasePlatformAdapter"] = None,
     ) -> "tuple[SendResult, BasePlatformAdapter]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
         (a reconnect may have replaced this adapter): record the obligation before the send,
@@ -4004,24 +4150,46 @@ class BasePlatformAdapter(ABC):
         supplies the source and the ledger identity (``ledger_message_id`` or ``message_id``).
         Returns the result with the adapter that sent it: that adapter owns ``result.message_id``
         (an ephemeral delete must go to the same transport)."""
-        delivery_adapter = self._final_delivery_adapter(event.source)
+        delivery_adapter = delivery_adapter or self._final_delivery_adapter(event.source)
         logger.info("[%s] Sending response (%d chars) to %s", delivery_adapter.name,
                     len(text_content), event.source.chat_id)
-        obligation_id = await self._record_delivery_obligation(
-            event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        obligation_id = delivery_obligation_id
+        if obligation_id is None:
+            obligation_id = await self._record_delivery_obligation(
+                event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:
-            await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
+            if delivery_obligation_id is None:
+                await self._finalize_delivery_obligation(
+                    obligation_id, result, event, delivery_adapter)
+            else:
+                from gateway.delivery_ledger import (
+                    mark_claimed_result_delivered,
+                    mark_claimed_result_failed,
+                )
+                marker = (
+                    mark_claimed_result_delivered
+                    if getattr(result, "success", False)
+                    else mark_claimed_result_failed
+                )
+                args = (obligation_id,) if getattr(result, "success", False) else (
+                    obligation_id, str(getattr(result, "error", "") or "")
+                )
+                await asyncio.to_thread(marker, *args)
         return result, delivery_adapter
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
-        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
+        is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable, *,
+        delivery_obligation_id: Optional[str] = None,
+        delivery_adapter: Optional["BasePlatformAdapter"] = None) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
         result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
-            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)
+            reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response,
+            delivery_obligation_id=delivery_obligation_id,
+            delivery_adapter=delivery_adapter)
         record_delivery(result)
         if ephemeral_ttl and ephemeral_ttl > 0 and result.success and result.message_id:
             delivery_adapter._schedule_ephemeral_delete(event.source.chat_id, result.message_id, ephemeral_ttl)
@@ -4074,20 +4242,49 @@ class BasePlatformAdapter(ABC):
             kwargs["stop_event"] = interrupt_event
         return asyncio.create_task(self._keep_typing(event.source.chat_id, **kwargs))
 
-    async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
-                                        *, is_ephemeral_response: bool) -> "_ExtractedResponse":
+    async def _extract_response_content(
+        self,
+        response: str,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        is_ephemeral_response: bool,
+        include_unavailable_attachments: bool = False,
+        claimed_parts_snapshot: Any = None,
+    ) -> "_ExtractedResponse":
         """Split a handler response into deliverable text + attachments. Order matters: MEDIA tags →
         image URLs → residual directives → bare local paths (skipped for ephemeral notices so config
         paths stay text; unknown-extension MEDIA tags survive for the bare-path detector). History
         dedup is bare-path only, off-loop, fail-open. An emptied non-empty response is recovered."""
+        if claimed_parts_snapshot is not None:
+            return _ExtractedResponse(
+                text_content=claimed_parts_snapshot.visible_text,
+                images=list(claimed_parts_snapshot.images),
+                media_files=list(claimed_parts_snapshot.media_files),
+                local_files=list(claimed_parts_snapshot.local_files),
+                force_document_attachments=bool(
+                    claimed_parts_snapshot.force_document_attachments
+                ),
+                pre_extract=response,
+            )
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
         pre_extract = response
-        # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
-        # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
+        # The handler's routed profile scope is gone by now; resolve attachment policy in the
+        # active source profile while retaining unavailable claimed-result intents.
         with self._media_delivery_scope(event.source):
-            media_files, response = self.extract_media(response)
-            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            if include_unavailable_attachments:
+                media_files, response = BasePlatformAdapter.extract_media(
+                    response,
+                    include_unavailable=True,
+                )
+            else:
+                media_files, response = self.extract_media(response)
+            if not include_unavailable_attachments:
+                media_files = self.filter_media_delivery_paths(
+                    media_files,
+                    session_key=session_key,
+                )
             images, text_content = self.extract_images(response)
             # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
             # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
@@ -4097,18 +4294,37 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
             local_files = []
             if not is_ephemeral_response:
-                local_files, text_content = self.extract_local_files(text_content)
-                local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
-        history = (await self._bounded_history_media_paths_for_session(session_key)
-                   if local_files else None)
-        if history:
-            suppressed = [p for p in local_files if p in history]
-            if suppressed:
-                logger.info("[%s] Suppressing %d bare local file path(s) already delivered in "
-                            "this session: %s", self.name, len(suppressed), suppressed)
-                local_files = [p for p in local_files if p not in history]
-        if local_files:
-            logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+                local_files, text_content = self.extract_local_files(
+                    text_content,
+                    include_unavailable=include_unavailable_attachments,
+                )
+                if not include_unavailable_attachments:
+                    local_files = self.filter_local_delivery_paths(
+                        local_files,
+                        session_key=session_key,
+                    )
+                    history = (
+                        await self._bounded_history_media_paths_for_session(session_key)
+                        if local_files
+                        else None
+                    )
+                    if history:
+                        suppressed = [p for p in local_files if p in history]
+                        if suppressed:
+                            logger.info(
+                                "[%s] Suppressing %d bare local file path(s) already delivered in "
+                                "this session: %s",
+                                self.name,
+                                len(suppressed),
+                                suppressed,
+                            )
+                            local_files = [p for p in local_files if p not in history]
+                if local_files:
+                    logger.info(
+                        "[%s] extract_local_files found %d file(s) in response",
+                        self.name,
+                        len(local_files),
+                    )
         # A2 (#29346): extraction can reduce a non-empty response to empty text with no attachment, and the
         # `if text_content` guard below then drops it silently. Recover on every platform (#33842 was
         # Discord-only); the guard avoids duplicating an attachment.
@@ -4160,6 +4376,236 @@ class BasePlatformAdapter(ABC):
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
 
+    async def _deliver_claimed_response_parts(
+        self,
+        *,
+        obligation_id: str,
+        chat_id: str,
+        text_content: str,
+        images: List[Tuple[str, str]],
+        media_files: List[Tuple[str, bool]],
+        local_files: List[str],
+        force_document_attachments: bool,
+        metadata: Optional[Dict[str, Any]],
+        reply_to: Optional[str],
+        recovery_marker: str = "",
+        text_already_delivered: bool = False,
+        attachment_session_key: Optional[str] = None,
+    ) -> None:
+        """Publish one complete claim-owned response through durable parts."""
+        from gateway.claimed_result_publication import (
+            ClaimedResultPartDeliveryError,
+            deliver_claimed_result_part,
+            plan_claimed_result_parts,
+            register_claimed_result_parts,
+        )
+
+        video_exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+        image_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        descriptors: List[Dict[str, Any]] = []
+
+        if text_content:
+            descriptors.append(
+                {
+                    "kind": "text",
+                    "identity": text_content,
+                    "payload": text_content,
+                    "already_delivered": text_already_delivered,
+                }
+            )
+        for image_url, alt_text in images:
+            descriptors.append(
+                {
+                    "kind": "image",
+                    "identity": f"{image_url}\0{alt_text}",
+                    "payload": image_url,
+                    "alt_text": alt_text,
+                }
+            )
+
+        for media_path, is_voice in media_files:
+            ext = Path(media_path).suffix.lower()
+            if (
+                ext in image_exts
+                and not is_voice
+                and not force_document_attachments
+            ):
+                descriptors.append(
+                    {
+                        "kind": "image",
+                        "identity": media_path,
+                        "payload": media_path,
+                        "local_path": media_path,
+                        "alt_text": "",
+                    }
+                )
+            elif should_send_media_as_audio(
+                self.platform, ext, is_voice=is_voice
+            ):
+                descriptors.append(
+                    {
+                        "kind": "voice",
+                        "identity": f"{media_path}\0{int(is_voice)}",
+                        "payload": media_path,
+                        "local_path": media_path,
+                        "is_voice": is_voice,
+                    }
+                )
+            elif ext in video_exts:
+                descriptors.append(
+                    {
+                        "kind": "video",
+                        "identity": media_path,
+                        "payload": media_path,
+                        "local_path": media_path,
+                    }
+                )
+            else:
+                descriptors.append(
+                    {
+                        "kind": "document",
+                        "identity": media_path,
+                        "payload": media_path,
+                        "local_path": media_path,
+                    }
+                )
+
+        for file_path in local_files:
+            ext = Path(file_path).suffix.lower()
+            if ext in image_exts and not force_document_attachments:
+                descriptors.append(
+                    {
+                        "kind": "image",
+                        "identity": file_path,
+                        "payload": file_path,
+                        "local_path": file_path,
+                        "alt_text": "",
+                    }
+                )
+            elif ext in video_exts:
+                descriptors.append(
+                    {
+                        "kind": "video",
+                        "identity": file_path,
+                        "payload": file_path,
+                        "local_path": file_path,
+                    }
+                )
+            else:
+                descriptors.append(
+                    {
+                        "kind": "document",
+                        "identity": file_path,
+                        "payload": file_path,
+                        "local_path": file_path,
+                    }
+                )
+
+        parts = plan_claimed_result_parts(
+            obligation_id,
+            [(item["kind"], item["identity"]) for item in descriptors],
+        )
+        await register_claimed_result_parts(obligation_id, parts)
+        if not parts:
+            from gateway.delivery_ledger import mark_claimed_result_failed
+
+            await asyncio.to_thread(
+                mark_claimed_result_failed,
+                obligation_id,
+                "no_deliverable_response_part",
+            )
+            raise ClaimedResultPartDeliveryError(
+                "claimed continuation produced no deliverable response part"
+            )
+
+        human_delay = self._get_human_delay()
+        for descriptor, part in zip(descriptors, parts):
+            if descriptor["kind"] != "text" and human_delay > 0:
+                await asyncio.sleep(human_delay)
+
+            if descriptor.get("already_delivered"):
+                from gateway.delivery_ledger import (
+                    mark_claimed_result_part_delivered,
+                    prepare_claimed_result_part,
+                )
+
+                should_ack = await asyncio.to_thread(
+                    prepare_claimed_result_part,
+                    obligation_id,
+                    part.part_id,
+                )
+                if should_ack:
+                    acknowledged = await asyncio.to_thread(
+                        mark_claimed_result_part_delivered,
+                        obligation_id,
+                        part.part_id,
+                    )
+                    if not acknowledged:
+                        raise ClaimedResultPartDeliveryError(
+                            "claimed continuation publication ownership changed"
+                        )
+                continue
+
+            part_metadata = dict(metadata or {})
+            part_metadata["_hermes_delivery_part_id"] = part.part_id
+
+            async def _send_part(item=descriptor):
+                kind = item["kind"]
+                payload = item["payload"]
+                local_path = item.get("local_path")
+                if local_path is not None and attachment_session_key is not None:
+                    safe_path = self.validate_media_delivery_path(
+                        local_path,
+                        session_key=attachment_session_key,
+                    )
+                    if safe_path is None:
+                        raise FileNotFoundError(
+                            "claimed continuation attachment is unavailable"
+                        )
+                    payload = (
+                        Path(safe_path).resolve().as_uri()
+                        if kind == "image"
+                        else safe_path
+                    )
+                if kind == "text":
+                    return await self._send_with_retry(
+                        chat_id=chat_id,
+                        content=f"{recovery_marker}{payload}",
+                        reply_to=reply_to,
+                        metadata=part_metadata,
+                    )
+                if kind == "image":
+                    return await self._send_claimed_image_part(
+                        chat_id=chat_id,
+                        image_url=payload,
+                        alt_text=item.get("alt_text", ""),
+                        metadata=part_metadata,
+                    )
+                if kind == "voice":
+                    return await self.send_voice(
+                        chat_id=chat_id,
+                        audio_path=payload,
+                        metadata=part_metadata,
+                        is_voice=item.get("is_voice", False),
+                    )
+                if kind == "video":
+                    return await self.send_video(
+                        chat_id=chat_id,
+                        video_path=payload,
+                        metadata=part_metadata,
+                    )
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=payload,
+                    metadata=part_metadata,
+                )
+
+            await deliver_claimed_result_part(
+                obligation_id,
+                part,
+                _send_part,
+            )
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
@@ -4176,7 +4622,15 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
-            response = await self._message_handler(event)
+            _precomputed_response = getattr(event, "_hermes_precomputed_response", None)
+            if _precomputed_response is not None:
+                response = DeliveryOwnedReply(
+                    str(_precomputed_response),
+                    str(getattr(event, "_hermes_precomputed_obligation_id", "")),
+                )
+            else:
+                response = await self._message_handler(event)
+            _delivery_owned_obligation_id = getattr(response, "obligation_id", None)
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
@@ -4189,14 +4643,79 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             else:
                 extracted = await self._extract_response_content(
-                    response, event, session_key, is_ephemeral_response=is_ephemeral_response)
+                    response,
+                    event,
+                    session_key,
+                    is_ephemeral_response=is_ephemeral_response,
+                    include_unavailable_attachments=bool(
+                        _delivery_owned_obligation_id
+                    ),
+                    claimed_parts_snapshot=(
+                        getattr(
+                            event,
+                            "_hermes_claimed_response_parts_snapshot",
+                            None,
+                        )
+                        if _delivery_owned_obligation_id
+                        else None
+                    ),
+                )
                 text_content, media_files = extracted.text_content, extracted.media_files
                 # Final content gets notify=True; typing metadata stays unmarked (thread-strict).
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
                 _tts_paths, _tts_requested_path = [], None
-                if self._wants_auto_tts(
-                        event, session_key, interrupt_event, text_content, media_files):
+                if (not _delivery_owned_obligation_id and self._wants_auto_tts(
+                        event, session_key, interrupt_event, text_content, media_files)):
                     _tts_paths, _tts_requested_path = await self._synthesize_auto_tts(text_content)
+
+                # A claimed continuation already owns a durable publication row.
+                # Freeze the complete text-plus-attachment manifest before any
+                # external send. Each acknowledged part then advances only its
+                # own durable state; the whole row becomes delivered only after
+                # every intended part is complete.
+                _owned_delivery_adapter = None
+                if _delivery_owned_obligation_id:
+                    from gateway.delivery_ledger import prepare_claimed_result_delivery
+
+                    _owned_delivery_adapter = self._final_delivery_adapter(event.source)
+                    should_send = await asyncio.to_thread(
+                        prepare_claimed_result_delivery,
+                        _delivery_owned_obligation_id,
+                        session_key=session_key,
+                        platform=str(getattr(event.source.platform, "value", event.source.platform)),
+                        chat_id=event.source.chat_id,
+                        thread_id=getattr(event.source, "thread_id", None),
+                        content=text_content,
+                        adapter_profile=getattr(_owned_delivery_adapter, "_owner_profile", None),
+                    )
+                    if not should_send:
+                        return
+                    await _owned_delivery_adapter._deliver_claimed_response_parts(
+                        obligation_id=_delivery_owned_obligation_id,
+                        chat_id=event.source.chat_id,
+                        text_content=text_content,
+                        images=extracted.images,
+                        media_files=extracted.media_files,
+                        local_files=extracted.local_files,
+                        force_document_attachments=extracted.force_document_attachments,
+                        metadata=_final_thread_metadata,
+                        reply_to=_reply_anchor_for_event(event),
+                        recovery_marker=str(
+                            getattr(event, "_hermes_recovery_marker", "") or ""
+                        ),
+                        attachment_session_key=session_key,
+                    )
+                    delivery_attempted = True
+                    delivery_succeeded = True
+                    # The owned helper performed every send. Empty the ordinary
+                    # best-effort pipeline to prevent a second publication.
+                    text_content = ""
+                    extracted.images = []
+                    extracted.media_files = []
+                    extracted.local_files = []
+                    extracted.pre_extract = ""
+                    _delivery_owned_obligation_id = None
+
                 # TTS plays before text; generated files are removed afterwards.
                 _tts_caption_delivered = False
                 for _tts_index, _tts_path in enumerate(_tts_paths):
@@ -4210,14 +4729,30 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
+                if _delivery_owned_obligation_id and _tts_caption_delivered:
+                    from gateway.delivery_ledger import mark_claimed_result_delivered
+
+                    await asyncio.to_thread(
+                        mark_claimed_result_delivered, _delivery_owned_obligation_id)
                 if text_content and not _tts_caption_delivered:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
-                        is_ephemeral_response, _ephemeral_ttl, _record_delivery)
+                        is_ephemeral_response, _ephemeral_ttl, _record_delivery,
+                        delivery_obligation_id=_delivery_owned_obligation_id,
+                        delivery_adapter=_owned_delivery_adapter)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+                if (
+                    _delivery_owned_obligation_id
+                    and not text_content
+                    and (delivery_succeeded or _tts_caption_delivered)
+                ):
+                    from gateway.delivery_ledger import mark_claimed_result_delivered
+
+                    await asyncio.to_thread(
+                        mark_claimed_result_delivered, _delivery_owned_obligation_id)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
@@ -4245,6 +4780,10 @@ class BasePlatformAdapter(ABC):
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            if locals().get("_delivery_owned_obligation_id"):
+                if isinstance(e, (SystemExit, KeyboardInterrupt)):
+                    raise
+                return
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
             # SystemExit/KeyboardInterrupt propagate; other BaseExceptions are contained.
             if isinstance(e, (SystemExit, KeyboardInterrupt)):

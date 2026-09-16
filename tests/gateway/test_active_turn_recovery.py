@@ -126,6 +126,39 @@ def test_active_turn_clear_is_compare_and_swap(tmp_path):
     assert current.active_turn_started_at is None
 
 
+def test_completed_publication_token_clears_marker_without_rearming(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    token = store.mark_turn_active(entry.session_key)
+
+    recovered = store.recover_interrupted_turns(
+        completed_turn_tokens={entry.session_key: token}
+    )
+
+    assert recovered == 0
+    current = _entry_for(store, source)
+    assert current.resume_pending is False
+    assert current.active_turn_token is None
+    assert current.active_turn_started_at is None
+
+
+def test_completed_publication_token_mismatch_still_rearms(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    token = store.mark_turn_active(entry.session_key)
+
+    recovered = store.recover_interrupted_turns(
+        completed_turn_tokens={entry.session_key: {token + "-other"}}
+    )
+
+    assert recovered == 1
+    current = _entry_for(store, source)
+    assert current.resume_pending is True
+    assert current.active_turn_token is None
+
+
 def test_mark_and_clear_use_single_entry_persistence(tmp_path):
     store = _make_store(tmp_path)
     entry = store.get_or_create_session(_make_source())
@@ -487,11 +520,14 @@ async def test_unclean_recovery_promotes_exact_markers_before_legacy_fallback(
 ):
     runner = object.__new__(GatewayRunner)
     calls: list[str] = []
+    from gateway import delivery_ledger as dl
 
     monkeypatch.delenv("HERMES_AGENT_TIMEOUT", raising=False)
+    monkeypatch.setattr(dl, "completed_active_turn_tokens", lambda **_kwargs: {})
 
-    async def _recover(*, max_age_seconds):
+    async def _recover(*, max_age_seconds, completed_turn_tokens):
         assert max_age_seconds == ACTIVE_TURN_MAX_AGE_SECONDS
+        assert completed_turn_tokens == {}
         calls.append("exact")
         return 1
 

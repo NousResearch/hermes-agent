@@ -634,6 +634,9 @@ export interface Translations {
       appActionsDesc: string
       appActionsLeft: string
       appActionsRight: string
+      externalButtonsTitle: string
+      externalButtonsDesc: string
+      externalButtonsNone: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string

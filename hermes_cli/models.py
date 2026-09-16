@@ -104,7 +104,9 @@ def _write_json_cache(path: Path, data: Any, **dump_kwargs: Any) -> None:
     whether a failed cache write is worth logging."""
     from utils import atomic_json_write
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, **dump_kwargs)
 
 

@@ -34,6 +34,21 @@ def mod():
     return module
 
 
+@pytest.mark.parametrize("directory,source,prefix", [
+    ("skills", "built-in", "NousResearch/hermes-agent/skills"),
+    ("optional-skills", "optional", "official"),
+])
+def test_local_skills_publish_exact_install_target(mod, tmp_path, monkeypatch, directory, source, prefix):
+    skill = tmp_path / directory / "creative" / "nested" / "example"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: Different Display Name\n---\nExample.")
+    monkeypatch.setattr(mod, "REPO_ROOT", str(tmp_path))
+    [entry] = mod.extract_local_skills()
+    expected = f"{prefix}/creative/nested/example"
+    assert entry["installIdentifier"] == expected
+    assert entry["installCmd"] == f"hermes skills install {expected}"
+
+
 # --------------------------------------------------------------------------
 # _source_url
 # --------------------------------------------------------------------------
@@ -65,14 +80,32 @@ def test_source_url_synthesizes_github_root_when_no_subpath(mod):
 
 
 def test_source_url_synthesizes_clawhub(mod):
-    assert mod._source_url("clawhub", "go-music-skill", {}) == "https://clawhub.ai/skills/go-music-skill"
+    # ClawHub URLs require the owner handle; without it we cannot build a
+    # valid URL, so the result is "" (better than a broken 404 link).
+    assert mod._source_url("clawhub", "go-music-skill", {}) == ""
 
 
 def test_source_url_synthesizes_clawhub_strips_prefix(mod):
     # identifier may arrive already prefixed; we must not double-prefix.
     assert (
         mod._source_url("clawhub", "clawhub/go-music-skill", {})
-        == "https://clawhub.ai/skills/go-music-skill"
+        == ""
+    )
+
+
+def test_source_url_synthesizes_clawhub_with_owner(mod):
+    # When the owner handle is available in extra, the URL includes it.
+    assert (
+        mod._source_url("clawhub", "go-music-skill", {"owner": "somepublisher"})
+        == "https://clawhub.ai/somepublisher/skills/go-music-skill"
+    )
+
+
+def test_source_url_synthesizes_clawhub_with_owner_strips_prefix(mod):
+    # Owner + prefixed identifier: prefix is stripped, owner is used.
+    assert (
+        mod._source_url("clawhub", "clawhub/go-music-skill", {"owner": "somepublisher"})
+        == "https://clawhub.ai/somepublisher/skills/go-music-skill"
     )
 
 

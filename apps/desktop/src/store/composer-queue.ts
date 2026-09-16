@@ -1,3 +1,4 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { ComposerAttachment } from './composer'
@@ -9,8 +10,20 @@ export interface QueuedPromptEntry {
    *  text the agent receives. A queued `/skill` invocation carries the whole
    *  expanded skill body as `text` — the UI shows the invocation instead. */
   displayText?: string
+  /** A hidden note (a setup line for the model) parked while the turn ran. The panel
+   *  shows a neutral label and the drain submits it hidden again. */
+  displayKind?: 'hidden'
   attachments: ComposerAttachment[]
   queuedAt: number
+}
+
+/** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
+ *  not a slash command — the same gate `steerDraft` applies to the live draft
+ *  (attachments can't ride a redirect; slash commands execute, not steer). */
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+  const text = entry.text.trim()
+
+  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -114,7 +127,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string }
+  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -126,6 +139,7 @@ export const enqueueQueuedPrompt = (
     id: nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
+    ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }

@@ -110,30 +110,91 @@ class TestDeepseekVSeriesPassThrough:
         result = normalize_model_for_provider("deepseek-v4-pro", "deepseek")
         assert result == "deepseek-v4-pro"
 
+    def test_deepseek_provider_preserves_versionless_flash_id(self):
+        """``deepseek-flash`` must reach DeepSeek's API unchanged.
+
+        DeepSeek's 2026-09 Flash refresh dropped the ``v<N>`` marker from the
+        public id: ``GET /v1/models`` reports ``deepseek-flash`` and the API
+        accepts it directly (verified live — it answers 200, and the older
+        ``deepseek-v4-flash`` is aliased onto it).  Folding it onto
+        ``deepseek-v4-flash`` meant the id users picked never reached the wire
+        and the config stored a different model than the picker advertised.
+        """
+        assert (
+            normalize_model_for_provider("deepseek-flash", "deepseek")
+            == "deepseek-flash"
+        )
+
 
 # ── DeepSeek post-2026-07-24 alias remapping ───────────────────────────
 
-class TestDeepseekCanonicalAndReasonerMapping:
-    """Retired aliases and fuzzy names rewrite to deepseek-v4-flash.
-
-    DeepSeek cut off ``deepseek-chat`` / ``deepseek-reasoner`` on
-    2026-07-24; sending them on the wire returns HTTP 400.
-    """
-
+class TestDeepseekRetiredAliasesAndCustomSlugs:
+    """Only the two retired aliases are rewritten; every other id is the user's and reaches the
+    wire as typed (a shape allow-list swallowed the vendor's own ``deepseek-flash``, #107206)."""
 
     def test_provider_path_rewrites_reasoner(self):
         assert (
             normalize_model_for_provider("deepseek-reasoner", "deepseek")
-            == "deepseek-v4-flash"
+            == "deepseek-flash"
         )
 
     @pytest.mark.parametrize("model", [
+        "deepseek-v4.1-flash",
+        "deepseek-v4-flash-0731",
         "deepseek-r1",
-        "deepseek-r1-0528",
-        "deepseek-think-v3",
-        "deepseek-reasoning-preview",
-        "deepseek-cot-experimental",
+        "deepseek-next-preview",
+        "my-fine-tune",
     ])
-    def test_reasoner_keywords_map_to_v4_flash(self, model):
-        assert _normalize_for_deepseek(model) == "deepseek-v4-flash"
+    def test_unknown_ids_pass_through_untouched(self, model):
+        assert _normalize_for_deepseek(model) == model
+
+
+# ── Regression: issue #78796 ───────────────────────────────────────────
+
+class TestIssue78796NvidiaPrefixRepair:
+    """A bare NVIDIA model id must regain its ``vendor/`` prefix.
+
+    build.nvidia.com serves ``nvidia/nemotron-…``; a bare
+    ``nemotron-3-ultra-550b-a55b`` returns a naked ``404 page not found``
+    that never names the model, so the failure reads like an outage.
+    """
+
+    @pytest.mark.parametrize("model,expected", [
+        ("nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3-ultra-550b-a55b"),
+        ("nemotron-3-super-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"),
+        (
+            "nemotron-3-nano-omni-30b-a3b-reasoning",
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        ),
+    ])
+    def test_bare_nemotron_regains_prefix(self, model, expected):
+        assert normalize_model_for_provider(model, "nvidia") == expected
+
+    def test_third_party_model_gets_its_own_vendor(self):
+        """NIM also hosts third-party models — the prefix is the catalogue's,
+        not a hardcoded ``nvidia/``."""
+        assert normalize_model_for_provider("glm-5.2", "nvidia") == "z-ai/glm-5.2"
+
+    @pytest.mark.parametrize("model", [
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "z-ai/glm-5.2",
+    ])
+    def test_already_prefixed_is_untouched(self, model):
+        assert normalize_model_for_provider(model, "nvidia") == model
+
+    @pytest.mark.parametrize("model", [
+        "my-local-nim-container",
+        "some-finetune-v2",
+    ])
+    def test_unknown_names_pass_through(self, model):
+        """The same provider id fronts local NIM containers. An id absent from
+        the catalogue is a lookup miss, not a guess — leave it alone."""
+        assert normalize_model_for_provider(model, "nvidia") == model
+
+    def test_other_providers_unaffected(self):
+        assert normalize_model_for_provider("my-model", "custom") == "my-model"
+        assert (
+            normalize_model_for_provider("claude-sonnet-4.6", "openrouter")
+            == "anthropic/claude-sonnet-4.6"
+        )
 

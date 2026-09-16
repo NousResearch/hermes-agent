@@ -45,6 +45,53 @@ export interface CronEditorSaveValues {
   schedule: string
 }
 
+export function parseCronDeliveryTargets(value: string): string[] {
+  const targets = value
+    .split(',')
+    .map(target => target.trim())
+    .filter(Boolean)
+
+  return targets.length > 0 ? [...new Set(targets)] : ['local']
+}
+
+export function toggleCronDeliveryTarget(value: string, target: string, checked: boolean): string {
+  const targets = parseCronDeliveryTargets(value)
+
+  if (checked) {
+    return targets.includes(target) ? targets.join(',') : [...targets, target].join(',')
+  }
+
+  if (!targets.includes(target) || targets.length === 1) {
+    return targets.join(',')
+  }
+
+  return targets.filter(candidate => candidate !== target).join(',')
+}
+
+// The scheduler stores `last_error` as the raw exception text, e.g.
+// "RuntimeError: Cron job 'x' has no model configured (job.model=None, …). Set a
+// per-job model via `hermes cron edit …`". Users need the first plain sentence,
+// not the Python wrapper; the full text stays reachable via a hover title.
+const ERROR_PREFIX_RE = /^(?:[A-Za-z_][\w.]*(?:Error|Exception)|Exception):\s*/
+const ERROR_MARKER_RE = /^\[[a-z_]+(?::[a-z_]+)?\]\s*/
+const ERROR_EMOJI_RE = /^(?:\u26A0\uFE0F?|\uD83D\uDED1|\u274C|\u{1F6AB})\s*/u
+const ERROR_SUMMARY_MAX = 200
+
+export function lastErrorSummary(lastError: string | null | undefined): string {
+  let text = (lastError ?? '').trim()
+
+  // Wrappers can nest (marker, then emoji, then exception class); peel until stable.
+  for (let previous = ''; previous !== text; ) {
+    previous = text
+    text = text.replace(ERROR_MARKER_RE, '').replace(ERROR_EMOJI_RE, '').replace(ERROR_PREFIX_RE, '').trimStart()
+  }
+
+  const sentenceEnd = text.search(/\. |\n/)
+  const sentence = (sentenceEnd === -1 ? text : text.slice(0, sentenceEnd + 1)).trim()
+
+  return sentence.length > ERROR_SUMMARY_MAX ? `${sentence.slice(0, ERROR_SUMMARY_MAX - 1).trimEnd()}…` : sentence
+}
+
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */
 export function cronEditorUpdates(values: CronEditorSaveValues, options: { scriptOnlyJob: boolean }): CronJobUpdates {
   const updates: CronJobUpdates = {

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  ensureHealthyPooledRemoteBackendForDispatch,
+  POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+  POWER_RESUME_REVALIDATION_HOLDOFF_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
   REMOTE_LIVENESS_TIMEOUT_MS,
@@ -179,9 +182,13 @@ describe('revalidateRemoteConnection', () => {
     const test = harness()
 
     await expect(revalidateRemoteConnection(test.options)).resolves.toEqual({ ok: true, rebuilt: false })
-    expect(test.probe).toHaveBeenCalledWith('https://gateway.example.com/api/status', {
-      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
-    })
+    expect(test.probe).toHaveBeenCalledWith(
+      expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
+      '/api/status',
+      {
+        timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+      }
+    )
     expect(test.resetConnection).not.toHaveBeenCalled()
   })
 
@@ -253,14 +260,131 @@ describe('revalidateRemoteConnection', () => {
   })
 })
 
+describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
+  it('covers quiet-box cold-start and stays below the power-resume holdoff', () => {
+    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(REMOTE_LIVENESS_TIMEOUT_MS)
+    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(8_000)
+    expect(POWER_RESUME_REVALIDATION_HOLDOFF_MS).toBeGreaterThan(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS)
+  })
+
+  it('returns a healthy cached descriptor without retiring or reconnecting', async () => {
+    const healthy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(healthy)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+    const probe = vi.fn().mockResolvedValue({ ok: true })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise,
+        currentConnectionPromise: () => connectionPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(healthy)
+
+    expect(probe).toHaveBeenCalledWith(healthy, '/api/health', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+
+  it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
+    const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }
+    const stalePromise = Promise.resolve(stale)
+    let currentPromise: Promise<typeof stale> | null = stalePromise
+
+    const retire = vi.fn(async () => {
+      currentPromise = null
+    })
+
+    const reconnect = vi.fn(async () => {
+      currentPromise = Promise.resolve(replacement)
+
+      return replacement
+    })
+
+    const probe = vi.fn(async connection => {
+      if (connection === stale) {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:49525')
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: stalePromise,
+        currentConnectionPromise: () => currentPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(replacement)
+
+    expect(probe).toHaveBeenCalledWith(stale, '/api/health', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).toHaveBeenCalledOnce()
+    expect(reconnect).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to /api/status when /api/health returns 404 on older backends', async () => {
+    const legacy = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const legacyPromise = Promise.resolve(legacy)
+
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    const probe = vi.fn(async (_connection, path) => {
+      if (path === '/api/health') {
+        throw new Error('404: Not Found')
+      }
+    })
+
+    await expect(
+      ensureHealthyPooledRemoteBackendForDispatch({
+        connectionPromise: legacyPromise,
+        currentConnectionPromise: () => legacyPromise,
+        probe,
+        reconnect,
+        retire
+      })
+    ).resolves.toBe(legacy)
+
+    expect(probe).toHaveBeenCalledWith(legacy, '/api/status', {
+      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+    })
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+  })
+})
+
 describe('revalidatePooledRemoteBackends', () => {
-  const harness = (entries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string }]>) => {
+  interface TestRemoteConnection {
+    authMode?: string
+    baseUrl: string
+    process?: unknown
+    remoteBaseUrl?: null | string
+  }
+
+  const harness = (
+    rawEntries: Array<[string, { process?: unknown; remoteBaseUrl?: null | string; authMode?: string }]>
+  ) => {
+    const entries: Array<[string, TestRemoteConnection & { connectionPromise: Promise<TestRemoteConnection> }]> =
+      rawEntries.map(([profile, entry]) => {
+        const connection = { ...entry, baseUrl: String(entry.remoteBaseUrl || '') }
+
+        return [profile, { ...connection, connectionPromise: Promise.resolve(connection) }]
+      })
+
     const unreachable = new Set<string>()
     const log = vi.fn()
     const stopBackend = vi.fn()
 
-    const probe = vi.fn(async (url: string) => {
-      if ([...unreachable].some(base => url.startsWith(base))) {
+    const probe = vi.fn(async (connection: TestRemoteConnection) => {
+      if ([...unreachable].some(base => connection.remoteBaseUrl?.startsWith(base))) {
         throw new Error('unreachable')
       }
 
@@ -291,7 +415,26 @@ describe('revalidatePooledRemoteBackends', () => {
     await pool.run(new RemoteLivenessTracker())
 
     expect(pool.probe).toHaveBeenCalledTimes(1)
-    expect(pool.probe).toHaveBeenCalledWith('https://remote.example.com/api/status', {
+    expect(pool.probe).toHaveBeenCalledWith(
+      expect.objectContaining({ remoteBaseUrl: 'https://remote.example.com' }),
+      '/api/status',
+      { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS }
+    )
+    expect(pool.stopBackend).not.toHaveBeenCalled()
+  })
+
+  it('passes the authenticated OAuth descriptor to the liveness probe', async () => {
+    const remote = {
+      process: null,
+      remoteBaseUrl: 'https://remote.example.com',
+      authMode: 'oauth'
+    }
+
+    const pool = harness([['oauth', remote]])
+
+    await pool.run(new RemoteLivenessTracker())
+
+    expect(pool.probe).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'oauth' }), '/api/status', {
       timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
     })
     expect(pool.stopBackend).not.toHaveBeenCalled()

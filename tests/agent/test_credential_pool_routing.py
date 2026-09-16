@@ -210,7 +210,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False  # reset after rotation
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key")
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key", failure_reason="rate_limit")
         agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_pool_exhaustion_returns_false(self):
@@ -236,7 +236,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key")
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key", failure_reason="billing")
 
 
     def test_api_key_hint_from_pool_current_when_agent_key_missing(self):
@@ -273,7 +273,8 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         pool.mark_exhausted_and_rotate.assert_called_once_with(
-            status_code=402, error_context=None, api_key_hint="pool-current-key"
+            status_code=402, error_context=None, api_key_hint="pool-current-key",
+            failure_reason="billing",
         )
 
 
@@ -370,15 +371,35 @@ class TestFailureAttribution:
     """
 
     def _make_pool(self, tmp_path, monkeypatch, entries):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Keep host Anthropic/Claude credentials out of this fixture. load_pool()
+        # auto-seeds ~/.claude/.credentials.json and env keys when anthropic is
+        # explicitly configured on the machine, which turns a deliberate
+        # single-entry pool into a multi-entry pool and invalidates isolation
+        # assertions (see test_unmatched_key_does_not_retry_only_pool_entry).
+        for env_var in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            lambda provider: False,
+        )
         (hermes_home / "auth.json").write_text(
-            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
+            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
+            encoding="utf-8",
         )
         from agent.credential_pool import load_pool
 
-        return load_pool("anthropic")
+        pool = load_pool("anthropic")
+        assert [entry.id for entry in pool.entries()] == [
+            entry["id"] for entry in entries
+        ], "pool fixture leaked host credentials into the test pool"
+        return pool
 
     def _entry(self, idx, key, **overrides):
         entry = {
@@ -491,4 +512,54 @@ class TestFailureAttribution:
         assert recovered is False
         assert self._statuses(pool)["cred-0"] != "exhausted"
         agent._swap_credential.assert_not_called()
+
+    def test_classified_billing_403_recorded_on_entry(self, tmp_path, monkeypatch):
+        """A billing-classified 403 must reach the pool as `billing`, not a bare 403.
+
+        `error_classifier` maps OpenRouter's `key limit exceeded` 403 (and xAI
+        spending-limit blocks) to FailoverReason.billing, but the pool only
+        ever saw the raw status — so a sole-credential pool gave a spent
+        account the 60s transient cooldown and re-failed every minute. The
+        recovery path now forwards the classified reason so the pool can size
+        the bench correctly.
+        """
+        from agent.error_classifier import FailoverReason
+
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        agent = self._agent(pool, failing_key="key-b")
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recover_with_credential_pool(
+            agent,
+            status_code=403,
+            has_retried_429=False,
+            classified_reason=FailoverReason.billing,
+        )
+
+        failed = {e.id: e for e in pool.entries()}["cred-1"]
+        assert failed.last_status == "exhausted"
+        assert failed.failure_reason == "billing"
+
+    def test_unclassified_403_records_no_billing_reason(self, tmp_path, monkeypatch):
+        """An unclassified 403 stays transient — no billing verdict is invented."""
+        pool = self._make_pool(
+            tmp_path, monkeypatch,
+            [self._entry(0, "key-a"), self._entry(1, "key-b")],
+        )
+        agent = self._agent(pool, failing_key="key-b")
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+
+        recover_with_credential_pool(
+            agent, status_code=403, has_retried_429=False
+        )
+
+        failed = {e.id: e for e in pool.entries()}["cred-1"]
+        assert failed.failure_reason != "billing"
 

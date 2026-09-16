@@ -563,12 +563,13 @@ class TestWhisperHallucinationFilter:
 # ============================================================================
 
 class TestPlayAudioFile:
+    @pytest.mark.linux_only
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
-        # Pin to a non-macOS platform: on macOS WAV output deliberately skips
-        # sounddevice (see TestMacOSAudioOutputPolicy), so this path is only
-        # exercised off Darwin.
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
+        # Linux-gated rather than faking a non-macOS platform: on macOS WAV
+        # output deliberately skips sounddevice (see
+        # TestMacOSAudioOutputPolicy), so this path is only exercised off
+        # Darwin and the host now selects it by itself.
 
         mock_sd_obj = MagicMock()
         # Simulate stream completing immediately (get_stream().active = False)
@@ -594,9 +595,13 @@ class TestPlayAudioFile:
 # ============================================================================
 
 class TestMacOSAudioOutputPolicy:
+    """macOS-gated: the policy exists because PortAudio/CoreAudio init raises
+    a TCC media-library prompt, which no faked platform on Linux reproduces —
+    and `afplay` only resolves on a real macOS host."""
+
+    @pytest.mark.macos_only
     def test_play_audio_file_skips_sounddevice_on_macos(self, monkeypatch, sample_wav):
         """On macOS, WAV playback must not import sounddevice; it routes to afplay."""
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
 
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for output on macOS")
@@ -618,7 +623,8 @@ class TestMacOSAudioOutputPolicy:
             popen_cmds.append(cmd)
             return _FakeProc()
 
-        monkeypatch.setattr("shutil.which", lambda exe: f"/usr/bin/{exe}")
+        # Only Popen is stubbed: the host resolves afplay for real, so the
+        # argv assertion below reflects real player selection.
         monkeypatch.setattr("subprocess.Popen", _fake_popen)
 
         from tools.voice_mode import play_audio_file
@@ -629,10 +635,10 @@ class TestMacOSAudioOutputPolicy:
         assert popen_cmds, "expected a system player to be invoked"
         assert popen_cmds[0][0] == "afplay"
 
+    @pytest.mark.macos_only
     def test_play_beep_routes_through_afplay_on_macos(self, monkeypatch):
         """On macOS, beeps synthesize with numpy but play via the tempfile/afplay path."""
         pytest.importorskip("numpy")
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Darwin")
 
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for beeps on macOS")
@@ -1060,6 +1066,38 @@ class TestStreamLeakOnStartFailure:
             recorder._ensure_stream()
 
         mock_stream.close.assert_called_once()
+
+
+class TestStreamStartTimeoutRetry:
+    """PortAudio paTimedOut (-9987) on a cold bridge: retry the open once (#109303)."""
+
+    def test_timed_out_start_retries_once_and_succeeds(self, mock_sd):
+        cold = MagicMock()
+        cold.start.side_effect = OSError("Error starting stream: Wait timed out [PaErrorCode -9987]")
+        warm = MagicMock()
+        mock_sd.InputStream.side_effect = [cold, warm]
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        recorder._ensure_stream()
+
+        assert recorder._stream is warm
+        cold.close.assert_called_once()
+        warm.close.assert_not_called()
+
+    def test_persistent_timeout_raises_after_second_attempt(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError, match="Wait timed out"):
+            recorder._ensure_stream()
+
+        assert mock_sd.InputStream.call_count == 2
+        assert mock_stream.close.call_count == 2
+        assert recorder._stream is None
 
 
 # ============================================================================

@@ -46,7 +46,7 @@ class TestHooksList:
     def test_empty_config(self, tmp_path):
         with patch("hermes_cli.config.load_config", return_value={}):
             out = _run(SimpleNamespace(hooks_action="list"))
-        assert "No shell hooks configured" in out
+        assert "No shell hooks or outbound webhooks configured" in out
 
     def test_shows_configured_and_consent_status(self, tmp_path):
         script = _hook_script(
@@ -102,7 +102,7 @@ class TestHooksTest:
         # Same top-level keys _serialize_payload produces at runtime
         assert set(seen.keys()) == {
             "hook_event_name", "tool_name", "tool_input",
-            "session_id", "cwd", "extra",
+            "session_id", "cwd", "extra", "profile",
         }
         # parent_session_id was routed to top-level session_id (matches runtime)
         assert seen["session_id"] == "parent-sess"

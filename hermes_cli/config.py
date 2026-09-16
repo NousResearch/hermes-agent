@@ -2416,6 +2416,16 @@ def save_config(
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
         if strip_defaults:
+            # A raw read of {} over an EXISTING file means no on-disk path looks
+            # explicit, so _strip_default_values would drop every default-equal
+            # value and collapse the document to the caller's non-default keys
+            # (#113301). Missing files (first install) still proceed below.
+            if not _raw_for_paths and config_path.exists():
+                raise RuntimeError(
+                    f"Your settings file ({config_path}) exists but no settings could be read from it, "
+                    f"so this change was not saved. Saving now would keep only values that differ from "
+                    f"the defaults. If the file is genuinely empty, delete it to start fresh and retry."
+                )
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)

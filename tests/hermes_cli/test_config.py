@@ -299,6 +299,29 @@ class TestSaveAndLoadRoundtrip:
 
         assert config_path.read_text(encoding="utf-8") == original
 
+    @pytest.mark.parametrize(
+        "raw", ["", "{}\n"], ids=["zero-byte", "explicit-empty-mapping"]
+    )
+    def test_save_config_refuses_to_strip_when_existing_config_reads_empty(
+        self, tmp_path, raw
+    ):
+        """An existing config.yaml that yields no settings must not be stripped.
+
+        Regression for the collapse class (#113301): when the raw read returns
+        {} over an existing file (e.g. a zero-byte file after external damage),
+        the explicit-path preserve set degenerates to nothing and
+        _strip_default_values rewrites config.yaml with only the caller's
+        non-default values — silently dropping every default-equal section.
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(raw, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with pytest.raises(RuntimeError, match="this change was not saved"):
+                save_config({"model": "test/collapse-guard"})
+
+        assert config_path.read_text(encoding="utf-8") == raw
+
 
 
 

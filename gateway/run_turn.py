@@ -1429,6 +1429,7 @@ class GatewayTurnMixin:
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
+        event: Any = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1447,7 +1448,13 @@ class GatewayTurnMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        # Heartbeat polls inject their prompt as a plain user message so authorization and the
+        # emergency stop still apply, but the turn itself is machinery: NO_REPLY stays silent.
+        if (
+            _intentional_silence
+            and not is_machinery_display_kind(_silence_kind)
+            and getattr(event, "_heartbeat_session_id", None) is None
+        ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -2128,6 +2135,7 @@ class GatewayTurnMixin:
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                event=event,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)

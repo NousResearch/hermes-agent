@@ -224,49 +224,74 @@ async def drain_under_lock(
 async def drain_once(
     adapter: Any, home: Path, *, budget_seconds: Optional[float] = None
 ) -> int:
-    """Run queued deliveries for every profile in ``home`` whose slot is free.
+    """Run queued deliveries for every profile whose slot is free.
 
     Returns the number of turns actually run. A slot held by any other turn (a
     desktop session, a card worker) is skipped, never fought for -- the holder
     drains the queue when it releases.
+
+    ``home`` locates the root; the drainer enumerates the WHOLE roster (default
+    + every named profile) because a peer delivery is admitted into its TARGET
+    lane's own home (``_bot_send_home`` resolves the request-scoped profile to
+    ``profiles/<lane>``), not the default home. Draining only ``home`` left a
+    named lane's backlog invisible (the live sweep logged ``actions=0`` while
+    two lanes held 13 queued records).
     """
-    from tools.bot_mode_probe import _hermes_root
+    from tools.bot_mode_probe import _hermes_root, _roster
     from tools.bot_relay import TurnBusyError, acquire_turn_lock
 
     root = _hermes_root(home)
     budget = SWEEP_DRAIN_BUDGET_SECONDS if budget_seconds is None else budget_seconds
     deadline = time.monotonic() + budget
     drained = 0
-    for profile in delivery_queue.queued_target_profiles(home):
-        while time.monotonic() < deadline:
-            try:
-                with acquire_turn_lock(root, profile, timeout_seconds=0):
-                    record = delivery_queue.claim_next(
-                        home, target_profile=profile, lease_ok=True
+    for _name, profile_home in _roster(root):
+        for profile in delivery_queue.queued_target_profiles(profile_home):
+            while time.monotonic() < deadline:
+                try:
+                    with acquire_turn_lock(root, profile, timeout_seconds=0):
+                        record = delivery_queue.claim_next(
+                            profile_home, target_profile=profile, lease_ok=True
+                        )
+                        if record is None:
+                            # A lane with queued records that still came back
+                            # unclaimable is the exact state that used to vanish
+                            # without a trace -- name the lane and its depth.
+                            log_delivery_event(
+                                "drain_nothing_claimable",
+                                None,
+                                target=profile,
+                                home=str(profile_home),
+                                reason="claim_empty_while_queued",
+                                queued=delivery_queue.queue_depth(profile_home, profile),
+                            )
+                            break
+                        settled, _reply = await run_record(adapter, profile_home, record)
+                        drained += 1
+                        log_delivery_event("drained", settled, drained=drained)
+                except TurnBusyError:
+                    log_delivery_event(
+                        "drain_deferred", None, target=profile, reason="slot_held"
                     )
-                    if record is None:
-                        break
-                    settled, _reply = await run_record(adapter, home, record)
-                    drained += 1
-                    log_delivery_event("drained", settled, drained=drained)
-            except TurnBusyError:
-                log_delivery_event("drain_deferred", None, target=profile, reason="slot_held")
-                break
+                    break
     return drained
 
 
 async def sweep_loop(adapter: Any) -> None:
     """Trigger 3: every ``sweep_seconds``, recover expiries then drain free slots."""
-    from tools.bot_mode_probe import _default_home
+    from tools.bot_mode_probe import _default_home, _hermes_root, _roster
 
     home = Path(_default_home())
+    root = _hermes_root(home)
     logger.info("[api_server] bot delivery drainer started (home=%s)", home)
     while True:
         await asyncio.sleep(delivery_queue.sweep_seconds())
         try:
-            # Recover orphaned claims / expire over-age records first, so the
-            # drain below sees the real queue (and never expires a busy target's).
-            delivery_queue.sweep_delivery_queue(home)
+            # Recover orphaned claims / expire over-age records in EVERY lane's
+            # home first, so the drain below sees the real queue (and never
+            # expires a busy target's). The drainer then enumerates the same
+            # roster, so a named lane's backlog is never invisible to the sweep.
+            for _name, profile_home in _roster(root):
+                delivery_queue.sweep_delivery_queue(profile_home)
             drained = await drain_once(adapter, home)
             if drained:
                 log_delivery_event("sweep_drained", None, drained=drained)

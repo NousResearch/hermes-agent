@@ -79,6 +79,12 @@ class FakeTerminal {
 
   refresh() {}
 
+  registerCharacterJoiner() {
+    return 1;
+  }
+
+  deregisterCharacterJoiner() {}
+
   write() {}
 }
 

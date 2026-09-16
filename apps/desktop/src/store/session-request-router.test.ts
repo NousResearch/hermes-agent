@@ -507,7 +507,11 @@ describe('requestForSessionProfile', () => {
     })
     expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
+    // Age the socket past the min-lifetime grace (#94769) so this prune
+    // asserts the turn-lease release, not the freshly-opened spare.
+    vi.useFakeTimers({ now: Date.now() + 31_000 })
     pruneSecondaryGateways(new Set())
+    vi.useRealTimers()
     expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
 
     await requestForSessionProfile(route, ambient as never, 'session.resume', { session_id: 'rt-pruned' })

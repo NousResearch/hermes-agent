@@ -121,6 +121,11 @@ const RECONNECT_ESCALATE_AFTER_MS = 300_000
 // only a STREAK of unanswered pings rebuilds the transport.
 const GATEWAY_LIVENESS_PROBE_TIMEOUT_MS = 5_000
 
+// Renderer twin of the main process's POWER_RESUME_REVALIDATION_HOLDOFF_MS:
+// forced wake reconnects (online / power resume) are coalesced into one per
+// window instead of tearing down every secondary socket on each signal (#94769).
+const WAKE_RECONNECT_HOLDOFF_MS = 15_000
+
 // Bounded self-heal for a failed REMOTE boot (#82679): main classifies every
 // fault it can see (via getBootProgress().retryable); the renderer adds the one
 // it cannot — a valid remote WebSocket dial that fails before becoming usable.
@@ -1001,7 +1006,30 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const forceReconnectNow = () => reconnectNow({ forceOpenSocket: true })
+    //
+    // Forced reconnects (power resume / 'online') close and redial every open
+    // secondary socket. Windows fires 'online' on any interface change — VPN
+    // connects, Wi-Fi blips, virtual adapter enumeration — so an unthrottled
+    // handler reaped healthy sockets in bursts and the UI remounted on every
+    // redial: the #94769 flicker loop. Coalesce forced wakes like the main
+    // process already does for power-resume revalidation
+    // (POWER_RESUME_REVALIDATION_HOLDOFF_MS): one forced reconnect per
+    // holdoff window; a socket dropped in between is still picked up by the
+    // ordinary close/reconnect backoff and by the non-forced focus/visibility
+    // nudges below.
+    let lastForcedWakeReconnectAt = 0
+
+    const forceReconnectNow = () => {
+      const now = Date.now()
+
+      if (now - lastForcedWakeReconnectAt < WAKE_RECONNECT_HOLDOFF_MS) {
+        return
+      }
+
+      lastForcedWakeReconnectAt = now
+      void reconnectNow({ forceOpenSocket: true })
+    }
+
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 

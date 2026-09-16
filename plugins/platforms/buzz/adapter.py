@@ -1290,9 +1290,33 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_state[channel_id] = state
         return True
 
+    async def _hydrate_restored_channel_metadata(self, channel_id: str, state: dict) -> None:
+        """Rebuild bounded reply-parent metadata after restoring a durable cursor.
+
+        Cursor state intentionally persists only de-duplication data.  A restart must still
+        recognize a later unmentioned reply to one of our pre-restart messages, so this read
+        restores the in-memory parent cache without advancing the cursor, marking history seen,
+        or dispatching any historical event.
+        """
+        code, out, err = await self._run_cli(
+            ["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)]
+        )
+        if code != 0:
+            logger.warning(
+                "Buzz: could not hydrate reply metadata for channel %s — %s",
+                channel_id, _cli_error_message(err, code),
+            )
+            return
+        for event in _parse_json_list(out):
+            self._remember_event(state, event)
+            self._maybe_latch_dm(channel_id, state, event)
+
     async def _seed_channel(self, channel_id: str, chat_type: str) -> None:
         """Initialize a channel's high-water mark from its newest events."""
         if self._restore_channel_state(channel_id, chat_type):
+            # Restored cursors preserve the restart-gap delivery contract, while this bounded
+            # read restores only parent metadata needed for reply-to-agent mention bypass.
+            await self._hydrate_restored_channel_metadata(channel_id, self._channel_state[channel_id])
             return
         state = self._channel_state[channel_id] = self._new_channel_state(chat_type)
         code, out, err = await self._run_cli(["messages", "get", "--channel", channel_id, "--limit", str(_FETCH_LIMIT)])

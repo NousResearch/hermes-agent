@@ -3772,8 +3772,9 @@ class TestChannelCursorPersistence:
         restarted._load_cursors()
         await restarted._seed_channel(CHANNEL, chat_type="group")
 
-        # Restoring must not spend a CLI call on history it is not going to use.
-        assert cli.calls == []
+        # Restoring preserves the cursor, but performs one bounded history read solely to
+        # rebuild reply-parent metadata; it must not reseed or advance the cursor.
+        assert len(cli.calls) == 1
         state = restarted._channel_state[CHANNEL]
         assert set(state["seen"]) == {"e1"}
         assert state["last_ts"] == 100
@@ -3781,6 +3782,46 @@ class TestChannelCursorPersistence:
         # The first poll after the restart delivers the missed mention.
         await restarted._poll_channel(CHANNEL)
         assert [d["message_id"] for d in restarted._dispatched] == ["e2"]
+
+    @pytest.mark.asyncio
+    async def test_restored_cursor_rehydrates_own_parent_for_unmentioned_reply(self, adapter, tmp_path):
+        """A reply to a pre-restart agent message must still dispatch after cursor restore.
+
+        Cursor state retains de-duplication but deliberately does not persist message content.
+        Startup must repopulate only the in-memory parent metadata before polling new events;
+        otherwise a direct reply to the agent fails mention gating despite being addressed.
+        """
+        await self._seed(
+            adapter,
+            _tagged_event("agent-before-restart", CHANNEL, content="Wik: ready", pubkey=SELF_PUBKEY, created_at=100),
+        )
+
+        restarted = _make_adapter()
+        restarted._dispatched = []
+
+        async def capture(**kwargs):
+            restarted._dispatched.append(kwargs)
+
+        restarted._dispatch_message = capture
+        restarted._message_handler = AsyncMock()
+        cli = _ScriptedCli()
+        # Startup metadata hydration sees only the already-known parent. The poll then sees a
+        # later direct reply with no explicit mention.
+        cli.script("messages", "get", [
+            _tagged_event("agent-before-restart", CHANNEL, content="Wik: ready", pubkey=SELF_PUBKEY, created_at=100),
+        ])
+        cli.script("messages", "get", [
+            _tagged_event("agent-before-restart", CHANNEL, content="Wik: ready", pubkey=SELF_PUBKEY, created_at=100),
+            _tagged_event("direct-reply-after-restart", CHANNEL, content="continue", root="agent-before-restart", reply_to="agent-before-restart", created_at=101),
+        ])
+        restarted._run_cli = cli
+        restarted._load_cursors()
+        await restarted._seed_channel(CHANNEL, chat_type="group")
+
+        assert "agent-before-restart" in restarted._channel_state[CHANNEL]["event_meta"]
+        await restarted._poll_channel(CHANNEL)
+        assert [d["message_id"] for d in restarted._dispatched] == ["direct-reply-after-restart"]
+        assert restarted._dispatched[0]["reply_to_is_own_message"] is True
 
     @pytest.mark.asyncio
     async def test_cursor_survives_only_for_the_same_identity_and_relay(self, adapter, tmp_path, monkeypatch):

@@ -14,7 +14,7 @@ import {
   DELEGATE_CARD_TRIGGERS,
   DELEGATE_CARD_TURNS,
   restartMockServer,
-} from './mock-server'
+} from '../../../tests-js/scripts/mock-server'
 import { expect, type Page, test } from './test'
 
 const ACTIVE_SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'

@@ -2737,6 +2737,7 @@ class TelegramAdapter(BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(
             filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
+        app.add_handler(TelegramMessageHandler(filters.CONTACT, self._handle_contact_message))
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
@@ -5994,6 +5995,45 @@ class TelegramAdapter(BasePlatformAdapter):
             f"latitude: {lat}", f"longitude: {lon}", f"Map: https://www.google.com/maps/search/?api=1&query={lat},{lon}",
             "Ask what they'd like to find nearby (restaurants, cafes, etc.) and any preferences."]
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
+        event.text = "\n".join(parts)
+        await self.handle_message(self._apply_telegram_group_observe_attribution(event))
+
+    async def _handle_contact_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming contact-share messages (``message.contact``).
+
+        Telegram contact cards carry no ``text``, so without a dedicated handler the shared contact
+        (name, phone, vCard) is silently dropped and the agent never sees it. Render it as the
+        structured text the agent acts on, mirroring ``_handle_location_message``.
+        """
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            self._log_blocked_user(msg)
+            return
+        # Hermes' MessageType has no CONTACT member; contacts ride the TEXT lane.
+        if not self._gate_or_observe(msg, update, MessageType.TEXT):
+            return
+        contact = getattr(msg, "contact", None)
+        if not contact:
+            return
+        first = getattr(contact, "first_name", None) or ""
+        last = getattr(contact, "last_name", None) or ""
+        phone = getattr(contact, "phone_number", None) or ""
+        user_id = getattr(contact, "user_id", None)
+        name = f"{first} {last}".strip()
+        parts = ["[El usuario compartió un contacto de Telegram.]"]
+        if name:
+            parts.append(f"Nombre: {name}")
+        if phone:
+            parts.append(f"Teléfono: {phone}")
+        if user_id:
+            parts.append(f"Telegram user_id: {user_id}")
+        vcard = getattr(contact, "vcard", None)
+        if vcard:
+            parts.append(f"vCard: {vcard}")
+        parts.append("Para guardarlo en contactos, usar estos datos y comprobar antes si ya existe.")
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = "\n".join(parts)
         await self.handle_message(self._apply_telegram_group_observe_attribution(event))
 

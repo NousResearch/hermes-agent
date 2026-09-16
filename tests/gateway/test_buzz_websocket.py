@@ -13,6 +13,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from unittest.mock import AsyncMock
 
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -41,6 +42,9 @@ def _make_adapter(extra=None):
     adapter._self_pubkey = SELF_PUBKEY
     adapter._private_key = TEST_PRIVATE_KEY
     adapter._display_name = "Chip"
+    # Transport-only sockets here bypass AUTH and omit recv/ACK; directory publication is covered
+    # by test_buzz_agent_directory.py with real signed events.
+    adapter._publish_directory_websocket = AsyncMock(return_value=True)
     return adapter
 
 

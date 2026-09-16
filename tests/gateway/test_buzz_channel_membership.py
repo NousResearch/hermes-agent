@@ -245,6 +245,7 @@ async def test_irrelevant_targeted_refresh_preserves_joined_snapshot():
 @pytest.mark.asyncio
 async def test_membership_subscription_and_reconciliation_cover_add_and_remove():
     adapter = _make_adapter()
+    adapter._publish_directory_websocket = AsyncMock(return_value=True)
     adapter._self_pubkey = SELF_PUBKEY
     adapter._channel_state = {
         "departed": {"chat_type": "group", "last_ts": 1, "seen": OrderedDict()}
@@ -296,6 +297,7 @@ async def test_membership_subscription_and_reconciliation_cover_add_and_remove()
 @pytest.mark.asyncio
 async def test_future_membership_timestamp_cannot_poison_reconnect_cursor(monkeypatch):
     adapter = _make_adapter()
+    adapter._publish_directory_websocket = AsyncMock(return_value=True)
     adapter._membership_since = 100
     monkeypatch.setattr(_buzz_mod.time, "time", lambda: 1_000)
     adapter._discover_joined_channels = AsyncMock(return_value=True)
@@ -321,6 +323,7 @@ async def test_future_membership_timestamp_cannot_poison_reconnect_cursor(monkey
 @pytest.mark.asyncio
 async def test_membership_reconciliation_applies_channel_rename():
     adapter = _make_adapter()
+    adapter._publish_directory_websocket = AsyncMock(return_value=True)
     adapter._channel_state = {
         CHANNEL: {"chat_type": "group", "last_ts": 0, "seen": {}}
     }
@@ -357,6 +360,7 @@ async def test_membership_reconciliation_applies_channel_rename():
 @pytest.mark.asyncio
 async def test_membership_reconciliation_closes_removed_channel():
     adapter = _make_adapter()
+    adapter._publish_directory_websocket = AsyncMock(return_value=True)
     adapter._channel_state = {
         CHANNEL: {"chat_type": "group", "last_ts": 0, "seen": {}}
     }
@@ -385,6 +389,7 @@ async def test_membership_reconciliation_closes_removed_channel():
 @pytest.mark.asyncio
 async def test_membership_refresh_does_not_resurrect_departed_group_from_public_listing():
     adapter = _make_adapter()
+    adapter._publish_directory_websocket = AsyncMock(return_value=True)
     adapter._channel_state[CHANNEL] = adapter._new_channel_state("group")
     adapter._channel_meta[CHANNEL] = {"channel_id": CHANNEL, "name": "room"}
     adapter._joined_channel_ids = {CHANNEL}
@@ -404,6 +409,7 @@ async def test_membership_refresh_does_not_resurrect_departed_group_from_public_
 @pytest.mark.asyncio
 async def test_poll_cadence_reconciles_roster_before_dms(monkeypatch):
     adapter = _make_adapter()
+    adapter._publish_directory_fallback = AsyncMock(return_value=True)
     adapter._poll_count = 4
     calls = []
     async def sleep(_):

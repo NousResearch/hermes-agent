@@ -19,7 +19,7 @@ import re
 import shutil
 import tempfile
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -163,6 +163,8 @@ _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discove
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
 _WS_MEMBERSHIP_REMOVED_KIND = 44101
 _CHANNEL_DISCOVERY_EVERY = 5
+_AGENT_DIRECTORY_KIND = 10100
+_WS_DEFERRED_FRAME_CAP = 100
 # Credentials JSON fallback when BUZZ_PRIVATE_KEY is not set; module-level so tests can point it at a tmpdir.
 _DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
 # Buzz-hosted media is private to the community: same-relay URLs must be authenticated + localised for vision.
@@ -618,6 +620,9 @@ class BuzzAdapter(BasePlatformAdapter):
         )
         self._membership_since = self._poll_count = 0
         self._joined_channel_ids: set[str] = set()
+        self._profile_name = ""
+        self._last_directory_projection: Optional[str] = None
+        self._ws_deferred_frames = deque()
         # Channels the relay permanently rejected ("restricted"); persists across reconnects so we never re-subscribe.
         # channel_id -> { "chat_type", "last_ts", "seen": OrderedDict[event_id, None], "event_meta":
         # OrderedDict[event_id, (author_pubkey, content_snippet)], } event_meta backs NIP-10 reply-parent
@@ -707,6 +712,7 @@ class BuzzAdapter(BasePlatformAdapter):
             )
         self._self_pubkey = str(profiles[0]["pubkey"]).lower()
         self._display_name = str(profiles[0].get("display_name") or "").strip()
+        self._profile_name = str(profiles[0].get("name") or self._display_name).strip()
         self._self_npub = hex_to_npub(self._self_pubkey) or ""
         # Two profiles must not drive the same identity on one relay (duplicate replies, split de-dupe state).
         if not self._acquire_platform_lock(
@@ -764,6 +770,7 @@ class BuzzAdapter(BasePlatformAdapter):
                     )
                     return False
             if transport_used == "poll":
+                await self._publish_directory_fallback(force=True)
                 self._poll_task = asyncio.create_task(self._poll_loop())
             self._mark_connected()
             logger.info(
@@ -1079,6 +1086,180 @@ class BuzzAdapter(BasePlatformAdapter):
             self._ws_task = None
             return False
 
+    def _directory_content(self) -> dict:
+        """Project public discovery fields from the live effective policy."""
+        from plugins.platforms.buzz.settings import effective_authorization_policy
+        policy = effective_authorization_policy(
+            getattr(self, "_hermes_profile_name", None), home=self._mention_policy_home
+        )
+        raw_configured_allowed = self._extra.get("allowed_users", [])
+        if isinstance(raw_configured_allowed, str):
+            raw_configured_allowed = raw_configured_allowed.split(",")
+        configured_allowed = sorted(
+            {
+                normalized
+                for entry in raw_configured_allowed
+                if isinstance(entry, str)
+                and (normalized := _normalize_user_ref(entry))
+            }
+        )
+        allowed = configured_allowed or sorted(
+            {
+                normalized
+                for entry in policy.get("allowed_users", [])
+                if isinstance(entry, str)
+                and (normalized := _normalize_user_ref(entry))
+            }
+        )
+        if configured_allowed:
+            respond_to = "allowlist"
+        elif allowed:
+            respond_to = "allowlist"
+        elif bool(policy.get("allow_all_users", False)):
+            respond_to = "anyone"
+        else:
+            # Buzz's picker treats an empty allowlist as ineligible. This is
+            # the supported wire representation of Hermes' deny-all policy.
+            respond_to = "allowlist"
+        eligible = []
+        for channel_id, state in self._channel_state.items():
+            meta = self._channel_meta.get(channel_id) or {}
+            relay_materialized_dm = (
+                str(meta.get("name") or "").strip() == "DM"
+                and not str(meta.get("description") or "").strip()
+            )
+            if (
+                state.get("chat_type") == "group"
+                and channel_id in self._joined_channel_ids
+                and not relay_materialized_dm
+            ):
+                eligible.append(channel_id)
+        eligible.sort()
+        display_name = self._display_name or self._profile_name or self._self_npub
+        return {
+            "name": self._profile_name or display_name,
+            "display_name": display_name,
+            "agent_type": "hermes-gateway",
+            "capabilities": ["chat"],
+            "status": "online",
+            "respond_to": respond_to,
+            "respond_to_allowlist": allowed if respond_to == "allowlist" else [],
+            "channels": [
+                self._channel_names.get(channel_id, channel_id)
+                for channel_id in eligible
+            ],
+            "channel_ids": eligible,
+            "channel_add_policy": "owner_only",
+        }
+
+    def _defer_ws_frame(self, raw: str) -> None:
+        if len(self._ws_deferred_frames) >= _WS_DEFERRED_FRAME_CAP:
+            raise ConnectionError("Buzz WebSocket received too many unrelated frames")
+        self._ws_deferred_frames.append(raw)
+
+    async def _publish_directory_websocket(
+        self, websocket, *, force: bool = False
+    ) -> bool:
+        """Publish the complete replaceable agent-directory event."""
+        nostr_auth = _load_nostr_auth()
+        signer_pubkey = nostr_auth.public_key_hex(self._private_key)
+        if self._self_pubkey and self._self_pubkey != signer_pubkey:
+            raise ValueError("Buzz profile identity does not match the signing key")
+        timestamp = int(time.time())
+        tags: List[List[str]] = []
+        auth_tag_json = _resolve_auth_tag(self._extra)
+        if auth_tag_json:
+            try:
+                auth_tag = json.loads(auth_tag_json)
+            except ValueError as exc:
+                raise ValueError("BUZZ_AUTH_TAG is not valid JSON") from exc
+            nostr_auth.verify_auth_tag_for_event(
+                auth_tag,
+                signer_pubkey,
+                kind=_AGENT_DIRECTORY_KIND,
+                created_at=timestamp,
+            )
+            tags.append(auth_tag)
+        content = json.dumps(
+            self._directory_content(), separators=(",", ":"), ensure_ascii=False
+        )
+        projection = json.dumps(
+            [tags, content], separators=(",", ":"), ensure_ascii=False
+        )
+        if not force and projection == self._last_directory_projection:
+            return False
+        event = nostr_auth.build_signed_event(
+            private_key=self._private_key,
+            kind=_AGENT_DIRECTORY_KIND,
+            tags=tags,
+            content=content,
+            created_at=timestamp,
+        )
+        await websocket.send(json.dumps(["EVENT", event], separators=(",", ":")))
+        deadline = asyncio.get_running_loop().time() + _WS_AUTH_TIMEOUT
+        while True:
+            raw = await self._recv_before_deadline(
+                websocket,
+                deadline,
+                "Buzz directory ACK timed out",
+            )
+            try:
+                response = json.loads(raw)
+            except (TypeError, ValueError):
+                self._defer_ws_frame(raw)
+                continue
+            if (
+                isinstance(response, list)
+                and len(response) >= 4
+                and response[0] == "OK"
+                and response[1] == event["id"]
+            ):
+                if response[2] is True:
+                    self._last_directory_projection = projection
+                    return True
+                raise ConnectionError(
+                    f"Buzz directory publication rejected: {response[3]}"
+                )
+            self._defer_ws_frame(raw)
+
+    async def _publish_directory_fallback(self, *, force: bool = False) -> bool:
+        """Publish over a short-lived authenticated socket for poll transport."""
+        try:
+            import websockets
+
+            self._ws_deferred_frames.clear()
+            async with asyncio.timeout(_WS_AUTH_TIMEOUT):
+                async with websockets.connect(
+                    self._websocket_url(),
+                    open_timeout=_WS_AUTH_TIMEOUT,
+                    close_timeout=5,
+                    ping_interval=None,
+                    max_size=_WS_MAX_MESSAGE_BYTES,
+                ) as websocket:
+                    await self._authenticate_websocket(websocket)
+                    await self._publish_directory_websocket(
+                        websocket, force=force
+                    )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Buzz: bounded directory publication attempt failed")
+            return False
+        finally:
+            self._ws_deferred_frames.clear()
+
+    async def _recv_before_deadline(
+        self, websocket, deadline: float, message: str
+    ) -> str:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(message)
+        try:
+            return await asyncio.wait_for(websocket.recv(), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(message) from exc
+
     async def _authenticate_websocket(self, websocket) -> None:
         """NIP-42: await the AUTH challenge, answer with a signed kind-22242 event (+ optional NIP-OA tag), await OK."""
         message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=_WS_AUTH_TIMEOUT))
@@ -1190,6 +1371,7 @@ class BuzzAdapter(BasePlatformAdapter):
         await subscribe_discovered()
         await self._discover_dms(seed=False)
         await subscribe_discovered()
+        await self._publish_directory_websocket(websocket)
 
     async def _rediscover_and_subscribe(self, websocket, subscriptions: Dict[str, Optional[str]]) -> None:
         """Rediscover conversations and subscribe to any adopted since (fresh DMs dispatch from their start)."""
@@ -1564,7 +1746,9 @@ class BuzzAdapter(BasePlatformAdapter):
                     self._websocket_url(), open_timeout=_WS_AUTH_TIMEOUT, close_timeout=5,
                     ping_interval=20, ping_timeout=20, max_size=_WS_MAX_MESSAGE_BYTES,
                 ) as websocket:
+                    self._ws_deferred_frames.clear()
                     await self._authenticate_websocket(websocket)
+                    await self._publish_directory_websocket(websocket, force=True)
                     subscriptions = await self._subscribe_websocket(websocket)
                     # Observer frames ride this socket; a new generation invalidates in-flight ACK state.
                     self._activity_ws_generation += 1
@@ -1610,27 +1794,31 @@ class BuzzAdapter(BasePlatformAdapter):
         """Read frames until the relay closes; a close or an idle read raises ConnectionError to reconnect."""
         frame_iter = websocket.__aiter__()
         while True:
-            read_task = asyncio.ensure_future(frame_iter.__anext__())
-            try:
-                done, _ = await asyncio.wait(
-                    {read_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
-                )
-                if not done:
-                    # wait_for() cancels and then waits for its awaitable to acknowledge the cancellation.
-                    # A transport receive stuck below asyncio can ignore that cancellation forever, leaving the
-                    # adapter healthy-looking. Detach the read instead so the outer loop can close and reconnect.
-                    raise ConnectionError(
-                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent"
+            if self._ws_deferred_frames:
+                # Frames the relay interleaved while a directory ACK was awaited.
+                raw = self._ws_deferred_frames.popleft()
+            else:
+                read_task = asyncio.ensure_future(frame_iter.__anext__())
+                try:
+                    done, _ = await asyncio.wait(
+                        {read_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
                     )
-                raw = read_task.result()
-            except StopAsyncIteration:
-                # A clean relay close is still a disconnect: raising sends it through the same
-                # backoff + "retrying" path instead of reconnecting in a hot loop.
-                raise ConnectionError("relay closed the WebSocket") from None
-            finally:
-                if not read_task.done():
-                    read_task.cancel()
-                    read_task.add_done_callback(_consume_ws_read_task)
+                    if not done:
+                        # wait_for() cancels and then waits for its awaitable to acknowledge the cancellation.
+                        # A transport receive stuck below asyncio can ignore that cancellation forever, leaving the
+                        # adapter healthy-looking. Detach the read instead so the outer loop can close and reconnect.
+                        raise ConnectionError(
+                            f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent"
+                        )
+                    raw = read_task.result()
+                except StopAsyncIteration:
+                    # A clean relay close is still a disconnect: raising sends it through the same
+                    # backoff + "retrying" path instead of reconnecting in a hot loop.
+                    raise ConnectionError("relay closed the WebSocket") from None
+                finally:
+                    if not read_task.done():
+                        read_task.cancel()
+                        read_task.add_done_callback(_consume_ws_read_task)
             try:
                 message = json.loads(raw)
             except (ValueError, TypeError):
@@ -1680,6 +1868,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 if self._poll_count % _CHANNEL_DISCOVERY_EVERY == 0:
                     await self._discover_joined_channels()
                     await self._discover_dms(seed=False)
+                    await self._publish_directory_fallback()
                 elif self._poll_count % _DM_DISCOVERY_EVERY == 0:
                     await self._discover_dms(seed=False)
                 for channel_id in list(self._channel_state):

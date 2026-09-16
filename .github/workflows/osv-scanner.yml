@@ -40,24 +40,83 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
-    with:
-      # Scan explicit lockfiles rather than recursing, so we only look at
-      # the five sources of truth and skip vendored / test / worktree dirs.
-      scan-args: |-
-        --lockfile=uv.lock
-        --lockfile=package-lock.json
-        --lockfile=website/package-lock.json
-        --lockfile=plugins/platforms/photon/sidecar/package-lock.json
-        --lockfile=scripts/whatsapp-bridge/package-lock.json
-      # The upstream reusable workflow uploads this exact file under its
-      # fixed artifact name, which the wrapper downloads below.
-      results-file-name: osv-results.sarif
-      fail-on-vuln: false
+    # Inlined from google/osv-scanner-action's reusable workflow (v2.3.8,
+    # pinned 9a4987089): that workflow's jobs run on GitHub-hosted
+    # (ubuntu-latest) runners — unreachable by runs-on conversion and
+    # forbidden by org policy (self-hosted only, no paid tiers). This inline
+    # version runs the same pinned osv-scanner binary on the self-hosted
+    # pool and uploads the same SARIF artifact ("OSV Scanner SARIF file" /
+    # osv-results.sarif) so the downstream emit-status job and the CodeQL
+    # upload path are unchanged.
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned osv-scanner
+        run: |
+          set -euo pipefail
+          # v2.3.8 — same version the upstream reusable workflow pinned.
+          VER=v2.3.8
+          URL="https://github.com/google/osv-scanner/releases/download/${VER}/osv-scanner_linux_amd64"
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL "$URL" -o "$RUNNER_TEMP/bin/osv-scanner"
+          chmod +x "$RUNNER_TEMP/bin/osv-scanner"
+          "$RUNNER_TEMP/bin/osv-scanner" --version
+
+      - name: Run scan
+        # Same lockfile list as before: explicit --lockfile args scan the
+        # five sources of truth and skip vendored / test / worktree dirs.
+        # osv-scanner exits 1 when it FINDS vulnerabilities — expected here
+        # (fail-on-vuln is false upstream: findings become a review warning
+        # via emit-status, not a CI failure). Any other non-zero is real.
+        run: |
+          set -uo pipefail
+          status=0
+          "$RUNNER_TEMP/bin/osv-scanner" scan source \
+            --lockfile=uv.lock \
+            --lockfile=package-lock.json \
+            --lockfile=website/package-lock.json \
+            --lockfile=plugins/platforms/photon/sidecar/package-lock.json \
+            --lockfile=scripts/whatsapp-bridge/package-lock.json \
+            --format=sarif \
+            --output-file=osv-results.sarif \
+            || status=$?
+          if [ ! -s osv-results.sarif ]; then
+            echo "::error::osv-scanner produced no SARIF output (exit $status)"
+            exit 1
+          fi
+          if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then
+            if [ "$status" -eq 1 ]; then
+              echo "vulnerabilities found — SARIF written, failing disabled (see emit-status)"
+            fi
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload SARIF artifact
+        # Same artifact name the upstream reusable workflow used, so the
+        # emit-status job's download-artifact step keeps working unchanged.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: OSV Scanner SARIF file
+          path: osv-results.sarif
+          retention-days: 5
+          overwrite: true
+
+      - name: Upload to Code Scanning
+        # The upstream reusable workflow also pushed SARIF to the Security
+        # tab; preserve that (permissions: security-events: write is already
+        # declared at workflow level). Never fails the CI on upload issues.
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3
+        with:
+          sarif_file: osv-results.sarif
 
   emit-status:
     name: Emit review status
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Downloads one small SARIF artifact and runs two inline python snippets —
     # minutes of work. Bound it so a wedged artifact download can't hold a
     # runner for GitHub's 6-hour default (the only unbounded job left in

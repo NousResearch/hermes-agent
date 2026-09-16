@@ -57,7 +57,7 @@ concurrency:
 jobs:
   generate-patch:
     name: Generate eslint --fix patch
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 5
     outputs:
       has-fixes: ${{ steps.produce-patch.outputs.has-fixes }}
@@ -137,7 +137,7 @@ jobs:
     # Skip entirely when generate-patch found no fixes — saves a runner,
     # avoids a redundant checkout/download, and keeps the job graph honest.
     if: needs.generate-patch.outputs.has-fixes == 'true'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     environment: trusted-automation
     permissions:

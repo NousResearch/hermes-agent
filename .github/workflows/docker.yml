@@ -36,7 +36,7 @@ jobs:
   # open (every lane true), so post-merge validation is never weakened.
   detect:
     name: Detect affected areas
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     outputs:
       build: ${{ steps.gate.outputs.build }}
@@ -76,14 +76,14 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest-32-core
+            runner: self-hosted
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
           # arm64 builds on the native arm64 larger runner. A build of
           # linux/arm64 on an x64 host uses emulation.
           - arch: arm64
-            runner: ubuntu-latest-32-arm-core
+            runner: self-hosted
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64
@@ -193,13 +193,13 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: ubuntu-latest-32-core
+            runner: self-hosted
             platform: linux/amd64
             cache-from: type=gha,scope=docker-amd64
             cache-to: type=gha,mode=max,scope=docker-amd64
           # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: ubuntu-latest-32-arm-core
+            runner: self-hosted
             platform: linux/arm64
             cache-from: type=gha,scope=docker-arm64
             cache-to: type=gha,mode=max,scope=docker-arm64
@@ -270,7 +270,7 @@ jobs:
   # ---------------------------------------------------------------------------
   merge:
     if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: [publish]
     timeout-minutes: 10
     environment: container-publish

@@ -29,7 +29,7 @@ jobs:
   rerun-review-labels:
     name: Rerun review-labels job
     if: github.event.label.name == 'ci-reviewed'
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 40
     steps:
       - name: Wait for CI run to finish, then rerun failed jobs

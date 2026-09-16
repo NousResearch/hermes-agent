@@ -51,7 +51,7 @@ jobs:
   check:
     name: Review label gate
     if: inputs.ci_review || inputs.mcp_catalog || inputs.supply_chain
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 2
     outputs:
       ci_reviewed: ${{ steps.label-check.outputs.ci_reviewed }}

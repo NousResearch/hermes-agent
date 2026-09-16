@@ -64,7 +64,7 @@ def test_terminal_reports_direct_config_write_without_stale_rollback(tmp_path, m
 
     from tools.terminal_tool import terminal_tool
 
-    script = f"open({str(config_path)!r}, 'wb').write({changed!r})"
+    script = f"open({config_path.as_posix()!r}, 'wb').write({changed!r})"
     command = f"{shlex.quote(sys.executable.replace(chr(92), '/'))} -c {shlex.quote(script)}"
     result = json.loads(terminal_tool(command, task_id="terminal-config-write-guard"))
 
@@ -110,8 +110,8 @@ def test_terminal_detects_config_symlink_retarget(tmp_path, monkeypatch):
     from tools.terminal_tool import terminal_tool
 
     script = (
-        f"import os; os.unlink({str(config_path)!r}); "
-        f"os.symlink({str(target_b)!r}, {str(config_path)!r})"
+        f"import os; os.unlink({config_path.as_posix()!r}); "
+        f"os.symlink({target_b.as_posix()!r}, {config_path.as_posix()!r})"
     )
     command = f"{shlex.quote(sys.executable.replace(chr(92), '/'))} -c {shlex.quote(script)}"
     result = json.loads(terminal_tool(command, task_id="terminal-symlink-retarget-guard"))

@@ -1,0 +1,7 @@
+name: agentpod-stop-check
+version: 1.0.0
+description: "Whole-board reconciliation gate: an opted-in supervisor session cannot conclude 'no material change' while unfinished cards are unattended."
+author: "Den's Hermes"
+provides_hooks:
+  - transform_llm_output
+  - pre_verify

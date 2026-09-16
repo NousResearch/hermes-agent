@@ -68,12 +68,23 @@ jobs:
       - name: Probe for usable host nix
         id: hostnix
         run: |
-          if command -v nix >/dev/null 2>&1 && nix flake --help >/dev/null 2>&1; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-            echo "Host nix $(nix --version) usable; skipping install"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
+          # The runner unit's PATH does not include the nix profile, so probe
+          # the well-known host locations as well. This is a self-hosted
+          # runner on the machine that runs the nix daemon.
+          for cand in "$(command -v nix || true)" \
+                       /nix/var/nix/profiles/default/bin/nix \
+                       "$HOME/.nix-profile/bin/nix"; do
+            if [ -n "$cand" ] && [ -x "$cand" ]; then
+              nixbin="$(dirname "$cand")"
+              echo "$nixbin" >> "$GITHUB_PATH"
+              if "$cand" flake --help >/dev/null 2>&1; then
+                echo "available=true" >> "$GITHUB_OUTPUT"
+                echo "Host nix $("$cand" --version) usable at $cand; skipping install"
+                exit 0
+              fi
+            fi
+          done
+          echo "available=false" >> "$GITHUB_OUTPUT"
       - name: Install Nix
         if: steps.hostnix.outputs.available != 'true'
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0

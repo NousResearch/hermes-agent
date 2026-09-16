@@ -31,6 +31,13 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch:
 
+# One run per branch (per workflow for schedules): a newer push to the
+# same branch supersedes and cancels the run in flight (U104). Schedules
+# key on the workflow alone - there is no branch to key on.
+concurrency:
+  group: github.workflow
+  cancel-in-progress: true
+
 permissions:
   # Required to upload SARIF file to CodeQL. See: https://github.com/github/codeql-action/issues/2117
   actions: read

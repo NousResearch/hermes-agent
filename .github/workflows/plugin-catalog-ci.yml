@@ -15,6 +15,13 @@ on:
     paths:
       - "plugin-catalog/**"
 
+# One run per branch (per workflow for schedules): a newer push to the
+# same branch supersedes and cancels the run in flight (U104). Schedules
+# key on the workflow alone - there is no branch to key on.
+concurrency:
+  group: github.workflow-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

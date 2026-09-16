@@ -136,6 +136,33 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
 }
 
 
+def _persisted_identity() -> str:
+    """Profile name persisted into board records (comment author, task creator).
+
+    Resolution mirrors ``hermes_cli.kanban._profile_author`` and
+    ``cron.lifecycle_guard._current_profile_name``: environment first (the
+    dispatcher pins ``HERMES_PROFILE``; some launchers set
+    ``HERMES_PROFILE_NAME``), else the active profile derived from
+    ``HERMES_HOME`` via ``hermes_cli.profiles.get_active_profile_name``, else
+    the generic ``"worker"`` fallback. Never taken from tool args: board
+    records are injected into future workers' prompts, so a caller-supplied
+    identity could forge an authoritative-looking author (see #19713).
+    """
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = (os.environ.get(env_name) or "").strip()
+        if value:
+            return value
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        active = (get_active_profile_name() or "").strip()
+        if active:
+            return active
+    except Exception:
+        logger.debug("kanban identity: active-profile lookup failed", exc_info=True)
+    return "worker"
+
+
 def _kanban_handler(tool_name: str) -> Callable:
     """Wrap a handler so every failure is a structured tool error. ``ValueError``
     (invalid board slug, DB validation such as cycle/self-link, ``AttachmentTooLarge``)
@@ -559,7 +586,7 @@ _comment_watermark: dict[str, int] = {}
 
 def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
-    steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
+    steer was injected; never raises. Own comments (``_persisted_identity``) are skipped."""
     global _comment_poll_last_attempt
     # Operator notes address the dispatcher-owned worker; a delegate_task child sharing
     # this process must neither receive them nor advance the shared watermark (#112817).
@@ -582,7 +609,10 @@ def inject_new_comments_from_env(agent: Any) -> bool:
         return False
     # Advance past everything read (including our own notes) so nothing is re-injected.
     _comment_watermark[tid] = max(c.id for c in rows)
-    own = (os.environ.get("HERMES_PROFILE") or "").strip()
+    # Same resolution the write side used, so a worker skips its OWN comments even
+    # when the dispatcher did not pin HERMES_PROFILE (echoed notes would otherwise
+    # re-enter the live turn as fake operator steering).
+    own = _persisted_identity()
     fresh = [c for c in rows if (c.author or "").strip() != own and (c.body or "").strip()]
     if not fresh:
         return False
@@ -862,15 +892,15 @@ def _handle_comment(args: dict, **kw) -> str:
     _check(tid, "task_id is required (use the current task id if that's what "
                 "you mean — pulls from env but kept explicit here)")
     body = _redact(_require_text(args, "body"))
-    # Author comes from the worker's runtime identity, never caller args: comments are
-    # injected into future workers' system prompts, so an args["author"] override could
-    # forge a directive from ``hermes-system``. Cross-task commenting stays unrestricted —
-    # it is the handoff channel between tasks.
+    # Author comes from the worker's runtime identity (``_persisted_identity``), never
+    # caller args: comments are injected into future workers' system prompts, so an
+    # args["author"] override could forge a directive from ``hermes-system``.
+    # Cross-task commenting stays unrestricted — it is the handoff channel between tasks.
     # Comments are injected into the next worker's system prompt by ``build_worker_context`` as
     # ``**{author}** (timestamp): {body}`` — accepting an ``args["author"]`` override let a worker forge a
     # comment from an authoritative-looking name like ``hermes-system`` and poison the future-worker context
     # with what reads as a system directive. See #19713.
-    author = os.environ.get("HERMES_PROFILE") or "worker"
+    author = _persisted_identity()
     with _board(args.get("board")) as (kb, conn):
         cid = kb.add_comment(conn, tid, author=author, body=str(body))
         return _ok(task_id=tid, comment_id=cid)
@@ -1049,7 +1079,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
-            created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
+            created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}

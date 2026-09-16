@@ -933,10 +933,13 @@ def _(rid, params: dict) -> dict:
     resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
     if not os.path.isdir(resolved):
         return _err(rid, 4017, f"working directory does not exist: {raw}")
+    # Stored IDs can recur across profiles; only the requested profile's live owner may follow.
+    profile_home = _profile_home(params.get("profile"))
     # Snapshot under the lock — concurrent RPCs mutate _sessions.
     with _sessions_lock:
         live_sid, live = next(
-            ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
+            ((sid, sess) for sid, sess in list(_sessions.items())
+             if sess.get("session_key") == target and _live_profile_matches(sess, profile_home)), ("", None))
     branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
     with _profile_db(params, writer=True) as db:
         if db is None:

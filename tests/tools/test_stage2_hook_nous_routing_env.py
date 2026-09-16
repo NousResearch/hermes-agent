@@ -72,7 +72,7 @@ def test_container_value_reaches_home_and_every_profile_env(stage2_text: str, tm
     (home / "profiles" / "ops" / ".env").write_text("SLACK_BOT_TOKEN=xoxb-x\n")
 
     result = _run_sync(
-        stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_INFERENCE_BASE_URL": INFERENCE}
+        stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_PORTAL_BASE_URL": None, "NOUS_INFERENCE_BASE_URL": INFERENCE}
     )
 
     assert result.returncode == 0, result.stderr
@@ -93,7 +93,7 @@ def test_stale_value_replaced_and_correct_value_left_alone(stage2_text: str, tmp
     env_file = home / ".env"
     env_file.write_text("HERMES_PORTAL_BASE_URL=https://portal.nousresearch.com\nOTHER=1\n")
 
-    first = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_INFERENCE_BASE_URL": None})
+    first = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_PORTAL_BASE_URL": None, "NOUS_INFERENCE_BASE_URL": None})
     assert first.returncode == 0, first.stderr
     assert _lines(env_file, "HERMES_PORTAL_BASE_URL") == [f"HERMES_PORTAL_BASE_URL={PORTAL}"]
     assert "OTHER=1" in env_file.read_text()
@@ -102,7 +102,7 @@ def test_stale_value_replaced_and_correct_value_left_alone(stage2_text: str, tmp
     before = env_file.stat().st_mtime_ns
     os.utime(env_file, ns=(before - 5_000_000_000, before - 5_000_000_000))
     stamped = env_file.stat().st_mtime_ns
-    second = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_INFERENCE_BASE_URL": None})
+    second = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_PORTAL_BASE_URL": None, "NOUS_INFERENCE_BASE_URL": None})
     assert second.returncode == 0, second.stderr
     assert env_file.stat().st_mtime_ns == stamped, "an already-correct line must not rewrite the volume"
     assert "Synced" not in second.stdout
@@ -112,7 +112,7 @@ def test_unset_override_touches_nothing_and_symlinked_env_is_refused(stage2_text
     """No container value → no .env is created or edited; a symlinked .env is never written through."""
     home = tmp_path / "home"
     (home / "profiles" / "work").mkdir(parents=True)
-    result = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": None, "NOUS_INFERENCE_BASE_URL": None})
+    result = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": None, "NOUS_PORTAL_BASE_URL": None, "NOUS_INFERENCE_BASE_URL": None})
     assert result.returncode == 0, result.stderr
     assert not (home / ".env").exists()
     assert not (home / "profiles" / "work" / ".env").exists()
@@ -120,7 +120,21 @@ def test_unset_override_touches_nothing_and_symlinked_env_is_refused(stage2_text
     outside = tmp_path / "outside.env"
     outside.write_text("KEEP=1\n")
     (home / ".env").symlink_to(outside)
-    result = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_INFERENCE_BASE_URL": None})
+    result = _run_sync(stage2_text, home, {"HERMES_PORTAL_BASE_URL": PORTAL, "NOUS_PORTAL_BASE_URL": None, "NOUS_INFERENCE_BASE_URL": None})
     assert result.returncode == 0, result.stderr
     assert outside.read_text() == "KEEP=1\n"
     assert "refusing sync HERMES_PORTAL_BASE_URL" in result.stdout
+
+
+def test_nous_portal_alias_is_synced_too(stage2_text: str, tmp_path: Path) -> None:
+    """``NOUS_PORTAL_BASE_URL`` is accepted by ``_nous_portal_env_override`` and must reach the scope as well."""
+    home = tmp_path / "home"
+    home.mkdir()
+    result = _run_sync(
+        stage2_text,
+        home,
+        {"HERMES_PORTAL_BASE_URL": None, "NOUS_PORTAL_BASE_URL": PORTAL, "NOUS_INFERENCE_BASE_URL": None},
+    )
+    assert result.returncode == 0, result.stderr
+    assert _lines(home / ".env", "NOUS_PORTAL_BASE_URL") == [f"NOUS_PORTAL_BASE_URL={PORTAL}"]
+    assert _lines(home / ".env", "HERMES_PORTAL_BASE_URL") == []

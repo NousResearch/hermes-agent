@@ -285,16 +285,21 @@ def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None,
     absent): a DCR ``client_id`` is bound to its registered redirect URI, so a new random port under
     it gets ``redirect_uri does not match any registered URIs``."""
     uri = port = None
-    for raw in (_cached_client_info(storage) or {}).get("redirect_uris") or []:
+    info = _cached_client_info(storage)
+    uris = info.get("redirect_uris") if isinstance(info, dict) else None
+    for raw in uris if isinstance(uris, (list, tuple)) else ():
         try:
             parsed = urlparse(str(raw))
+            # .port/.hostname are lazy properties that can raise ValueError on access —
+            # resolve them inside the try so a malformed entry is skipped, not fatal.
+            parsed_hostname, parsed_port = parsed.hostname, parsed.port
         except (TypeError, ValueError):
             continue
         if uri is None and parsed.scheme == "https" and parsed.netloc:
             uri = str(raw)
-        is_loopback_callback = parsed.scheme == "http" and parsed.path == "/callback" and parsed.hostname in {"127.0.0.1", "localhost"}
-        if port is None and is_loopback_callback and parsed.port is not None:
-            port = int(parsed.port)
+        is_loopback_callback = parsed.scheme == "http" and parsed.path == "/callback" and parsed_hostname in {"127.0.0.1", "localhost"}
+        if port is None and is_loopback_callback and parsed_port is not None:
+            port = int(parsed_port)
     return uri, port
 
 

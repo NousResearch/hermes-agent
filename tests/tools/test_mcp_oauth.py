@@ -639,6 +639,54 @@ class TestCallbackPortReservation:
         assert result.code == "flowA"
         assert result.state == "sA"
 
+    def _seed_client_info(self, tmp_path, monkeypatch, redirect_uris):
+        import json as _json
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "srv.client.json").write_text(_json.dumps({
+            "client_id": "client-a", "redirect_uris": redirect_uris}))
+        return storage, mod
+
+    @pytest.mark.parametrize("bad_uri", [
+        "http://127.0.0.1:abc/callback",      # .port raises: non-numeric
+        "http://127.0.0.1:99999/callback",    # .port raises: out of range
+        "http://[bad/callback",               # urlparse itself raises: bad IPv6 bracket
+    ])
+    def test_cached_redirect_skips_malformed_entries(self, tmp_path, monkeypatch, bad_uri):
+        """DCR-supplied redirect_uris persist to client.json. urlparse() alone does not
+        validate ports — .port is lazy and raises ValueError on access — so the try/except
+        around urlparse never fires. A poisoned entry must be skipped like every other
+        malformed one, not crash the whole OAuth flow."""
+        storage, mod = self._seed_client_info(
+            tmp_path, monkeypatch,
+            [bad_uri, "http://127.0.0.1:1455/callback", "https://proxy.example.com/cb"])
+        assert mod._cached_redirect(storage) == ("https://proxy.example.com/cb", 1455)
+
+    @pytest.mark.parametrize("payload", [
+        ["not", "a", "dict"],                    # non-dict client.json: .get would AttributeError
+        {"redirect_uris": 123},                  # non-iterable redirect_uris: for would TypeError
+        {"redirect_uris": {"a": 1}},             # dict redirect_uris: iterate keys, nothing matches
+        {"redirect_uris": None},                 # explicit null
+        {"client_id": "c"},                      # missing key entirely
+    ])
+    def test_cached_redirect_tolerates_misshaped_client_info(self, tmp_path, monkeypatch, payload):
+        """_read_json returns whatever the file holds — the crash class isn't limited to
+        bad URIs inside a well-formed list. Any misshaped payload must degrade to
+        (None, None), not propagate AttributeError/TypeError through the OAuth flow."""
+        import json as _json
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "srv.client.json").write_text(_json.dumps(payload))
+        assert mod._cached_redirect(storage) == (None, None)
+
 
 # ---------------------------------------------------------------------------
 # remove_oauth_tokens

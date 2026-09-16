@@ -63,6 +63,7 @@ What you'll see:
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
+| `/goal continue` | Take the next step toward the goal without resetting the turn counter. Used by the Desktop's **Resume goal** action after a crash. |
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
@@ -213,6 +214,21 @@ While an agent is already running, `/goal status`, `/goal pause`, `/goal clear`,
 
 Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That means `/resume` picks up right where you left off — set a goal, close your laptop, come back tomorrow, `/resume`, and the goal is still standing exactly as you left it (active, paused, or done).
 
+### After a crash or app restart
+
+If the process running the turn dies mid-goal — you quit the Desktop app, the backend is killed, the machine reboots — the goal is not lost. It stays `active` with the same `turns_used`; only the interrupted turn is gone.
+
+On reconnect the Desktop marks the goal card **Interrupted** and offers a **Resume goal** action. That action runs `/goal continue`: it takes the next step toward the same goal **without resetting the turn budget**, unlike `/goal resume`, which pauses-to-resume and zeroes the counter. The interrupted turn is not replayed — the agent picks up from the persisted state.
+
+To have the continuation fire automatically as soon as the app reconnects, opt in:
+
+```yaml
+goals:
+  auto_resume_on_reconnect: true   # default: false
+```
+
+With it off (the default) nothing runs until you click **Resume goal**. With it on, the continuation is dispatched on reconnect and is bounded by `desktop.auto_continue.max_attempts`, so a goal that crashes the backend every turn stops retrying instead of looping.
+
 ### Prompt cache
 
 The continuation prompt is a plain user-role message appended to history. It does **not** mutate the system prompt, swap toolsets, or touch the conversation in any way that invalidates Hermes' prompt cache. Running a 20-turn goal costs the same cache-wise as 20 turns of normal conversation.
@@ -227,6 +243,11 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+  # Continue an interrupted goal automatically when the Desktop reconnects
+  # after a crash or app restart, instead of waiting for "Resume goal".
+  # Default false. Bounded by desktop.auto_continue.max_attempts.
+  auto_resume_on_reconnect: false
 ```
 
 ### Choosing the judge model

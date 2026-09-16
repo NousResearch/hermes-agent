@@ -2810,6 +2810,7 @@ export const ru = defineLocale({
     goalActive: 'Цель активна',
     goalBlocked: 'Цель заблокирована',
     goalDone: 'Цель выполнена',
+    goalInterrupted: 'Прервана',
     goalPaused: 'Цель на паузе',
     goalWaiting: 'Цель ожидает',
     subagents: count => `${count} ${RU_PLURAL(count, 'субагент', 'субагента', 'субагентов')}`,

@@ -29,7 +29,9 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
+import { useViewedInterval } from '@/hooks/use-viewed-interval'
 import { useI18n } from '@/i18n'
+import { formatDuration } from '@/lib/statusbar'
 import {
   runSessionControlAction,
   type SessionControlAction,
@@ -45,6 +47,36 @@ interface GoalSectionProps {
   pendingAction: SessionControlAction | null
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onFeedback: (error: string | null, success: string | null) => void
+}
+
+type GoalVisibleState = 'active' | 'done' | 'interrupted' | 'paused' | 'waiting'
+
+function visibleStateOf(goal: SessionControlGoal, isBusy: boolean): GoalVisibleState {
+  if (goal.wait_barrier) {
+    return 'waiting'
+  }
+
+  if (goal.status === 'paused') {
+    return 'paused'
+  }
+
+  if (goal.status === 'done') {
+    return 'done'
+  }
+
+  // A crash killed the turn and nothing has picked the goal back up. Once the
+  // continuation is in flight (isBusy) the card is a plain active goal again.
+  return goal.interrupted_at != null && !isBusy ? 'interrupted' : 'active'
+}
+
+// Amber is the app's "needs attention" tier — the interrupted goal shares it
+// with paused rather than minting a colour of its own.
+const GOAL_ICON_CLASS: Record<GoalVisibleState, string> = {
+  active: 'text-emerald-500',
+  done: 'text-muted-foreground/70',
+  interrupted: 'text-amber-500',
+  paused: 'text-amber-500',
+  waiting: 'text-amber-500'
 }
 
 export const SessionControlGoalSection = memo(function SessionControlGoalSection({
@@ -64,8 +96,11 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
   const [newCriterionText, setNewCriterionText] = useState('')
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const isBusy = Boolean(pendingAction)
+
+  useViewedInterval(() => setNowMs(Date.now()), 1_000, goal.created_at != null && goal.status !== 'done')
 
   const handleAction = useCallback(
     async (
@@ -142,42 +177,36 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
     [onFeedback, ctrl]
   )
 
-  const visibleState: 'waiting' | 'active' | 'paused' | 'done' = goal.wait_barrier
-    ? 'waiting'
-    : goal.status === 'paused'
-      ? 'paused'
-      : goal.status === 'done'
-        ? 'done'
-        : 'active'
+  const visibleState = visibleStateOf(goal, isBusy)
 
-  const iconClass =
-    goal.last_verdict === 'blocked'
-      ? 'text-red-500'
-      : visibleState === 'done'
-        ? 'text-muted-foreground/70'
-        : visibleState === 'active'
-          ? 'text-emerald-500'
-          : 'text-amber-500'
+  const iconClass = goal.last_verdict === 'blocked' ? 'text-red-500' : GOAL_ICON_CLASS[visibleState]
 
   const stateLabel =
     goal.last_verdict === 'blocked'
       ? s.goalBlocked
-      : visibleState === 'waiting'
-        ? s.goalWaiting
-        : visibleState === 'paused'
-          ? s.goalPaused
-          : visibleState === 'done'
-            ? s.goalDone
-            : s.goalActive
+      : {
+          active: s.goalActive,
+          done: s.goalDone,
+          interrupted: s.goalInterrupted,
+          paused: s.goalPaused,
+          waiting: s.goalWaiting
+        }[visibleState]
 
-  const headerLabel =
+  const turnsLabel =
     visibleState === 'done'
-      ? `${stateLabel} · ${ctrl.goalDoneTurns(goal.turns_used)}`
+      ? ctrl.goalDoneTurns(goal.turns_used)
       : goal.max_turns > 0
-        ? `${stateLabel} · ${ctrl.goalActiveTurns(goal.turns_used, goal.max_turns)}`
+        ? ctrl.goalActiveTurns(goal.turns_used, goal.max_turns)
         : goal.turns_used > 0
-          ? `${stateLabel} · ${ctrl.goalTurn(goal.turns_used)}`
-          : stateLabel
+          ? ctrl.goalTurn(goal.turns_used)
+          : ''
+
+  // The goal's age comes from the persisted snapshot, not from when this window
+  // happened to mount, so a restart resumes the same clock instead of zeroing it.
+  const startedAtMs = goal.created_at == null ? null : goal.created_at * 1_000
+  const elapsedLabel = startedAtMs == null ? '' : formatDuration(nowMs - startedAtMs)
+
+  const headerLabel = [stateLabel, turnsLabel, elapsedLabel].filter(Boolean).join(' · ')
 
   const confirmClearGoal = () => {
     setConfirmState({
@@ -251,6 +280,12 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
             <span>{ctrl.resumeGoal}</span>
           </Item>
         )}
+        {visibleState === 'interrupted' && (
+          <Item disabled={isBusy} onSelect={() => void handleAction('goal.continue')}>
+            <Codicon name="play" size="0.8rem" />
+            <span>{ctrl.resumeGoal}</span>
+          </Item>
+        )}
         {visibleState === 'waiting' && (
           <>
             <Item disabled={isBusy} onSelect={() => void handleAction('goal.unwait')}>
@@ -288,41 +323,55 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
           <div data-slot="session-control-goal">
             <StatusSection
               accessory={
-                <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.goalActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.goalActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
-                  <DropdownMenuContent align="end" className="w-44">
-                    {renderMenuItems(false)}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <>
+                  {visibleState === 'interrupted' && (
+                    <Button
+                      className="text-[0.7rem] text-amber-500 hover:text-amber-400"
+                      disabled={isBusy}
+                      onClick={() => void handleAction('goal.continue')}
+                      size="micro"
+                      type="button"
+                      variant="text"
+                    >
+                      {ctrl.resumeGoal}
+                    </Button>
+                  )}
+                  <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
+                    <Tip label={ctrl.goalActions}>
+                      <span className="inline-flex">
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            aria-haspopup="menu"
+                            aria-label={ctrl.goalActions}
+                            className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                            disabled={isBusy}
+                            onClick={event => {
+                              // Radix opens pointer interactions from pointerdown. Keyboard,
+                              // assistive-tech, and programmatic clicks have no pointer sequence.
+                              if (event.detail === 0) {
+                                setMenuOpen(true)
+                              }
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'F10' && e.shiftKey) {
+                                e.preventDefault()
+                                setMenuOpen(true)
+                              }
+                            }}
+                            size="icon-xs"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Codicon name="ellipsis" size="0.8rem" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </span>
+                    </Tip>
+                    <DropdownMenuContent align="end" className="w-44">
+                      {renderMenuItems(false)}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
               }
               icon={<Codicon className={iconClass} name="target" size="0.8rem" />}
               label={headerLabel}

@@ -406,7 +406,8 @@ def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
         {"severity": f.severity, "rule": f.rule, "message": f.message} for f in findings]
     result["lint_hint"] = (
         "The skill was created. These are advisory authoring-convention findings (not blockers) "
-        "— fix them with skill_manage(action='patch') to match Hermes skill standards.")
+        "— fix them with skill_manage operations=[{name, patch: {old_string, new_string}}] "
+        "to match Hermes skill standards.")
 
 
 def _clip(text: str, n: int, ellipsis: str) -> str:
@@ -435,9 +436,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "success": True, "message": f"Skill '{name}' created.", "path": str(display),
         "skill_md": str(skill_md), "_change": {"description": _description_preview(content)},
         **({"category": category} if category else {}),
-        "hint": "To add reference files, templates, or scripts, use "
-                f"skill_manage(action='write_file', name='{name}', file_path='references/example.md', "
-                "file_content='...')"}
+        "hint": "To add reference files, templates, or scripts, use skill_manage "
+                f"operations=[{{name: '{name}', write_file: {{file_path: "
+                "'references/example.md', content: '...'}}}}]"}
     _attach_lint_findings(_add_description_prompt_preview(result, content), skill_md)
     return result
 
@@ -461,12 +462,13 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
     """Targeted find-and-replace in SKILL.md (default) or a supporting file; unique match unless replace_all."""
     if not old_string:
         # A bare "required" error is a dead end: the model retries blindly and often
-        # escapes to action='write_file', clobbering the whole file.
+        # escapes to write_file, clobbering the whole file.
         return _err(
             "old_string is required for 'patch' and must be the EXACT text currently in the file. "
             "Read the target file first (read_file on the skill's SKILL.md, or the file named by "
-            "file_path) and copy the snippet verbatim, then retry 'patch'. Do NOT fall back to "
-            "action='write_file' — that rewrites the entire file and destroys unrelated content.")
+            "file_path) and copy the snippet verbatim, then retry with operations=[{name, patch: "
+            "{old_string, new_string}}]. Do NOT fall back to write_file — that rewrites the entire "
+            "file and destroys unrelated content.")
     if new_string is None:
         return _err("new_string is required for 'patch'. Use an empty string to delete matched text.")
     # No old_string == new_string guard here: fuzzy_find_and_replace rejects that with a
@@ -562,7 +564,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
                     f"bytes / 1 MiB). Consider splitting into smaller files.")
     if err := _validate_content_size(file_content, label=file_path):
         return _err(err)
-    skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
+    skill_dir, guard = _locate_for_write(
+        name, "write_file", " Create it first with operations=[{name, create: {content}}].")
     if guard:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)

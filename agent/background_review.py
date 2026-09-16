@@ -1109,7 +1109,7 @@ def _run_review_fork(
         deny_msg_fmt=(
             "Background review denied non-whitelisted tool: "
             "{tool_name}. Allowed here: skill_view/skills_list/read_file/search_files to read, "
-            "skill_manage(action='patch'|...) to change skills"
+            "skill_manage operations=[{name, patch: {old_string, new_string}}] to change skills"
             + memory_phrase_deny + "." + deny_extra + " Do not retry {tool_name}."
         ),
     )

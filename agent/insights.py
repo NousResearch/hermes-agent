@@ -245,13 +245,22 @@ class InsightsEngine:
                 tool_name = func.get("name")
                 if tool_name not in _SKILL_TOOLS:
                     continue
-                skill_name = (_parse_json(func.get("arguments"), dict) or {}).get("name")
-                if not isinstance(skill_name, str) or not skill_name.strip():
-                    continue
-                entry = skill_counts.setdefault(skill_name, {"skill": skill_name, "view_count": 0, "manage_count": 0, "last_used_at": None})
-                entry["view_count" if tool_name == "skill_view" else "manage_count"] += 1
-                if timestamp is not None and (entry["last_used_at"] is None or timestamp > entry["last_used_at"]):
-                    entry["last_used_at"] = timestamp
+                arguments = _parse_json(func.get("arguments"), dict) or {}
+                if tool_name == "skill_manage":
+                    from tools.skill_manager_batch import iter_recorded_skill_operations
+                    skill_names = {
+                        op.get("name").strip()
+                        for op in iter_recorded_skill_operations(arguments)
+                        if isinstance(op.get("name"), str) and op.get("name").strip()
+                    }
+                else:
+                    name = arguments.get("name")
+                    skill_names = {name.strip()} if isinstance(name, str) and name.strip() else set()
+                for skill_name in skill_names:
+                    entry = skill_counts.setdefault(skill_name, {"skill": skill_name, "view_count": 0, "manage_count": 0, "last_used_at": None})
+                    entry["view_count" if tool_name == "skill_view" else "manage_count"] += 1
+                    if timestamp is not None and (entry["last_used_at"] is None or timestamp > entry["last_used_at"]):
+                        entry["last_used_at"] = timestamp
         return list(skill_counts.values())
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:

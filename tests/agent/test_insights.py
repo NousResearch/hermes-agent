@@ -119,7 +119,10 @@ def populated_db(db):
         content="Load and update GitHub skills.",
         tool_calls=[
             {"function": {"name": "skill_view", "arguments": '{"name":"github-pr-workflow"}'}},
-            {"function": {"name": "skill_manage", "arguments": '{"name":"github-code-review"}'}},
+            {"function": {"name": "skill_manage", "arguments": (
+                '{"operations":[{"name":"github-code-review",'
+                '"patch":{"old_string":"old","new_string":"new"}}]}'
+            )}},
         ],
     )
 

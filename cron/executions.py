@@ -83,6 +83,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     add_column_if_missing(conn, "executions", "delivery_manifest", "delivery_manifest TEXT")
     add_column_if_missing(conn, "executions", "incident_id", "incident_id TEXT")
+    add_column_if_missing(conn, "executions", "incident_generation", "incident_generation INTEGER")
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
@@ -285,9 +286,13 @@ def bind_delivery_incident(execution_id: Optional[str], incident_id: str) -> Non
     """Persist the producer's actual incident association, never infer it from errors."""
     if execution_id:
         with _transaction() as conn:
-            conn.execute("UPDATE executions SET incident_id=? WHERE id=? AND incident_id IS NULL "
+            from cron.incidents import _initialize_schema as init_incidents
+            init_incidents(conn)
+            conn.execute("UPDATE executions SET incident_id=?, incident_generation="
+                         "(SELECT generation FROM cron_incidents WHERE id=?) "
+                         "WHERE id=? AND incident_id IS NULL "
                          "AND status IN ('claimed','running') AND process_id=? AND pid=?",
-                         (incident_id, execution_id, _PROCESS_ID, os.getpid()))
+                         (incident_id, incident_id, execution_id, _PROCESS_ID, os.getpid()))
 
 
 def record_delivery_manifest(execution_id: Optional[str], manifest: dict) -> None:
@@ -383,7 +388,8 @@ def reconcile_delivery_projections() -> None:
                     init_incidents(conn)
                     # Late completion cannot resurrect resolved/acked incidents.
                     conn.execute("UPDATE cron_incidents SET state='alerted' WHERE id=? "
-                                 "AND state='detected'", (record["incident_id"],))
+                                 "AND state='detected' AND generation=?",
+                                 (record["incident_id"], record.get("incident_generation")))
             update_delivery_projection(record["job_id"], record["id"], values)
         except Exception:
             logging.getLogger(__name__).exception(

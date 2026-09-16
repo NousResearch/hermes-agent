@@ -81,6 +81,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              output_file   TEXT
            )"""
     )
+    from hermes_cli.sqlite_util import add_column_if_missing
+    add_column_if_missing(conn, "cron_incidents", "generation", "generation INTEGER NOT NULL DEFAULT 1")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cron_incidents_job "
         "ON cron_incidents(job_id)"
@@ -167,6 +169,7 @@ def upsert_incident(
             conn.execute(
                 """UPDATE cron_incidents
                    SET last_seen_at=?, error=?, output_file=?,
+                       generation=generation + CASE WHEN state='resolved' THEN 1 ELSE 0 END,
                        state=CASE WHEN state='resolved' THEN 'detected' ELSE state END,
                        closed_at=CASE WHEN state='resolved' THEN NULL ELSE closed_at END
                    WHERE id=?""",

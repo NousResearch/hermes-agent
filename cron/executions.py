@@ -84,6 +84,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "delivery_manifest", "delivery_manifest TEXT")
     add_column_if_missing(conn, "executions", "incident_id", "incident_id TEXT")
     add_column_if_missing(conn, "executions", "incident_generation", "incident_generation INTEGER")
+    add_column_if_missing(conn, "executions", "delivery_projection_settled", "delivery_projection_settled INTEGER NOT NULL DEFAULT 0")
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
@@ -143,6 +144,8 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
         """DELETE FROM executions WHERE id IN (
              SELECT id FROM executions
              WHERE status IN ('completed','failed','unknown')
+               AND (delivery_outcome IS NULL OR delivery_outcome != 'queued')
+               AND (delivery_manifest IS NULL OR delivery_projection_settled=1)
              ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
@@ -318,12 +321,15 @@ def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
     from tools.bot_live_delivery import read_delivery_result
 
     manifest = json.loads(record["delivery_manifest"])
+    external_outcome = None
+    external_error = None
     if manifest.get("external"):
         receipt = delivery_queue.get_status(record["id"])
         if not receipt or receipt["status"] in ("pending", "delivering"):
             return None
         outcome = receipt["status"]
-        if outcome in ("unknown", "failed", "suppressed") or "bot" not in manifest:
+        external_outcome, external_error = outcome, receipt.get("error")
+        if not manifest.get("bot"):
             return outcome, {"last_delivery_queued": None, "last_delivery_unverified": None,
                              "last_delivery_error": receipt.get("error")}
 
@@ -337,13 +343,13 @@ def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
         if status in ("queued", "claimed", "transferred"):
             queued[target] = {**ref, "status": status}
         states.append(status)
-    error = manifest.get("error")
+    error = manifest.get("error") or external_error
     unverified = manifest.get("unverified")
     if queued:
         outcome = "queued"
-    elif "ambiguous" in states or "unknown" in states or unverified:
+    elif external_outcome == "unknown" or "ambiguous" in states or "unknown" in states or unverified:
         outcome = "unknown"
-    elif "failed" in states or error:
+    elif external_outcome == "failed" or "failed" in states or error:
         outcome = "failed"
     elif manifest.get("delivered") or "settled" in states:
         outcome = "delivered"
@@ -391,6 +397,13 @@ def reconcile_delivery_projections() -> None:
                                  "AND state='detected' AND generation=?",
                                  (record["incident_id"], record.get("incident_generation")))
             update_delivery_projection(record["job_id"], record["id"], values)
+            if outcome != "queued":
+                # Pin the receipt association until BOTH durable projections have
+                # completed. A crash above leaves it replayable even under retention.
+                with _transaction() as conn:
+                    conn.execute("UPDATE executions SET delivery_projection_settled=1 "
+                                 "WHERE id=? AND delivery_outcome=? AND delivery_manifest=?",
+                                 (record["id"], outcome, record["delivery_manifest"]))
         except Exception:
             logging.getLogger(__name__).exception(
                 "Could not reconcile cron delivery %s; durable receipt retained", record["id"])

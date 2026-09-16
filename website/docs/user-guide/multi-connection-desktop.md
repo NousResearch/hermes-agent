@@ -72,6 +72,10 @@ Rules worth knowing:
   stops when you remove the connection or stop the gateway, or on its own after
   the remote idle timeout (`dashboard.ssh_isolated_idle_grace_s`, 15 minutes by
   default) while no client is connected and no work is running.
+- Once **Test** (or the roster poll) has read a gateway's `/api/status`, its
+  row wears a **Container** or **Native** pill for the runtime that backend
+  reports. Gateways older than the field show no pill: absence means unknown,
+  never native.
 - **Duplicates are rejected when you save**: there is only ever one **local**
   entry; **remote** and **cloud** entries are deduplicated on the normalized
   URL (trimmed, trailing slashes stripped, lowercased — and across both

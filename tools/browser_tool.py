@@ -440,11 +440,31 @@ _cleanup_lock = threading.Lock()  # protects _session_last_activity AND _active_
 
 from tools import browser_tool_lifecycle as _lifecycle
 
+
+def _safe_atexit(fn):
+    """Wrap an atexit callback so it can never surface a raw traceback at process exit.
+
+    ``origin_module()`` (``browser_tool_origin.py``) falls back to a bare
+    ``import tools.browser_tool`` when called from an atexit frame, which can hit a
+    transient ``ImportError`` if ``hermes update``'s post-pull module purge evicted a
+    sibling (e.g. ``utils``) whose reimport races a still-cached dependent — see #112522.
+    That's a cosmetic, self-resolving race unrelated to whatever this callback does, so
+    it's logged and swallowed rather than left to print "Exception ignored in atexit
+    callback".
+    """
+    def _wrapped():
+        try:
+            fn()
+        except Exception:
+            logger.debug("atexit cleanup %s failed", fn.__qualname__, exc_info=True)
+    return _wrapped
+
+
 # atexit only — NO SIGINT/SIGTERM handlers calling sys.exit(): a SystemExit raised
 # inside a prompt_toolkit key-binding callback corrupts the coroutine state and
 # makes the process unkillable.
-atexit.register(_lifecycle._emergency_cleanup_all_sessions)
-atexit.register(_lifecycle._stop_browser_cleanup_thread)
+atexit.register(_safe_atexit(_lifecycle._emergency_cleanup_all_sessions))
+atexit.register(_safe_atexit(_lifecycle._stop_browser_cleanup_thread))
 
 # ----------------------------------------------------------------------------
 # Tool Schemas

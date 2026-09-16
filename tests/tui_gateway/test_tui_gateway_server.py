@@ -1178,6 +1178,24 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_write_json_unserializable_payload_becomes_error_frame(monkeypatch, caplog):
+    """The stdio twin of the WS guard (#92506): an unserializable result must reach the Ink TUI /
+    stdio bridge as a JSON-RPC error frame with the original id plus a log line, not kill the pool
+    worker silently while the client waits forever."""
+    import datetime
+    import logging
+
+    out = _ChunkyStdout()
+    monkeypatch.setattr(server, "_real_stdout", out)
+    with caplog.at_level(logging.ERROR, logger="tui_gateway.transport"):
+        assert server.write_json({"jsonrpc": "2.0", "id": "profiles",
+                                  "result": {"created": datetime.datetime(2026, 8, 22)}}) is True
+    frame = json.loads("".join(out.parts))
+    assert frame["id"] == "profiles" and frame["error"]["code"] == -32603
+    assert "datetime" in frame["error"]["message"]
+    assert "frame serialization failed" in caplog.text
+
+
 def test_write_json_drops_detached_ws_frames(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)

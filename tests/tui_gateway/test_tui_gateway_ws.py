@@ -268,7 +268,7 @@ def test_ws_transport_replies_with_error_for_unserializable_response(caplog):
         assert frame["error"]["message"].startswith("response serialization error")
         assert "datetime" in frame["error"]["message"]
     assert sent[1] == {"jsonrpc": "2.0", "id": "next", "result": {}}
-    assert caplog.text.count("ws frame serialization failed") == 2
+    assert caplog.text.count("frame serialization failed") == 2
 
 
 def test_ws_transport_preserves_cross_batch_order():

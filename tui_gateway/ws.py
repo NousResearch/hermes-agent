@@ -17,6 +17,7 @@ from typing import Any
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
+from tui_gateway.transport import serialize_frame
 
 _log = logging.getLogger(__name__)
 
@@ -106,24 +107,10 @@ class WSTransport:
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
 
-    def _serialize_frame(self, obj: dict) -> str:
-        """``json.dumps`` the frame; an unserializable payload becomes a JSON-RPC error frame
-        carrying the original id. Without this the TypeError escaped from a pool worker (the
-        executor swallows it), so the client waited forever with no log line (#92506)."""
-        try:
-            return json.dumps(obj, ensure_ascii=False)
-        except (TypeError, ValueError) as exc:
-            rid = obj.get("id") if isinstance(obj, dict) else None
-            _log.error("ws frame serialization failed peer=%s id=%s error_type=%s error=%s",
-                       self._peer, rid, type(exc).__name__, exc)
-            fallback = {"jsonrpc": "2.0", "id": rid,
-                        "error": {"code": -32603, "message": f"response serialization error: {exc}"}}
-            return json.dumps(fallback, ensure_ascii=False)
-
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
-        line = self._serialize_frame(obj)
+        line = serialize_frame(obj, self._peer, _log)
         try:
             on_loop = asyncio.get_running_loop() is self._loop
         except RuntimeError:
@@ -191,7 +178,7 @@ class WSTransport:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(self._serialize_frame(obj))
+            batch.append(serialize_frame(obj, self._peer, _log))
         await self._safe_send_many(batch)
         return not self._closed
 

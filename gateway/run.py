@@ -759,8 +759,11 @@ def _approval_send_outcome(future, timeout: float) -> str:
 def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | None":
     """Decide whether a clarify prompt send aborts the wait; returns the abort sentinel or ``None``.
 
-    Only a DEFINITIVE failure tears down the registration; ``ambiguous`` (card may have posted) stays armed
-    and proceeds to the bounded wait, whose response timeout covers a lost card."""
+    Only a CONFIRMED send proceeds to the bounded wait. A definitive failure, a
+    decline, or an ambiguous send (timed out before the connector confirmed
+    delivery) tears down the registration and returns a sentinel — waiting out the
+    full timeout on an unconfirmed send misreports a possibly-undelivered prompt
+    as user inactivity (#112684)."""
     outcome = _approval_send_outcome(fut, timeout=15)
     if outcome == "declined":
         # P5(b): a connector DECLINE is MORE definitive than a failure — the
@@ -780,9 +783,15 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
         clarify_mod.clear_session(session_key)
         return "[clarify prompt could not be delivered]"
     if outcome == "ambiguous":
-        logger.warning(
-            "Clarify prompt send timed out — treating as possibly-delivered "
-            "(no teardown; the registration stays armed for a late reply)")
+        # #112684: the send timed out before the connector confirmed delivery — the
+        # card may have posted (late ack) or never been delivered. Waiting out the
+        # full timeout misreports a possibly-undelivered prompt as user inactivity,
+        # so surface the uncertainty now. Retire the registration: no waiter remains,
+        # and a stale armed entry would swallow the user's next message
+        # (get_pending_for_session routes oldest-first).
+        logger.warning("Clarify send ambiguous (unconfirmed delivery); retiring registration")
+        clarify_mod.clear_session(session_key)
+        return "[clarify prompt delivery uncertain: send timed out before confirmation]"
     return None
 
 

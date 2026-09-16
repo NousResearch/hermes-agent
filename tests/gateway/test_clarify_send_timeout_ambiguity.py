@@ -1,17 +1,18 @@
-"""Clarify prompt-send TIMEOUT must not tear down the registration.
+"""Clarify prompt-send TIMEOUT surfaces delivery-uncertainty (#112684).
 
-Sibling of test_approval_send_timeout_ambiguity.py, same boundary rule, same
-live physics: send_clarify's scheduling future can hit its 15s deadline while
-the clarify card HAS already posted (late connector ack). The old caller
-treated any exception — including the timeout — as a definitive failure and
-ran clear_session(), so the user answered a rendered card whose registration
-was already gone.
+Sibling of test_approval_send_timeout_ambiguity.py. send_clarify's scheduling
+future can hit its 15s deadline while the clarify card HAS already posted (late
+connector ack) — or while it was never delivered at all (the Telegram case in
+#112684). The old caller fell through to the full bounded wait, which then
+reported "[user did not respond within Nm]": a delivery failure misreported as
+user inactivity.
 
-Contract under test: TimeoutError is AMBIGUOUS (possibly delivered) — the
-registration must stay armed (clear_session NOT called) and the caller must
-proceed to the bounded wait (disposition None). A definitive error
-(SendResult success=False, non-timeout exception, or no future) keeps
-today's teardown + sentinel behavior.
+Contract under test: TimeoutError is AMBIGUOUS (delivery unconfirmed) — the
+caller returns a delivery-uncertainty sentinel immediately, never waits, and
+retires the registration (a stale armed entry with no waiter would swallow the
+user's next message via get_pending_for_session's oldest-first routing). A
+definitive error (SendResult success=False, non-timeout exception, or no
+future) keeps the teardown + "could not be delivered" sentinel behavior.
 """
 
 import concurrent.futures
@@ -20,6 +21,7 @@ from unittest.mock import MagicMock
 from gateway.run import _clarify_send_disposition, _clarify_send_then_wait
 
 SENTINEL = "[clarify prompt could not be delivered]"
+UNCERTAIN = "[clarify prompt delivery uncertain: send timed out before confirmation]"
 
 
 class _Result:
@@ -28,19 +30,21 @@ class _Result:
         self.error = error
 
 
-def test_timeout_keeps_registration_armed_and_proceeds_to_wait():
+def test_timeout_surfaces_delivery_uncertainty_and_retires_registration():
+    # #112684: a send timeout must not fall through to the bounded wait — the card
+    # may never have been delivered, and waiting out the full timeout misreports
+    # that as user inactivity.
     fut = MagicMock()
     fut.result.side_effect = concurrent.futures.TimeoutError()
     clarify_mod = MagicMock()
     disposition = _clarify_send_disposition(
         fut, session_key="sk", clarify_mod=clarify_mod
     )
-    assert disposition is None, (
-        "a send timeout aborted the clarify wait — this is the "
-        "cleared-session-under-a-rendered-card bug (card posted, ack late); "
-        "ambiguous must fall through to wait_for_response"
+    assert disposition == UNCERTAIN, (
+        "a send timeout fell through to the bounded wait (disposition None) — "
+        "a possibly-undelivered prompt must surface delivery-uncertainty"
     )
-    clarify_mod.clear_session.assert_not_called()
+    clarify_mod.clear_session.assert_called_once_with("sk")
 
 
 def test_successful_send_proceeds_to_wait():
@@ -88,24 +92,23 @@ def test_missing_future_tears_down_and_aborts():
 # --- Caller-path contract: the disposition feeds the bounded wait ---------
 
 
-def test_ambiguous_send_reaches_wait_for_response():
-    """The full caller contract, not just the classifier: on a send timeout
-    the flow must proceed to wait_for_response with the generated clarify_id
-    and the configured timeout — the late reply to the (probably rendered)
-    card resolves through that wait."""
+def test_ambiguous_send_returns_uncertainty_without_waiting():
+    """The full caller contract, not just the classifier: on a send timeout the
+    flow must return the delivery-uncertainty sentinel immediately — never the
+    bounded wait, never "[user did not respond]"."""
     fut = MagicMock()
     fut.result.side_effect = concurrent.futures.TimeoutError()
     clarify_mod = MagicMock()
     clarify_mod.get_clarify_timeout.return_value = 600
-    clarify_mod.wait_for_response.return_value = "user picked B"
+    clarify_mod.wait_for_response.return_value = None
 
     out = _clarify_send_then_wait(
         fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
     )
 
-    assert out == ("user picked B", True)
-    clarify_mod.clear_session.assert_not_called()
-    clarify_mod.wait_for_response.assert_called_once_with("cid123", timeout=600.0)
+    assert out == (UNCERTAIN, False)
+    clarify_mod.wait_for_response.assert_not_called()
+    clarify_mod.clear_session.assert_called_once_with("sk")
 
 
 def test_sent_reaches_wait_for_response():

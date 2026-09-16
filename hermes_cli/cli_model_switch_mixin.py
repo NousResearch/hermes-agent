@@ -589,6 +589,10 @@ class CLIModelSwitchMixin:
         """
         from cli import _cprint
         _cli_snapshot = _runtime_fields(self)
+        # Reasoning is CLI-level state on the lazy-build path: the next agent
+        # re-initialization inherits it, so a failed swap must roll it back
+        # with the rest of the staged runtime (#50163 consistency).
+        _cli_snapshot["reasoning_config"] = getattr(self, "reasoning_config", None)
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
@@ -602,6 +606,27 @@ class CLIModelSwitchMixin:
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+
+        # Re-resolve the per-model reasoning override for the NEW model.
+        # self.reasoning_config was resolved against the model that was live
+        # at startup; leaving it stale means the next agent re-initialization
+        # injects the old model's effort over the per-model override the
+        # in-place switch just applied — providers that accept a narrower
+        # level set then 400 (#96012). Runs before (and outside) the agent
+        # branch so the lazy-build path (switch before the first message) is
+        # covered too; agent.switch_model re-resolves its own copy. An
+        # explicit --reasoning stays authoritative for the whole run, and a
+        # reasoning_effort riding along with the pick is applied after the
+        # swap by _apply_reasoning_after_switch.
+        if not getattr(self, "_reasoning_cli_flag_applied", False):
+            try:
+                from cli import CLI_CONFIG, logger
+                from hermes_constants import resolve_reasoning_config
+                self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, result.new_model)
+            except Exception:
+                logger.debug(
+                    "reasoning re-resolution for %s failed; keeping prior level",
+                    result.new_model, exc_info=True)
 
         if self.agent is not None:
             try:

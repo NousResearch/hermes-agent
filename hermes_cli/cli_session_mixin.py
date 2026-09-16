@@ -489,7 +489,7 @@ class CLISessionMixin:
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
-            CLI_CONFIG, _parse_reasoning_config, _parse_service_tier_config,
+            CLI_CONFIG, _parse_service_tier_config,
             _sync_process_session_id, datetime)
         old_session_id = self.session_id
         _boundary_snapshot = None
@@ -527,14 +527,30 @@ class CLISessionMixin:
         self._resumed = False
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", ""))
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).
         self._pending_one_turn_model_restore = None
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
         _reset_model_to_config_default(self, silent)
+        # Re-resolve reasoning through the shared chokepoint for the model
+        # the fresh session lands on — i.e. after the config-default model
+        # reset above. Resolving from the global key only loses per-model
+        # reasoning_overrides (#96012); an explicit --reasoning stays
+        # authoritative for the whole run, matching the /model switch path.
+        if not getattr(self, "_reasoning_cli_flag_applied", False):
+            try:
+                from cli import logger
+                from hermes_constants import resolve_reasoning_config
+                # A missing/blank model means "unknown current model" — the
+                # chokepoint then resolves for the config-default model
+                # instead of AttributeError-ing into the stale-keeping path.
+                self.reasoning_config = resolve_reasoning_config(
+                    CLI_CONFIG, getattr(self, "model", None))
+            except Exception:
+                logger.debug(
+                    "reasoning re-resolution at /new failed; keeping prior level",
+                    exc_info=True)
         _sync_process_session_id(self.session_id)
 
         if self.agent:

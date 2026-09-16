@@ -122,9 +122,15 @@ class TestHandleReasoningCommand(unittest.TestCase):
             _resumed=False,
             reasoning_config={"enabled": True, "effort": "high"},
             _notify_session_boundary=MagicMock(),
+            model="stub-model",
         )
 
-        with patch.dict(CLI_CONFIG.setdefault("agent", {}), {"reasoning_effort": "medium"}):
+        # Empty reasoning_overrides keeps the expectation environment-
+        # independent: the chokepoint falls back to the global effort below.
+        with patch.dict(
+            CLI_CONFIG.setdefault("agent", {}),
+            {"reasoning_effort": "medium", "reasoning_overrides": {}},
+        ):
             HermesCLI.new_session(stub, silent=True)
 
         self.assertEqual(stub.reasoning_config, {"enabled": True, "effort": "medium"})

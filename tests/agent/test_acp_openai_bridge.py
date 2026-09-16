@@ -121,13 +121,25 @@ def test_bare_json_is_a_fallback_only_when_no_block_matched():
 def test_malformed_and_empty_input_never_raises():
     assert extract_tool_calls_from_text("") == ([], "")
     assert extract_tool_calls_from_text(None) == ([], "")
+    # A block that fails to parse stays in the visible text rather than vanishing.
     calls, cleaned = extract_tool_calls_from_text("<tool_call>{not json}</tool_call>plain")
     assert calls == []
-    assert cleaned == "plain"
+    assert cleaned == "<tool_call>{not json}</tool_call>plain"
     # Well-formed JSON that isn't a tool call is ignored, text preserved.
     calls, cleaned = extract_tool_calls_from_text('<tool_call>{"function": 5}</tool_call>hi')
     assert calls == []
-    assert cleaned == "hi"
+    assert cleaned == '<tool_call>{"function": 5}</tool_call>hi'
+
+
+def test_malformed_tool_call_block_is_never_silently_swallowed():
+    """Regression for #55431: a trailing-comma JSON block used to be stripped from
+    the reply but never executed. Now the block stays visible in the text, so the
+    user can see what the model attempted."""
+    text = 'Reading it.\n<tool_call>{"id": "c1", "function": {"name": "read", "arguments": "{}",}}</tool_call>'
+    calls, cleaned = extract_tool_calls_from_text(text)
+    assert calls == []
+    assert "<tool_call>" in cleaned
+    assert "Reading it." in cleaned
 
 
 # ── streaming shape ──────────────────────────────────────────────────────────

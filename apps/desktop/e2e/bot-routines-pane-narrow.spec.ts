@@ -27,7 +27,6 @@ import { expect, test } from './test'
 type Page = MockBackendFixture['page']
 
 const LONG_TITLE = '[bot:alpha] Weekly research digest with a deliberately long routine title that overflows'
-const SHOT_DIR = '/tmp/batchbots/panes-layout-cron-tile/shots'
 
 let fixture: MockBackendFixture | null = null
 let alphaHome = ''
@@ -129,19 +128,6 @@ function routinesTab(page: Page) {
   return page.locator('[data-tree-tab="hermes-bots:routines"]').filter({ visible: true }).first()
 }
 
-/** Which left-dock tab is selected, and whether the bot chat is still the workspace. */
-async function workspaceState(page: Page) {
-  return page.evaluate(() => ({
-    selectedDockTab: document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() ?? null,
-    treeTabs: [...document.querySelectorAll<HTMLElement>('[data-tree-tab]')].map(el => ({
-      id: el.getAttribute('data-tree-tab'),
-      visible: el.getClientRects().length > 0,
-      text: el.textContent?.trim()
-    })),
-    dismissed: localStorage.getItem('hermes.desktop.dismissedPanes.v1')
-  }))
-}
-
 /** Expand the collapsed right-edge Scheduled jobs tab (a no-op when the pane is already open); resolve the row. */
 async function expandRoutines(page: Page) {
   const row = page
@@ -157,7 +143,6 @@ async function expandRoutines(page: Page) {
 
   await expect(row).toBeVisible({ timeout: 30_000 })
   await page.waitForTimeout(2_500)
-  console.log('AFTER EXPAND', JSON.stringify(await workspaceState(page)))
   await expect(row).toBeVisible()
 
   return row
@@ -170,7 +155,6 @@ test.beforeAll(async () => {
   writeEnvFile(sandbox.hermesHome)
   alphaHome = await seedBot(sandbox.hermesHome, mock.url, 'alpha')
   seedRoutine(alphaHome, LONG_TITLE)
-  fs.mkdirSync(SHOT_DIR, { recursive: true })
 
   const { app, page } = await launchDesktop(buildAppEnv(sandbox))
 
@@ -194,13 +178,13 @@ test.afterAll(async () => {
   fixture = null
 })
 
-test('a long routine title never pushes the Switch, delete control or next-run label out of the 250px pane', async () => {
+test('a long routine title never pushes the Switch, delete control or next-run label out of the 250px pane', async ({}, testInfo) => {
   test.setTimeout(300_000)
   const page = fixture!.page
 
   await openAlphaChat(page)
   const row = await expandRoutines(page)
-  await page.screenshot({ path: path.join(SHOT_DIR, 'routines-pane.png') })
+  await page.screenshot({ path: testInfo.outputPath('routines-pane.png') })
 
   // Geometry against the pane's own scroll container, not body text: the row
   // is a grid item, so its intrinsic width is what pins the controls off-edge.
@@ -229,7 +213,6 @@ test('a long routine title never pushes the Switch, delete control or next-run l
     }
   })
 
-  console.log('ROUTINE ROW GEOMETRY', JSON.stringify(geometry))
 
   expect.soft(geometry.card.right).toBeLessThanOrEqual(geometry.pane.right + 1)
   expect.soft(geometry.switch.right).toBeLessThanOrEqual(geometry.pane.right + 1)
@@ -250,7 +233,7 @@ test('a long routine title never pushes the Switch, delete control or next-run l
     await expect.poll(() => readJobs(alphaHome)[0]?.enabled, { timeout: 30_000 }).toBe(false)
     await expect(row).toBeVisible()
     await expect(page.getByText(/Open this bot's continuous chat/i)).toHaveCount(0)
-    await page.screenshot({ path: path.join(SHOT_DIR, 'routines-pane-toggled.png') })
+    await page.screenshot({ path: testInfo.outputPath('routines-pane-toggled.png') })
   })
 
   await test.step('closing Scheduled jobs with ✕ is recoverable — leaving and re-entering Bot Mode brings the pane back (#102224)', async () => {
@@ -260,16 +243,14 @@ test('a long routine title never pushes the Switch, delete control or next-run l
     const closer = tab.getByRole('button', { name: /^close$/i }).first()
     await closer.click({ force: true })
     await page.waitForTimeout(1_500)
-    console.log('AFTER CLOSE', JSON.stringify(await workspaceState(page)))
     await expect(page.getByRole('button', { name: /Weekly research digest/ })).toHaveCount(0, { timeout: 15_000 })
-    await page.screenshot({ path: path.join(SHOT_DIR, 'routines-closed.png') })
+    await page.screenshot({ path: testInfo.outputPath('routines-closed.png') })
 
     await openSessions(page)
     await page.waitForTimeout(1_000)
     await openAlphaChat(page)
     await page.waitForTimeout(2_000)
-    console.log('AFTER RE-ENTER', JSON.stringify(await workspaceState(page)))
-    await page.screenshot({ path: path.join(SHOT_DIR, 'routines-restored.png') })
+    await page.screenshot({ path: testInfo.outputPath('routines-restored.png') })
 
     await expect(page.locator('[data-tree-tab="hermes-bots:routines"]').first()).toBeVisible({ timeout: 30_000 })
   })

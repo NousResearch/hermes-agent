@@ -58,7 +58,13 @@ class _TerminalSlot:
                 )
                 try:
                     self.guard_key = (ref.args["command"], config["env_type"], tt._docker_has_host_access(config))
-                    self.decision = tt._check_all_guards(*self.guard_key)
+                    self.decision = tt._check_all_guards(
+                        *self.guard_key,
+                        approval_context={
+                            key: ref.args.get(f"approval_{key}")
+                            for key in ("purpose", "effect", "risk")
+                        },
+                    )
                 finally:
                     reset_current_observability_context(tokens)
         finally:

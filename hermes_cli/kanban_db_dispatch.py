@@ -860,6 +860,44 @@ _PROTOCOL_VIOLATION_ERROR = (
 )
 
 
+_EXIT_SUMMARY_MARKER = "Resume this session with:"
+# Rich panel/rule chrome around the rendered response, and the CLI's own preamble lines.
+_LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Hermes")
+_LOG_NOISE_PREFIXES = ("session_id:", "Query:", "Initializing agent")
+
+
+def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
+    """Best-effort read of a dead worker's last printed text, for the board diagnostic.
+
+    A ``chat -q`` worker's stdout/stderr are redirected to its per-task log
+    (``_default_spawn``), so when it exits without a terminal board call the
+    reason is usually sitting there: the model's own explanation of why it could
+    not comply (#88603), or the rendered provider error (#46593). The reap used to
+    discard it in favour of a canned message on every retry. Trims the CLI exit
+    summary, rule lines and the ``session_id:`` trailer; returns "" (never raises)
+    on a missing/empty log.
+
+    ``board`` must come from the dispatching tick: ambient current-board resolution
+    is wrong for every board but the one the dispatcher thread happens to call
+    "current", so the log would silently not be found.
+    """
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    cut = raw.rfind(_EXIT_SUMMARY_MARKER)
+    if cut != -1:
+        raw = raw[:cut]
+    lines = []
+    for ln in raw.splitlines():
+        ln = _LOG_CHROME.sub("", ln).strip()
+        if ln and not ln.startswith(_LOG_NOISE_PREFIXES):
+            lines.append(ln)
+    return " ".join(lines)[-400:]
+
+
 @dataclass
 class _DeadWorker:
     """How ``detect_crashed_workers`` should book one dead worker."""
@@ -879,8 +917,26 @@ class _DeadWorker:
         return "rate_limited" if self.rate_limited else "crashed"
 
 
-def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
-    """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
+def _classify_dead_worker(
+    pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
+) -> _DeadWorker:
+    """Map a dead worker's reaped exit status to its reclaim bookkeeping.
+
+    A clean exit or a crash carries the worker's own last output (``worker_output``
+    in the event payload, appended to the error text) so the board and the retry
+    worker see WHY instead of a bare label; a rate-limited requeue does not need it.
+    """
+    dead = _classify_dead_worker_exit(pid, claimer)
+    if task_id and not dead.rate_limited:
+        worker_output = _worker_final_output(task_id, board=board)
+        if worker_output:
+            dead.error_text += f" Worker's last output: {worker_output!r}"
+            dead.event_payload["worker_output"] = worker_output
+    return dead
+
+
+def _classify_dead_worker_exit(pid: int, claimer: Optional[str]) -> _DeadWorker:
+    """Exit status -> reclaim bookkeeping, before the worker's own words are folded in."""
     kind, code = _classify_worker_exit(pid)
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
@@ -931,7 +987,7 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
-def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
+def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
     """Release every host-local ``running`` task whose worker PID is dead."""
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
@@ -954,7 +1010,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"])
+            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1063,7 +1119,7 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
@@ -1073,7 +1129,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
-    sweep = _reclaim_dead_workers(conn)
+    sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1816,6 +1872,7 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -1824,7 +1881,7 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
@@ -1955,7 +2012,7 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

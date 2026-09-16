@@ -662,6 +662,46 @@ class TestEmptyPartialStreamStubNotPersisted:
 
         assert result["completed"] is True
 
+    def test_empty_stub_without_dropped_tools_does_not_nudge_continuation(self, loop_agent):
+        """A zero-character stub with no dropped tool names has no recovery
+        point: retry the same messages instead of injecting a continuation
+        user row that tells the model to continue from nowhere."""
+        from tests.agent.test_run_agent import _mock_response, _mock_assistant_msg
+
+        empty_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=""),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        recovery = _mock_response(content="Completed the remaining work.", finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [empty_stub, recovery]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("complete the task")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        second_call = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call.kwargs.get("messages") or second_call.args[0].get("messages")
+        last_user = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
+        assert last_user is not None
+        content = last_user.get("content") or ""
+        assert "Continue exactly where you left off" not in content
+        assert "network error mid-stream" not in content
+        empty_assistants = [
+            m for m in msgs
+            if m.get("role") == "assistant" and not m.get("content")
+        ]
+        assert empty_assistants == []
+        assert result["final_response"] == "Completed the remaining work."
 
 
 class TestBuildAssistantMessageEmptyContentPad:

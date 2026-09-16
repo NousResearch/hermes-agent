@@ -1346,7 +1346,8 @@ class TestAnthropicStreamCallbacks:
         agent._anthropic_client.messages.stream.side_effect = lambda **kwargs: attempts.pop(0)
         agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
         emitted = []
-        agent._fire_stream_delta = lambda text: emitted.append(text)
+        _orig_fire = agent._fire_stream_delta
+        agent._fire_stream_delta = lambda text: (emitted.append(text), _orig_fire(text))[1]
 
         response = agent._interruptible_streaming_api_call(
             {"model": agent.model, "tools": [{"name": "old_tool", "input_schema": {"type": "object"}}]})
@@ -1521,27 +1522,13 @@ class TestPartialToolCallWarning:
     def test_empty_partial_stream_stub_stays_empty_for_loop_guard(
         self, mock_close, mock_create,
     ):
-        """Stream dies with 0 recovered chars and no tool call → the stub
-        keeps its empty content ON PURPOSE.
-
-        The conversation loop's truncation path detects an EMPTY
-        partial-stream stub (PARTIAL_STREAM_STUB_ID + no content) and skips
-        appending it to history entirely — only the continuation nudge is
-        sent (the #68041 class fix).  An earlier iteration substituted
-        '[response interrupted]' placeholder text HERE, which defeated that
-        guard: the stub no longer looked empty, entered history, and the
-        placeholder leaked into the stitched final response.  Transcripts
-        that already carry a persisted empty turn are healed at the send
-        boundary by repair_empty_non_final_messages instead.
-        """
+        """An empty partial stream is undelivered, not a continuation stub."""
         from run_agent import AIAgent
-        from hermes_constants import PARTIAL_STREAM_STUB_ID
-
         class _StallError(RuntimeError):
             pass
 
         def _stalling_stream():
-            yield _make_stream_chunk(content="partial token")
+            yield _make_stream_chunk(content=" \n")
             raise _StallError("simulated upstream stall after a delta")
 
         mock_client = MagicMock()
@@ -1569,23 +1556,13 @@ class TestPartialToolCallWarning:
         _prev = _os.environ.get("HERMES_STREAM_RETRIES")
         _os.environ["HERMES_STREAM_RETRIES"] = "0"
         try:
-            response = agent._interruptible_streaming_api_call({})
+            with pytest.raises(_StallError):
+                agent._interruptible_streaming_api_call({})
         finally:
             if _prev is None:
                 _os.environ.pop("HERMES_STREAM_RETRIES", None)
             else:
                 _os.environ["HERMES_STREAM_RETRIES"] = _prev
-
-        # The stub must be RECOGNIZABLY empty so the loop guard can skip it.
-        assert getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
-        content = response.choices[0].message.content
-        assert not content, (
-            f"Empty-partial-stream stub must keep empty content so the "
-            f"conversation loop's empty-stub guard can detect and skip it — "
-            f"substituted text defeats the guard and leaks into the final "
-            f"response. Got content={content!r}"
-        )
-        assert response.choices[0].message.tool_calls is None
 
 
 class TestSilentRetryMidToolCall:

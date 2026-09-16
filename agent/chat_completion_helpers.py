@@ -2537,6 +2537,10 @@ class _StreamingCall(StreamingWaitMonitor):
         self._request_cancelled = {"value": False}
         self.first_delta_fired = {"done": False}
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
+        # Raw assistant deltas from this attempt. UI tracking can stay empty in
+        # quiet/no-callback contexts even after _emit_text; this is the durable
+        # recovery source for empty-stub vs retry.
+        self._stream_text_parts: list[str] = []
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
@@ -2645,6 +2649,16 @@ class _StreamingCall(StreamingWaitMonitor):
         self._fire_first_delta()
         self.agent._fire_stream_delta(text)
         self.deltas_were_sent["yes"] = True
+        if isinstance(text, str) and text:
+            self._stream_text_parts.append(text)
+
+    def _durable_partial_text(self) -> str | None:
+        """Visible recovery for stub/retry: prefer scrubbed UI text, else raw deltas."""
+        ui = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip()
+        if ui:
+            return ui
+        raw = "".join(self._stream_text_parts).strip()
+        return raw or None
 
     def _emit_reasoning(self, text: str) -> None:
         self._fire_first_delta()
@@ -3207,11 +3221,17 @@ class _StreamingCall(StreamingWaitMonitor):
             return True
 
         if self.deltas_were_sent["yes"]:
-            # Died AFTER tokens were delivered: normally no retry (would duplicate
-            # text). Exception: a tool call in flight — aborting discards it, so
-            # retry TRANSIENT errors (a "reconnecting" marker + duplicated
-            # preamble beats a failed action; no tool has executed yet).
+            # Only visible text or dropped tool names are durable recovery. A callback
+            # alone is not delivery: an empty stream must follow the undelivered path.
             _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
+            _durable_recovery = bool(self._durable_partial_text()) or bool(self.result.get("partial_tool_names"))
+            if not _durable_recovery and not _partial_tool_in_flight and _is_transient and attempt < max_retries:
+                self._quiet(self.agent._reset_stream_delivery_tracking)
+                self.deltas_were_sent["yes"] = False
+                self.first_delta_fired["done"] = False
+                self._stream_text_parts = []
+                self._retry_after_drop(e, attempt, max_retries, mid_tool_call=False, reason="stream_empty_partial_retry_cleanup")
+                return True
             if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
                 logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
                 self.result["error"] = e
@@ -3222,6 +3242,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._quiet(self.agent._reset_stream_delivery_tracking)
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
+            self._stream_text_parts = []
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")
             return True
 
@@ -3410,10 +3431,14 @@ class _StreamingCall(StreamingWaitMonitor):
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the
         continuation machinery; tool_calls=None blocks executing incomplete calls.
-        Content may be EMPTY on purpose — the loop skips appending an empty stub and
-        only sends the nudge (placeholder text leaked into the stitched response)."""
+
+        Returns None when nothing durable was recovered (no visible text, no dropped
+        tool names) so the caller re-raises the stream error instead of pretending
+        the turn has a continuation point. Overflow and content-filter deaths still
+        return tagged empty stubs for their existing loop owners.
+        """
         error = self.result["error"]
-        _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
+        _partial_text = self._durable_partial_text()
         _partial_names = list(self.result.get("partial_tool_names") or [])
         if _partial_names:
             # User-visible warning so the user and model both know what was attempted.
@@ -3449,6 +3474,18 @@ class _StreamingCall(StreamingWaitMonitor):
                 "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
                 dropped_tool_names=_partial_names, overflow_terminal=True,
             )
+        if not _partial_text and not _partial_names:
+            if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
+                _stub = _build_partial_stream_stub(
+                    "assistant", None, None, getattr(self.agent, "model", "unknown"), None)
+                _stub._content_filter_terminated = True
+                return _stub
+            logger.warning(
+                "Partial stream flagged delivery but recovered 0 chars and no tool names; "
+                "not seeding a length stub (no continuation point): %s",
+                error,
+            )
+            return None
         if not _partial_names:
             logger.warning(
                 "Partial stream delivered before error; returning length-truncated stub with %s chars of "
@@ -3489,7 +3526,9 @@ class _StreamingCall(StreamingWaitMonitor):
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
         if self.result["error"] is not None:
             if self.deltas_were_sent["yes"]:
-                return self._partial_stream_stub()
+                _stub = self._partial_stream_stub()
+                if _stub is not None:
+                    return _stub
             raise self.result["error"]
         if self.result["response"] is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker

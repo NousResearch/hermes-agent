@@ -259,6 +259,12 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     filled = st.window_filled
     if n < 4 and filled is None:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
+        if st.is_stub and not _interim_content and not _dropped_tools and not getattr(st.response, "_overflow_terminal", False):
+            # Empty stubs have no recovery point. Retry the same messages without
+            # manufacturing a user continuation request.
+            agent._session_messages = messages
+            _retry.restart_with_length_continuation = False
+            return st.done("continue")
         if st.is_stub and _dropped_tools:
             agent._vprint(
                 f"{agent.log_prefix}↻ Stream interrupted mid "

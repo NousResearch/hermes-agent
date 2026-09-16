@@ -3724,6 +3724,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
                 agent = None
+                from agent.notification_presentation import notification_turn
+                from gateway.warning_notifications import warning_notifications_enabled
+                muted = notification_category == "diagnostic" and not warning_notifications_enabled("api_server")
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
@@ -3761,16 +3764,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
-                    from agent.notification_presentation import notification_turn
-                    from gateway.warning_notifications import warning_notifications_enabled
-                    muted = notification_category == "diagnostic" and not warning_notifications_enabled("api_server")
                     with notification_turn(agent, muted=muted, session_id=session_id or ""):
                         result = agent.run_conversation(**conversation_kwargs)
-                    if muted and isinstance(result, dict):
-                        result["final_response"] = ""
-                    return self._finish_turn_result(
+                    result, usage = self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)
+                    if muted and isinstance(result, dict):
+                        # Project presentation only after finishing the source outcome. Keep
+                        # the agent's result, transcript, failure flags and usage intact.
+                        result = {**result, "_notification_presentation_suppressed": True}
+                    return result, usage
                 except _ProviderAuthResolutionError as exc:
                     # Typed provider-auth failure only, handled once for every caller in
                     # run.py's response shape (text, no HTTP error).
@@ -3778,8 +3781,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                                    session_id or "", exc)
                     return (
                         {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [],
-                         "api_calls": 0, "tools": []},
+                         "api_calls": 0, "tools": [],
+                         **({"_notification_presentation_suppressed": True} if muted else {})},
                         {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                except Exception as exc:
+                    if muted:
+                        # Keep the original exception/traceback for logs and failure
+                        # handling; the HTTP/SSE boundary suppresses its presentation.
+                        setattr(exc, "_notification_presentation_suppressed", True)
+                    raise
                 finally:
                     # Turn over (any outcome): clear ownership so a late disconnect can't reap
                     # background work this turn deliberately left running.

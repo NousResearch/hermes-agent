@@ -564,6 +564,7 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
+        presentation_muted = result.get("_notification_presentation_suppressed") is True
         final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
@@ -579,7 +580,7 @@ class OpenAICompatRoutesMixin:
         # clients raise instead of rendering the failure string as message.content.
         if not final_response and (is_failed or is_partial):
             err_body = _openai_error(
-                err_msg or "Agent run did not produce a response.", err_type="server_error",
+                "" if presentation_muted else (err_msg or "Agent run did not produce a response."), err_type="server_error",
                 code="agent_incomplete")
             err_body["error"]["hermes"] = {
                 "completed": completed, "partial": is_partial, "failed": is_failed}
@@ -590,15 +591,15 @@ class OpenAICompatRoutesMixin:
         response_data = {
             "id": completion_id, "object": "chat.completion", "created": created,
             "model": model_name,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": final_response},
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
         if is_partial or is_failed or not completed:
             response_data["hermes"] = _hermes_extras(
-                completed, is_partial, is_failed, err_msg, finish_reason)
+                completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
-            if err_msg:
+            if err_msg and not presentation_muted:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
         return web.json_response(response_data, headers=response_headers)
 
@@ -628,7 +629,8 @@ class OpenAICompatRoutesMixin:
             return (result, usage), None
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
-            return None, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
+            message = "" if getattr(e, "_notification_presentation_suppressed", False) is True else f"Internal server error: {e}"
+            return None, _error_response(message, 500, err_type="server_error")
 
     async def _prepare_sse_response(
         self, request: "web.Request", session_id: Optional[str], gateway_session_key: Optional[str],
@@ -688,13 +690,17 @@ class OpenAICompatRoutesMixin:
                 err_msg = err_msg or str(agent_error)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
+            presentation_muted = (
+                (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
+                or getattr(agent_error, "_notification_presentation_suppressed", False) is True
+            )
             if finish_reason != "stop":
-                if err_msg:
+                if err_msg and not presentation_muted:
                     finish_chunk["error"] = {
                         "message": err_msg,
                         "type": type(agent_error).__name__ if agent_error else "agent_error"}
                 finish_chunk["hermes"] = _hermes_extras(
-                    completed, is_partial, is_failed, err_msg, finish_reason)
+                    completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):

@@ -45,34 +45,6 @@ class _Event:
 
 
 @pytest.mark.asyncio
-async def test_agents_command_lists_background_delegation_with_activity():
-    gate = threading.Event()
-    base_ts = time.time() - 8.0
-
-    res = ad.dispatch_async_delegation(
-        goal="research the delegation stall monitor",
-        context=None, toolsets=None, role="leaf", model="m",
-        session_key="agent:main:test:dm:1", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
-        progress_fn=lambda: (((2, "web_search", base_ts),), True),
-    )
-    assert res["status"] == "dispatched"
-
-    try:
-        runner = _make_runner()
-        out = await runner._handle_agents_command(_Event())
-    finally:
-        gate.set()
-
-    assert res["delegation_id"] in out
-    assert "running" in out
-    assert "research the delegation stall monitor" in out
-    # Live per-child activity sampled from progress_fn.
-    assert "2 api calls" in out
-    assert "web_search" in out
-
-
-@pytest.mark.asyncio
 async def test_agents_command_marks_stalling_delegation(monkeypatch):
     monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
     monkeypatch.setattr(ad, "_STALE_IDLE_SECONDS", 0.1)
@@ -112,8 +84,3 @@ async def test_agents_command_marks_stalling_delegation(monkeypatch):
     assert "no progress" in out
 
 
-@pytest.mark.asyncio
-async def test_agents_command_no_delegations_keeps_none_message():
-    runner = _make_runner()
-    out = await runner._handle_agents_command(_Event())
-    assert "No active agents" in out

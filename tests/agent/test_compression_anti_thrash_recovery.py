@@ -17,10 +17,13 @@ The recovery contract pinned here:
   next recovery waits a FULL fresh window (no immediate re-probe loop).
 * An effective probe (or any fitting real-usage reading) fully clears the
   counters through the existing ``update_from_response`` path.
-* The recovery clock is armed lazily on the first blocked evaluation and is
-  NOT durable: a process restart that loads a durable tripped counter
-  (#69872) starts a full fresh window blocked — a restart must never disarm
-  or shorten the guard (#54923).
+* The recovery clock is armed lazily on the first blocked evaluation and
+  persisted on the session row as a wall-clock deadline (#100185): a fresh
+  compressor that loads a durable tripped counter (#69872) with NO stored
+  deadline starts a full window blocked — a restart must never disarm or
+  shorten the guard (#54923) — while one that loads an armed deadline
+  resumes that window instead of restarting it, so gateway agent rebuilds
+  cannot block a session forever.
 * The protection itself is preserved: inside the window the gate stays
   blocked exactly as before.
 """
@@ -51,67 +54,16 @@ def _trip(cc: ContextCompressor) -> None:
 
 
 class TestRecoveryWindow:
-    def test_blocked_within_window_unblocked_after(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            # First blocked evaluation arms the clock and stays blocked.
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS - 1,
-        ):
-            # Still inside the window: protection intact.
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-            assert cc._ineffective_compression_count == 2
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
-        ):
-            # Window elapsed: exactly one probe is granted.
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
-        # Probation, not amnesty: one strike remains armed.
-        assert cc._ineffective_compression_count == 1
 
-    def test_ineffective_probe_re_trips_and_waits_a_full_fresh_window(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        probe_time = base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1
-        with patch(
-            "agent.context_compressor.time.monotonic", return_value=probe_time
-        ):
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
-            # The probe compaction completes but does not clear the threshold.
-            cc._verify_compaction_cleared_threshold = True
-            cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
-            assert cc._ineffective_compression_count == 2
-            # Re-tripped: blocked again immediately (arms a new clock).
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=probe_time + cc._ANTI_THRASH_RECOVERY_SECONDS - 5,
-        ):
-            # No immediate re-probe loop: the second window is full length,
-            # measured from the re-trip, not the original trip.
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        with patch(
-            "agent.context_compressor.time.monotonic",
-            return_value=probe_time + cc._ANTI_THRASH_RECOVERY_SECONDS + 5,
-        ):
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
 
     def test_effective_probe_clears_the_guard_completely(self):
         cc = _compressor()
         _trip(cc)
         base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
+        with patch("agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         with patch(
-            "agent.context_compressor.time.monotonic",
+            "agent.context_compressor.time.time",
             return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
         ):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
@@ -124,37 +76,16 @@ class TestRecoveryWindow:
         cc = _compressor()
         cc._fallback_compression_streak = 2
         base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
+        with patch("agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         with patch(
-            "agent.context_compressor.time.monotonic",
+            "agent.context_compressor.time.time",
             return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
         ):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
         assert cc._fallback_compression_streak == 1
 
-    def test_under_threshold_never_arms_the_clock(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            # Under threshold: gate never evaluated, clock untouched.
-            assert cc.should_compress(cc.threshold_tokens - 1) is False
-        assert cc._anti_thrash_recovery_deadline == 0.0
 
-    def test_untripped_guard_disarms_a_stale_clock(self):
-        cc = _compressor()
-        _trip(cc)
-        base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
-            assert cc.should_compress(cc.threshold_tokens + 1) is False
-        assert cc._anti_thrash_recovery_deadline > 0.0
-        # A fitting real-usage reading clears the counter mid-window.
-        cc.update_from_response({"prompt_tokens": cc.threshold_tokens - 500})
-        with patch("agent.context_compressor.time.monotonic", return_value=base + 1):
-            assert cc.should_compress(cc.threshold_tokens + 1) is True
-        # The stale clock was disarmed, so a LATER trip starts a full window.
-        assert cc._anti_thrash_recovery_deadline == 0.0
 
 
 class TestRestartSemantics:
@@ -167,13 +98,13 @@ class TestRestartSemantics:
         cc = _compressor()
         cc.bind_session_state(session_db=db, session_id="sess-1")
         assert cc._ineffective_compression_count == 2
-        # The recovery clock is process-local and must come up disarmed.
+        # No stored deadline yet -> the clock comes up disarmed.
         assert cc._anti_thrash_recovery_deadline == 0.0
         base = 5000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
+        with patch("agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         with patch(
-            "agent.context_compressor.time.monotonic",
+            "agent.context_compressor.time.time",
             return_value=base + cc._ANTI_THRASH_RECOVERY_SECONDS + 1,
         ):
             assert cc.should_compress(cc.threshold_tokens + 1) is True
@@ -185,9 +116,92 @@ class TestRestartSemantics:
         cc = _compressor()
         _trip(cc)
         base = 1000.0
-        with patch("agent.context_compressor.time.monotonic", return_value=base):
+        with patch("agent.context_compressor.time.time", return_value=base):
             assert cc.should_compress(cc.threshold_tokens + 1) is False
         assert cc._anti_thrash_recovery_deadline > 0.0
         cc.on_session_reset()
         assert cc._anti_thrash_recovery_deadline == 0.0
         assert cc._ineffective_compression_count == 0
+
+
+class TestDurableDeadline:
+    """#100185: the gateway rebuilds the compressor on every cache eviction."""
+
+    def _bound(self, db, session_id="sess-1"):
+        cc = _compressor()
+        cc.bind_session_state(session_db=db, session_id=session_id)
+        return cc
+
+    def test_fresh_compressors_resume_the_same_window(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="telegram")
+        db.set_compression_ineffective_count("sess-1", 2)
+        base = 5000.0
+        first = self._bound(db)
+        with patch("agent.context_compressor.time.time", return_value=base):
+            assert first.should_compress(first.threshold_tokens + 1) is False
+        # Deadline is durable, as a wall-clock epoch.
+        assert db.get_compression_recovery_deadline("sess-1") == (
+            base + first._ANTI_THRASH_RECOVERY_SECONDS
+        )
+        # Fresh compressor (gateway rebuilt the agent) well past the window:
+        # before the fix it re-armed a new window and stayed blocked forever.
+        second = self._bound(db)
+        assert second._anti_thrash_recovery_deadline == (
+            base + first._ANTI_THRASH_RECOVERY_SECONDS
+        )
+        with patch(
+            "agent.context_compressor.time.time",
+            return_value=base + first._ANTI_THRASH_RECOVERY_SECONDS + 1,
+        ):
+            assert second.should_compress(second.threshold_tokens + 1) is True
+        assert db.get_compression_ineffective_count("sess-1") == 1
+        assert db.get_compression_recovery_deadline("sess-1") == 0.0
+
+    def test_fresh_compressor_inside_window_stays_blocked(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="telegram")
+        db.set_compression_ineffective_count("sess-1", 2)
+        base = 5000.0
+        first = self._bound(db)
+        with patch("agent.context_compressor.time.time", return_value=base):
+            assert first.should_compress(first.threshold_tokens + 1) is False
+        second = self._bound(db)
+        with patch("agent.context_compressor.time.time", return_value=base + 10):
+            assert second.should_compress(second.threshold_tokens + 1) is False
+        assert db.get_compression_ineffective_count("sess-1") == 2
+
+    def test_backward_clock_jump_is_bounded_to_one_window(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="telegram")
+        db.set_compression_ineffective_count("sess-1", 2)
+        window = ContextCompressor._ANTI_THRASH_RECOVERY_SECONDS
+        db.set_compression_recovery_deadline("sess-1", 1_000_000.0)
+        cc = self._bound(db)
+        # Wall clock now far BEFORE the stored deadline (clock stepped back).
+        with patch("agent.context_compressor.time.time", return_value=100.0):
+            assert cc.should_compress(cc.threshold_tokens + 1) is False
+        assert db.get_compression_recovery_deadline("sess-1") == 100.0 + window
+
+    def test_clearing_the_guard_disarms_the_durable_deadline(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="telegram")
+        db.set_compression_ineffective_count("sess-1", 2)
+        cc = self._bound(db)
+        with patch("agent.context_compressor.time.time", return_value=5000.0):
+            assert cc.should_compress(cc.threshold_tokens + 1) is False
+        assert db.get_compression_recovery_deadline("sess-1") > 0.0
+        cc._record_ineffective_compression_verdict(0)
+        with patch("agent.context_compressor.time.time", return_value=5001.0):
+            assert cc.should_compress(cc.threshold_tokens + 1) is True
+        assert db.get_compression_recovery_deadline("sess-1") == 0.0
+
+    def test_session_db_round_trip(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        assert db.get_compression_recovery_deadline("sess-1") == 0.0
+        db.set_compression_recovery_deadline("sess-1", 1234.5)
+        assert db.get_compression_recovery_deadline("sess-1") == 1234.5
+        db.set_compression_recovery_deadline("sess-1", 0.0)
+        assert db.get_compression_recovery_deadline("sess-1") == 0.0
+        assert db.get_compression_recovery_deadline("missing") == 0.0

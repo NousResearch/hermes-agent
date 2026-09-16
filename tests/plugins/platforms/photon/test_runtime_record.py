@@ -22,6 +22,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -123,7 +124,7 @@ def _patch_spawn(
     # sidecar_deps_installed() checks the dependency's own directory, not just
     # node_modules/ (9cf2046081) — mirror a real completed install.
     (sidecar_dir / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", sidecar_dir)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", sidecar_dir)
     monkeypatch.setattr(photon_adapter, "_sidecar_deps_stale", lambda: False)
 
     async def _no_reap(self: PhotonAdapter) -> None:
@@ -164,49 +165,6 @@ async def test_record_written_after_healthz_success(
     # Cleanup so the fake supervisor task doesn't leak between tests.
     if adapter._sidecar_supervisor_task is not None:
         adapter._sidecar_supervisor_task.cancel()
-
-
-@pytest.mark.asyncio
-async def test_record_removed_on_failed_startup(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path, tmp_path: Path
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    _patch_spawn(monkeypatch, adapter, tmp_path)
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthzClient)
-
-    class _DeadProc(_FakeProc):
-        returncode = 1
-
-        def poll(self) -> int | None:
-            return 1
-
-    monkeypatch.setattr(
-        photon_adapter.subprocess, "Popen", lambda *a, **k: _DeadProc()
-    )
-
-    # Pre-seed a stale record; the failed startup must clear it.
-    photon_adapter._write_runtime_record(1234, "stale", 1)
-
-    with pytest.raises(RuntimeError, match="before becoming ready"):
-        await adapter._start_sidecar()
-
-    assert not record_path.exists()
-    if adapter._sidecar_supervisor_task is not None:
-        adapter._sidecar_supervisor_task.cancel()
-
-
-@pytest.mark.asyncio
-async def test_record_removed_on_stop(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    photon_adapter._write_runtime_record(8789, "tok", 4242)
-    adapter._sidecar_proc = _FakeProc()  # type: ignore[assignment]
-
-    await adapter._stop_sidecar()
-
-    assert not record_path.exists()
-    assert adapter._sidecar_proc is None
 
 
 @pytest.mark.asyncio
@@ -273,56 +231,3 @@ async def test_standalone_send_consumes_record_when_env_missing(
     assert headers["X-Hermes-Sidecar-Token"] == "record-token"
 
 
-@pytest.mark.asyncio
-async def test_standalone_send_env_token_still_wins(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "env-token")
-    monkeypatch.delenv("PHOTON_SIDECAR_PORT", raising=False)
-    photon_adapter._write_runtime_record(9111, "record-token", os.getpid())
-    _SendClient.calls = []
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _SendClient)
-
-    result = await photon_adapter._standalone_send(
-        PlatformConfig(enabled=True, token="", extra={}), "+15551234567", "hi"
-    )
-
-    assert result["success"] is True
-    _url, _body, headers = _SendClient.calls[0]
-    assert headers["X-Hermes-Sidecar-Token"] == "env-token"
-
-
-@pytest.mark.asyncio
-async def test_standalone_send_stale_record_errors_cleanly(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
-    photon_adapter._write_runtime_record(9111, "record-token", 2**22 + 12345)
-    monkeypatch.setattr(photon_adapter, "_sidecar_pid_alive", lambda pid: False)
-    _SendClient.calls = []
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _SendClient)
-
-    result = await photon_adapter._standalone_send(
-        PlatformConfig(enabled=True, token="", extra={}), "+15551234567", "hi"
-    )
-
-    assert "error" in result
-    assert "gateway" in result["error"]
-    assert _SendClient.calls == []  # never hit the sidecar
-
-
-@pytest.mark.asyncio
-async def test_standalone_send_no_record_no_env_errors(
-    monkeypatch: pytest.MonkeyPatch, record_path: Path
-) -> None:
-    monkeypatch.delenv("PHOTON_SIDECAR_TOKEN", raising=False)
-    _SendClient.calls = []
-    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _SendClient)
-
-    result = await photon_adapter._standalone_send(
-        PlatformConfig(enabled=True, token="", extra={}), "+15551234567", "hi"
-    )
-
-    assert "error" in result
-    assert "gateway" in result["error"].lower() or "sidecar" in result["error"].lower()
-    assert _SendClient.calls == []

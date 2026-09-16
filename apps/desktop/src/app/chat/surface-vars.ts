@@ -14,27 +14,48 @@
  * read its own measurement through normal CSS inheritance. Remeasuring on
  * session switch cannot fix this — several surfaces are visible at once, so
  * there is no single correct value to remeasure to.
+ *
+ * A measurement is only ever meaningful to the surface that owns it, so an
+ * unowned node has nowhere to publish to and must publish NOWHERE. Writing to
+ * the document root instead is not a graceful fallback: `:root` holds the
+ * defaults every surface inherits until it publishes its own, so one stale
+ * write there is a global floor under every thread's bottom clearance, on
+ * every tab, until reload. That is the "randomly huge gap at the bottom of the
+ * thread" bug — see surface-vars.test.ts.
  */
 
 export const COMPOSER_HEIGHT_VAR = '--composer-measured-height'
 export const COMPOSER_SURFACE_HEIGHT_VAR = '--composer-surface-measured-height'
-export const STATUS_STACK_VAR = '--status-stack-measured-height'
 
 /**
- * The surface owning `el`, falling back to the document root so a composer
- * rendered outside a chat surface (the popped-out window) keeps behaving
- * exactly as before.
+ * The surface owning `el`, or null when `el` is detached or outside one.
+ *
+ * Floating editors are portaled outside the pane's clipping/filter layer.
+ * Their stable host carries the exact owning surface id; missing owners never
+ * publish measurements to another pane or the document root.
  */
-export function chatSurfaceRoot(el: Element | null): HTMLElement {
-  return el?.closest<HTMLElement>('[data-chat-surface]') ?? document.documentElement
+export function chatSurfaceRoot(el: Element | null): HTMLElement | null {
+  const local = el?.closest<HTMLElement>('[data-chat-surface]')
+
+  if (local) {
+    return local
+  }
+
+  const owner = el?.closest<HTMLElement>('[data-composer-owner]')?.dataset.composerOwner
+
+  return owner
+    ? ([...document.querySelectorAll<HTMLElement>('[data-chat-surface]')].find(
+        surface => surface.dataset.composerSurfaceId === owner
+      ) ?? null)
+    : null
 }
 
-/** Publish a measured-height var on the surface owning `el`. */
+/** Publish a measured-height var on the surface owning `el`. No owner, no write. */
 export function setSurfaceVar(el: Element | null, name: string, value: string): void {
-  chatSurfaceRoot(el).style.setProperty(name, value)
+  chatSurfaceRoot(el)?.style.setProperty(name, value)
 }
 
-/** Clear a measured-height var from the surface owning `el`. */
-export function clearSurfaceVar(el: Element | null, name: string): void {
-  chatSurfaceRoot(el).style.removeProperty(name)
+/** Clear a measured-height var from `root`. */
+export function clearSurfaceVar(root: HTMLElement | null, name: string): void {
+  root?.style.removeProperty(name)
 }

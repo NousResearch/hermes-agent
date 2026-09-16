@@ -23,7 +23,7 @@ from typing import Any
 import yaml
 
 from hermes_cli import __version__ as HERMES_VERSION
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 from hermes_cli.profiles import get_active_profile_name
 
 _STATUS_RANK = {"healthy": 0, "warning": 1, "critical": 2}

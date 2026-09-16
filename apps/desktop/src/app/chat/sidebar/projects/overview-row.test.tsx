@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -17,7 +17,8 @@ vi.mock('@/i18n', () => ({
         projects: {
           enter: (label: string) => `Enter ${label}`,
           reorder: (label: string) => `Reorder ${label}`,
-          toggle: (label: string) => `Toggle ${label} sessions`
+          toggle: (label: string, open: boolean) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+          autoDiscovered: 'Auto-discovered'
         }
       }
     }
@@ -60,21 +61,58 @@ describe('ProjectOverviewRow', () => {
       />
     )
 
-    const button = screen.getByRole('button', { name: 'Toggle Test D sessions' })
+    // Collapsed by default, so the disclosure offers to show the sessions.
+    const button = screen.getByRole('button', { name: 'Show Test D sessions' })
     expect(tipTrigger(button)).toBeTruthy()
   })
 
   it('does not render the disclosure toggle when there is nothing to preview', () => {
     render(<ProjectOverviewRow project={project} />)
 
-    expect(screen.queryByRole('button', { name: 'Toggle Test D sessions' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Show Test D sessions' })).toBeNull()
   })
 
-  it('drops the "new session" add button on Home, which has no folder to start in', () => {
-    const home = { id: '__no_project__', isNoProject: true, label: 'Home' } as unknown as SidebarProjectTree
+  it('offers the "new session" add button on Home, which starts one with no folder', () => {
+    const home = {
+      id: '__no_project__',
+      isNoProject: true,
+      label: 'Home',
+      path: null
+    } as unknown as SidebarProjectTree
 
-    render(<ProjectOverviewRow onNewSession={vi.fn()} project={home} />)
+    const onNewSession = vi.fn()
 
-    expect(screen.queryByRole('button', { name: 'New session in Home' })).toBeNull()
+    render(<ProjectOverviewRow onNewSession={onNewSession} project={home} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
+
+    expect(onNewSession).toHaveBeenCalledWith(null)
+  })
+
+  it('tags the row with data-sessions-project so a skin can target one project', () => {
+    const { container } = render(<ProjectOverviewRow project={project} />)
+
+    expect(container.querySelector('[data-sessions-project="p1"]')).toBeTruthy()
+  })
+
+  it('explicit projects keep the folder-library glyph and a plain accessible name', () => {
+    const explicit = { id: 'p1', label: 'Explicit' } as unknown as SidebarProjectTree
+
+    const { container } = render(<ProjectOverviewRow project={explicit} />)
+
+    expect(container.querySelector('.codicon-folder-library')).toBeTruthy()
+    expect(container.querySelector('.codicon-repo')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Enter Explicit' })).toBeTruthy()
+  })
+
+  it('auto-discovered repos get the repo glyph, an "Auto-discovered" tooltip, and an accessible name that says so', () => {
+    const auto = { id: '/Users/dev/my-repo', label: 'my-repo', isAuto: true } as unknown as SidebarProjectTree
+
+    const { container } = render(<ProjectOverviewRow project={auto} />)
+
+    expect(container.querySelector('.codicon-repo')).toBeTruthy()
+    expect(container.querySelector('.codicon-folder-library')).toBeNull()
+
+    const link = screen.getByRole('button', { name: 'Enter my-repo (Auto-discovered)' })
+    expect(tipTrigger(link)).toBeTruthy()
   })
 })

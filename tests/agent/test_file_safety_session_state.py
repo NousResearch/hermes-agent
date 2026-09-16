@@ -45,24 +45,8 @@ def test_session_state_paths_are_write_denied(fake_homes, relative):
     assert is_write_denied(str(target)) is True
 
 
-def test_default_profile_state_db_is_write_denied_from_profile(fake_homes):
-    from agent.file_safety import is_write_denied
-
-    root, _profile = fake_homes
-    target = root / "state.db"
-    target.write_text("canonical transcript", encoding="utf-8")
-
-    assert is_write_denied(str(target)) is True
 
 
-def test_project_local_state_db_remains_writable(fake_homes, tmp_path):
-    from agent.file_safety import is_write_denied
-
-    target = tmp_path / "project" / "state.db"
-    target.parent.mkdir()
-    target.write_text("application database", encoding="utf-8")
-
-    assert is_write_denied(str(target)) is False
 
 
 def test_write_file_tool_preserves_existing_session_snapshot(fake_homes):

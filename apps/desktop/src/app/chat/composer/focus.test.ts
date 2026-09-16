@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
+
 import {
   blurComposerInput,
+  focusComposerInput,
   getActiveComposer,
   markActiveComposer,
   onComposerFocusRequest,
+  onComposerModelMenuRequest,
   releaseActiveComposer,
-  requestComposerFocus
+  requestComposerFocus,
+  requestModelMenuToggle
 } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
@@ -45,6 +50,40 @@ afterEach(() => {
   // `activeTarget` is module-level — a case that leaves a stale claim behind
   // would otherwise decide the next one.
   markActiveComposer('main')
+  $hoveredTreeGroup.set(null)
+})
+
+describe('focusComposerInput', () => {
+  it('does not steal the caret from another live composer', () => {
+    const foreground = mountInput()
+    const background = mountInput()
+
+    foreground.focus()
+    focusComposerInput(background)
+
+    expect(document.activeElement).toBe(foreground)
+  })
+
+  it('still focuses when the caret is not already in a composer', () => {
+    const input = mountInput()
+    const outside = document.createElement('button')
+
+    document.body.append(outside)
+    outside.focus()
+    focusComposerInput(input)
+
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('takes the caret from a hidden keep-alive composer on tab switch', () => {
+    const hidden = mountInput(true)
+    const visible = mountInput()
+
+    hidden.focus()
+    focusComposerInput(visible)
+
+    expect(document.activeElement).toBe(visible)
+  })
 })
 
 describe('blurComposerInput', () => {
@@ -214,5 +253,67 @@ describe('resolveActive / keep-alive tab heal', () => {
     markActiveComposer('edit')
 
     expect(getActiveComposer()).toBe('edit')
+  })
+})
+
+/** A chat surface inside a layout zone, mirroring ChatView-in-tree-group. */
+function mountZonedSurface(target: string, zone: string, hidden = false) {
+  const group = document.createElement('div')
+  group.dataset.treeGroup = zone
+  const layer = document.createElement('div')
+  layer.toggleAttribute('data-pane-hidden', hidden)
+  const surface = document.createElement('div')
+  surface.dataset.composerTarget = target
+  layer.append(surface)
+  group.append(layer)
+  document.body.append(group)
+
+  return surface
+}
+
+const collectModelMenuTargets = async (): Promise<string[]> => {
+  const saw: string[] = []
+  const off = onComposerModelMenuRequest(target => saw.push(target))
+
+  await new Promise(resolve => window.setTimeout(resolve, 0))
+  off()
+
+  return saw
+}
+
+describe('requestModelMenuToggle', () => {
+  it('targets the pane under the pointer over the focused one (#74447 convention)', async () => {
+    mountZonedSurface('main', 'zone-a')
+    mountZonedSurface('tile:hovered', 'zone-b')
+    markActiveComposer('main')
+    $hoveredTreeGroup.set('zone-b')
+
+    expect(requestModelMenuToggle()).toBe(true)
+    expect(await collectModelMenuTargets()).toEqual(['tile:hovered'])
+  })
+
+  it('falls back to the active composer when the pointer is off every zone', async () => {
+    mountZonedSurface('main', 'zone-a')
+    mountZonedSurface('tile:other', 'zone-b')
+    markActiveComposer('tile:other')
+
+    expect(requestModelMenuToggle()).toBe(true)
+    expect(await collectModelMenuTargets()).toEqual(['tile:other'])
+  })
+
+  it('skips a hidden keep-alive tab in the hovered zone (targets its visible sibling)', async () => {
+    mountZonedSurface('main', 'zone-a', true)
+    mountZonedSurface('tile:front', 'zone-a')
+    markActiveComposer('main')
+    $hoveredTreeGroup.set('zone-a')
+
+    expect(requestModelMenuToggle()).toBe(true)
+    expect(await collectModelMenuTargets()).toEqual(['tile:front'])
+  })
+
+  it('returns false with no chat surface on screen so the caller can open the dialog', async () => {
+    // Settings/profiles routes: no [data-composer-target] anywhere.
+    expect(requestModelMenuToggle()).toBe(false)
+    expect(await collectModelMenuTargets()).toEqual([])
   })
 })

@@ -4,19 +4,22 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+import { SidebarRowCluster, SidebarRowShell, SidebarRowStack } from './chrome'
+
+// Stands in for session rows, so it borrows their chrome instead of copying
+// the grid — a placeholder on a different edge than the rows it resolves into
+// makes the list step sideways on load.
 export function SidebarSessionSkeletons() {
   return (
-    <div aria-hidden="true" className="grid gap-px">
+    <SidebarRowStack aria-hidden="true">
       {['w-32', 'w-40', 'w-28', 'w-36', 'w-24'].map((width, i) => (
-        <div
-          className="grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md pl-2"
-          key={`${width}-${i}`}
-        >
-          <Skeleton className={cn('h-3 rounded-sm', width)} />
-          <Skeleton className="mx-auto size-3.5 rounded-sm opacity-60" />
-        </div>
+        <SidebarRowShell actions={<Skeleton className="size-3.5 rounded-sm opacity-60" />} key={`${width}-${i}`}>
+          <SidebarRowCluster>
+            <Skeleton className={cn('h-3 rounded-sm', width)} />
+          </SidebarRowCluster>
+        </SidebarRowShell>
       ))}
-    </div>
+    </SidebarRowStack>
   )
 }
 
@@ -47,6 +50,26 @@ export function SidebarPinnedEmptyState() {
         <Codicon name="pin" size="0.75rem" />
       </span>
       <span>{t.sidebar.shiftClickHint}</span>
+    </div>
+  )
+}
+
+// A failed drill-in load must not share the "no sessions yet" copy — that
+// reads as data loss. Borrows the row chrome so it resolves into the rows it
+// replaces without the list stepping sideways.
+export function SidebarLoadErrorState({ onRetry }: { onRetry: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center">
+      <div className="flex flex-col items-center gap-2">
+        <Codicon className="text-(--ui-text-quaternary)" name="error" size="1rem" />
+        <p className="text-xs text-(--ui-text-tertiary)">{t.sidebar.projectLoadFailed}</p>
+        <Button className="mt-0.5 text-(--ui-text-secondary)" onClick={onRetry} size="sm" variant="ghost">
+          <Codicon name="refresh" size="0.75rem" />
+          {t.common.retry}
+        </Button>
+      </div>
     </div>
   )
 }

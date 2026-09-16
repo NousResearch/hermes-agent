@@ -28,6 +28,8 @@ def _isolate_env(monkeypatch):
         "TELEGRAM_ALLOW_ALL_USERS",
         "TELEGRAM_GROUP_ALLOWED_USERS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "WHATSAPP_ALLOWED_USERS",
+        "WHATSAPP_CLOUD_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "GATEWAY_ALLOWED_USERS",
     ):
@@ -65,30 +67,11 @@ def test_paired_user_authorized_even_when_not_in_allowlist(monkeypatch):
     assert runner._is_user_authorized(_make_source("pairme")) is True
 
 
-def test_paired_user_authorized_with_no_allowlist(monkeypatch):
-    runner = _make_runner(paired=True)
-
-    assert runner._is_user_authorized(_make_source("pairme")) is True
-
-
 def test_unpaired_user_in_allowlist_still_authorized(monkeypatch):
     runner = _make_runner(paired=False)
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
 
     assert runner._is_user_authorized(_make_source("owner1")) is True
-
-
-def test_unpaired_user_not_in_allowlist_denied(monkeypatch):
-    runner = _make_runner(paired=False)
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1")
-
-    assert runner._is_user_authorized(_make_source("stranger")) is False
-
-
-def test_unpaired_user_no_allowlist_denied_no_failopen(monkeypatch):
-    runner = _make_runner(paired=False)
-
-    assert runner._is_user_authorized(_make_source("stranger")) is False
 
 
 # --------------------------------------------------------------------------
@@ -129,49 +112,6 @@ def test_approval_adds_to_configured_allowlist(store, monkeypatch):
     assert captured.get("TELEGRAM_ALLOWED_USERS") == "owner1,newuser99"
 
 
-def test_approval_no_allowlist_leaves_gateway_open(store, monkeypatch):
-    """Open gateway: approval must NOT create an allowlist (option i)."""
-    called = {}
-    import hermes_cli.config as cfg
-
-    monkeypatch.setattr(cfg, "save_env_value",
-                        lambda k, v: called.__setitem__(k, v))
-
-    _approve_new_user(store, "telegram", "newuser99")
-
-    assert "TELEGRAM_ALLOWED_USERS" not in called
-    assert os.getenv("TELEGRAM_ALLOWED_USERS", "") == ""
-    # The pairing store still records the grant (union honors it).
-    assert store.is_approved("telegram", "newuser99") is True
-
-
-def test_approval_idempotent_when_already_in_allowlist(store, monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1,newuser99")
-    called = {}
-    import hermes_cli.config as cfg
-
-    monkeypatch.setattr(cfg, "save_env_value",
-                        lambda k, v: called.__setitem__(k, v))
-
-    _approve_new_user(store, "telegram", "newuser99")
-
-    # Already present — no rewrite.
-    assert "TELEGRAM_ALLOWED_USERS" not in called
-
-
-def test_approval_skips_wildcard_allowlist(store, monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-    called = {}
-    import hermes_cli.config as cfg
-
-    monkeypatch.setattr(cfg, "save_env_value",
-                        lambda k, v: called.__setitem__(k, v))
-
-    _approve_new_user(store, "telegram", "newuser99")
-
-    assert "TELEGRAM_ALLOWED_USERS" not in called
-
-
 def test_revoke_removes_from_allowlist(store, monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "owner1,newuser99")
     saved = {}
@@ -189,17 +129,266 @@ def test_revoke_removes_from_allowlist(store, monkeypatch):
     assert saved.get("TELEGRAM_ALLOWED_USERS") == "owner1"
 
 
-def test_revoke_removes_env_var_when_list_empties(store, monkeypatch):
-    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "newuser99")
-    removed = []
+def test_revoke_whatsapp_device_jid_removes_bare_allowlist_entry(store, monkeypatch):
+    """Revoke with a device-suffix JID must clear the normalized phone allowlist entry.
+
+    Approve persists/mirrors the bare phone; operators often revoke with the
+    bridge's JID form. Exact-string allowlist remove left the user authorized.
+    """
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "already,15551234567")
+    saved = {}
     import hermes_cli.config as cfg
 
-    monkeypatch.setattr(cfg, "save_env_value",
-                        lambda k, v: os.environ.__setitem__(k, v))
-    monkeypatch.setattr(cfg, "remove_env_value", lambda k: removed.append(k))
-    store._approve_user("telegram", "newuser99", "")
-    # _approve_user's own add is a no-op (already present); reset for the revoke.
-    os.environ["TELEGRAM_ALLOWED_USERS"] = "newuser99"
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    monkeypatch.setattr(cfg, "remove_env_value", lambda k: os.environ.pop(k, None))
 
-    assert store.revoke("telegram", "newuser99") is True
-    assert "TELEGRAM_ALLOWED_USERS" in removed
+    store._approve_user("whatsapp", "15551234567@s.whatsapp.net", "")
+    assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is True
+
+    assert store.revoke("whatsapp", "15551234567:47@s.whatsapp.net") is True
+    assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is False
+    assert saved.get("WHATSAPP_ALLOWED_USERS") == "already"
+    assert os.environ.get("WHATSAPP_ALLOWED_USERS") == "already"
+
+
+def test_revoke_whatsapp_removes_all_alias_forms_from_allowlist(store, monkeypatch):
+    """Allowlist may hold both bare phone and JID; revoke must drop every alias."""
+    monkeypatch.setenv(
+        "WHATSAPP_ALLOWED_USERS",
+        "keeper,15551234567,15551234567@s.whatsapp.net",
+    )
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    store._approve_user("whatsapp", "15551234567", "")
+
+    assert store.revoke("whatsapp", "15551234567@s.whatsapp.net") is True
+    assert saved.get("WHATSAPP_ALLOWED_USERS") == "keeper"
+
+
+def test_revoke_whatsapp_cloud_device_jid_removes_bare_allowlist_entry(store, monkeypatch):
+    """Cloud pairing uses platform whatsapp_cloud — same JID/phone alias rules."""
+    monkeypatch.setenv("WHATSAPP_CLOUD_ALLOWED_USERS", "already,15551234567")
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    monkeypatch.setattr(cfg, "remove_env_value", lambda k: os.environ.pop(k, None))
+
+    store._approve_user("whatsapp_cloud", "15551234567@s.whatsapp.net", "")
+    assert store.is_approved("whatsapp_cloud", "15551234567@s.whatsapp.net") is True
+
+    assert store.revoke("whatsapp_cloud", "15551234567:47@s.whatsapp.net") is True
+    assert store.is_approved("whatsapp_cloud", "15551234567@s.whatsapp.net") is False
+    assert saved.get("WHATSAPP_CLOUD_ALLOWED_USERS") == "already"
+    assert os.environ.get("WHATSAPP_CLOUD_ALLOWED_USERS") == "already"
+
+
+def test_revoke_whatsapp_preserves_wildcard_allowlist_entry(store, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*,15551234567")
+    saved = {}
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: (saved.__setitem__(k, v), os.environ.__setitem__(k, v)),
+    )
+    store._approve_user("whatsapp", "15551234567", "")
+
+    assert store.revoke("whatsapp", "15551234567:47@s.whatsapp.net") is True
+    assert saved.get("WHATSAPP_ALLOWED_USERS") == "*"
+
+
+def test_revoke_whatsapp_sole_entry_denies_live_adapter_without_restart(
+    store, monkeypatch,
+):
+    """Sole allowlist entry revoke must deny immediately on a live gateway.
+
+    Persistence alone is not enough: WhatsAppAdapter snapshots ``_allow_from``
+    at construction, and authz trusts ``dm_policy=allowlist`` when the env
+    allowlist is gone. After revoke, intake and ``_is_user_authorized`` must
+    both deny the device-suffix JID without restarting the gateway.
+    """
+    from types import SimpleNamespace
+
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+    from gateway.run import GatewayRunner
+    import gateway.run as gateway_run
+    import hermes_cli.config as cfg
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr(
+        cfg,
+        "save_env_value",
+        lambda k, v: os.environ.__setitem__(k, v),
+    )
+    monkeypatch.setattr(
+        cfg,
+        "remove_env_value",
+        lambda k: (os.environ.pop(k, None), True)[1],
+    )
+
+    class LiveWhatsAppAdapter(WhatsAppBehaviorMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(
+                extra={
+                    "dm_policy": "allowlist",
+                    "allow_from": ["15551234567"],
+                }
+            )
+            self.platform = Platform.WHATSAPP
+            self._dm_policy = "allowlist"
+            self._dm_allowlist_source = "config"
+            self._allow_from = {"15551234567"}
+            self._group_policy = "pairing"
+            self._group_allow_from = set()
+
+    adapter = LiveWhatsAppAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist", "allow_from": ["15551234567"]},
+            )
+        }
+    )
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    runner.pairing_store = store
+    runner.pairing_stores = {}
+    monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: runner)
+
+    store._approve_user("whatsapp", "15551234567@s.whatsapp.net", "")
+    sender = "15551234567:47@s.whatsapp.net"
+    assert adapter._is_dm_intake_allowed(sender) is True
+    assert runner._is_user_authorized(
+        SessionSource(
+            platform=Platform.WHATSAPP,
+            user_id=sender,
+            chat_id=sender,
+            user_name="revoked",
+            chat_type="dm",
+        )
+    ) is True
+
+    assert store.revoke("whatsapp", sender) is True
+    assert store.is_approved("whatsapp", "15551234567@s.whatsapp.net") is False
+    assert os.environ.get("WHATSAPP_ALLOWED_USERS") in (None, "")
+    assert "15551234567" not in (adapter._allow_from or set())
+    assert adapter._is_dm_intake_allowed(sender) is False
+    assert adapter._is_dm_allowed(sender) is False
+    assert runner._is_user_authorized(
+        SessionSource(
+            platform=Platform.WHATSAPP,
+            user_id=sender,
+            chat_id=sender,
+            user_name="revoked",
+            chat_type="dm",
+        )
+    ) is False
+
+
+def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
+    """Explicit allow_from must stay authoritative when env differs.
+
+    Live DM checks must not invert construction precedence: a stale or
+    lower-precedence WHATSAPP_ALLOWED_USERS entry must not authorize (or
+    replace) an explicit config allowlist.
+    """
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "dm_policy": "allowlist",
+                "allow_from": ["15550000001"],
+            },
+        )
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._is_dm_intake_allowed("15550000001") is True
+    assert adapter._is_dm_allowed("15550000001") is True
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000002") is False
+
+    # Pairing-style env mutation must not broaden a config-seeded allowlist.
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002,15550000003")
+    assert adapter._is_dm_intake_allowed("15550000001") is True
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_intake_allowed("15550000003") is False
+
+
+def test_whatsapp_explicit_empty_allow_from_blocks_env_grant(monkeypatch):
+    """allow_from: [] is present config — must not fall through to env grants."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "dm_policy": "allowlist",
+                "allow_from": [],
+            },
+        )
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._allow_from == set()
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000002") is False
+
+
+def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
+    """Env-seeded adapters still pick up pairing allowlist mutations live."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})
+    )
+
+    assert adapter._dm_allowlist_source == "WHATSAPP_ALLOWED_USERS"
+    assert adapter._is_dm_intake_allowed("15551234567") is True
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "")
+    assert adapter._is_dm_intake_allowed("15551234567") is False
+    assert adapter._is_dm_allowed("15551234567") is False
+
+
+def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
+    """Sole-entry revoke pops the env key — must not revive the construction snapshot."""
+    from gateway.config import PlatformConfig
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    adapter = WhatsAppAdapter(
+        PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})
+    )
+    assert adapter._allow_from == {"15551234567"}
+
+    monkeypatch.delenv("WHATSAPP_ALLOWED_USERS", raising=False)
+    assert adapter._live_dm_allow_from() == set()
+    assert adapter._is_dm_intake_allowed("15551234567") is False
+    assert adapter._is_dm_allowed("15551234567") is False

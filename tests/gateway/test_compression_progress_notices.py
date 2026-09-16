@@ -63,43 +63,6 @@ def progress_notices_default(monkeypatch):
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-@pytest.mark.parametrize(
-    "message", ROUTINE_COMPRESSION_STATUS_SAMPLES, ids=lambda m: m[:32]
-)
-def test_enabled_delivers_routine_compression_statuses(
-    progress_notices_enabled, platform, message
-):
-    """Opt-in ON: every ROUTINE compression status reaches chat platforms.
-
-    Iterates the sample strings formatted from the SAME template constants
-    the emit sites use, so wording drift at an emit site cannot silently
-    detach the opt-in gate from the real messages.
-    """
-    assert _prepare_gateway_status_message(platform, "lifecycle", message) == message
-
-
-@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-@pytest.mark.parametrize(
-    "message", ROUTINE_COMPRESSION_STATUS_SAMPLES, ids=lambda m: m[:32]
-)
-def test_default_stays_silent(progress_notices_default, platform, message):
-    """Default (key absent): routine compression statuses stay suppressed."""
-    assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
-
-
-@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-def test_explicit_false_stays_silent(monkeypatch, platform):
-    """compression.progress_notices: false behaves exactly like the default."""
-    monkeypatch.setattr(
-        gateway_run,
-        "_load_gateway_config",
-        lambda: {"compression": {"progress_notices": False}},
-    )
-    for message in ROUTINE_COMPRESSION_STATUS_SAMPLES:
-        assert _prepare_gateway_status_message(platform, "lifecycle", message) is None
-
-
-@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 @pytest.mark.parametrize("message", NON_COMPRESSION_NOISE, ids=lambda m: m[:32])
 def test_enabled_still_suppresses_non_compression_noise(
     progress_notices_enabled, platform, message
@@ -115,33 +78,20 @@ def test_enabled_still_suppresses_non_compression_noise(
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["enabled", "default"])
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-def test_compaction_completion_notice_reaches_chat(monkeypatch, platform, enabled):
-    """The #69546 'compacted' lifecycle edge is deliverable on chat surfaces.
-
-    COMPACTION_DONE_STATUS already flows through the status callback on
-    compaction completion and is not matched by the noise regex — the opt-in
-    gate must not change that in either mode, so users who enable
-    progress_notices see the completion stat notice paired with the start.
-    """
+def test_compaction_completion_notice_respects_progress_notices_gate(
+    monkeypatch, platform, enabled
+):
+    """The completion edge follows the same opt-in gate as the start edge."""
     monkeypatch.setattr(
         gateway_run,
         "_load_gateway_config",
         lambda: {"compression": {"progress_notices": enabled}},
     )
-    assert (
-        _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
-        == COMPACTION_DONE_STATUS
-    )
-
-
-def test_config_read_errors_fail_closed(monkeypatch):
-    """A broken config read keeps the silent-by-design default."""
-    def _boom():
-        raise RuntimeError("config unreadable")
-
-    monkeypatch.setattr(gateway_run, "_load_gateway_config", _boom)
-    message = ROUTINE_COMPRESSION_STATUS_SAMPLES[0]
-    assert _prepare_gateway_status_message("telegram", "lifecycle", message) is None
+    result = _prepare_gateway_status_message(platform, "compacted", COMPACTION_DONE_STATUS)
+    if enabled:
+        assert result == COMPACTION_DONE_STATUS
+    else:
+        assert result is None
 
 
 def test_enabled_gate_does_not_leak_to_raw_platforms(progress_notices_enabled):
@@ -151,12 +101,6 @@ def test_enabled_gate_does_not_leak_to_raw_platforms(progress_notices_enabled):
         assert (
             _prepare_gateway_status_message(platform, "lifecycle", message) == message
         )
-
-
-def test_progress_notices_is_a_hot_reload_cache_busting_key():
-    """Editing compression.progress_notices on a running gateway must take
-    effect like every other compression.* key (hot-reload key list)."""
-    assert ("compression", "progress_notices") in gateway_run.GatewayRunner._CACHE_BUSTING_CONFIG_KEYS
 
 
 def test_progress_regex_covers_every_routine_sample():

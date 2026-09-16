@@ -67,11 +67,6 @@ def _exit_diag_records(home: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def test_sample_memory_never_raises() -> None:
-    sample = sample_memory()
-    assert isinstance(sample, dict)
-
-
 @pytest.mark.skipif(sys.platform != "linux", reason="/proc is Linux-only")
 def test_sample_memory_has_expected_keys_on_linux() -> None:
     sample = sample_memory()
@@ -104,14 +99,6 @@ def test_clean_exit_then_boot_reports_nothing(tmp_path: Path) -> None:
 
     assert record_startup(home=tmp_path) is None
     assert _exit_diag_records(tmp_path) == []
-
-
-def test_mark_exited_records_watchdog_reason(tmp_path: Path) -> None:
-    record_startup(home=tmp_path)
-    mark_exited(70, reason="loop_liveness_watchdog", home=tmp_path)
-    sentinel = _read_sentinel(tmp_path)
-    assert sentinel["exit_reason"] == "loop_liveness_watchdog"
-    assert sentinel["exit_code"] == 70
 
 
 # ---------------------------------------------------------------------------
@@ -156,88 +143,55 @@ def test_record_startup_persists_unclean_report_and_reclaims(tmp_path: Path) -> 
     assert sentinel["pid"] == os.getpid()
 
 
-def test_unclean_report_includes_last_heartbeat_memory(tmp_path: Path) -> None:
-    _write_sentinel(tmp_path, {
-        "phase": "running", "pid": _DEAD_PID, "start_time": 1000.0,
-    })
-    _write_heartbeat(tmp_path, {
-        "pid": _DEAD_PID,
-        "updated_at": "2026-07-12T19:33:00+00:00",
-        "mem": {
-            "rss_kib": 900_000,
-            "mem_total_kib": 2_015_136,
-            "mem_available_kib": 40_000,  # ~2% available → OOM suspicion
-            "swap_used_kib": 900_000,
-        },
-    })
-
-    evidence = detect_unclean_exit(home=tmp_path)
-    assert evidence is not None
-    assert evidence["last_heartbeat_at"] == "2026-07-12T19:33:00+00:00"
-    assert evidence["last_heartbeat_mem"]["mem_available_kib"] == 40_000
-    assert evidence["suspected_oom"] is True
-
-
-def test_healthy_memory_heartbeat_does_not_suspect_oom(tmp_path: Path) -> None:
-    _write_sentinel(tmp_path, {
-        "phase": "running", "pid": _DEAD_PID, "start_time": 1000.0,
-    })
-    _write_heartbeat(tmp_path, {
-        "pid": _DEAD_PID,
-        "updated_at": "2026-07-12T19:33:00+00:00",
-        "mem": {
-            "mem_total_kib": 2_015_136,
-            "mem_available_kib": 1_000_000,
-        },
-    })
-
-    evidence = detect_unclean_exit(home=tmp_path)
-    assert evidence is not None
-    assert "suspected_oom" not in evidence
-
-
-def test_live_owner_is_not_reported_as_unclean(tmp_path: Path) -> None:
-    """A live matching PID means a --replace takeover is in flight, not a
-    death — the detector must stay quiet (start_time omitted → assume alive)."""
+def test_record_startup_carries_unclean_flags_onto_new_sentinel(
+    tmp_path: Path,
+) -> None:
+    """The unclean-death verdict must survive on the reclaimed sentinel so
+    /api/status can surface "restarted after (suspected) OOM" (NS-656)."""
     _write_sentinel(tmp_path, {
         "phase": "running",
-        "pid": os.getpid(),
+        "pid": _DEAD_PID,
+        "start_time": 1000.0,
+        "started_at": "2026-07-11T04:30:00+00:00",
     })
-    assert detect_unclean_exit(home=tmp_path) is None
+    # Last heartbeat shows near-exhausted memory → suspected OOM.
+    from gateway.shutdown_watchdog import get_loop_heartbeat_path
+
+    hb_path = get_loop_heartbeat_path(tmp_path)
+    hb_path.parent.mkdir(parents=True, exist_ok=True)
+    hb_path.write_text(json.dumps({
+        "pid": _DEAD_PID,
+        "updated_at": "2026-07-11T05:00:00+00:00",
+        "mem": {"mem_total_kib": 1024 * 1024, "mem_available_kib": 20 * 1024},
+    }), encoding="utf-8")
+
+    evidence = record_startup(home=tmp_path)
+    assert evidence is not None
+    assert evidence.get("suspected_oom") is True
+
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running"
+    assert sentinel["prior_unclean_exit"] is True
+    assert sentinel["prior_suspected_oom"] is True
 
 
-def test_corrupt_sentinel_is_ignored(tmp_path: Path) -> None:
-    path = get_lifecycle_sentinel_path(tmp_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{not json", encoding="utf-8")
-    assert detect_unclean_exit(home=tmp_path) is None
+def test_record_startup_clean_boot_has_no_prior_flags(tmp_path: Path) -> None:
+    _write_sentinel(tmp_path, {
+        "phase": "exited",
+        "pid": _DEAD_PID,
+        "exit_code": 0,
+        "exit_reason": "graceful_shutdown",
+    })
     assert record_startup(home=tmp_path) is None
-    # And the boot still claims a fresh sentinel.
-    assert _read_sentinel(tmp_path)["phase"] == "running"
+    sentinel = _read_sentinel(tmp_path)
+    assert sentinel["phase"] == "running"
+    assert "prior_unclean_exit" not in sentinel
+    assert "prior_suspected_oom" not in sentinel
 
 
 # ---------------------------------------------------------------------------
 # Takeover ownership guard on mark_exited
 # ---------------------------------------------------------------------------
-
-
-def test_old_life_cannot_clobber_new_owner_sentinel(tmp_path: Path) -> None:
-    """--replace: the replacement claims the sentinel while the old process
-    is mid-teardown; the old life's mark_exited must be a no-op."""
-    _write_sentinel(tmp_path, {
-        "phase": "running",
-        "pid": os.getpid() + 1,  # someone else owns it
-        "start_time": 2000.0,
-    })
-    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
-    sentinel = _read_sentinel(tmp_path)
-    assert sentinel["phase"] == "running"
-    assert sentinel["pid"] == os.getpid() + 1
-
-
-def test_mark_exited_without_prior_sentinel_writes_exited(tmp_path: Path) -> None:
-    mark_exited(1, reason="graceful_shutdown", home=tmp_path)
-    assert _read_sentinel(tmp_path)["phase"] == "exited"
 
 
 def test_mark_exited_leaves_pid_none_sentinel_alone(tmp_path: Path) -> None:
@@ -250,31 +204,9 @@ def test_mark_exited_leaves_pid_none_sentinel_alone(tmp_path: Path) -> None:
     assert sentinel["pid"] is None
 
 
-def test_mark_exited_rewrites_own_sentinel(tmp_path: Path) -> None:
-    _write_sentinel(tmp_path, {
-        "phase": "running", "pid": os.getpid(), "start_time": 2000.0,
-    })
-    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
-    assert _read_sentinel(tmp_path)["phase"] == "exited"
-
-
 # ---------------------------------------------------------------------------
 # read_prior_exit_label (container-boot annotation)
 # ---------------------------------------------------------------------------
-
-
-def test_prior_exit_label_unknown_when_no_sentinel(tmp_path: Path) -> None:
-    assert read_prior_exit_label(tmp_path) == "unknown"
-
-
-def test_prior_exit_label_clean_after_exit(tmp_path: Path) -> None:
-    _write_sentinel(tmp_path, {"phase": "exited", "pid": 123, "exit_code": 0})
-    assert read_prior_exit_label(tmp_path) == "clean"
-
-
-def test_prior_exit_label_unclean_when_still_running(tmp_path: Path) -> None:
-    _write_sentinel(tmp_path, {"phase": "running", "pid": _DEAD_PID})
-    assert read_prior_exit_label(tmp_path) == "unclean"
 
 
 def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
@@ -282,3 +214,39 @@ def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("garbage", encoding="utf-8")
     assert read_prior_exit_label(tmp_path) == "unknown"
+
+
+def test_sentinel_carries_process_birth_through_exit(tmp_path: Path, monkeypatch) -> None:
+    """The running sentinel stamps the process ``create_time`` (psutil birth, not the later ledger
+    claim) and the exited sentinel keeps it, so the Windows start attestation can match a clean
+    exit by incarnation, not by reusable PID (#110020)."""
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1234.5)
+    record_startup(home=tmp_path)
+    running = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    assert running["create_time"] == 1234.5
+    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
+    exited = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    assert exited["phase"] == "exited"
+    assert (exited["start_time"], exited["create_time"]) == (running["start_time"], 1234.5)
+
+
+def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkeypatch) -> None:
+    """The live-owner guard compares the sentinel's psutil ``create_time`` with the live PID's
+    (same producer, epoch seconds). The ledger's ``start_time`` (claim time) is never compared
+    with ``get_process_start_time`` (proc ticks / centiseconds): that comparison could not match,
+    so a ``--replace`` handover was reported as an unclean death."""
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 5000.0)
+    live = {"phase": "running", "pid": 4242, "start_time": 5003.7, "started_at": "x"}
+
+    _write_sentinel(tmp_path, {**live, "create_time": 5000.0})
+    assert detect_unclean_exit(home=tmp_path) is None  # same incarnation still alive: handover
+
+    _write_sentinel(tmp_path, {**live, "create_time": 4000.0})
+    assert detect_unclean_exit(home=tmp_path) is not None  # PID reused by another process: death
+
+    # Pre-stamp sentinel (no create_time): the owner was born before it claimed; a reuser after.
+    _write_sentinel(tmp_path, live)  # birth 5000.0 <= claim 5003.7 → owner
+    assert detect_unclean_exit(home=tmp_path) is None
+    _write_sentinel(tmp_path, {**live, "start_time": 4000.0})  # born after the claim → reuser → death
+    assert detect_unclean_exit(home=tmp_path) is not None

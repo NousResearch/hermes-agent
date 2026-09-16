@@ -10,6 +10,8 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import pytest
+
 import cron.scheduler as s
 
 
@@ -18,7 +20,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
     """Patch the job pipeline primitives and record the call order."""
     calls = []
 
-    def fake_run_job(job, *, defer_agent_teardown=None):
+    def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         calls.append(("run_job", job["id"]))
         fr = final if silent_marker_in is None else silent_marker_in
         return (success, output, fr, error)
@@ -27,11 +29,11 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(jid, ok, err=None, delivery_error=None, **_kw):
         calls.append(("mark", jid, ok))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
@@ -46,12 +48,22 @@ def test_tick_process_job_sequence(monkeypatch):
     sequence run_job → save → deliver → mark, in that order."""
     calls = _patch_pipeline(monkeypatch)
     monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
-    monkeypatch.setattr(s, "advance_next_run", lambda jid: True)
+    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id, **_kwargs: True)
 
     s.tick(verbose=False, sync=True)
 
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j1", True)
+
+
+def test_tick_skips_job_when_durable_fire_claim_is_lost(monkeypatch):
+    """A manual/external fire that wins the shared CAS must exclude ticker."""
+    calls = _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(s, "get_due_jobs", lambda: [{"id": "j1", "name": "t"}])
+    monkeypatch.setattr(s, "claim_job_for_fire", lambda _job_id: False)
+
+    assert s.tick(verbose=False, sync=True) == 0
+    assert calls == []
 
 
 def test_run_one_job_success_sequence(monkeypatch):
@@ -66,118 +78,270 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
-def test_run_one_job_silent_skips_delivery(monkeypatch):
-    """A [SILENT] final response saves output + marks the run but does NOT
-    deliver."""
-    calls = _patch_pipeline(monkeypatch, silent_marker_in="[SILENT]")
+def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
+    """An exception escaping the run body must not become a silent error row."""
+    delivered = []
+    marked = []
+    finished = []
 
-    s.run_one_job({"id": "j3", "name": "t"})
-
-    kinds = [c[0] for c in calls]
-    assert "run_job" in kinds and "save" in kinds and "mark" in kinds
-    assert "deliver" not in kinds
-
-
-def test_run_one_job_empty_response_is_soft_failure(monkeypatch):
-    """An empty final response marks the run as NOT ok (issue #8585)."""
-    calls = _patch_pipeline(monkeypatch, final="   ")
-
-    s.run_one_job({"id": "j4", "name": "t"})
-
-    mark = [c for c in calls if c[0] == "mark"][0]
-    assert mark == ("mark", "j4", False)
-
-
-def test_run_one_job_failed_job_delivers_error(monkeypatch):
-    """A failed job still delivers (the error notice) and marks not-ok."""
-    calls = _patch_pipeline(monkeypatch, success=False, final="", error="boom")
-
-    s.run_one_job({"id": "j5", "name": "t"})
-
-    kinds = [c[0] for c in calls]
-    assert "deliver" in kinds  # failures always deliver
-    mark = [c for c in calls if c[0] == "mark"][0]
-    assert mark == ("mark", "j5", False)
-
-
-def test_run_one_job_exception_marks_failure(monkeypatch):
-    """If run_job raises, the helper marks the run failed and returns False
-    rather than propagating."""
-    def boom(job, *, defer_agent_teardown=None):
-        raise RuntimeError("kaboom")
-
-    monkeypatch.setattr(s, "run_job", boom)
-    marks = []
     monkeypatch.setattr(
-        s, "mark_job_run",
-        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j3"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            RuntimeError("Gemini HTTP 503 (UNAVAILABLE)")
+        ),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
     )
 
-    ok = s.run_one_job({"id": "j6", "name": "t"})
+    ok = s.run_one_job({"id": "j3", "name": "morning", "deliver": "telegram"})
 
     assert ok is False
-    assert marks == [("j6", False)]
-
-
-def test_run_one_job_base_exception_records_failure_then_reraises(monkeypatch):
-    """#73973: a BaseException escaping run_job (CancelledError re-raised by the
-    inner teardown handler, KeyboardInterrupt, SystemExit) must still record the
-    failure via mark_job_run — otherwise a claim_dispatch()-consumed one-shot is
-    left wedged with completed==times but last_run_at never written. The
-    BaseException itself is re-raised after recording so shutdown semantics are
-    preserved."""
-    import asyncio
-
-    import pytest
-
-    for exc in (asyncio.CancelledError(), KeyboardInterrupt(), SystemExit(1)):
-        def boom(job, *, defer_agent_teardown=None, _exc=exc):
-            raise _exc
-
-        monkeypatch.setattr(s, "run_job", boom)
-        marks = []
-        monkeypatch.setattr(
-            s, "mark_job_run",
-            lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok, err)),
+    assert len(delivered) == 1 and delivered[0][0] == "j3"
+    # The notice carries the classifier verdict's gloss from the copy table (whatever its wording),
+    # never the raw HTTP code as the lead, plus a retry command.
+    from cron.scheduler_failure_copy import _provider_failure_cause, classify_cron_failure_reason
+    gloss = _provider_failure_cause(classify_cron_failure_reason("Gemini HTTP 503 (UNAVAILABLE)"))
+    assert gloss and gloss in delivered[0][1]
+    assert not delivered[0][1].lstrip("⚠️ ").startswith("Gemini HTTP 503")
+    assert "hermes cron run j3" in delivered[0][1]
+    assert marked == [
+        (("j3", False, "Gemini HTTP 503 (UNAVAILABLE)"), {"delivery_error": None})
+    ]
+    assert finished == [
+        (
+            ("exec-j3",),
+            {
+                "success": False,
+                "error": "Gemini HTTP 503 (UNAVAILABLE)",
+                "delivery_outcome": "delivered",
+            },
         )
-
-        with pytest.raises(type(exc)):
-            s.run_one_job({"id": "jbase", "name": "t"})
-
-        assert marks and marks[0][0] == "jbase" and marks[0][1] is False, (
-            f"{type(exc).__name__}: failure was not recorded"
-        )
-        # Empty str(exc) (e.g. bare CancelledError) falls back to the class name.
-        assert marks[0][2], f"{type(exc).__name__}: error text must be non-empty"
+    ]
 
 
-def test_run_one_job_plain_exception_still_swallowed(monkeypatch):
-    """The BaseException widening must not change plain-Exception behavior:
-    recorded, returns False, NOT re-raised."""
-    def boom(job, *, defer_agent_teardown=None):
-        raise ValueError("plain failure")
+def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch):
+    """A failed fallback alert must populate last_delivery_error."""
+    marked = []
 
-    monkeypatch.setattr(s, "run_job", boom)
-    marks = []
     monkeypatch.setattr(
-        s, "mark_job_run",
-        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok)),
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j4"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("provider failed")),
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: "send failed: 502")
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+
+    assert s.run_one_job({"id": "j4", "deliver": "telegram"}) is False
+    assert marked == [
+        (("j4", False, "provider failed"), {"delivery_error": "send failed: 502"})
+    ]
+
+
+def _patch_escaped_failure(monkeypatch, delivered, *, exec_id, err):
+    """Make run_job raise, and capture what the escape handler delivers."""
+    monkeypatch.setattr(s, "create_execution", lambda *_a, **_kw: {"id": exec_id})
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError(err)),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append(content) or None,
+    )
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_kw: None)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+    # Deterministic threshold: default 3, independent of the host config.
+    monkeypatch.setattr(s, "load_config", lambda: {})
+
+
+def test_escaped_failure_delivery_carries_the_streak_nudge(monkeypatch):
+    """A repeatedly-failing job must be nudged even when it fails at the
+    scheduler layer (#88655).
+
+    ``mark_job_run`` increments ``failure_streak`` for an escaped failure just
+    as it does for an agent failure, so the counter climbs either way. But the
+    nudge that spends it was only composed on the normal delivery path, so a
+    job that raises before the run body on every tick - a bad import from a
+    half-applied update, a provider client that cannot construct - alerts
+    forever and is never told it should be reviewed or paused. Nothing else
+    surfaces the streak in chat.
+    """
+    delivered = []
+    _patch_escaped_failure(
+        monkeypatch, delivered, exec_id="exec-j5", err="cannot import name X"
     )
 
-    ok = s.run_one_job({"id": "jplain", "name": "t"})
+    ok = s.run_one_job(
+        {
+            "id": "j5",
+            "name": "scout",
+            "deliver": "telegram",
+            "schedule": {"kind": "interval"},
+            "failure_streak": 2,  # + this run = 3 = default threshold
+        }
+    )
 
     assert ok is False
-    assert marks == [("jplain", False)]
+    assert len(delivered) == 1
+    assert "cannot import name X" in delivered[0]
+    assert "failed 3 runs in a row" in delivered[0]
+    assert "hermes cron pause scout" in delivered[0]
+
+
+def test_escaped_failure_delivery_stays_quiet_below_the_threshold(monkeypatch):
+    """The nudge is appended, not always-on: a first failure reads as before."""
+    delivered = []
+    _patch_escaped_failure(
+        monkeypatch, delivered, exec_id="exec-j6", err="provider failed"
+    )
+
+    ok = s.run_one_job(
+        {
+            "id": "j6",
+            "name": "scout",
+            "deliver": "telegram",
+            "schedule": {"kind": "interval"},
+            "failure_streak": 0,
+        }
+    )
+
+    assert ok is False
+    assert len(delivered) == 1
+    assert delivered[0].startswith("⚠️ Cron 'scout' failed: provider failed")
+    assert "hermes cron runs j6" in delivered[0]
+
+
+def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
+    """Once delivery has been attempted, the outer handler must not send again."""
+    delivered = []
+    mark_calls = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j5"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (True, "out", "final response", None),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+
+    def fake_mark(*args, **kwargs):
+        mark_calls.append((args, kwargs))
+        if len(mark_calls) == 1:
+            raise RuntimeError("bookkeeping boom")
+
+    monkeypatch.setattr(s, "mark_job_run", fake_mark)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+
+    ok = s.run_one_job({"id": "j5", "name": "once", "deliver": "telegram"})
+
+    assert ok is False
+    assert delivered == [("j5", "final response")]
+    assert mark_calls[0] == (("j5", True, None), {"delivery_error": None})
+    assert mark_calls[1] == (
+        ("j5", False, "bookkeeping boom"),
+        {"delivery_error": None},
+    )
+
+
+def test_run_one_job_keyboard_interrupt_skips_delivery_and_reraises(monkeypatch):
+    """Hard interrupts must not attempt failure delivery; they re-raise."""
+    delivered = []
+    marked = []
+    finished = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j6"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: {})
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        s.run_one_job({"id": "j6", "name": "interrupt", "deliver": "telegram"})
+
+    assert delivered == []
+    assert marked == [(("j6", False, "KeyboardInterrupt"), {})]
+    assert finished == [
+        (
+            ("exec-j6",),
+            {
+                "success": False,
+                "error": "KeyboardInterrupt",
+                "delivery_outcome": "suppressed",
+            },
+        )
+    ]
 
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
-    execute run_job inside a profile secret scope so credential reads
-    (resolve_runtime_provider -> get_secret) don't fail-close with
-    UnscopedSecretError, and must tear the scope down afterward.
+    keep one profile secret scope active through execution and delivery so
+    credential reads do not fail closed or fall through to another profile,
+    then tear the scope down after the complete job lifecycle.
 
-    Behavior contract: a scope is present during run_job and absent after,
-    regardless of the concrete secret values.
+    Behavior contract: the same scope is present during run_job and
+    _deliver_result, and no scope remains after run_one_job returns.
     """
     from agent import secret_scope as ss
 
@@ -186,17 +350,23 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
 
     scope_during_run = {}
+    scope_during_delivery = {}
 
-    def fake_run_job(job, *, defer_agent_teardown=None):
+    def fake_run_job(job, *, defer_agent_teardown=None, **kw):
         # This is where resolve_runtime_provider() would read a secret. Prove a
         # scope is installed and the profile's secret resolves without raising.
         scope_during_run["scope"] = ss.current_secret_scope()
         scope_during_run["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
         return (True, "out", "final", None)
 
+    def fake_deliver(*args, **kwargs):
+        scope_during_delivery["scope"] = ss.current_secret_scope()
+        scope_during_delivery["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
+        return None
+
     monkeypatch.setattr(s, "run_job", fake_run_job)
     monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
     ss.set_multiplex_active(True)
@@ -206,220 +376,12 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
         ss.set_multiplex_active(False)
 
     assert ok is True
-    # Scope was installed during run_job and the profile secret resolved.
+    # The same profile scope covered both execution and delivery.
     assert scope_during_run["scope"] is not None
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
-    # And it was torn down after run_one_job returned (no leak).
+    assert scope_during_delivery["scope"] == scope_during_run["scope"]
+    assert scope_during_delivery["base_url"] == "https://openrouter.ai/api/v1"
+    # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
 
-def test_run_one_job_env_injected_credential_resolves_without_multiplex(
-    monkeypatch, tmp_path
-):
-    """Regression for #65773: single-profile deployment (multiplex OFF) where
-    the provider key is injected via the process environment ONLY (container
-    env var / systemd Environment= / secret-manager wrapper) and is absent
-    from <home>/.env.
-
-    run_one_job installs a <home>/.env secret scope around every job. Before
-    c758ded6d (#69057, salvage of #67827) an installed scope was authoritative
-    even with multiplexing off, so the env-injected key resolved to empty
-    inside cron, the client shipped the "no-key-required" placeholder, and
-    every provider call 401'd — while interactive turns on the same deployment
-    (which never install a scope when multiplex is off) kept working.
-
-    Behavior contract at the cron layer, regardless of how it's implemented
-    (scope-miss fallthrough on main today, or a multiplex guard on the
-    installation site): during run_job with multiplex OFF,
-    get_secret(<env-injected key>) must return the process-environment value.
-    """
-    from agent import secret_scope as ss
-
-    # Profile .env exists but does NOT carry the provider key — exactly the
-    # reported deployment shape.
-    (tmp_path / ".env").write_text("UNRELATED_KEY=x\n")
-    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
-    monkeypatch.setenv("DEEPINFRA_API_KEY", "env-injected-key")
-
-    observed = {}
-
-    def fake_run_job(job, *, defer_agent_teardown=None):
-        # This is where resolve_runtime_provider() reads the credential.
-        observed["key"] = ss.get_secret("DEEPINFRA_API_KEY")
-        # And a key that IS in .env must still resolve (scope stays useful).
-        observed["env_file_key"] = ss.get_secret("UNRELATED_KEY")
-        return (True, "out", "final", None)
-
-    monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
-    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
-
-    # set_multiplex_active writes a module-level global (deployment mode, not
-    # per-task state) — restore whatever was there to avoid cross-test leaks.
-    prev_multiplex = ss.is_multiplex_active()
-    ss.set_multiplex_active(False)
-    try:
-        ok = s.run_one_job({"id": "j-65773", "name": "t"})
-    finally:
-        ss.set_multiplex_active(prev_multiplex)
-
-    assert ok is True
-    # The user-facing symptom: this was None/"" before the fix (key absent
-    # from .env), which became the "no-key-required" placeholder → HTTP 401.
-    assert observed["key"] == "env-injected-key"
-    # .env-sourced secrets keep resolving through the scope.
-    assert observed["env_file_key"] == "x"
-    # No scope leaks out of run_one_job.
-    assert ss.current_secret_scope() is None
-
-
-def test_run_one_job_env_file_wins_over_environ_without_multiplex(
-    monkeypatch, tmp_path
-):
-    """Precedence half of #65773: when a key exists in BOTH <home>/.env and
-    the process environment, cron must resolve the .env value (the installed
-    scope is an overlay over os.environ, checked first — matching
-    load_hermes_dotenv's .env-overrides-shell precedence on interactive paths).
-    """
-    from agent import secret_scope as ss
-
-    (tmp_path / ".env").write_text("DEEPINFRA_API_KEY=from-env-file\n")
-    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
-    monkeypatch.setenv("DEEPINFRA_API_KEY", "stale-shell-value")
-
-    observed = {}
-
-    def fake_run_job(job, *, defer_agent_teardown=None):
-        observed["key"] = ss.get_secret("DEEPINFRA_API_KEY")
-        return (True, "out", "final", None)
-
-    monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
-    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
-
-    prev_multiplex = ss.is_multiplex_active()
-    ss.set_multiplex_active(False)
-    try:
-        ok = s.run_one_job({"id": "j-65773b", "name": "t"})
-    finally:
-        ss.set_multiplex_active(prev_multiplex)
-
-    assert ok is True
-    assert observed["key"] == "from-env-file"
-    assert ss.current_secret_scope() is None
-
-
-def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
-    """Regression for #58720: the cron agent's async-resource teardown
-    (agent.close + cleanup_stale_async_clients) MUST run AFTER delivery, not
-    before. run_job defers teardown by appending the live agent to the holder
-    list; run_one_job tears it down only after _deliver_result has run. If the
-    order flips, delivery races a torn-down async client and dies with
-    'cannot schedule new futures after interpreter shutdown'.
-    """
-    order = []
-
-    class FakeAgent:
-        def close(self):
-            order.append("agent.close")
-
-    def fake_run_job(job, *, defer_agent_teardown=None):
-        order.append("run_job")
-        # Mimic run_job's deferral contract: hand the live agent back so the
-        # caller tears it down after delivery instead of in run_job's finally.
-        assert defer_agent_teardown is not None, "run_one_job must defer teardown"
-        defer_agent_teardown.append(FakeAgent())
-        return (True, "out", "final response", None)
-
-    def fake_deliver(job, content, adapters=None, loop=None):
-        order.append("deliver")
-        return None
-
-    monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
-    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
-    # cleanup_stale_async_clients is imported lazily inside _teardown_cron_agent;
-    # stub it so the teardown records its own marker without touching real caches.
-    import agent.auxiliary_client as aux
-    monkeypatch.setattr(aux, "cleanup_stale_async_clients",
-                        lambda: order.append("cleanup_stale"))
-
-    ok = s.run_one_job({"id": "j8", "name": "t"})
-
-    assert ok is True
-    # Delivery must strictly precede agent teardown + stale-client reap.
-    assert order == ["run_job", "deliver", "agent.close", "cleanup_stale"], order
-
-
-def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch):
-    """Even if _deliver_result raises, the deferred agent is still torn down
-    (no fd/client leak — #10200). Teardown lives in a finally around delivery.
-    """
-    order = []
-
-    class FakeAgent:
-        def close(self):
-            order.append("agent.close")
-
-    def fake_run_job(job, *, defer_agent_teardown=None):
-        defer_agent_teardown.append(FakeAgent())
-        return (True, "out", "final response", None)
-
-    def boom_deliver(job, content, adapters=None, loop=None):
-        order.append("deliver-raise")
-        raise RuntimeError("send blew up")
-
-    monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
-    monkeypatch.setattr(s, "_deliver_result", boom_deliver)
-    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
-    import agent.auxiliary_client as aux
-    monkeypatch.setattr(aux, "cleanup_stale_async_clients",
-                        lambda: order.append("cleanup_stale"))
-
-    ok = s.run_one_job({"id": "j9", "name": "t"})
-
-    assert ok is True  # delivery error is recorded, not propagated
-    assert order == ["deliver-raise", "agent.close", "cleanup_stale"], order
-
-
-def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
-    """#58720 W1: if save_job_output (or the [SILENT]/empty computation) raises
-    AFTER run_job hands the agent back but BEFORE delivery, the deferred agent
-    must still be torn down. The outer `except` would otherwise swallow the
-    error and leak the agent (#10200). Teardown lives in a finally spanning
-    save→deliver.
-    """
-    order = []
-
-    class FakeAgent:
-        def close(self):
-            order.append("agent.close")
-
-    def fake_run_job(job, *, defer_agent_teardown=None):
-        defer_agent_teardown.append(FakeAgent())
-        return (True, "out", "final response", None)
-
-    def boom_save(jid, out):
-        order.append("save-raise")
-        raise RuntimeError("disk full")
-
-    monkeypatch.setattr(s, "run_job", fake_run_job)
-    monkeypatch.setattr(s, "save_job_output", boom_save)
-    monkeypatch.setattr(s, "_deliver_result",
-                        lambda *a, **k: order.append("deliver"))
-    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
-    import agent.auxiliary_client as aux
-    monkeypatch.setattr(aux, "cleanup_stale_async_clients",
-                        lambda: order.append("cleanup_stale"))
-
-    ok = s.run_one_job({"id": "j10", "name": "t"})
-
-    # save raised → outer handler marks failure and returns False, but the
-    # deferred agent was still torn down (no delivery, no leak).
-    assert ok is False
-    assert "deliver" not in order
-    assert order == ["save-raise", "agent.close", "cleanup_stale"], order

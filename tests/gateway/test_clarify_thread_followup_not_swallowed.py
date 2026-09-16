@@ -26,10 +26,9 @@ import pytest
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 
@@ -51,6 +50,17 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id, "type": "im"}
+
+
+class _CardAdapter(_StubAdapter):
+    """Adapter with a persistent native card: records the gateway's retire callback."""
+
+    def __init__(self):
+        super().__init__()
+        self.retired: list[tuple[str, str]] = []
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        self.retired.append((clarify_id, notice))
 
 
 class _FellThroughIntercept(Exception):
@@ -123,52 +133,158 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
     with pytest.raises(_FellThroughIntercept):
         await _dispatch(runner, _event("just checking the visual UI, no need to pass any data"))
 
-    # The clarify entry must still be pending and unresolved.
+    # The prose is not accepted as the answer, but the clarify must be
+    # released before normal busy routing so redirect-to-steer can drain.
     with cm._lock:
         entry = cm._entries.get("cl-native")
     assert entry is not None
-    assert not entry.event.is_set()
-    _clear_clarify_state()
-
-
-@pytest.mark.asyncio
-async def test_numeric_reply_still_resolves_native_multi_choice_clarify():
-    """Typed "2" keeps resolving the button prompt through the same intercept."""
-    _clear_clarify_state()
-    from tools import clarify_gateway as cm
-
-    adapter = _StubAdapter()
-    runner = _make_runner(adapter)
-    cm.register("cl-num", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
-
-    result = await _dispatch(runner, _event("2"))
-
-    assert result == ""  # intercepted + acknowledged silently
-    with cm._lock:
-        entry = cm._entries.get("cl-num")
-    assert entry is not None
     assert entry.event.is_set()
-    assert entry.response == "dropdown"
+    assert entry.response == ""
     _clear_clarify_state()
 
 
 @pytest.mark.asyncio
-async def test_exact_label_reply_still_resolves_native_multi_choice_clarify():
+async def test_thread_prose_retires_the_native_card_before_falling_through():
+    """The card adapter gets one retire call (cancel notice) while the prose still falls through."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    cm.register("cl-slack-card", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, _event("just checking the visual UI, no need to pass any data"))
+
+    assert [cid for cid, _ in adapter.retired] == ["cl-slack-card"]
+    assert "cancelled" in adapter.retired[0][1].lower()
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_typed_selection_retires_the_native_card_with_the_answer():
+    """A numeric pick typed into the thread resolves the clarify AND rewrites the card."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register("cl-typed-card", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+
+    assert await _dispatch(runner, _event("2")) == ""
+
+    assert entry.response == "dropdown"
+    assert adapter.retired == [("cl-typed-card", "✅ answered: dropdown")]
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
+    """A button result that wins the race remains the clarify response."""
     _clear_clarify_state()
     from tools import clarify_gateway as cm
 
     adapter = _StubAdapter()
     runner = _make_runner(adapter)
-    cm.register("cl-label", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+    entry = cm.register(
+        "cl-button-race",
+        SESSION_KEY,
+        "Pick a UI variant",
+        ["buttons", "dropdown"],
+    )
+    assert cm.resolve_gateway_clarify("cl-button-race", "buttons") is True
 
-    result = await _dispatch(runner, _event("Buttons"))
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, _event("one more unrelated thought"))
+
+    assert entry.event.is_set()
+    assert entry.response == "buttons"
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_native_multi_select_out_of_range_keeps_clarify_pending():
+    """Out-of-range multi-select numbers must not cancel the pending prompt."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-ms-oor",
+        SESSION_KEY,
+        "Pick some targets",
+        ["staging", "prod", "canary"],
+        multi_select=True,
+    )
+    assert entry.awaiting_text is False
+
+    result = await _dispatch(runner, _event("99"))
 
     assert result == ""
     with cm._lock:
-        entry = cm._entries.get("cl-label")
+        still = cm._entries.get("cl-ms-oor")
+    assert still is not None
+    assert not still.event.is_set()
+    assert still.response is None
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_native_multi_select_bad_comma_list_keeps_clarify_pending():
+    """Unrecognised comma-lists are retryable selection attempts, not prose."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register(
+        "cl-ms-bad",
+        SESSION_KEY,
+        "Pick some targets",
+        ["staging", "prod", "canary"],
+        multi_select=True,
+    )
+    assert entry.awaiting_text is False
+
+    result = await _dispatch(runner, _event("1,99"))
+
+    assert result == ""
+    with cm._lock:
+        still = cm._entries.get("cl-ms-bad")
+    assert still is not None
+    assert not still.event.is_set()
+    assert still.response is None
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_native_multi_select_prose_releases_clarify_before_routing():
+    """Free prose on multi-select still breaks the redirect/steer deadlock."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _StubAdapter()
+    runner = _make_runner(adapter)
+    cm.register(
+        "cl-ms-prose",
+        SESSION_KEY,
+        "Pick some targets",
+        ["staging", "prod"],
+        multi_select=True,
+    )
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(
+            runner,
+            _event("just checking the visual UI, no need to pass any data"),
+        )
+
+    with cm._lock:
+        entry = cm._entries.get("cl-ms-prose")
     assert entry is not None
     assert entry.event.is_set()
-    assert entry.response == "buttons"
+    assert entry.response == ""
     _clear_clarify_state()
 
 
@@ -191,24 +307,4 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry is not None
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
-    _clear_clarify_state()
-
-
-@pytest.mark.asyncio
-async def test_prose_still_accepted_for_open_ended_clarify():
-    _clear_clarify_state()
-    from tools import clarify_gateway as cm
-
-    adapter = _StubAdapter()
-    runner = _make_runner(adapter)
-    cm.register("cl-open", SESSION_KEY, "What should I name it?", None)
-
-    result = await _dispatch(runner, _event("call it hermes-ux"))
-
-    assert result == ""
-    with cm._lock:
-        entry = cm._entries.get("cl-open")
-    assert entry is not None
-    assert entry.event.is_set()
-    assert entry.response == "call it hermes-ux"
     _clear_clarify_state()

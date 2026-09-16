@@ -37,9 +37,11 @@ export function KeybindSettings() {
   const bindings = useStore($bindings)
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
-  // Subscribe so contributed actions appear/disappear live in the map.
-  useContributions(KEYBINDS_AREA)
-  const actionList = allKeybindActions()
+  // Subscribe so contributed actions appear/disappear live in the map. The
+  // snapshot feeds the list: under React Compiler an independently called
+  // allKeybindActions() stays memoized across that registration.
+  const contributions = useContributions(KEYBINDS_AREA)
+  const actionList = allKeybindActions(contributions)
   const [query, setQuery] = useState('')
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]
@@ -173,11 +175,13 @@ export function KeybindSettings() {
 function CategoryHeader({ label, onToggle, open }: { label: string; onToggle: () => void; open: boolean }) {
   return (
     <button
-      className="group/kbd-cat flex w-fit items-center gap-1 px-2.5 pb-1 pt-3 text-left leading-none"
+      className="group/kbd-cat flex w-fit min-w-0 items-center gap-1 px-2.5 pb-1 pt-3 text-left leading-none"
       onClick={onToggle}
       type="button"
     >
-      <span className="text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">{label}</span>
+      <span className="min-w-0 truncate text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+        {label}
+      </span>
       <DisclosureCaret
         className="text-(--ui-text-tertiary) opacity-0 transition group-hover/kbd-cat:opacity-100"
         open={open}

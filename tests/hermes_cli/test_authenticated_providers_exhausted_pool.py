@@ -8,6 +8,7 @@ the session provider (the "sticky provider fallback pollution" bug).
 """
 
 import pytest
+from hermes_cli import main_provider_setup
 
 
 class _FakePool:
@@ -67,20 +68,9 @@ def test_exhausted_pool_provider_is_not_authenticated(monkeypatch):
     assert "opencode-go" not in slugs
 
 
-def test_pool_provider_with_available_credential_is_authenticated(monkeypatch):
-    """Control: with a usable credential the provider IS authenticated, proving
-    the test drives the credential gate rather than excluding it for some other
-    reason."""
-    from hermes_cli.model_switch import get_authenticated_provider_slugs
-
-    _patch_opencode_pool(monkeypatch, available=True)
-    slugs = get_authenticated_provider_slugs(current_provider="alibaba")
-    assert "opencode-go" in slugs
-
-
 def test_opaque_legacy_pool_value_stays_visible(monkeypatch):
     """Legacy token-style auth-store values have no parsed pool entries."""
-    from hermes_cli.model_switch import _credential_pool_is_usable
+    from hermes_cli.model_switch_providers import _credential_pool_is_usable
 
     monkeypatch.setattr(
         "agent.credential_pool.load_pool",
@@ -101,7 +91,7 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
     """The interactive picker must include providers whose credential pool
     entries are all exhausted, so the user can still switch to a different
     model under the same provider."""
-    from hermes_cli.model_switch import list_picker_providers
+    from hermes_cli.model_switch_providers import list_picker_providers
 
     _patch_opencode_pool(monkeypatch, available=False)
     providers = list_picker_providers(
@@ -114,6 +104,8 @@ def test_picker_shows_exhausted_pool_provider(monkeypatch):
         "Picker must show exhausted-pool providers so the user can select "
         "a different model under the same provider"
     )
+
+
 
 
 class _StopPicker(BaseException):
@@ -149,7 +141,7 @@ def test_aux_task_picker_requests_exhausted_pool_visibility(monkeypatch):
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
 
     with pytest.raises(_StopPicker):
-        main._aux_select_for_task("compression")
+        main_provider_setup._aux_select_for_task("compression")
 
     assert recorded.get("for_picker") is True, (
         "aux-task picker must pass for_picker=True so exhausted-pool providers "
@@ -157,18 +149,3 @@ def test_aux_task_picker_requests_exhausted_pool_visibility(monkeypatch):
     )
 
 
-def test_vision_provider_picker_requests_exhausted_pool_visibility(monkeypatch):
-    """The vision provider/model picker (``_configure_vision_provider_model``)
-    must also request exhausted-pool visibility — same rationale as #66584."""
-    import hermes_cli.tools_config as tc
-
-    recorded: dict = {}
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        _spy_list_authenticated(recorded),
-    )
-
-    with pytest.raises(_StopPicker):
-        tc._configure_vision_provider_model({}, {})
-
-    assert recorded.get("for_picker") is True

@@ -71,25 +71,6 @@ class TestCounterRoundTripsBindSessionState:
             "tripped anti-thrash guard instead of re-compacting"
         )
 
-    def test_fresh_compressor_inherits_armed_single_strike(self, tmp_path):
-        """One strike before the restart still counts toward the trip."""
-        db = _db(tmp_path)
-        db.create_session("s1", source="cli")
-
-        first = _compressor(db, "s1")
-        first._verify_compaction_cleared_threshold = True
-        first.update_from_response({"prompt_tokens": first.threshold_tokens + 1})
-        assert first._ineffective_compression_count == 1
-
-        second = _compressor(db, "s1")
-        assert second._ineffective_compression_count == 1
-        # One inherited strike does not block yet...
-        assert second.should_compress(10**9) is True
-        # ...but the next ineffective pass trips the guard cross-process.
-        second._verify_compaction_cleared_threshold = True
-        second.update_from_response({"prompt_tokens": second.threshold_tokens + 1})
-        assert second._ineffective_compression_count == 2
-        assert second.should_compress(10**9) is False
 
     def test_rebind_to_other_session_does_not_leak_counter(self, tmp_path):
         """The counter is per-session: switching sessions must not carry it."""
@@ -104,14 +85,6 @@ class TestCounterRoundTripsBindSessionState:
         cc.bind_session_state(db, "cold")
         assert cc._ineffective_compression_count == 0
 
-    def test_unbound_compressor_keeps_in_memory_behavior(self):
-        """No session DB bound (plugins/tests): everything still works."""
-        cc = _compressor()
-        cc._verify_compaction_cleared_threshold = True
-        cc.update_from_response({"prompt_tokens": cc.threshold_tokens + 1})
-        assert cc._ineffective_compression_count == 1
-        cc.update_from_response({"prompt_tokens": 1})
-        assert cc._ineffective_compression_count == 0
 
 
 class TestResetSemanticsPreserved:
@@ -171,13 +144,19 @@ class TestResetSemanticsPreserved:
 
 
 class TestStrikesPersistFromEveryVerdictSite:
-    def test_no_op_compaction_branches_write_through(self, tmp_path):
-        """The insufficient-messages no-op branch records its strike durably."""
+    def test_no_op_compaction_branch_does_not_strike(self, tmp_path):
+        """The insufficient-messages branch is a structural no-op (#93022).
+
+        Nothing was eligible to compress, so no ineffective strike is
+        recorded — durable or in-memory. The transient structural backoff
+        arms instead; the breaker must stay untouched so a short session
+        can still auto-compact once it grows real compressible material.
+        """
         db = _db(tmp_path)
         db.create_session("s1", source="cli")
 
         cc = _compressor(db, "s1")
-        # 3 tiny messages < minimum window → the #40803 no-op branch.
+        # 3 tiny messages < minimum window → the #40803/#93022 no-op branch.
         msgs = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
@@ -185,8 +164,9 @@ class TestStrikesPersistFromEveryVerdictSite:
         ]
         out = cc.compress(msgs, current_tokens=10**9)
         assert out == msgs
-        assert cc._ineffective_compression_count == 1
-        assert db.get_compression_ineffective_count("s1") == 1
+        assert cc._ineffective_compression_count == 0
+        assert db.get_compression_ineffective_count("s1") == 0
+        assert cc._structural_no_op_backoff_until > 0.0
 
     def test_persist_failure_is_swallowed_and_memory_still_advances(self, tmp_path):
         """A DB write failure must not break the in-memory guard."""

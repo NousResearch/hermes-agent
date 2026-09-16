@@ -1,15 +1,16 @@
-#!/command/with-contenv sh
+#!/bin/sh
 # shellcheck shell=sh
 # /opt/hermes/docker/main-wrapper.sh — wraps the container's CMD with
 # the same argument-routing logic the pre-s6 entrypoint.sh used. Runs
 # as /init's "main program" (Docker CMD) so it inherits stdin/stdout/
-# stderr from the container.
+# stderr from the container. The non-PID-1 entrypoint fallback also
+# execs this script directly after running the stage2 bootstrap.
 #
-# Shebang note: /init scrubs env before invoking CMD, so a plain
-# `#!/bin/sh` wrapper sees an empty environ and `ENV HERMES_HOME=/opt/data`
-# from the Dockerfile never reaches `hermes`. with-contenv repopulates
-# the env from /run/s6/container_environment before exec'ing, which is
-# what s6-supervised services use too (see main-hermes/run).
+# Env note: /init scrubs env before invoking CMD, so when this wrapper
+# is launched through the supervised path it must rehydrate via
+# with-contenv before touching HERMES_HOME / PATH. On the non-PID-1
+# fallback path the Dockerfile env is still intact, so we skip the
+# re-exec and continue directly.
 #
 # Routing:
 #   no args                       → exec `hermes` (the default)
@@ -18,6 +19,14 @@
 #
 # Drop to hermes via s6-setuidgid, but skip it when already non-root.
 set -e
+
+if [ -z "${HERMES_MAIN_WRAPPER_ENV_READY:-}" ] && \
+   [ -z "${HERMES_HOME:-}" ] && \
+   [ -x /command/with-contenv ]; then
+    export HERMES_MAIN_WRAPPER_ENV_READY=1
+    exec /command/with-contenv sh "$0" "$@"
+fi
+unset HERMES_MAIN_WRAPPER_ENV_READY
 
 drop() { [ "$(id -u)" = 0 ] && set -- s6-setuidgid hermes "$@"; exec "$@"; }
 

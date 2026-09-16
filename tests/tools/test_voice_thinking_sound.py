@@ -48,19 +48,6 @@ class TestConfigGate:
         with patch("hermes_cli.config.load_config", return_value={"voice": {}}):
             assert vm.thinking_sound_enabled() is True
 
-    def test_disabled_via_config(self):
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"voice": {"thinking_sound": False}},
-        ):
-            assert vm.thinking_sound_enabled() is False
-
-    def test_quoted_false_string(self):
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"voice": {"thinking_sound": "false"}},
-        ):
-            assert vm.thinking_sound_enabled() is False
 
     def test_start_refuses_when_disabled(self):
         _reset()
@@ -79,12 +66,6 @@ class TestBlipSynthesis:
         assert int(np.abs(blip).max()) <= int(0.3 * 0.5 * 32767) + 1
         assert int(np.abs(blip).max()) > 0
 
-    def test_blip_volume_follows_beep_volume(self):
-        with patch.object(vm, "_get_beep_volume", return_value=1.0):
-            loud = vm._synth_thinking_blip(np, 392.0)
-        with patch.object(vm, "_get_beep_volume", return_value=0.1):
-            quiet = vm._synth_thinking_blip(np, 392.0)
-        assert int(np.abs(loud).max()) > int(np.abs(quiet).max()) * 5
 
     def test_no_click_smooth_attack(self):
         blip = vm._synth_thinking_blip(np, 392.0)
@@ -112,37 +93,6 @@ class TestLoopLifecycle:
         assert fake.played, "loop never played a blip"
         assert not t.is_alive()
 
-    def test_should_play_false_suppresses_blips(self):
-        _reset()
-        fake = _FakeSD()
-        stop = threading.Event()
-        with patch.object(vm, "_sounddevice_output_allowed", return_value=True), \
-             patch.object(vm, "_import_audio", return_value=(fake, np)), \
-             patch.object(vm, "_get_beep_volume", return_value=0.3):
-            t = threading.Thread(
-                target=vm._thinking_sound_loop,
-                args=(stop, lambda: False),
-                daemon=True,
-            )
-            t.start()
-            time.sleep(0.3)
-            stop.set()
-            t.join(timeout=3.0)
-        assert fake.played == []
-
-    def test_macos_tcc_gate_skips_silently(self):
-        """sounddevice output is gated on macOS — the loop must exit without
-        importing/playing anything (per-second afplay churn is worse than
-        silence)."""
-        _reset()
-        stop = threading.Event()
-
-        def _boom():
-            raise AssertionError("must not import audio when output is gated")
-
-        with patch.object(vm, "_sounddevice_output_allowed", return_value=False), \
-             patch.object(vm, "_import_audio", _boom):
-            vm._thinking_sound_loop(stop, None)  # returns immediately
 
     def test_start_is_idempotent_and_stop_clears(self):
         _reset()

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { test } from 'vitest'
 
@@ -12,14 +12,61 @@ import {
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
+  enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
   readFileDataUrlForIpc,
   resolveDirectoryForIpc,
+  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  sensitiveFileBlockReason
+  SAFE_STORAGE_ENCODING,
+  SECRET_FILE_MODE,
+  sensitiveFileBlockReason,
+  tightenSecretFileMode,
+  writeSecretFileAtomic
 } from './hardening'
+
+/**
+ * Real temp dir per test: the property under test IS the on-disk mode after a
+ * temp-file-then-rename, which a mocked fs would assert into existence rather
+ * than verify. `platform` is still injected so the Windows branch is coverable
+ * from a POSIX run.
+ */
+function withTempDir(run: (dir: string) => void) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-secret-file-'))
+
+  try {
+    run(dir)
+  } finally {
+    fs.rmSync(dir, { force: true, recursive: true })
+  }
+}
+
+function modeOf(filePath: string) {
+  return fs.statSync(filePath).mode & 0o777
+}
+
+/**
+ * No file other than the target may survive a write, and nothing left in the
+ * directory may contain the payload. Asserts the CONTRACT (no readable debris)
+ * instead of a literal directory listing, so adding a lock file or renaming the
+ * staging file does not break the test.
+ */
+function assertNoSecretDebris(dir: string, targetName: string, secret: string) {
+  for (const name of fs.readdirSync(dir)) {
+    if (name === targetName) {
+      continue
+    }
+
+    // Substring, not RegExp: a real token can contain regex metacharacters.
+    assert.equal(
+      fs.readFileSync(path.join(dir, name), 'utf8').includes(secret),
+      false,
+      `leftover file ${name} still contains the secret`
+    )
+  }
+}
 
 async function rejectsWithCode(promise, code: string) {
   await assert.rejects(promise, (error: any) => {
@@ -97,10 +144,520 @@ test('encryptDesktopSecret stores safeStorage base64 payload', () => {
     encryptString: value => Buffer.from(`enc:${value}`, 'utf8')
   })
 
+  // Contract: the payload is tagged with the SAME constant main's
+  // decryptDesktopSecret dispatches on, and `value` is the keychain ciphertext
+  // base64'd — not the token itself.
+  assert.equal(secret?.encoding, SAFE_STORAGE_ENCODING)
+  assert.equal(Buffer.from(String(secret?.value), 'base64').toString('utf8'), 'enc:token-123')
+  assert.doesNotMatch(String(secret?.value), /token-123/, 'the plaintext is not recoverable from the payload')
+})
+
+// ─── Owner-only credential files (connection.json) ─────────────────────────
+
+test('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask default', () => {
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    const payload = JSON.stringify({ remote: { token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' } } })
+
+    writeSecretFileAtomic(target, payload)
+
+    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assert.equal(modeOf(target) & 0o077, 0, 'no group/other bits')
+    assert.equal(fs.readFileSync(target, 'utf8'), payload, 'content round-trips')
+    assertNoSecretDebris(dir, 'connection.json', 'BLOB')
+  })
+})
+
+test('encryptDesktopSecret allows plain-text opt-in when encryption is unavailable', () => {
+  const secret = encryptDesktopSecret(
+    'token',
+    { isEncryptionAvailable: () => false, encryptString: () => Buffer.alloc(0) },
+    { allowPlainText: true }
+  )
+
+  assert.deepEqual(secret, { encoding: 'plain', value: 'token' })
+})
+
+test('encryptDesktopSecret keeps encrypting when available even with the plain-text opt-in', () => {
+  const secret = encryptDesktopSecret(
+    'token-123',
+    { isEncryptionAvailable: () => true, encryptString: value => Buffer.from(`enc:${value}`, 'utf8') },
+    { allowPlainText: true }
+  )
+
   assert.deepEqual(secret, {
     encoding: 'safeStorage',
     value: Buffer.from('enc:token-123', 'utf8').toString('base64')
   })
+})
+
+test('encryptDesktopSecret returns null for an empty value even with the plain-text opt-in', () => {
+  assert.equal(
+    encryptDesktopSecret(
+      '',
+      { isEncryptionAvailable: () => false, encryptString: () => Buffer.alloc(0) },
+      { allowPlainText: true }
+    ),
+    null
+  )
+})
+
+test('enableBasicPasswordStoreEncryption flips the flag once on linux with --password-store=basic', () => {
+  const calls: boolean[] = []
+
+  const safeStorageApi = {
+    setUsePlainTextEncryption: (value: boolean) => calls.push(value)
+  }
+
+  const result = enableBasicPasswordStoreEncryption({
+    platform: 'linux',
+    passwordStoreSwitch: 'basic',
+    safeStorageApi
+  })
+
+  assert.equal(result, true)
+  assert.deepEqual(calls, [true])
+})
+
+test('enableBasicPasswordStoreEncryption ignores non-basic password-store values on linux', () => {
+  for (const passwordStoreSwitch of ['gnome-libsecret', '', undefined]) {
+    const calls: unknown[] = []
+
+    const safeStorageApi = {
+      setUsePlainTextEncryption: () => calls.push('called')
+    }
+
+    const result = enableBasicPasswordStoreEncryption({
+      platform: 'linux',
+      passwordStoreSwitch,
+      safeStorageApi
+    })
+
+    assert.equal(result, false, `value ${JSON.stringify(passwordStoreSwitch)} must not enable plain text`)
+    assert.deepEqual(calls, [])
+  }
+})
+
+test('enableBasicPasswordStoreEncryption never enables plain text off linux even with --password-store=basic', () => {
+  for (const platform of ['win32', 'darwin']) {
+    const calls: unknown[] = []
+
+    const safeStorageApi = {
+      setUsePlainTextEncryption: () => calls.push('called')
+    }
+
+    const result = enableBasicPasswordStoreEncryption({
+      platform,
+      passwordStoreSwitch: 'basic',
+      safeStorageApi
+    })
+
+    assert.equal(result, false, `platform ${platform} must not enable plain text`)
+    assert.deepEqual(calls, [])
+  }
+})
+
+test('enableBasicPasswordStoreEncryption tolerates a missing setUsePlainTextEncryption method', () => {
+  assert.equal(
+    enableBasicPasswordStoreEncryption({ platform: 'linux', passwordStoreSwitch: 'basic', safeStorageApi: {} }),
+    false
+  )
+  assert.equal(
+    enableBasicPasswordStoreEncryption({ platform: 'linux', passwordStoreSwitch: 'basic', safeStorageApi: undefined }),
+    false
+  )
+})
+
+test('enableBasicPasswordStoreEncryption swallows a throwing setUsePlainTextEncryption', () => {
+  const safeStorageApi = {
+    setUsePlainTextEncryption: () => {
+      throw new Error('backend not ready')
+    }
+  }
+
+  assert.equal(
+    enableBasicPasswordStoreEncryption({ platform: 'linux', passwordStoreSwitch: 'basic', safeStorageApi }),
+    false
+  )
+})
+
+test('resolvePersistedRemoteToken stores plain text end-to-end only with the explicit opt-in', () => {
+  const unavailableSafeStorage = { isEncryptionAvailable: () => false, encryptString: () => Buffer.alloc(0) }
+  const encryptSecret = (value: string, options: any) => encryptDesktopSecret(value, unavailableSafeStorage, options)
+
+  assert.deepEqual(
+    resolvePersistedRemoteToken({
+      incomingToken: 'token',
+      persistToken: true,
+      existingToken: undefined,
+      allowPlainText: true,
+      encryptSecret
+    }),
+    { encoding: 'plain', value: 'token' }
+  )
+
+  // Only strict boolean true opts in; undefined, false, and truthy-non-true
+  // values must all keep the secure-storage requirement (which throws when the
+  // keyring is unavailable).
+  for (const allowPlainText of [undefined, false, 1, 'yes']) {
+    assert.throws(
+      () =>
+        resolvePersistedRemoteToken({
+          incomingToken: 'token',
+          persistToken: true,
+          existingToken: undefined,
+          allowPlainText,
+          encryptSecret
+        }),
+      /Secure token storage is unavailable/,
+      `allowPlainText ${JSON.stringify(allowPlainText)} must not enable plain-text storage`
+    )
+  }
+})
+
+test('resolvePersistedRemoteToken keeps encrypting when the keyring is available even with the opt-in', () => {
+  const availableSafeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf8')
+  }
+
+  const encryptSecret = (value: string, options: any) => encryptDesktopSecret(value, availableSafeStorage, options)
+
+  assert.deepEqual(
+    resolvePersistedRemoteToken({
+      incomingToken: 'token-123',
+      persistToken: true,
+      existingToken: undefined,
+      allowPlainText: true,
+      encryptSecret
+    }),
+    { encoding: 'safeStorage', value: Buffer.from('enc:token-123', 'utf8').toString('base64') }
+  )
+})
+
+test('resolvePersistedRemoteToken passes the token through untouched on the transient path', () => {
+  let called = false
+
+  const encryptSecret = () => {
+    called = true
+
+    return null
+  }
+
+  assert.deepEqual(
+    resolvePersistedRemoteToken({
+      incomingToken: 'token',
+      persistToken: false,
+      existingToken: { encoding: 'safeStorage', value: 'stale' },
+      allowPlainText: false,
+      encryptSecret
+    }),
+    { encoding: 'plain', value: 'token' }
+  )
+  assert.equal(called, false, 'the transient test-connection path must not touch secure storage')
+})
+
+test('resolvePersistedRemoteToken keeps the existing token when no new token is supplied', () => {
+  let called = false
+
+  const encryptSecret = () => {
+    called = true
+
+    return null
+  }
+
+  const existingToken = { encoding: 'safeStorage', value: 'kept' }
+
+  assert.equal(
+    resolvePersistedRemoteToken({
+      incomingToken: '',
+      persistToken: true,
+      existingToken,
+      allowPlainText: true,
+      encryptSecret
+    }),
+    existingToken
+  )
+  assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
+})
+
+test('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
+  // renameSync keeps the TEMP file's permissions, and writeFileSync's `mode`
+  // is ignored when the path already exists — so a temp left by a crashed
+  // earlier write would otherwise hand 0644 straight to the target.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
+    assert.notEqual(modeOf(`${target}.tmp`), SECRET_FILE_MODE)
+
+    writeSecretFileAtomic(target, 'fresh')
+
+    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assert.equal(fs.readFileSync(target, 'utf8'), 'fresh')
+  })
+})
+
+/**
+ * Owner-only is carried by two independent mechanisms — the create-time `mode`
+ * and the chmod before the rename — because each covers a case the other
+ * cannot. The next two tests knock out one mechanism at a time (with the REAL
+ * fs doing the actual write, so the assertion is still the on-disk mode) and
+ * require the survivor to hold the line on its own. Without them, either
+ * mechanism could be deleted with every test still green.
+ */
+function fsWith(overrides: Record<string, unknown>) {
+  return { ...fs, ...overrides } as any
+}
+
+test('the written file is owner-only even where chmod does nothing', () => {
+  // Windows, and any mount that refuses chmod. The create-time `mode` is what
+  // covers this — there is no second chance to tighten.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    // Pin a permissive umask so a mode-less create WOULD land
+    // group/other-readable — otherwise a restrictive-umask host could pass this
+    // for free. Synchronous and restored in `finally`, and the electron project
+    // runs one process per file, so no other test observes it.
+    const previousUmask = process.umask(0o022)
+
+    try {
+      const witness = path.join(dir, 'witness.json')
+      fs.writeFileSync(witness, 'x')
+      assert.notEqual(modeOf(witness), SECRET_FILE_MODE, 'the ambient default is NOT already owner-only')
+
+      writeSecretFileAtomic(target, 'tok', { fs: fsWith({ chmodSync: () => void 0 }) })
+    } finally {
+      process.umask(previousUmask)
+    }
+
+    assert.equal(modeOf(target), SECRET_FILE_MODE, 'created owner-only, not tightened after the fact')
+  })
+})
+
+test('the written file is owner-only even when a stale temp cannot be removed', () => {
+  // The unlink is best-effort; if the stale temp survives, writeFileSync's
+  // `mode` is ignored on an existing path and only the chmod before the rename
+  // can still fix the bits.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    fs.writeFileSync(`${target}.tmp`, 'stale', { mode: 0o666 })
+
+    writeSecretFileAtomic(target, 'tok', { fs: fsWith({ rmSync: () => void 0 }) })
+
+    assert.equal(modeOf(target), SECRET_FILE_MODE, 'tightened before the rename handed the bits over')
+    assert.equal(fs.readFileSync(target, 'utf8'), 'tok')
+  })
+})
+
+test('writeSecretFileAtomic cannot be redirected through a symlink planted at the temp path', () => {
+  // A stale temp path is attacker-controllable in a shared temp/userData dir.
+  // Following it would write the token into the victim file AND then rename the
+  // link over connection.json, so every later write leaks too.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    const victim = path.join(dir, 'victim.txt')
+    fs.writeFileSync(victim, 'original', { mode: 0o644 })
+
+    try {
+      fs.symlinkSync(victim, `${target}.tmp`, 'file')
+    } catch (error: any) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        return
+      }
+
+      throw error
+    }
+
+    writeSecretFileAtomic(target, 'tok-live-42')
+
+    assert.equal(fs.readFileSync(victim, 'utf8'), 'original', 'the symlink target was not written through')
+    assert.equal(modeOf(victim), 0o644, 'the victim file was not chmodded either')
+    assert.equal(fs.readFileSync(target, 'utf8'), 'tok-live-42')
+    assert.equal(fs.lstatSync(target).isSymbolicLink(), false, 'the target is a real file, not the planted link')
+    assert.equal(modeOf(target), SECRET_FILE_MODE)
+  })
+})
+
+test('tightenSecretFileMode tightens a pre-existing world-readable config in place', () => {
+  // The upgrade path: a connection.json written by an older build sits at 0644
+  // with a real (encrypted) token in it. Tightening must change the mode and
+  // nothing else — the token has to stay readable or the user loses their
+  // configured gateway.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+
+    const legacy = JSON.stringify({
+      mode: 'remote',
+      remote: {
+        url: 'https://gw.example.com',
+        authMode: 'token',
+        token: { encoding: SAFE_STORAGE_ENCODING, value: 'BLOB' }
+      }
+    })
+
+    fs.writeFileSync(target, legacy, { mode: 0o644 })
+    assert.equal(modeOf(target), 0o644)
+
+    assert.equal(tightenSecretFileMode(target), true)
+
+    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), JSON.parse(legacy), 'contents untouched')
+  })
+})
+
+test('tightenSecretFileMode leaves a non-safeStorage token payload readable', () => {
+  // A hand-edited config (or one from a pre-release build) can hold a
+  // non-safeStorage token payload, which decryptDesktopSecret still reads
+  // verbatim on purpose. Tightening the mode must not disturb that fallback —
+  // it only narrows who can open the file.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+
+    const legacyPlain = JSON.stringify({
+      mode: 'remote',
+      remote: { url: 'https://gw.example.com', authMode: 'token', token: { encoding: 'plain', value: 'tok-live-42' } }
+    })
+
+    fs.writeFileSync(target, legacyPlain, { mode: 0o644 })
+
+    tightenSecretFileMode(target)
+
+    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).remote.token.value, 'tok-live-42')
+  })
+})
+
+test('tightenSecretFileMode is idempotent and never throws on an unusable path', () => {
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    writeSecretFileAtomic(target, '{}')
+
+    assert.equal(tightenSecretFileMode(target), true)
+    assert.equal(tightenSecretFileMode(target), true)
+    assert.equal(modeOf(target), SECRET_FILE_MODE)
+
+    // Missing file (fresh install, nothing saved yet) reports failure quietly
+    // instead of breaking the read path it is called from.
+    assert.equal(tightenSecretFileMode(path.join(dir, 'absent.json')), false)
+  })
+})
+
+test('tightenSecretFileMode refuses to chmod a symlink instead of following it to its target', () => {
+  // Matches readInstallationId in desktop-installation.ts. Without the lstat
+  // guard a link planted at the config path sends the chmod to whatever it
+  // resolves to — someone else's file gets its mode rewritten.
+  withTempDir(dir => {
+    const target = path.join(dir, 'connection.json')
+    const victim = path.join(dir, 'victim.txt')
+    fs.writeFileSync(victim, 'not mine', { mode: 0o644 })
+
+    try {
+      fs.symlinkSync(victim, target, 'file')
+    } catch (error: any) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        return
+      }
+
+      throw error
+    }
+
+    assert.equal(tightenSecretFileMode(target), false, 'reports "not tightened" rather than acting on the link')
+    assert.equal(modeOf(victim), 0o644, 'the symlink target keeps its own mode')
+  })
+})
+
+test('tightenSecretFileMode only touches a regular file the current user owns', () => {
+  // Directories, sockets, fifos and files owned by another account are all
+  // "not ours to chmod". Injected lstat so the foreign-owner branch is
+  // reachable without a second OS account.
+  const chmodded: string[] = []
+
+  const fakeFs = (stat: Record<string, unknown>) =>
+    ({
+      chmodSync: (filePath: string) => void chmodded.push(filePath),
+      lstatSync: () => ({ isFile: () => true, isSymbolicLink: () => false, mode: 0o644, uid: 0, ...stat }),
+      renameSync: () => void 0,
+      rmSync: () => void 0,
+      writeFileSync: () => void 0
+    }) as any
+
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+
+  assert.equal(
+    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ isFile: () => false }), platform: 'linux' }),
+    false
+  )
+  assert.equal(
+    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid: uid + 1 }), platform: 'linux' }),
+    false,
+    'a file owned by another user is left alone'
+  )
+  assert.deepEqual(chmodded, [], 'nothing was chmodded on the rejected paths')
+
+  // The same fs shape, but ours and loose: now it tightens.
+  assert.equal(tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux' }), true)
+  assert.deepEqual(chmodded, ['/x/connection.json'])
+})
+
+test('tightenSecretFileMode leaves Windows alone rather than flipping the read-only bit', () => {
+  const chmods: string[] = []
+
+  const fakeFs = {
+    chmodSync: (filePath: string) => void chmods.push(filePath),
+    lstatSync: () => ({
+      isFile: () => true,
+      isSymbolicLink: () => false,
+      mode: 0o644,
+      uid: typeof process.getuid === 'function' ? process.getuid() : 0
+    }),
+    renameSync: () => void 0,
+    rmSync: () => void 0,
+    writeFileSync: () => void 0
+  } as any
+
+  assert.equal(tightenSecretFileMode('C:\\Users\\me\\connection.json', { fs: fakeFs, platform: 'win32' }), true)
+  assert.deepEqual(chmods, [], 'no chmod on win32')
+
+  // Same fs, POSIX: the chmod does happen, proving the platform gate is what
+  // suppressed it above.
+  assert.equal(tightenSecretFileMode('/home/me/connection.json', { fs: fakeFs, platform: 'linux' }), true)
+  assert.ok(chmods.includes('/home/me/connection.json'), 'the POSIX path was tightened')
+})
+
+test('a token is never persisted in plaintext when safeStorage is unavailable', () => {
+  // The defined degradation for `isEncryptionAvailable() === false` (Linux with
+  // no keyring): encryptDesktopSecret throws with an actionable message, so the
+  // save aborts before any write. It must never fall back to a plaintext
+  // payload — the file mode is defense in depth, not a substitute for the
+  // keychain.
+  const unavailable = {
+    isEncryptionAvailable: () => false,
+    encryptString: () => Buffer.from('unused', 'utf8')
+  }
+
+  assert.throws(
+    () => encryptDesktopSecret('tok-live-42', unavailable),
+    (error: unknown) => {
+      assert.ok(error instanceof Error, 'aborts instead of returning a payload')
+      assert.match(String((error as Error).message), /Secure token storage is unavailable/)
+      assert.doesNotMatch(String((error as Error).message), /tok-live-42/, 'the secret is not echoed in the error')
+
+      return true
+    }
+  )
+
+  // And a throwing keychain (available, but encryptString fails) is the same
+  // contract — no silent plaintext.
+  assert.throws(
+    () =>
+      encryptDesktopSecret('tok-live-42', {
+        isEncryptionAvailable: () => true,
+        encryptString: () => {
+          throw new Error('keyring locked')
+        }
+      }),
+    /Failed to encrypt the remote gateway token/
+  )
 })
 
 test('sensitiveFileBlockReason blocks obvious secret file patterns', () => {
@@ -351,4 +908,140 @@ test('resolveDirectoryForIpc accepts directory symlinks or junctions', async () 
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }
+})
+
+// main.ts has no module.exports, so the wiring of the extracted keyring-less
+// helpers into the main process follows the repo's source-assertion pattern
+// (see windows-hermes-resolution.test.ts). These pin the propagation the PR
+// reviewer flagged as untested: the connection-config IPC path forwarding
+// allowPlainTextToken through resolvePersistedRemoteToken, and the whenReady
+// --password-store=basic startup branch.
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+function readMain() {
+  return fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
+}
+
+test('registry JSON helpers retain native OAuth bearer authentication', () => {
+  const source = readMain()
+  const postStart = source.indexOf('async function postJsonForBackend(')
+  const fetchStart = source.indexOf('async function fetchJsonForBackend(', postStart)
+  const helpers = source.slice(postStart, fetchStart)
+
+  assert.notEqual(postStart, -1)
+  assert.notEqual(fetchStart, -1)
+  assert.match(
+    helpers,
+    /return fetchJsonForBackend\(descriptor, path, \{ \.\.\.opts, body: body \?\? \{\}, method: 'POST' \}\)/
+  )
+  assert.match(helpers, /return fetchJsonForBackend\(descriptor, path, opts\)/)
+  assert.doesNotMatch(helpers, /fetchJsonViaOauthSession/)
+})
+
+test('coerceDesktopConnectionConfig routes token persistence through resolvePersistedRemoteToken', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('function coerceDesktopConnectionConfig(')
+  assert.notEqual(fnStart, -1, 'coerceDesktopConnectionConfig must exist in main.ts')
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  assert.match(
+    body,
+    /const nextToken = resolvePersistedRemoteToken\(\{/,
+    'the persist decision must go through the shared hardening helper'
+  )
+  // The opt-in must be forwarded RAW (no `=== true` at the call site): the
+  // helper owns the strict coercion so it is asserted in exactly one place.
+  assert.match(
+    body,
+    /allowPlainText: input\.allowPlainTextToken\b/,
+    'allowPlainTextToken must reach the helper so the IPC opt-in propagates'
+  )
+  assert.doesNotMatch(
+    body,
+    /allowPlainText: input\.allowPlainTextToken === true/,
+    'the strict coercion must live in the helper, not be duplicated at the call site'
+  )
+  assert.match(body, /encryptSecret: encryptDesktopSecret\b/, 'the helper must encrypt via encryptDesktopSecret')
+})
+
+test('connection-config save and apply IPC handlers route payloads through coerceDesktopConnectionConfig', () => {
+  const source = readMain()
+
+  for (const channel of ['hermes:connection-config:save', 'hermes:connection-config:apply']) {
+    const handlerStart = source.indexOf(`ipcMain.handle('${channel}'`)
+    assert.notEqual(handlerStart, -1, `${channel} handler must exist`)
+    const handlerBody = source.slice(handlerStart, handlerStart + 400)
+    assert.match(
+      handlerBody,
+      /coerceDesktopConnectionConfig\(payload(?:, previousConfig)?\)/,
+      `${channel} must coerce its payload (the propagation seam) before persisting`
+    )
+  }
+})
+
+test('whenReady enables basic password-store encryption before createWindow', () => {
+  const source = readMain()
+  const enableIndex = source.indexOf('enableBasicPasswordStoreEncryption({')
+  assert.notEqual(enableIndex, -1, 'whenReady must call enableBasicPasswordStoreEncryption')
+
+  const call = source.slice(enableIndex, enableIndex + 240)
+  assert.match(call, /platform: process\.platform/, 'the real platform must be forwarded')
+  assert.match(
+    call,
+    /passwordStoreSwitch: app\.commandLine\.getSwitchValue\('password-store'\)/,
+    'the real --password-store switch value must be forwarded'
+  )
+  assert.match(call, /safeStorageApi: safeStorage/, 'the real safeStorage must be forwarded')
+
+  // Ordering matters: the switch must take effect before anything touches
+  // safeStorage, so the enable call must precede the first createWindow().
+  const createWindowIndex = source.indexOf('createWindow()', enableIndex)
+  assert.notEqual(createWindowIndex, -1, 'whenReady must call createWindow after enabling encryption')
+  assert.ok(
+    enableIndex < createWindowIndex,
+    'enableBasicPasswordStoreEncryption must run before createWindow() so the switch is applied first'
+  )
+})
+
+test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteTokenPlainText', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
+  assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  const returnIndex = body.indexOf('return {')
+  assert.notEqual(returnIndex, -1, 'sanitizeDesktopConnectionConfig must return a sanitized object')
+  const returned = body.slice(returnIndex)
+  assert.match(returned, /\bsecureTokenStorage\b/, 'the renderer needs the secure-storage availability signal')
+  assert.match(returned, /\bremoteTokenPlainText\b/, 'the renderer needs the plain-text token signal')
+})
+
+// #95393: connections.save succeeded but the switcher menu (renderer
+// $connectionsRegistry snapshot) never refreshed until reload. The registry
+// push (broadcastConnectionsChanged) fired only on the dial-material-edit
+// branch, so a brand-new connection or a label rename never reached other
+// windows — or the switcher's onChanged re-pull. Mirrors the live repro at
+// /tmp/mg-ab/w2_95393.py: save → menu (no reload) must include the new row.
+test('saveRegistryConnection republishes the registry to renderers on EVERY successful save (#95393)', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function saveRegistryConnection(')
+  assert.notEqual(fnStart, -1, 'saveRegistryConnection must exist in main.ts')
+  const fnEnd = source.indexOf('\nasync function ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  // The dial-material edit branch keeps its dispose+redial semantics…
+  assert.match(
+    body,
+    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'updated' \}\)/,
+    'a dial-material edit must still push the dispose+redial signal'
+  )
+  // …and every OTHER save (new connection, label rename) must still push a
+  // registry refresh, or the switcher menu paints stale until reload.
+  assert.match(
+    body,
+    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'saved' \}\)/,
+    'a non-dial-material save must republish the registry snapshot (#95393)'
+  )
 })

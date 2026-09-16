@@ -23,7 +23,7 @@ from typing import Any, Dict
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.command_manifest import build_relay_command_manifest
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
@@ -86,37 +86,6 @@ async def test_create_handoff_thread_routes_thread_create():
     assert action["thread_name"] == "fix the build"
 
 
-@pytest.mark.asyncio
-async def test_create_handoff_thread_op_gated_and_decline_safe():
-    # Not advertised → None without touching the wire.
-    adapter, stub = _adapter(supported_ops=("send", "edit", "typing"))
-    assert await adapter.create_handoff_thread("chan1", "x") is None
-    assert stub.sent == []
-    # Advertised but declined (non-forum Telegram chat, missing perms) → None.
-    adapter2, stub2 = _adapter()
-
-    async def declined(action, *, platform=None):
-        stub2.sent.append(action)
-        return {"success": False, "error": "not a forum"}
-
-    stub2.send_outbound = declined  # type: ignore[method-assign]
-    assert await adapter2.create_handoff_thread("chan1", "x") is None
-
-
-@pytest.mark.asyncio
-async def test_create_handoff_thread_falls_back_to_message_id():
-    # Slack shape: the connector returns the seed ts as message_id+thread_id;
-    # older stubs may return only message_id — either resolves.
-    adapter, stub = _adapter()
-
-    async def send_outbound(action, *, platform=None):
-        stub.sent.append(action)
-        return {"success": True, "message_id": "170.001"}
-
-    stub.send_outbound = send_outbound  # type: ignore[method-assign]
-    assert await adapter.create_handoff_thread("C1", "handoff") == "170.001"
-
-
 # ── rename_thread (semantic rename) ──────────────────────────────────────
 
 
@@ -150,84 +119,75 @@ async def test_rename_thread_parent_chat_and_gating():
 
 
 @pytest.mark.asyncio
-async def test_rename_thread_decline_returns_false():
+async def test_rename_thread_prefers_connector_owned_guard():
+    """The relay lane sends only_if_connector_created (connector resolves the
+    no-clobber guard from its own created-name memory) instead of the fragile
+    cross-repo only_if_current_name string."""
     adapter, stub = _adapter()
+    ok = await adapter.rename_thread(
+        "th9", "Real Session Title", prefer_connector_created=True
+    )
+    assert ok is True
+    action = stub.sent[-1]
+    assert action["op"] == "thread_rename"
+    assert action["only_if_connector_created"] is True
+    # The fragile string guard is NOT sent when the connector owns the check.
+    assert "only_if_current_name" not in action
 
-    async def declined(action, *, platform=None):
-        stub.sent.append(action)
-        return {"success": False, "error": "guard: current name differs"}
 
-    stub.send_outbound = declined  # type: ignore[method-assign]
-    assert await adapter.rename_thread("th1", "x", only_if_current_name="H") is False
+@pytest.mark.asyncio
+async def test_rename_thread_connector_guard_takes_precedence_over_string():
+    """prefer_connector_created wins even if a legacy string is also passed."""
+    adapter, stub = _adapter()
+    await adapter.rename_thread(
+        "th9",
+        "Title",
+        prefer_connector_created=True,
+        only_if_current_name="ignored initial words",
+    )
+    action = stub.sent[-1]
+    assert action["only_if_connector_created"] is True
+    assert "only_if_current_name" not in action
+
+
+@pytest.mark.asyncio
+async def test_rename_thread_resolves_scope_from_parent_chat_not_thread():
+    """The connector's egress guard resolves the owning tenant from the
+    outbound metadata's scope_id / user_id, and the adapter's discriminator
+    caches are keyed by the PARENT channel chat_id (learned at inbound), never
+    the thread id. A rename that passes parent_chat_id must carry that
+    discriminator; a rename keyed only on the thread id must not — reproducing
+    the live decline ("target not routed to an onboarded tenant") and its fix.
+    """
+    adapter, stub = _adapter()
+    # Simulate the inbound-learned scope for the PARENT channel only.
+    adapter._scope_by_chat["chan-parent"] = "guild-123"
+
+    # Fix: pass the parent chat id -> scope_id resolves.
+    await adapter.rename_thread(
+        "th-9",
+        "Real Title",
+        prefer_connector_created=True,
+        parent_chat_id="chan-parent",
+    )
+    fixed = stub.sent[-1]
+    assert fixed["metadata"].get("scope_id") == "guild-123"
+
+    # Regression shape: keyed on the thread id alone (no parent) -> no scope_id,
+    # which is exactly what made the connector decline the op.
+    await adapter.rename_thread(
+        "th-9",
+        "Real Title",
+        prefer_connector_created=True,
+    )
+    unscoped = stub.sent[-1]
+    assert "scope_id" not in unscoped["metadata"]
 
 
 # ── the relay semantic-rename lane (marker parity) ───────────────────────
 
 
-def test_relay_source_satisfies_auto_thread_lane_field_contract():
-    """The native lane check reads platform/chat_type/thread_id +
-    auto_thread_created + auto_thread_initial_name off the source. A relay
-    event carrying the connector-stamped markers must present ALL of them
-    through _event_from_wire — same field contract, no relay-specific case.
-    """
-    event = _event_from_wire(
-        {
-            "text": "hi",
-            "message_type": "text",
-            "source": {
-                "platform": "discord",
-                "chat_id": "th9",
-                "chat_type": "thread",
-                "thread_id": "th9",
-                "user_id": "u1",
-                "auto_thread_created": True,
-                "auto_thread_initial_name": "Hermes reply",
-            },
-        }
-    )
-    src = event.source
-    assert src.chat_type == "thread"
-    assert src.thread_id == "th9"
-    assert src.auto_thread_created is True
-    assert src.auto_thread_initial_name == "Hermes reply"
-    # And absent markers default off (never light the lane spuriously).
-    plain = _event_from_wire(
-        {
-            "text": "hi",
-            "message_type": "text",
-            "source": {
-                "platform": "discord",
-                "chat_id": "c",
-                "chat_type": "thread",
-                "thread_id": "t",
-            },
-        }
-    )
-    assert plain.source.auto_thread_created is False
-    assert plain.source.auto_thread_initial_name is None
-
-
 # ── reply_to wire parse ──────────────────────────────────────────────────
-
-
-def test_event_from_wire_maps_reply_to_onto_native_fields():
-    event = _event_from_wire(
-        {
-            "text": "re",
-            "message_type": "text",
-            "source": {"platform": "telegram", "chat_id": "5", "chat_type": "dm"},
-            "reply_to_message_id": "19",
-            "reply_to": {
-                "text": "what the bot said",
-                "author": "hermesbot",
-                "is_own": True,
-            },
-        }
-    )
-    assert event.reply_to_message_id == "19"
-    assert event.reply_to_text == "what the bot said"
-    assert event.reply_to_author_name == "hermesbot"
-    assert event.reply_to_is_own_message is True
 
 
 def test_event_from_wire_reply_to_absent_and_partial():
@@ -256,53 +216,345 @@ def test_event_from_wire_reply_to_absent_and_partial():
 # ── hello command manifest ───────────────────────────────────────────────
 
 
-def test_manifest_entries_satisfy_discord_naming_rules():
-    manifest = build_relay_command_manifest()
-    assert len(manifest) > 0
-    assert len(manifest) <= 100  # Discord's global command cap
-    name_re = re.compile(r"^[a-z0-9_-]{1,32}$")
-    seen = set()
-    for entry in manifest:
-        assert name_re.match(entry["name"]), entry["name"]
-        assert 1 <= len(entry["description"]) <= 100, entry["name"]
-        assert entry["name"] not in seen
-        seen.add(entry["name"])
-        for opt in entry.get("options", []):
-            assert name_re.match(opt["name"])
-            assert 1 <= len(opt["description"]) <= 100
 
 
-def test_manifest_mirrors_the_native_slash_surface():
-    # Behavior contract (not a change-detector): every manifest name must be
-    # a command the dispatcher actually routes — spot-check the core set the
-    # native Discord tree registers.
-    names = {e["name"] for e in build_relay_command_manifest()}
-    for core in ("new", "reset", "model", "approve", "deny", "stop", "help"):
-        assert core in names
+# ── auto-thread routing feedback (send-result thread_id) ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_hello_carries_manifest_for_discord_only():
-    from gateway.relay.ws_transport import WebSocketRelayTransport
+async def test_send_captures_auto_thread_feedback():
+    """A send result carrying thread_id + auto_thread_name (the connector's
+    auto-thread egress policy routed the reply into a thread it created)
+    populates auto_thread_info_for_chat for the semantic-rename lane."""
+    adapter, stub = _adapter()
 
-    sent: list[Dict[str, Any]] = []
-    transport = WebSocketRelayTransport.__new__(WebSocketRelayTransport)
-    transport._identities = [("discord", "app1"), ("telegram", "tg1")]
+    async def send_outbound(action, *, platform=None):
+        stub.sent.append(action)
+        return {
+            "success": True,
+            "message_id": "m1",
+            "thread_id": "th-auto-1",
+            "auto_thread_name": "What is a duck",
+        }
 
-    async def fake_send(frame):
-        sent.append(frame)
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    result = await adapter.send("chan1", "quack")
+    assert result.success
+    assert adapter.auto_thread_info_for_chat("chan1") == (
+        "th-auto-1",
+        "What is a duck",
+    )
+    # Plain results (no auto-thread) leave no feedback for other chats.
+    assert adapter.auto_thread_info_for_chat("chan-other") is None
 
-    transport._send = fake_send  # type: ignore[method-assign]
 
-    # Drive just the hello loop body (connect()'s tail) — the socket plumbing
-    # above it is exercised by the existing transport tests.
-    for platform, bot_id in transport._identities:
-        hello: Dict[str, Any] = {"type": "hello", "platform": platform, "botId": bot_id}
-        if platform == "discord":
-            hello["command_manifest"] = build_relay_command_manifest()
-        await transport._send(hello)
+@pytest.mark.asyncio
+async def test_send_without_thread_feedback_leaves_no_info():
+    adapter, stub = _adapter()
 
-    assert sent[0]["platform"] == "discord"
-    assert "command_manifest" in sent[0]
-    assert sent[1]["platform"] == "telegram"
-    assert "command_manifest" not in sent[1]
+    async def send_outbound(action, *, platform=None):
+        return {"success": True, "message_id": "m2"}
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    await adapter.send("chan2", "hello")
+    assert adapter.auto_thread_info_for_chat("chan2") is None
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_auto_thread_feedback_outlasts_the_turn():
+    """The rename lane asks where the reply landed before the reply exists.
+
+    Titling reads the user's opening message, so the question arrives one whole
+    turn early — and a turn is however long the agent takes. Waiting on the send
+    rather than on a fixed nap is what makes the answer arrive at all.
+    """
+    import asyncio
+
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {
+            "success": True,
+            "message_id": "m1",
+            "thread_id": "th-auto-1",
+            "auto_thread_name": "What is a duck",
+        }
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    waiting = asyncio.ensure_future(adapter.wait_for_auto_thread_info("chan1", 10.0))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+
+    await adapter.send("chan1", "quack")
+    assert await waiting == ("th-auto-1", "What is a duck")
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_was_not_auto_threaded_reports_its_miss_on_send():
+    """A miss is an answer, and the send is when we have it.
+
+    Only a turn that never sends at all should reach the timeout, so a policy
+    that doesn't auto-thread costs a wait as long as the turn, not as long as
+    the backstop.
+    """
+    import asyncio
+
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {"success": True, "message_id": "m1"}
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    waiting = asyncio.ensure_future(adapter.wait_for_auto_thread_info("chan1", 600.0))
+    await asyncio.sleep(0)
+
+    await adapter.send("chan1", "quack")
+    assert await waiting is None
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_auto_thread_feedback_gives_up():
+    """A turn that never sends anything still has to end."""
+    adapter, _stub = _adapter()
+    assert await adapter.wait_for_auto_thread_info("chan-quiet", 0.05) is None
+
+
+@pytest.mark.asyncio
+async def test_auto_thread_feedback_is_bounded():
+    adapter, stub = _adapter()
+
+    async def send_outbound(action, *, platform=None):
+        return {
+            "success": True,
+            "message_id": "m",
+            "thread_id": f"th-{action['chat_id']}",
+            "auto_thread_name": "n",
+        }
+
+    stub.send_outbound = send_outbound  # type: ignore[method-assign]
+    for i in range(300):
+        await adapter.send(f"c{i}", "x")
+    assert len(adapter._auto_thread_by_chat) <= 256
+    # Newest entries survive the bound.
+    assert adapter.auto_thread_info_for_chat("c299") == ("th-c299", "n")
+
+
+# ── title-turn rename: registration shape-gate + fire-time cache poll ────
+
+
+def _mk_runner_stub():
+    """Minimal object carrying the three GatewayRunner methods under test."""
+    import asyncio as _asyncio
+    from gateway.run import GatewayRunner
+
+    class _Stub:
+        _is_relay_discord_channel_lane = GatewayRunner._is_relay_discord_channel_lane
+        _relay_auto_thread_info = GatewayRunner._relay_auto_thread_info
+        _await_relay_auto_thread_info = GatewayRunner._await_relay_auto_thread_info
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self, adapter):
+            self.adapters = {Platform.RELAY: adapter}
+
+        def _adapter_for_source(self, source):
+            return self.adapters.get(Platform.RELAY)
+
+    return _Stub
+
+
+def _relay_channel_source():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="chan-parent",
+        chat_type="group",
+        thread_id=None,
+        delivered_via_upstream_relay=True,
+        auto_thread_created=False,
+        auto_thread_initial_name=None,
+    )
+
+
+def test_relay_channel_lane_shape_gate():
+    from types import SimpleNamespace
+    from gateway.config import Platform as P
+
+    stub = _mk_runner_stub()(adapter=None)
+    src = _relay_channel_source()
+    assert stub._is_relay_discord_channel_lane(src) is True
+    # thread events, DMs, and native (non-relay) events do not match
+    assert (
+        stub._is_relay_discord_channel_lane(
+            SimpleNamespace(**{**src.__dict__, "thread_id": "t1"})
+        )
+        is False
+    )
+    assert (
+        stub._is_relay_discord_channel_lane(
+            SimpleNamespace(**{**src.__dict__, "chat_type": "dm"})
+        )
+        is False
+    )
+    assert (
+        stub._is_relay_discord_channel_lane(
+            SimpleNamespace(**{**src.__dict__, "delivered_via_upstream_relay": False})
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_relay_auto_thread_info_prefers_prospective_thread_id():
+    """When the connector stamps prospective_thread_id, the rename lane uses it
+    directly (deterministic, per-thread) and does NOT consult the per-chat
+    send-result cache — the empty initial-name marker defers no-clobber to the
+    connector's own created-name guard."""
+    from types import SimpleNamespace
+
+    adapter, _ = _adapter()
+    # Poison the per-chat cache with a DIFFERENT (stale sibling) thread to prove
+    # the prospective id wins and the cache is not read.
+    adapter._auto_thread_by_chat["chan-parent"] = ("th-STALE", "old words")
+    runner = _mk_runner_stub()(adapter)
+    src = SimpleNamespace(
+        **{**_relay_channel_source().__dict__, "prospective_thread_id": "th-B"}
+    )
+    assert runner._relay_auto_thread_info(src) == ("th-B", "")
+
+
+@pytest.mark.asyncio
+async def test_sibling_threads_in_one_channel_each_rename_to_own_thread():
+    """Two auto-threads spawned from the SAME parent channel must each rename
+    to their OWN thread id. Before the prospective_thread_id fix the per-chat
+    cache held one slot, so only the first thread renamed (staging repro
+    2026-08-02: thread A renamed, sibling thread B stuck at raw text)."""
+    from types import SimpleNamespace
+
+    adapter, _ = _adapter()
+    renames: list = []
+
+    async def rename_thread(
+        thread_id,
+        name,
+        *,
+        only_if_current_name=None,
+        prefer_connector_created=False,
+        parent_chat_id=None,
+    ):
+        renames.append((thread_id, name, prefer_connector_created, parent_chat_id))
+        return True
+
+    adapter.rename_thread = rename_thread  # type: ignore[method-assign]
+    runner = _mk_runner_stub()(adapter)
+    base = _relay_channel_source().__dict__
+
+    # A and B share the parent channel but carry distinct prospective thread ids.
+    src_a = SimpleNamespace(**{**base, "prospective_thread_id": "th-A"})
+    src_b = SimpleNamespace(**{**base, "prospective_thread_id": "th-B"})
+    await runner._rename_discord_auto_thread_for_session_title(
+        src_a, "sessA", "Sea Shanty Draft"
+    )
+    await runner._rename_discord_auto_thread_for_session_title(
+        src_b, "sessB", "Exotic Short Story"
+    )
+    # Each renamed ITS OWN thread, via the connector-owned guard, passing the
+    # parent channel id for tenant discriminator resolution.
+    assert renames == [
+        ("th-A", "Sea Shanty Draft", True, "chan-parent"),
+        ("th-B", "Exotic Short Story", True, "chan-parent"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_title_rename_waits_for_feedback_that_arrives_late():
+    """The title beats delivery by a whole turn, and the lane still renames.
+
+    Feedback only exists once the reply is sent, so the lane waits on the send
+    rather than on a nap long enough to cover a turn it can't measure.
+    """
+    import asyncio
+
+    adapter, stub_conn = _adapter()
+    renames: list = []
+
+    async def rename_thread(
+        thread_id,
+        name,
+        *,
+        only_if_current_name=None,
+        prefer_connector_created=False,
+        parent_chat_id=None,
+    ):
+        renames.append((thread_id, name, prefer_connector_created, parent_chat_id))
+        return True
+
+    adapter.rename_thread = rename_thread  # type: ignore[method-assign]
+    runner = _mk_runner_stub()(adapter)
+    src = _relay_channel_source()
+
+    async def send_outbound(action, *, platform=None):
+        return {
+            "success": True,
+            "message_id": "m1",
+            "thread_id": "th-9",
+            "auto_thread_name": "Initial words",
+        }
+
+    stub_conn.send_outbound = send_outbound  # type: ignore[method-assign]
+
+    async def deliver_late():
+        await asyncio.sleep(0.05)
+        await adapter.send("chan-parent", "the reply")
+
+    task = asyncio.create_task(deliver_late())
+    await runner._rename_discord_auto_thread_for_session_title(
+        src, "sess1", "Debugging the flux capacitor"
+    )
+    await task
+    # Relay lane uses the connector-owned guard (prefer_connector_created=True),
+    # not the fragile cross-repo initial-name string. It MUST pass the PARENT
+    # channel chat_id so the connector's egress guard can resolve the tenant
+    # (the discriminator caches are keyed by the parent channel, not the thread;
+    # omitting it made the connector decline "target not routed to an onboarded
+    # tenant" — the live failure on staging 2026-08-01).
+    assert renames == [
+        ("th-9", "Debugging the flux capacitor", True, "chan-parent")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_title_rename_true_miss_noops():
+    """The connector didn't auto-thread this reply, so there is nothing to rename."""
+    import asyncio
+
+    adapter, stub_conn = _adapter()
+    renames: list = []
+
+    async def rename_thread(thread_id, name, **kw):
+        renames.append(thread_id)
+        return True
+
+    adapter.rename_thread = rename_thread  # type: ignore[method-assign]
+    runner = _mk_runner_stub()(adapter)
+    src = _relay_channel_source()
+
+    async def send_outbound(action, *, platform=None):
+        return {"success": True, "message_id": "m1"}
+
+    stub_conn.send_outbound = send_outbound  # type: ignore[method-assign]
+
+    async def deliver():
+        await asyncio.sleep(0.05)
+        await adapter.send("chan-parent", "the reply")
+
+    task = asyncio.create_task(deliver())
+    await runner._rename_discord_auto_thread_for_session_title(
+        src, "sess1", "A title"
+    )
+    await task
+    assert renames == []

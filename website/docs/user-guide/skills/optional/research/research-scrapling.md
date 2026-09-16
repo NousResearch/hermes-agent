@@ -15,7 +15,7 @@ Scrape sites with stealth browsing and Cloudflare bypass.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/scrapling` |
-| Path | `optional-skills/research/scrapling` |
+| Path | `optional-skills/research\scrapling` |
 | Version | `1.0.0` |
 | Author | FEUAZUR |
 | License | MIT |

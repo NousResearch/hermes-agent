@@ -471,7 +471,7 @@ def test_status_aggregation_prefers_highest_severity():
 
 
 def test_early_cli_subcommand_distinguishes_command_from_argument():
-    from hermes_cli.main import _early_cli_subcommand
+    from hermes_cli._early_recovery import early_cli_subcommand as _early_cli_subcommand
 
     assert _early_cli_subcommand(["chat", "health"]) == "chat"
     assert _early_cli_subcommand(["--profile", "dev", "health"]) == "health"
@@ -479,6 +479,8 @@ def test_early_cli_subcommand_distinguishes_command_from_argument():
     assert _early_cli_subcommand(["--provider", "auto", "health"]) == "health"
     assert _early_cli_subcommand(["--model", "test-model", "health"]) == "health"
     assert _early_cli_subcommand(["--toolsets", "all", "health"]) == "health"
+    assert _early_cli_subcommand(["--reasoning", "high", "health"]) == "health"
+    assert _early_cli_subcommand(["--in", "/tmp/workspace", "health"]) == "health"
     assert _early_cli_subcommand(["--model", "health", "chat"]) == "chat"
 
 
@@ -684,6 +686,8 @@ def test_health_cli_e2e_global_value_options_do_not_enable_file_logging(tmp_path
         ("--provider", "auto", "health", "--json"),
         ("--model", "test-model", "health", "--json"),
         ("--toolsets", "all", "health", "--json"),
+        ("--reasoning", "high", "health", "--json"),
+        ("--in", str(tmp_path), "health", "--json"),
     )
     for index, invocation in enumerate(invocations):
         home = tmp_path / f"profile-{index}"

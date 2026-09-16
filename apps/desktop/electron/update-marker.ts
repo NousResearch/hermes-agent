@@ -119,20 +119,87 @@ export function readLiveUpdateMarker(
  *
  * Fix: the desktop writes the marker itself, using the spawned updater's
  * PID, immediately after `spawn()`. The updater's `UpdateMarkerGuard` will
- * later overwrite it with its own PID — that's fine, the marker body is
- * the same format and `readLiveUpdateMarker` only cares that *some* live
- * pid owns it. When the updater finishes it deletes the marker as before.
+ * later adopt it or another hand-off stage may replace the PID. A live
+ * holder's original timestamp is preserved across those transfers so retries
+ * cannot keep resetting the 20-minute stale ceiling. When the updater finishes
+ * it deletes the marker as before.
  * If the updater never starts (spawn failure) the marker still contains a
  * real PID, so `readLiveUpdateMarker` will self-heal once that PID exits.
  */
-export function writeUpdateMarker(hermesHome, pid, { now = Date.now } = {}) {
+export function writeUpdateMarker(
+  hermesHome,
+  pid,
+  {
+    kill,
+    now = Date.now,
+    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
+    startedAt
+  }: {
+    now?: () => number
+    maxAgeMs?: number
+    kill?: typeof process.kill
+    startedAt?: number
+  } = {}
+) {
   const file = markerPath(hermesHome)
-  const startedAt = Math.floor(now() / 1000)
+  const nowMs = now()
+  const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs })
+
+  const acquiredAt =
+    typeof startedAt === 'number' && Number.isInteger(startedAt)
+      ? startedAt
+      : owner
+        ? Math.floor((nowMs - owner.ageMs) / 1000)
+        : Math.floor(nowMs / 1000)
 
   try {
-    fs.writeFileSync(file, `${pid}\n${startedAt}\n`, 'utf8')
+    fs.writeFileSync(file, `${pid}\n${acquiredAt}\n`, 'utf8')
   } catch {
     // Best-effort: if we can't write the marker, proceed anyway. The
     // updater will write its own when it reaches run_update.
+  }
+}
+
+/**
+ * Whether a NEW updater hand-off must be refused because a different,
+ * already-alive updater currently owns the marker (#75778).
+ *
+ * `writeUpdateMarker` unconditionally overwrites the marker file. Called
+ * before every hand-off with no conflict check, a user who clicks "Update"
+ * again while a prior updater is still parked mid-run (e.g. "waiting for
+ * Hermes to exit…") clobbers that still-running updater's claim: the
+ * retry's pre-write now names the NEW child, so the OLD process — alive
+ * and mutating the checkout — is no longer recorded as the owner. A second
+ * live updater can then run over the same tree unrecorded, the exact
+ * two-updaters-at-once hazard `UpdateMarkerGuard` in the Rust updater
+ * exists to prevent (apps/bootstrap-installer/src-tauri/src/update.rs).
+ *
+ * Returns the live foreign owner (with a ready-to-show message) when the
+ * hand-off must be refused, or `null` when it's safe to spawn — no marker,
+ * or the existing one is stale/dead and self-heals via
+ * `readLiveUpdateMarker`.
+ */
+export function updateHandoffConflict(
+  hermesHome,
+  opts: {
+    now?: () => number
+    maxAgeMs?: number
+    kill?: typeof process.kill
+  } = {}
+) {
+  const owner = readLiveUpdateMarker(hermesHome, opts)
+
+  if (!owner) {
+    return null
+  }
+
+  const mins = Math.floor(owner.ageMs / 60_000)
+  const secs = Math.floor((owner.ageMs % 60_000) / 1000)
+  const elapsed = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+
+  return {
+    pid: owner.pid,
+    ageMs: owner.ageMs,
+    message: `An update is already running (PID ${owner.pid}, started ${elapsed} ago). Wait for it to finish, then try again.`
   }
 }

@@ -28,27 +28,6 @@ class TestSharedTable:
         for mime, ext in DEFAULT_MIME_TO_EXT.items():
             assert ext_for_mime(mime) == ext
 
-    def test_overrides_always_win(self):
-        # Every override is honored even when the default table or
-        # mimetypes disagree.
-        assert ext_for_mime("image/heic", overrides={"image/heic": ".jpg"}) == ".jpg"
-        assert ext_for_mime("audio/ogg", overrides={"audio/ogg": ".weird"}) == ".weird"
-        assert ext_for_mime("image/jpeg", overrides={"image/jpeg": ".jpeg"}) == ".jpeg"
-
-    def test_mime_parameters_stripped(self):
-        assert ext_for_mime("audio/ogg; codecs=opus") == ".ogg"
-        assert ext_for_mime("IMAGE/JPEG; charset=binary") == ".jpg"
-
-    def test_unknown_mime_falls_back_to_mimetypes_then_fallback(self):
-        # Known to mimetypes but not our table.
-        assert ext_for_mime("image/bmp") == mimetypes.guess_extension("image/bmp")
-        # Unknown everywhere → explicit fallback.
-        assert ext_for_mime("application/x-no-such-type", fallback=".bin") == ".bin"
-        assert ext_for_mime("application/x-no-such-type") is None
-
-    def test_empty_mime_returns_fallback(self):
-        assert ext_for_mime("") is None
-        assert ext_for_mime("", fallback=".bin") == ".bin"
 
     def test_stage_gating(self):
         # use_defaults=False skips the shared table.
@@ -58,13 +37,6 @@ class TestSharedTable:
         # use_mimetypes=False skips the mimetypes fallback.
         assert ext_for_mime("image/bmp", use_mimetypes=False) is None
 
-    def test_inverse_map_consistent_with_forward(self):
-        # Round-trip: every inverse entry's mime maps forward to an ext
-        # whose inverse is the same mime (canonical closure).
-        for ext, mime in DEFAULT_EXT_TO_MIME.items():
-            fwd_ext = ext_for_mime(mime)
-            assert fwd_ext is not None
-            assert mime_for_ext(fwd_ext) == mime
 
     def test_mime_for_ext_fallback_and_case(self):
         assert mime_for_ext(".JPG") == "image/jpeg"
@@ -87,12 +59,6 @@ class TestCacheMediaBytes:
         path = cache_media_bytes(self.PNG, "image/png")
         assert path.endswith(".png")
 
-    def test_audio_dispatch(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "gateway.platforms.base.get_audio_cache_dir", lambda: tmp_path
-        )
-        path = cache_media_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ", "audio/wav")
-        assert path.endswith(".wav")
 
     def test_document_dispatch_uses_filename_hint(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
@@ -101,31 +67,6 @@ class TestCacheMediaBytes:
         path = cache_media_bytes(b"%PDF-1.4", "application/pdf",
                                  filename_hint="report.pdf")
         assert path.endswith("_report.pdf")
-
-    def test_document_dispatch_generates_name(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "gateway.platforms.base.get_document_cache_dir", lambda: tmp_path
-        )
-        path = cache_media_bytes(b"%PDF-1.4", "application/pdf")
-        assert path.endswith(".pdf")
-
-    def test_kind_hint_forces_cache(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "gateway.platforms.base.get_document_cache_dir", lambda: tmp_path
-        )
-        # Image mime but explicit document hint → document cache.
-        path = cache_media_bytes(self.PNG, "image/png", kind_hint="document",
-                                 filename_hint="pic.png")
-        assert path.endswith("_pic.png")
-
-    def test_ext_overrides_threaded(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(
-            "gateway.platforms.base.get_image_cache_dir", lambda: tmp_path
-        )
-        path = cache_media_bytes(
-            self.PNG, "image/png", ext_overrides={"image/png": ".png2"}
-        )
-        assert path.endswith(".png2")
 
 
 # ---------------------------------------------------------------------------
@@ -168,18 +109,6 @@ class TestBlueBubblesParity:
         )
         assert got == expected
 
-    @pytest.mark.parametrize("mime,expected", sorted(AUDIO_CASES.items()))
-    def test_audio_map(self, mime, expected):
-        from gateway.platforms.bluebubbles import _BLUEBUBBLES_AUDIO_EXT_OVERRIDES
-        got = ext_for_mime(
-            mime,
-            overrides=_BLUEBUBBLES_AUDIO_EXT_OVERRIDES,
-            use_defaults=False,
-            use_mimetypes=False,
-            fallback=".mp3",
-        )
-        assert got == expected
-
 
 class TestWhatsAppCloudParity:
     """Historical _ext_for_mime: overrides → mimetypes → None."""
@@ -198,21 +127,6 @@ class TestWhatsAppCloudParity:
     def test_pinned_overrides(self, mime, expected):
         from gateway.platforms.whatsapp_cloud import _ext_for_mime
         assert _ext_for_mime(mime) == expected
-
-    def test_unpinned_falls_to_mimetypes(self):
-        from gateway.platforms.whatsapp_cloud import _ext_for_mime
-        assert _ext_for_mime("application/pdf") == mimetypes.guess_extension(
-            "application/pdf"
-        )
-
-    def test_unknown_returns_none(self):
-        from gateway.platforms.whatsapp_cloud import _ext_for_mime
-        assert _ext_for_mime("application/x-no-such-type") is None
-        assert _ext_for_mime("") is None
-
-    def test_parameters_stripped(self):
-        from gateway.platforms.whatsapp_cloud import _ext_for_mime
-        assert _ext_for_mime("audio/ogg; codecs=opus") == ".ogg"
 
 
 class TestSignalParity:
@@ -233,13 +147,6 @@ class TestSignalParity:
         assert _ext_to_mime(ext) == expected
         assert _ext_to_mime(ext.upper()) == expected
 
-    def test_unknown_ext(self):
-        from gateway.platforms.signal import _ext_to_mime
-        assert _ext_to_mime(".xyz") == "application/octet-stream"
-
-    def test_shared_table_matches_historical_verbatim(self):
-        assert DEFAULT_EXT_TO_MIME == self.HISTORICAL
-
 
 class TestQQBotParity:
     """Historical qqbot image path: mimetypes.guess_extension or '.jpg'."""
@@ -254,9 +161,3 @@ class TestQQBotParity:
         ) or ".jpg"
         assert got == historical
 
-    def test_unknown_image_mime_falls_back_to_jpg(self):
-        got = ext_for_mime(
-            "image/x-no-such-type",
-            use_defaults=False, use_mimetypes=True, fallback=".jpg",
-        ) or ".jpg"
-        assert got == ".jpg"

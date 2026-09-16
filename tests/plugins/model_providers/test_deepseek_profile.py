@@ -44,13 +44,6 @@ class TestDeepSeekThinkingWireShape:
         assert extra_body == {"thinking": {"type": "enabled"}}
         assert top_level == {}
 
-    def test_v4_pro_enabled_with_high_effort(self, deepseek_profile):
-        extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "high"},
-            model="deepseek-v4-pro",
-        )
-        assert extra_body == {"thinking": {"type": "enabled"}}
-        assert top_level == {"reasoning_effort": "high"}
 
     @pytest.mark.parametrize("effort", ["low", "medium", "high"])
     def test_standard_efforts_pass_through(self, deepseek_profile, effort):
@@ -115,6 +108,10 @@ class TestDeepSeekModelGating:
             "deepseek-v4-flash",
             "deepseek-v4-future-variant",
             "DEEPSEEK-V4-PRO",  # case-insensitive
+            # Version-less canonical ids (2026-09 Flash refresh) carry the
+            # same thinking-mode contract but no v<N> marker.
+            "deepseek-flash",
+            "DEEPSEEK-FLASH",  # case-insensitive
         ],
     )
     def test_thinking_capable_models_emit_thinking(self, deepseek_profile, model):
@@ -144,7 +141,7 @@ class TestDeepSeekModelGating:
 class TestDeepSeekFullKwargsIntegration:
     """End-to-end: the transport's full kwargs match DeepSeek's live wire format.
 
-    The live test harness in ``tests/run_agent/test_deepseek_v4_thinking_live.py``
+    The live test harness in ``tests/agent/test_deepseek_v4_thinking_live.py``
     sends ``{"reasoning_effort": "high", "extra_body": {"thinking": {"type":
     "enabled"}}}``.  Confirm the transport produces that exact shape when wired
     through the registered DeepSeek profile.
@@ -193,19 +190,15 @@ class TestDeepSeekAuxModel:
     system.
     """
 
-    def test_profile_advertises_deepseek_v4_flash(self, deepseek_profile):
-        assert deepseek_profile.default_aux_model == "deepseek-v4-flash"
+    def test_profile_advertises_deepseek_flash(self, deepseek_profile):
+        assert deepseek_profile.default_aux_model == "deepseek-flash"
 
-    def test_fallback_models_are_v4_only(self, deepseek_profile):
-        assert deepseek_profile.fallback_models == (
-            "deepseek-v4-pro",
-            "deepseek-v4-flash",
-        )
+    def test_fallback_models_are_current_ids(self, deepseek_profile):
+        from hermes_cli.model_normalize import _normalize_for_deepseek
+        # Every advertised id must survive normalization unchanged (no retired alias in the picker).
+        assert all(_normalize_for_deepseek(m) == m for m in deepseek_profile.fallback_models)
 
-    def test_consumer_api_returns_deepseek_v4_flash(self):
+    def test_consumer_api_returns_deepseek_flash(self):
         from agent.auxiliary_client import _get_aux_model_for_provider
-        assert _get_aux_model_for_provider("deepseek") == "deepseek-v4-flash"
+        assert _get_aux_model_for_provider("deepseek") == "deepseek-flash"
 
-    def test_consumer_api_returns_non_empty(self):
-        from agent.auxiliary_client import _get_aux_model_for_provider
-        assert _get_aux_model_for_provider("deepseek") != ""

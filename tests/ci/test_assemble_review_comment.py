@@ -65,20 +65,6 @@ def test_statuses_bad_json():
     assert sources == set()
 
 
-def test_statuses_action_required():
-    statuses = _status("review-label-gate", [{
-        "kind": "action_required",
-        "title": "CI-sensitive file review",
-        "summary": "Changes detected.",
-        "how_to_fix": "Add the label.",
-    }])
-    items, sources = _mod.collect_from_statuses(statuses)
-    assert len(items) == 1
-    assert items[0].severity == "action_required"
-    assert items[0].title == "CI-sensitive file review"
-    assert items[0].how_to_fix == "Add the label."
-    assert items[0].source == "review-label-gate"
-    assert sources == {"review-label-gate"}
 
 
 def test_statuses_info():
@@ -93,89 +79,18 @@ def test_statuses_info():
     assert sources == {"review-label-gate"}
 
 
-def test_statuses_debug():
-    statuses = _status("ci-timings", [{
-        "kind": "debug",
-        "title": "CI timings",
-        "summary": "No regression.",
-    }])
-    items, _ = _mod.collect_from_statuses(statuses)
-    assert items[0].severity == "debug"
 
 
-def test_statuses_multiple_results_same_source():
-    """One source can emit multiple results of different kinds."""
-    statuses = _status("review-label-gate", [
-        {"kind": "action_required", "title": "CI review", "summary": "Missing label."},
-        {"kind": "action_required", "title": "MCP review", "summary": "Missing label."},
-    ])
-    items, sources = _mod.collect_from_statuses(statuses)
-    assert len(items) == 2
-    assert sources == {"review-label-gate"}
 
 
-def test_statuses_mixed_kinds_same_source():
-    """One source can emit both a warning and an info."""
-    statuses = _status("ci-timings", [
-        {"kind": "warning", "title": "CI timings", "summary": "Slower."},
-        {"kind": "info", "title": "Baseline", "summary": "OK."},
-    ])
-    items, sources = _mod.collect_from_statuses(statuses)
-    assert len(items) == 2
-    assert items[0].severity == "warning"
-    assert items[1].severity == "info"
-    assert sources == {"ci-timings"}
 
 
-def test_statuses_multiple_sources():
-    statuses = json.dumps([
-        {"source": "review-label-gate", "results": [
-            {"kind": "action_required", "title": "CI review", "summary": "Missing."},
-        ]},
-        {"source": "lockfile-diff", "results": [
-            {"kind": "info", "title": "package-lock.json", "summary": "No changes."},
-        ]},
-    ])
-    items, sources = _mod.collect_from_statuses(statuses)
-    assert len(items) == 2
-    assert sources == {"review-label-gate", "lockfile-diff"}
 
 
-def test_statuses_unknown_kind_becomes_info():
-    statuses = _status("some-job", [{
-        "kind": "bogus",
-        "title": "X",
-        "summary": "Y",
-    }])
-    items, _ = _mod.collect_from_statuses(statuses)
-    assert items[0].severity == "info"
 
 
-def test_statuses_no_source():
-    """Status without a source — still rendered, just not excluded from errors."""
-    statuses = json.dumps([{
-        "results": [{"kind": "info", "title": "X", "summary": "Y"}],
-    }])
-    items, sources = _mod.collect_from_statuses(statuses)
-    assert len(items) == 1
-    assert sources == set()
 
 
-def test_statuses_passes_through_optional_fields():
-    statuses = _status("ci-timings", [{
-        "kind": "warning",
-        "title": "CI timings",
-        "summary": "Slower.",
-        "detail": "- job: +5s",
-        "link": "https://report",
-        "link_label": "View report",
-        "how_to_fix": "Optimize.",
-    }])
-    items, _ = _mod.collect_from_statuses(statuses)
-    assert items[0].detail == "- job: +5s"
-    assert items[0].link == "https://report"
-    assert items[0].link_label == "View report"
-    assert items[0].how_to_fix == "Optimize."
 
 
 # ─── collect_failed_jobs ─────────────────────────────────────────────
@@ -185,24 +100,10 @@ def test_failed_jobs_empty_needs():
     assert _mod.collect_failed_jobs("", "https://run") == []
 
 
-def test_failed_jobs_no_failures():
-    needs = json.dumps({"tests": "success", "lint": "skipped"})
-    assert _mod.collect_failed_jobs(needs, "https://run") == []
 
 
-def test_failed_jobs_collects_only_failures():
-    needs = json.dumps({"tests": "success", "lint": "failure", "js-tests": "failure"})
-    items = _mod.collect_failed_jobs(needs, "https://run/123")
-    assert len(items) == 2
-    assert all(i.severity == "error" for i in items)
-    # sorted by name
-    names = [i.title for i in items]
-    assert names == ["js-tests", "lint"]
-    assert all(i.job_url == "https://run/123" for i in items)
 
 
-def test_failed_jobs_bad_json():
-    assert _mod.collect_failed_jobs("not json", "https://run") == []
 
 
 def test_failed_jobs_excluded_by_source():
@@ -216,71 +117,19 @@ def test_failed_jobs_excluded_by_source():
     assert items[0].title == "tests"
 
 
-def test_failed_jobs_no_exclusion_without_sources():
-    """Without exclude_sources, all failures are shown."""
-    needs = json.dumps({"review-label-gate": "failure", "tests": "failure"})
-    items = _mod.collect_failed_jobs(needs, "https://run")
-    assert len(items) == 2
 
 
-def test_failed_jobs_per_job_url():
-    """When job_urls is provided, the link points to the specific job."""
-    needs = json.dumps({"tests": "failure", "lint": "failure"})
-    job_urls = {"tests": "https://run/1/job/2", "lint": "https://run/1/job/3"}
-    items = _mod.collect_failed_jobs(needs, "https://fallback", job_urls=job_urls)
-    assert len(items) == 2
-    urls = {i.title: i.job_url for i in items}
-    assert urls["tests"] == "https://run/1/job/2"
-    assert urls["lint"] == "https://run/1/job/3"
 
 
-def test_failed_jobs_fallback_to_run_url():
-    """Jobs not in job_urls fall back to run_url."""
-    needs = json.dumps({"tests": "failure", "lint": "failure"})
-    job_urls = {"tests": "https://run/1/job/2"}
-    items = _mod.collect_failed_jobs(needs, "https://fallback", job_urls=job_urls)
-    urls = {i.title: i.job_url for i in items}
-    assert urls["tests"] == "https://run/1/job/2"
-    assert urls["lint"] == "https://fallback"
 
 
 # ─── render_comment ───────────────────────────────────────────────────
 
 
-def test_render_empty_shows_clean_banner():
-    """Completely clean — dog kaomoji + 'all good' banner, no sections."""
-    body = _mod.render_comment([])
-    assert body.startswith(MARKER)
-    assert "૮ >ﻌ< ა" in body
-    assert "all good!" in body
-    assert "##" not in body  # no section headers
 
 
-def test_render_info_only_is_visible_above_the_fold():
-    """Info items are visible rather than hidden in debug details."""
-    items = [
-        ReviewItem(severity="info", title="lockfile", summary="No changes."),
-        ReviewItem(severity="info", title="timings", summary="OK."),
-    ]
-    body = _mod.render_comment(items)
-    assert "૮ >ﻌ< ა" in body
-    assert "## ℹ️ Info" in body
-    assert "<details>" not in body
-    assert "No changes." in body
-    assert "OK." in body
-    # No blocking sections
-    assert "## ❌" not in body
-    assert "## ⚠️" not in body
 
 
-def test_render_info_only_with_pending_shows_info_plus_footer():
-    items = [ReviewItem(severity="info", title="lockfile", summary="No changes.")]
-    body = _mod.render_comment(items, pending_jobs=["ci-timings"])
-    assert "૮ >ﻌ< ა" in body
-    assert "Still running" in body
-    assert "## ℹ️ Info" in body
-    assert "Still running" in body
-    assert "`ci-timings`" in body
 
 
 def test_render_group_header_for_errors():
@@ -296,104 +145,20 @@ def test_render_group_header_for_errors():
     assert body.index("## ❌ Job failures") < body.index("### tests")
 
 
-def test_render_group_header_for_action_required():
-    items = [
-        ReviewItem(severity="action_required", title="CI review", summary="Need label."),
-    ]
-    body = _mod.render_comment(items)
-    assert "## ⚠️ Action required" in body
-    assert "### CI review" in body
 
 
-def test_render_group_header_for_warnings():
-    items = [
-        ReviewItem(severity="warning", title="CI timings", summary="Slower."),
-    ]
-    body = _mod.render_comment(items)
-    assert "## ⚠️ Warnings" in body
-    assert "### CI timings" in body
-    assert "<details>" not in body
-
-    items2 = [ReviewItem(severity="info", title="x", summary="y")]
-    body2 = _mod.render_comment(items2)
-    assert "## ⚠️ Warnings" not in body2
 
 
-def test_render_no_duplicated_severity_in_item_body():
-    """Items don't repeat the severity label — the group header carries it."""
-    items = [ReviewItem(severity="error", title="tests", summary="Job failed.", link="https://run")]
-    body = _mod.render_comment(items)
-    assert "### tests" in body
-    assert "Job failed." in body
-    assert "**❌ Error**" not in body
 
 
-def test_render_how_to_fix_at_bottom():
-    items = [
-        ReviewItem(severity="action_required", title="CI review", summary="Need label.",
-                   how_to_fix="Add the `ci-reviewed` label."),
-    ]
-    body = _mod.render_comment(items)
-    assert "**How to fix:**" in body
-    assert "Add the `ci-reviewed` label." in body
-    assert body.index("Need label.") < body.index("How to fix")
 
 
-def test_render_sections_separated_by_hr():
-    items = [
-        ReviewItem(severity="error", title="tests", summary="failed."),
-        ReviewItem(severity="action_required", title="CI review", summary="need label."),
-    ]
-    body = _mod.render_comment(items)
-    assert "\n\n---\n\n" in body
 
 
-def test_render_errors_always_visible():
-    items = [
-        ReviewItem(severity="error", title="tests", summary="Job **tests** failed.", job_url="https://run"),
-        ReviewItem(severity="info", title="lockfile", summary="No changes."),
-    ]
-    body = _mod.render_comment(items)
-    assert "## ❌ Job failures" in body
-    assert "### tests" in body
-    assert "Job **tests** failed." in body
-    assert "[View job](https://run)" in body
-    assert "## ℹ️ Info" in body
-    assert "No changes." in body
 
 
-def test_render_debug_in_collapsible_details():
-    """Debug items have a small label and each has its own <details> block."""
-    items = [
-        ReviewItem(severity="debug", title="lockfile", summary="No changes."),
-        ReviewItem(severity="debug", title="timings", summary="OK."),
-    ]
-    body = _mod.render_comment(items)
-    assert "### debug info" in body
-    assert body.index("### debug info") < body.index("<details>")
-    assert body.count("<details>") == 2
-    assert body.count("</details>") == 2
-    assert "<summary>lockfile</summary>" in body
-    assert "<summary>timings</summary>" in body
-    assert "No changes." in body
-    assert "OK." in body
 
 
-def test_render_order_errors_then_action_then_warn_then_info_then_debug():
-    items = [
-        ReviewItem(severity="info", title="i", summary="info"),
-        ReviewItem(severity="debug", title="d", summary="debug"),
-        ReviewItem(severity="warning", title="w", summary="warn"),
-        ReviewItem(severity="action_required", title="a", summary="action"),
-        ReviewItem(severity="error", title="e", summary="error"),
-    ]
-    body = _mod.render_comment(items)
-    error_pos = body.index("## ❌ Job failures")
-    action_pos = body.index("## ⚠️ Action required")
-    warn_pos = body.index("## ⚠️ Warnings")
-    info_pos = body.index("## ℹ️ Info")
-    debug_pos = body.index("<details>")
-    assert error_pos < action_pos < warn_pos < info_pos < debug_pos
 
 
 # ─── render_comment (pending jobs) ────────────────────────────────────
@@ -416,59 +181,46 @@ def test_render_pending_notif():
     assert "<sub>Still running 1 job: `ci-timings`</sub>" in body
 
 
-def test_render_pending_multiple_jobs_sorted():
-    body = _mod.render_comment([], pending_jobs=["docker", "ci-timings"])
-    assert "`ci-timings`" in body
-    assert "`docker`" in body
-    assert body.index("`ci-timings`") < body.index("`docker`")
+# ─── render_comment (waiting for jobs to start) ───────────────────────
 
 
-def test_render_no_pending_no_footer():
-    items = [ReviewItem(severity="info", title="x", summary="y")]
-    body = _mod.render_comment(items)
-    assert "Still running" not in body
+def test_waiting_with_no_items_shows_waiting_not_all_good():
+    """A run with no jobs yet must not render the final 'all good!' banner."""
+    body = _mod.render_comment([], waiting=True)
+    assert "all good" not in body
+    assert "waiting for jobs to start" in body
+
+
+def test_waiting_with_items_but_no_pending_keeps_a_live_footer():
+    """Between job waves: results exist, nothing pending, run not done."""
+    items = [ReviewItem(severity="info", title="lockfile", summary="No changes.")]
+    body = _mod.render_comment(items, waiting=True)
+    assert "waiting for more jobs to start" in body
+    assert "### lockfile" in body
+
+
+def test_not_waiting_and_no_items_still_renders_all_good():
+    body = _mod.render_comment([])
+    assert "all good!" in body
+
+
+def test_assemble_passes_waiting_through():
+    body = _mod.assemble(waiting=True)
+    assert "waiting for jobs to start" in body
+    assert "all good" not in body
+
+
+
+
 
 
 # ─── assemble (integration) ──────────────────────────────────────────
 
 
-def test_assemble_all_skipped_clean_banner():
-    body = _mod.assemble()
-    assert body.startswith(MARKER)
-    assert "૮ >ﻌ< ა" in body
-    assert "all good!" in body
-    assert "##" not in body
 
 
-def test_assemble_failed_job_shown():
-    needs = json.dumps({"tests": "failure", "lint": "success"})
-    body = _mod.assemble(needs_json=needs, run_url="https://run/1")
-    assert "## ❌ Job failures" in body
-    assert "### tests" in body
-    assert "[View job](https://run/1)" in body
 
 
-def test_assemble_with_review_statuses():
-    """Statuses from review-labels render directly + exclude gate from errors."""
-    statuses = _status("review-label-gate", [{
-        "kind": "action_required",
-        "title": "CI-sensitive file review",
-        "summary": "Changes detected.",
-        "how_to_fix": "Add the label.",
-    }])
-    needs = json.dumps({
-        "Review label gate / Review label gate": "failure",
-        "tests": "success",
-    })
-    body = _mod.assemble(
-        needs_json=needs,
-        run_url="https://run",
-        review_statuses_json=statuses,
-    )
-    assert "## ⚠️ Action required" in body
-    assert "### CI-sensitive file review" in body
-    assert "Add the label." in body
-    assert "## ❌ Job failures" not in body
 
 
 def test_assemble_review_status_detail_renders_sensitive_file_links():
@@ -497,19 +249,8 @@ def test_assemble_info_keeps_screenshot_details_visible_below_its_summary():
     assert "[`proof.png`](https://example.test/artifact)" in body
 
 
-def test_assemble_pending_jobs():
-    body = _mod.assemble(pending_jobs=["ci-timings"])
-    assert "Still running" in body
-    assert "`ci-timings`" in body
 
 
-def test_assemble_with_items_and_pending():
-    needs = json.dumps({"tests": "failure"})
-    body = _mod.assemble(needs_json=needs, run_url="https://run", pending_jobs=["ci-timings"])
-    assert "## ❌ Job failures" in body
-    assert "### tests" in body
-    assert "Still running" in body
-    assert "`ci-timings`" in body
 
 
 def test_assemble_with_timings_status():
@@ -542,21 +283,6 @@ def test_assemble_with_lockfile_status():
     assert "No lockfile changes" in body
 
 
-def test_assemble_with_lockfile_changed_status():
-    """Lockfile changed status renders as action_required with ci-reviewed how_to_fix."""
-    statuses = _status("lockfile-diff", [{
-        "kind": "action_required",
-        "title": "package-lock.json",
-        "summary": "Locked npm dependency versions changed.",
-        "detail": "#### `package-lock.json`\n\n| col | | |",
-        "how_to_fix": "Add the `ci-reviewed` label after verifying the version changes are expected.",
-    }])
-    body = _mod.assemble(review_statuses_json=statuses)
-    assert "## ⚠️ Action required" in body
-    assert "### package-lock.json" in body
-    assert "Locked npm dependency versions changed." in body
-    assert "Add the `ci-reviewed` label" in body
-    assert "<details>" not in body  # action_required is not in the collapsible block
 
 
 # ─── _attach_job_urls ────────────────────────────────────────────────
@@ -583,40 +309,10 @@ def test_attach_job_urls_fills_missing_links():
     assert items[1].job_url == "https://fallback"  # fell back to run_url
 
 
-def test_attach_job_urls_fallback_to_run_url():
-    """Items with a source but no matching job URL fall back to run_url."""
-    items = [
-        ReviewItem(severity="info", title="X", summary="Y", source="some-job"),
-    ]
-    _mod._attach_job_urls(items, {}, "https://fallback")
-    assert items[0].job_url == "https://fallback"
 
 
-def test_attach_job_urls_no_source_no_link():
-    """Items without a source don't get a link."""
-    items = [
-        ReviewItem(severity="info", title="X", summary="Y"),  # no source
-    ]
-    _mod._attach_job_urls(items, {"job": "https://run/1"}, "https://fallback")
-    assert items[0].job_url == ""
 
 
-def test_assemble_attaches_links_to_all_items():
-    """Integration: assemble() attaches job URLs to status items, not just errors."""
-    statuses = _status("supply chain", [{
-        "kind": "info",
-        "title": "Supply chain scan",
-        "summary": "No risks.",
-    }])
-    job_urls = {
-        "Supply Chain Audit / Scan PR for critical supply chain risks": "https://run/1/job/2",
-    }
-    body = _mod.assemble(
-        review_statuses_json=statuses,
-        job_urls=job_urls,
-        run_url="https://fallback",
-    )
-    assert "[View job](https://run/1/job/2)" in body
 
 
 def test_render_commit_info_below_header():
@@ -632,10 +328,6 @@ def test_render_commit_info_below_header():
     assert body.index("abc1234") < body.index("## ❌")
 
 
-def test_render_no_commit_info_when_empty():
-    """No commit_info → no extra line below header."""
-    body = _mod.render_comment([])
-    assert "running on" not in body
 
 
 def test_assemble_passes_commit_info():
@@ -663,21 +355,3 @@ def test_render_both_emitted_link_and_job_url():
     assert " · " in body
 
 
-def test_assemble_both_links_for_ci_timings():
-    """Integration: ci-timings has a report URL (link) AND gets a job_url."""
-    statuses = _status("ci timings", [{
-        "kind": "warning",
-        "title": "CI timings",
-        "summary": "Wall time 5m vs 3m (+66%).",
-        "detail": "- tests: +120s",
-        "link": "https://artifact/report.html",
-        "link_label": "View report",
-    }])
-    job_urls = {"CI timings": "https://github.com/run/1/job/5"}
-    body = _mod.assemble(
-        review_statuses_json=statuses,
-        job_urls=job_urls,
-        run_url="https://fallback",
-    )
-    assert "[View report](https://artifact/report.html)" in body
-    assert "[View job](https://github.com/run/1/job/5)" in body

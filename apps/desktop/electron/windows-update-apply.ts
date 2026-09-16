@@ -373,6 +373,7 @@ export interface WindowsUpdateState {
 interface BlockerWaitPlan {
   command: string
   holders: ForceReleaseHolder[]
+  message: string
 }
 
 function blockerWaitPlan(preflight: UpdatePreflightOutcome): BlockerWaitPlan | null {
@@ -387,7 +388,7 @@ function blockerWaitPlan(preflight: UpdatePreflightOutcome): BlockerWaitPlan | n
 
   const command = formatWindowsHolderStopCommand(holders)
 
-  return command ? { command, holders } : null
+  return command ? { command, holders, message: preflight.message } : null
 }
 
 export function cancelWindowsUpdateWait(state: WindowsUpdateState): boolean {
@@ -531,7 +532,7 @@ export async function applyWindowsUpdate<TTransport, TLaunch>(
       const controller = new AbortController()
       const holderSummary = waitPlan.holders.slice(0, 5).map(formatHolderLine).join('; ')
 
-      deps.log(`[updates] waiting for blockers: ${preflight.message}`)
+      deps.log(`[updates] waiting for blockers: ${waitPlan.message}`)
       deps.state.phase = 'waiting'
       deps.state.waitAbortController = controller
       deps.emitProgress({

@@ -2828,6 +2828,8 @@ export interface Translations {
     everythingSkipped: string
     everythingRowFailed: string
     everythingFanoutFailedTitle: string
+    cancellingWait: string
+    cancelWaitFailed: string
     applyStatus: {
       preparing: string
       pulling: string

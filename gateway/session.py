@@ -1148,6 +1148,26 @@ class SessionStore(
                 self._save()
         return len(moving)
 
+    def purge_profile_routing(self, profile: str) -> int:
+        """Drop a deleted profile's live routing entries and persist the drop (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_routing`, and it has to happen here for the same reason:
+        this index is written back by the owning process, so a durable DB delete made elsewhere is
+        undone by the next save of this in-memory copy — which is how a deleted profile kept
+        resolving. Idempotent; returns the number of entries dropped.
+        """
+        name = (profile or "").strip()
+        if not name:
+            return 0
+        ns = f"agent:{name}:"
+        with self._lock:
+            dropped = [key for key in self._entries if key.startswith(ns)]
+            for key in dropped:
+                self._entries.pop(key, None)
+            if dropped:
+                self._save()
+        return len(dropped)
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).

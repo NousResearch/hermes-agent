@@ -210,6 +210,21 @@ def normalize_updated_at(value: Any) -> Optional[str]:
     return None
 
 
+def retained_gateway_state(runtime: Any) -> str:
+    """What a NOT-running gateway's retained ``gateway_state.json`` says about it now:
+    ``"startup_failed"`` only while the operator still wants it running, else ``"stopped"``.
+
+    ``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk for
+    diagnostics and records the durable stop intent as ``desired_state``; a profile the operator
+    stopped is "stopped", not a current failure. Any other retained state of a dead process
+    (``running``, ``starting``, missing) is also just "stopped". Shared by ``/api/status`` and
+    ``/api/messaging/platforms`` so the sidebar strip and the Channels page cannot disagree."""
+    rt = runtime if isinstance(runtime, dict) else {}
+    if rt.get("desired_state") != "stopped" and rt.get("gateway_state") == "startup_failed":
+        return "startup_failed"
+    return "stopped"
+
+
 def terminate_pid(
     pid: int, *, force: bool = False, expected_start_time: Optional[float] = None
 ) -> None:

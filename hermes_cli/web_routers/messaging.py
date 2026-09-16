@@ -22,7 +22,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness)
+    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_constants import get_process_hermes_home
@@ -246,7 +247,9 @@ def _messaging_platform_payload(
     elif gateway_running and not state:
         state = "pending_restart"
     elif not gateway_running and not state:
-        state = "startup_failed" if rt.get("gateway_state") == "startup_failed" else "gateway_stopped"
+        # Same verdict /api/status gives: ``hermes gateway stop`` keeps the last failure on disk,
+        # and a profile the operator stopped must not wear a "Start failed" badge for it.
+        state = "startup_failed" if retained_gateway_state(rt) == "startup_failed" else "gateway_stopped"
 
     error_code = runtime_platform.get("error_code")
     error_message = runtime_platform.get("error_message")

@@ -42,6 +42,10 @@ vi.mock('@/store/gateway', async original => ({
   retainGatewayForAgent: vi.fn(async () => () => undefined)
 }))
 
+// Routed session.create dials are user gestures (send / "New session"), so the
+// hook tags them foreground (#105104); the two undefineds are timeout/signal.
+const FOREGROUND_CREATE_DIAL = [undefined, undefined, { spawnPriority: 'foreground' }] as const
+
 function mountActions() {
   const ref = <T,>(current: T) => ({ current })
   const requestGateway = vi.fn(async () => ({ session_id: 'ambient', stored_session_id: 'ambient-stored' }) as never)
@@ -193,7 +197,8 @@ describe('generic new session default routing', () => {
       'peer-host',
       'peer-agent',
       'session.create',
-      expect.objectContaining({ profile: 'peer-agent' })
+      expect.objectContaining({ profile: 'peer-agent' }),
+      ...FOREGROUND_CREATE_DIAL
     )
   })
 
@@ -216,7 +221,8 @@ describe('generic new session default routing', () => {
         connectionId,
         profile,
         'session.create',
-        expect.objectContaining({ profile })
+        expect.objectContaining({ profile }),
+        ...FOREGROUND_CREATE_DIAL
       )
       expect(getSessionOwnerHint('created-stored')).toEqual({ connectionId, profile })
     }
@@ -239,7 +245,8 @@ describe('generic new session default routing', () => {
       expected.connectionId,
       expected.profile,
       'session.create',
-      expect.objectContaining({ profile: expected.profile })
+      expect.objectContaining({ profile: expected.profile }),
+      ...FOREGROUND_CREATE_DIAL
     )
     expect(getSessionOwnerHint('created-stored')).toEqual(expected)
     expect($sessions.get().find(row => row.id === 'created-stored')).toMatchObject({

@@ -940,6 +940,34 @@ class TestPostUpdateStaleModuleReload:
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
 
+    def test_cleanup_failure_is_isolated_and_recorded(self, capsys):
+        """#112604 class: the cleanup runs pulled ``dashboard_procs`` in the pre-pull interpreter,
+        so a symbol gap raises AttributeError from inside the scan. That exception used to
+        propagate out of ``_finish_dashboard_update_cleanup`` and abort the fleet-verification
+        tail (matrix, reconciliation, inner receipt finalize). It must be contained, made
+        visible, and recorded as a failed step on the open receipt."""
+        import hermes_cli.update_receipt as ur
+        from hermes_cli import update_cmd
+
+        ur._current = None
+        try:
+            ur.begin_update_receipt()
+            with patch.object(update_cmd, "_reload_process_scan_modules"), patch(
+                "hermes_cli.main._kill_stale_dashboard_processes",
+                side_effect=AttributeError(
+                    "module 'hermes_cli.main_dashboard' has no attribute '_loaded_launchd_backend_jobs'"
+                ),
+            ):
+                update_cmd._finish_dashboard_update_cleanup([])  # must not raise
+
+            steps = {s["name"]: s for s in ur._current.data["steps"]}
+        finally:
+            ur._current = None
+
+        assert steps["dashboard_cleanup"]["ok"] is False
+        assert "_loaded_launchd_backend_jobs" in steps["dashboard_cleanup"]["detail"]
+        assert "_loaded_launchd_backend_jobs" in capsys.readouterr().out
+
 
 class TestLaunchdSupervisedBackends:
     """macOS (#111689): a backend supervised by a launchd job must come back through launchd. Respawning

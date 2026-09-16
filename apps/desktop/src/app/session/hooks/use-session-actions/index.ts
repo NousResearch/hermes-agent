@@ -609,8 +609,15 @@ export function useSessionActions({
         // foreground hold below takes over from that point until the created
         // chat is selected. Between the two, nothing may close the socket
         // that just minted the runtime.
+        //
+        // 'foreground' spawn priority (#102281 primitive): this is the user
+        // hitting send on a fresh chat, so a cold spawn must not queue behind
+        // background roster hydration on a saturated pool. The retain is the
+        // first dial, so it carries the tag as well as the create RPC.
         const releaseCreateLease = capturedRoute
-          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile)
+          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, {
+              spawnPriority: 'foreground'
+            })
           : () => undefined
 
         let created: SessionCreateResponse
@@ -622,7 +629,10 @@ export function useSessionActions({
                 capturedRoute.connectionId,
                 capturedRoute.profile,
                 'session.create',
-                params
+                params,
+                undefined,
+                undefined,
+                { spawnPriority: 'foreground' }
               )
             : await requestGateway<SessionCreateResponse>('session.create', params)
 
@@ -843,9 +853,13 @@ export function useSessionActions({
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the
-        // tile is mounted ($sessionTiles names the owner from then on).
+        // tile is mounted ($sessionTiles names the owner from then on). Same
+        // 'foreground' spawn priority too: "New session" / tab-strip "+" is a
+        // direct user click, not background hydration.
         const releaseCreateLease = capturedRoute
-          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile)
+          ? await retainGatewayForAgent(capturedRoute.connectionId, capturedRoute.profile, {
+              spawnPriority: 'foreground'
+            })
           : () => undefined
 
         let created: SessionCreateResponse
@@ -857,7 +871,10 @@ export function useSessionActions({
                 capturedRoute.connectionId,
                 capturedRoute.profile,
                 'session.create',
-                params
+                params,
+                undefined,
+                undefined,
+                { spawnPriority: 'foreground' }
               )
             : await requestGateway<SessionCreateResponse>('session.create', params)
 

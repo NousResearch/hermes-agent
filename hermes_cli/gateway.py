@@ -3915,9 +3915,16 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 
-    <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
+    <!-- SuccessfulExit=false parks a clean stop (exit 0), including gateway
+         EX_CONFIG 78 after stderr_timestamp maps it to 0 — launchd cannot
+         honor RestartPreventExitStatus, and KeepAlive=true respawned token
+         collisions forever (#89477). Exit 75 and crashes still relaunch.
+         ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid
          respawn storm; ExitTimeOut gives the gateway 25s of graceful-drain
          headroom before launchd escalates from SIGTERM to SIGKILL on stop. -->

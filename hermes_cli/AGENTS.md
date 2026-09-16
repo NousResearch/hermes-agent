@@ -129,7 +129,15 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
   Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
   refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for.
+  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt writer runs in
+  the PRE-pull interpreter after the module purge, so `update_receipt.py` may import only stdlib and
+  purge-protected modules (`hermes_constants`) — a `hermes_cli.config` import there re-executed the
+  pulled config against a stale `utils` and silently dropped the whole receipt; a write failure
+  prints `⚠ Update receipt not written` and logs at WARNING, never debug.
+- **Post-update steps are isolated**: everything after the code swap that runs pulled code in the
+  pre-pull process (`_finish_dashboard_update_cleanup`, notices, probes) catches its own failure,
+  prints it, and records a failed receipt step — one stale-symbol `AttributeError` must not abort
+  the fleet matrix, reconciliation and receipt finalize that follow it.
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
@@ -145,7 +153,9 @@ profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
 root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+islands by design — no live config inheritance and no credential inheritance (a named profile reads
+only its own `auth.json`/`.env`; the root store is never a fallback and never a write-through target,
+#111724 — a profile without a provider gets the setup prompt); `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand

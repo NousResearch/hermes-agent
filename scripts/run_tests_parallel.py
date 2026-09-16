@@ -412,7 +412,15 @@ def _run_one_file_once(
     home_root = tempfile.mkdtemp(prefix="hermes-pytest-home-")
     env["HOME"] = home_root
     env["HERMES_HOME"] = os.path.join(home_root, ".hermes")
-    temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
+    # Anchor the pytest temproot at a SHORT path. When TMPDIR points into a
+    # deep tree (e.g. the self-hosted runner's ~/.hermes/tmp/gh-runner-...),
+    # tmp_path-derived AF_UNIX socket paths exceed the 108-byte sockaddr_un
+    # limit and bind() raises 'AF_UNIX path too long'; long paths also slow
+    # every filesystem touch. /tmp is short on every platform we run on.
+    try:
+        temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-", dir="/tmp")
+    except (OSError, FileNotFoundError):
+        temproot = tempfile.mkdtemp(prefix="hermes-pytest-tmproot-")
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
 
     subproc_start = time.monotonic()

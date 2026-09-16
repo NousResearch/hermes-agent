@@ -33,7 +33,24 @@ def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
 
 class TestMCPConfigWatch:
 
+    def test_run_state_seeds_signature_when_config_exists(self, tmp_path, monkeypatch):
+        """An existing config file must not crash CLI startup."""
+        from cli import HermesCLI
 
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("mcp_servers: {}\n")
+        monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+        cli = HermesCLI(
+            model="fixture",
+            provider="openai-compat",
+            api_key="fixture",
+            base_url="http://127.0.0.1:1/v1",
+        )
+
+        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+            cli._tui_init_run_state()
+
+        assert cli._config_sig == file_signature(cfg_file.stat())
 
     def test_new_mcp_server_triggers_reload(self, tmp_path):
         """Adding a new MCP server to config triggers auto-reload."""

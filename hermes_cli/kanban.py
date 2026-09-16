@@ -622,6 +622,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="JSON dict of structured facts to store on the latest completed run.",
     )
 
+    p_set_ws = sub.add_parser(
+        "set-workspace",
+        help="Correct a task's recorded workspace metadata (moves no files)",
+        description=(
+            "Rewrite workspace_kind/workspace_path on an existing task so the "
+            "row describes the workspace that task actually owns. Nothing is "
+            "created, moved or removed on disk and no worker is started; "
+            "status, assignee, claim, links and history are untouched. "
+            "Refused when the task is running / holds an active claim, when "
+            "the kind is unknown, when a dir/worktree path is missing, "
+            "relative, or does not already exist, and when a scratch kind is "
+            "given an explicit path."
+        ),
+    )
+    p_set_ws.add_argument("task_id")
+    p_set_ws.add_argument(
+        "--kind", required=True, choices=sorted(kb.VALID_WORKSPACE_KINDS),
+        help="Workspace kind to record",
+    )
+    p_set_ws.add_argument(
+        "--path", default=None,
+        help="Absolute path to an EXISTING directory (dir/worktree kinds)",
+    )
+    p_set_ws.add_argument("--json", action="store_true",
+                          help="Emit the applied change as JSON")
+
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
     p_block.add_argument("task_id")
     p_block.add_argument("reason", nargs="*", help="Reason (also appended as a comment)")
@@ -1127,6 +1153,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
+            "set-workspace": _cmd_set_workspace,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
@@ -1195,6 +1222,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "attach-rm",
     "complete",
     "edit",
+    "set-workspace",
     "block",
     "schedule",
     "unblock",
@@ -2331,6 +2359,32 @@ def _cmd_edit(args: argparse.Namespace) -> int:
             )
             return 1
     print(f"Edited {args.task_id}")
+    return 0
+
+
+def _cmd_set_workspace(args: argparse.Namespace) -> int:
+    """``hermes kanban set-workspace`` — audited workspace-metadata correction."""
+    with kb.connect_closing() as conn:
+        try:
+            applied = kb.set_task_workspace(
+                conn,
+                args.task_id,
+                workspace_kind=args.kind,
+                workspace_path=getattr(args, "path", None),
+                actor=_profile_author(),
+            )
+        except kb.WorkspaceUpdateRefused as exc:
+            print(f"kanban set-workspace: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(applied, ensure_ascii=False))
+    else:
+        old, new = applied["old"], applied["new"]
+        print(
+            f"{args.task_id}: workspace "
+            f"{old['workspace_kind']}:{old['workspace_path'] or '-'} -> "
+            f"{new['workspace_kind']}:{new['workspace_path'] or '-'}"
+        )
     return 0
 
 

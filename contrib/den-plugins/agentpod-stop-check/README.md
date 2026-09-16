@@ -154,9 +154,30 @@ a `~/.hermes/kanban/workspaces/…` path satisfy neither, and are reported as
 apply, never this plugin:
 
 * launch with `workdir` = the card's recorded `workspace_path`; or
-* update the card's workspace metadata to the directory the worker really uses
-  (`hermes kanban` update + read it back with `hermes kanban show <id>` before
-  relying on it).
+* correct the card's workspace metadata to the directory the worker really
+  uses, with the audited operator verb:
+
+  ```bash
+  hermes kanban set-workspace <card-id> --kind worktree --path <ABS per-card worktree>
+  hermes kanban show <card-id>        # read it back before relying on it
+  ```
+
+  `set-workspace` rewrites only `workspace_kind`/`workspace_path`; it moves no
+  files, starts no worker, and leaves status, assignee, claim, links and
+  history untouched, appending a `workspace_updated` audit event. It refuses a
+  running task, an active claim, an unknown kind, a relative or non-existent
+  path, and `scratch` + an explicit path. Workers cannot call it
+  (`set-workspace` is in `_DELEGATED_CHILD_DENIED_ACTIONS`).
+
+  **Keep the path at the per-card worktree, never the shared repo root** — a
+  repo-root path binds any process running anywhere in that checkout, which is
+  precisely the mis-assignment this gate must avoid.
+
+  Before this verb there was NO supported mutation surface for these fields:
+  `hermes kanban edit` only backfills `result`/`summary`/`metadata` on a done
+  task, the dashboard `PATCH /tasks/{id}` body carries no workspace fields, and
+  `kanban_db.set_workspace_path` is an internal claim-time write with no kind,
+  no audit event and no claim guard.
 
 A model-visible `terminal` parameter for the card id was deliberately **not**
 added: it would put a per-plugin field in the core tool schema on every API
@@ -187,6 +208,22 @@ agentpod_stop_check:
   max_continuations: 2
   continuation_window_seconds: 900
 ```
+
+### Cap ordering (`max_verify_nudges` vs `max_continuations`)
+
+The `pre_verify` call site only re-evaluates while
+`attempt < agent.max_verify_nudges`. If the **core** cap is reached first
+(`agent.max_verify_nudges <= agentpod_stop_check.max_continuations`) the verdict
+recorded at the first evaluation is frozen and ships **even when the
+continuation then really resolved the board** — a stale fail-explicit verdict on
+finished work.
+
+The shipped defaults are safe: `max_verify_nudges: 3` (core default) vs
+`max_continuations: 2`, so the plugin's own cap is hit first and the last
+evaluation clears the verdict. Rather than changing runtime behavior, the
+activation preflight **refuses** the inverted ordering and names the exact
+required setting (`agent.max_verify_nudges` >= `max_continuations + 1`).
+Covered by `test_40_preflight_refuses_a_stale_verdict_cap_ordering`.
 
 ## Activation (staged, reversible, core first)
 

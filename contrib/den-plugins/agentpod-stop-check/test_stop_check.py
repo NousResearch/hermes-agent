@@ -1967,3 +1967,62 @@ def test_39_an_unpinned_launch_is_owner_unknown_not_attended(home, monkeypatch):
         assert not v.quiet_allowed
     finally:
         pr.process_registry.kill_all()
+
+
+def test_40_preflight_refuses_a_stale_verdict_cap_ordering(home):
+    """The core cap must not stop re-evaluation before the plugin's cap.
+
+    When ``agent.max_verify_nudges <= max_continuations`` the call site freezes
+    the verdict recorded at the first evaluation, so a continuation that really
+    resolved the board still ships a fail-explicit verdict. That is a config
+    foot-gun; the preflight refuses it with the exact required setting rather
+    than the runtime silently changing behavior. The SHIPPED defaults are safe.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "stopcheck_preflight_caps", PLUGIN_SRC / "activation_preflight.py")
+    pf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pf)
+
+    # Shipped defaults (neither key set) are SAFE: 3 > 2.
+    ok, nudges, conts, detail = pf.evaluate_cap_ordering({})
+    assert (ok, nudges, conts) == (True, 3, 2), detail
+
+    # Explicitly writing the shipped values is equally safe.
+    ok, _, _, _ = pf.evaluate_cap_ordering(
+        {"agent": {"max_verify_nudges": 3},
+         "agentpod_stop_check": {"max_continuations": 2}})
+    assert ok
+
+    # The stale-verdict orderings are refused, and the refusal names the fix.
+    for nudge_v, cont_v, need in ((1, 5, 6), (2, 2, 3), (0, 0, 1)):
+        ok, _, _, detail = pf.evaluate_cap_ordering(
+            {"agent": {"max_verify_nudges": nudge_v},
+             "agentpod_stop_check": {"max_continuations": cont_v}})
+        assert not ok, (nudge_v, cont_v)
+        assert f"at least {need}" in detail, detail
+
+    # Junk values fall back to the safe shipped defaults, not to a pass-by-luck.
+    ok, nudges, conts, _ = pf.evaluate_cap_ordering(
+        {"agent": {"max_verify_nudges": "three"},
+         "agentpod_stop_check": {"max_continuations": None}})
+    assert (ok, nudges, conts) == (True, 3, 2)
+
+    # ...and it is wired into the real scope gate, not just callable.
+    cfg_path = home / "cap-config.yaml"
+    cfg_path.write_text(yaml.safe_dump({
+        "agent": {"max_verify_nudges": 1},
+        "agentpod_stop_check": {"session_ids": [SESSION], "max_continuations": 5},
+    }))
+    g = pf.Gate()
+    pf.probe_scope(cfg_path, None, g)
+    assert "cap ordering" in g.failures, g.lines
+
+    cfg_path.write_text(yaml.safe_dump({
+        "agent": {"max_verify_nudges": 3},
+        "agentpod_stop_check": {"session_ids": [SESSION], "max_continuations": 2},
+    }))
+    g_ok = pf.Gate()
+    pf.probe_scope(cfg_path, None, g_ok)
+    assert "cap ordering" not in g_ok.failures, g_ok.lines

@@ -223,6 +223,64 @@ def probe_core(core_root: Path, gate: Gate) -> None:
     )
 
 
+# Shipped defaults for the two caps the stale-verdict window depends on.
+# They are SAFE as shipped: the plugin's own cap (2) is reached first, so the
+# gate re-evaluates and a verdict recorded earlier in the turn is cleared when
+# the continuation actually resolved the board.
+DEFAULT_PLUGIN_MAX_CONTINUATIONS = 2
+DEFAULT_CORE_MAX_VERIFY_NUDGES = 3
+
+
+def evaluate_cap_ordering(cfg: dict) -> tuple[bool, int, int, str]:
+    """Gate the core-cap / plugin-cap ordering. Pure function, config in.
+
+    The ``pre_verify`` call site only re-evaluates while
+    ``attempt < agent.max_verify_nudges``. If the CORE cap is reached first
+    (``max_verify_nudges <= max_continuations``) the verdict recorded at the
+    first evaluation is frozen and ships even when the continuation then really
+    resolved the board — a stale fail-explicit verdict on finished work.
+
+    This is a configuration foot-gun, not a runtime defect: with the shipped
+    defaults (2 vs 3) the plugin's cap is hit first and re-evaluation clears the
+    verdict. So the preflight REFUSES the bad ordering with the exact required
+    setting instead of adding new runtime behavior.
+
+    Returns ``(ok, nudges, continuations, detail)``.
+    """
+    sc = (cfg.get("agentpod_stop_check") or {})
+    agent_cfg = (cfg.get("agent") or {})
+
+    def _as_int(raw, default):
+        try:
+            return max(0, int(raw))
+        except (TypeError, ValueError):
+            return default
+
+    continuations = _as_int(
+        sc.get("max_continuations"), DEFAULT_PLUGIN_MAX_CONTINUATIONS)
+    nudges = _as_int(
+        agent_cfg.get("max_verify_nudges"), DEFAULT_CORE_MAX_VERIFY_NUDGES)
+    ok = nudges > continuations
+    if ok:
+        detail = (
+            f"agent.max_verify_nudges={nudges} > "
+            f"agentpod_stop_check.max_continuations={continuations}: the "
+            "plugin's cap is reached first, so the last evaluation clears a "
+            "verdict the continuation resolved"
+        )
+    else:
+        detail = (
+            f"agent.max_verify_nudges={nudges} <= "
+            f"agentpod_stop_check.max_continuations={continuations}: the CORE "
+            "cap stops re-evaluation first, so a verdict recorded earlier in "
+            "the turn would ship even after the continuation resolved the "
+            f"board. Required: set agent.max_verify_nudges to at least "
+            f"{continuations + 1} (or lower "
+            f"agentpod_stop_check.max_continuations below {nudges})."
+        )
+    return ok, nudges, continuations, detail
+
+
 def probe_scope(config_path: Path | None, board_db: Path | None, gate: Gate) -> None:
     """Gate 3 — the configured scope must select a real, non-empty set."""
     if config_path is None:
@@ -253,6 +311,9 @@ def probe_scope(config_path: Path | None, board_db: Path | None, gate: Gate) -> 
         else "session_ids is empty — the plugin would be inert, and enabling it "
              "would read as active",
     )
+
+    cap_ok, _nudges, _conts, cap_detail = evaluate_cap_ordering(cfg)
+    gate.check(cap_ok, "cap ordering", cap_detail)
 
     project_id, tenant = sc.get("project_id"), sc.get("tenant")
     if project_id is None and tenant is None:

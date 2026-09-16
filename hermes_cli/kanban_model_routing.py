@@ -310,63 +310,9 @@ def resolve_task_route(
     return kwargs
 
 
-def enforce_worker_route(
-    hermes_home,
-    receipt_id: str,
-    *,
-    actual_provider: str,
-    actual_model: str,
-    actual_endpoint: Optional[str],
-    actual_reasoning: Optional[str],
-    record_outcome: bool = True,
-    outcome_kind: str = "routing_started",
-) -> None:
-    """The worker-side half of the guard (design §4 step 7, §12 "Claim/start/
-    crash sequence" step 5): called from the actual Kanban worker process immediately
-    before its first real inference, with the actually-constructed
-    provider/model/endpoint/reasoning. Loads the SAME receipt the dispatcher
-    persisted at claim time and raises ``RoutingBlocked`` on any divergence
-    (revoked/stale decision, a code path that silently substituted a different
-    route, etc.) — the worker must stop before sending task content, never
-    silently fall back to whatever it was actually constructed with.
-
-    ``record_outcome=False`` skips the append-only outcome write. Callers that
-    re-run this same check before EVERY subsequent request in a managed turn
-    (design §12: "best-effort revocation generation check before each
-    subsequent managed request") pass this so the receipt's outcome log grows
-    once per turn's first call, not once per iteration.
-    """
-    decision = get_receipt(hermes_home, receipt_id)
-    if decision is None:
-        raise RoutingBlocked(
-            "stale_or_revoked_decision",
-            f"no routing receipt found for id={receipt_id!r}; the decision this worker "
-            "was claimed under is missing or was never persisted",
-        )
-    # Emergency revocation (design §12 "Availability, budget, reasoning and
-    # revocation": "best-effort revocation generation check before each
-    # subsequent managed request; it never substitutes another model").
-    # Already-in-flight requests cannot be recalled -- this checkpoint runs
-    # before the FIRST request AND before every later request in the same
-    # managed turn, so a policy edited/suspended between requests must still
-    # stop the NEXT one, never silently launch/continue under a routing that
-    # is no longer current.
-    active_policy = get_active_policy(hermes_home, decision["policy_id"])
-    if active_policy is None or active_policy.get("revision") != decision["policy_revision"]:
-        raise RoutingBlocked(
-            "stale_or_revoked_decision",
-            f"policy {decision['policy_id']!r} revision {decision['policy_revision']} "
-            "is no longer the active revision (revoked/superseded since this decision "
-            "was receipted); refusing to launch under a stale route",
-        )
-    validate_actual_route(
-        decision,
-        actual_provider=actual_provider,
-        actual_model=actual_model,
-        actual_endpoint=actual_endpoint,
-        actual_reasoning=actual_reasoning,
-    )
-    if record_outcome:
-        append_outcome(hermes_home, receipt_id, outcome_kind, {
-            "actual_provider": actual_provider, "actual_model": actual_model,
-        })
+# The worker-side half of the guard now lives in `agent.managed_route_runtime` (design §6: "shared
+# managed_route_guard currently imports hermes_cli.kanban_model_routing.enforce_worker_route ->
+# factor neutral implementation if needed"). Re-exported here UNCHANGED so every existing Kanban
+# call site, `unittest.mock.patch("hermes_cli.kanban_model_routing.enforce_worker_route", ...)`
+# target and test keeps passing byte-for-byte -- this is a wrapper, not a reimplementation.
+from agent.managed_route_runtime import enforce_worker_route  # noqa: F401,E402

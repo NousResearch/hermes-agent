@@ -382,15 +382,68 @@ def _build_children(
         _child_context = t.get("context")
         if _task_schema is not None:
             _child_context = append_output_contract(_child_context, _task_schema)
+        # Guided model routing (plans/2026-09-15_141016-guided-model-routing.md §6 "Delegation"):
+        # a per-task ``routing_role`` (or an inherited managed-parent ceiling) resolves through the
+        # SAME neutral selector/store/guard Kanban uses. A resolution failure is a real spawn
+        # failure -- propagated exactly like the existing pinned-command preflight failure, never
+        # silently downgraded to an unmanaged/default route (design §5).
+        from agent.model_selection_types import RoutingBlocked as _RoutingBlocked
+        from tools.delegate_tool_routing import resolve_delegation_route, stamp_managed_route
+        try:
+            _routing_resolution = resolve_delegation_route(t, parent_agent, task_index=i)
+        except (_RoutingBlocked, ValueError) as exc:
+            return [], f"Task {i} routing: {exc}"
+        _task_overrides = dict(overrides)
+        if _routing_resolution is not None:
+            # Managed override: authoritative, never merged with parent/config inheritance (§5) --
+            # this REPLACES the config-derived overrides for this one task's construction only.
+            _task_overrides.update({
+                "override_provider": _routing_resolution["provider"],
+                "override_base_url": _routing_resolution.get("endpoint"),
+                "override_api_key": None,  # resolved provider credentials inherit via runtime resolution below
+                "override_api_mode": None,
+                "override_request_overrides": None,
+                "override_acp_command": None, "override_acp_args": None,
+            })
+            _managed_model = _routing_resolution["model"]
+            _managed_reasoning = _routing_resolution.get("reasoning_effort")
+            try:
+                from tools.delegate_tool_config import _runtime_provider_credentials
+                _managed_runtime_creds = _runtime_provider_credentials(
+                    {"model": _managed_model, "provider": _routing_resolution["provider"], "api_mode": None},
+                    None,
+                )
+            except ValueError as exc:
+                return [], f"Task {i} routing: managed route provider could not be resolved: {exc}"
+            _task_overrides["override_api_key"] = _managed_runtime_creds["api_key"]
+            _task_overrides["override_api_mode"] = _managed_runtime_creds["api_mode"]
+            _task_overrides["override_acp_command"] = _managed_runtime_creds.get("command")
+            _task_overrides["override_acp_args"] = _managed_runtime_creds.get("args")
+            if _routing_resolution.get("endpoint") is None:
+                _task_overrides["override_base_url"] = _managed_runtime_creds.get("base_url")
+        else:
+            _managed_model = creds["model"]
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                model=_managed_model, max_iterations=max_iterations, task_count=len(task_list),
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_task_overrides,
             )
         except ValueError as exc:
             return [], str(exc)
+        if _routing_resolution is not None:
+            if _routing_resolution.get("reasoning_effort"):
+                from hermes_constants import parse_reasoning_effort as _parse_reasoning_effort
+                _parsed_reasoning = _parse_reasoning_effort(_routing_resolution["reasoning_effort"])
+                if _parsed_reasoning is not None:
+                    child.reasoning_config = _parsed_reasoning
+            # Pinned runtime receipt (design §4 step 7, §12): the SAME per-request guard every
+            # managed agent carries (agent.managed_route_guard.enforce_managed_route_per_request)
+            # re-validates this child's actually-constructed route against this receipt before
+            # EVERY request in its own turn, not merely at construction -- catching a fallback/
+            # rotation that silently swapped the client mid-turn.
+            stamp_managed_route(child, _routing_resolution)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
                 child._delegate_output_schema = _task_schema

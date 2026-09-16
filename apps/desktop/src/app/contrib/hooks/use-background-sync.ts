@@ -177,12 +177,7 @@ export async function reconcileTileTranscripts({
     // Bot tiles are pinned to an exact owner (connection + target profile);
     // read from that backend, not whichever profile is foreground. Tiles
     // without a route keep the legacy local read.
-    const profileScope: ProfileScope = tile.ownerRoute
-      ? {
-          connectionId: tile.ownerRoute.connectionId,
-          profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile
-        }
-      : undefined
+    const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
 

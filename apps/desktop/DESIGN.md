@@ -287,6 +287,19 @@ so glass and message-bubble transparency do not reveal scrolling text.
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
   visible at the bottom of the stack, below the queue and all status groups.
+- Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
+  icon and optional trailing actions. `StatusDismissButton` owns the Codicon
+  close button for previews, background tasks and queued prompts; do not swap
+  it for a trash icon or a CSS glyph. Icons and controls align to the first text
+  line, including messages with attachment metadata.
+- `status-stack.css` owns the shared columns and `0.25rem` nesting step. Rows
+  own their padding and full-width hover fill. `StatusControlRow` uses the same
+  columns for goal/loop/heartbeat details; `StatusPendingIcon` supplies the
+  dashed marker for tasks and criteria. The first row has `0.5rem` top inset.
+- Keep the rounded status card stationary, with the bounded scroll viewport
+  inside it. The outer scroll boundary uses `overscroll-behavior-y: contain`;
+  nested rosters and transcripts use `auto` so wheel input can hand off at an
+  edge without trapping it or scrolling the chat behind the stack.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.

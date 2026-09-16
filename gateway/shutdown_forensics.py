@@ -8,8 +8,11 @@ subprocess. Anything that waits belongs in the async helper, never in the probe.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -18,7 +21,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.restart import DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, resolve_systemd_timeout_stop_sec
-import contextlib
 
 _SIGNAL_NAME_BY_NUM: Dict[int, str] = {
     int(getattr(signal, _name)): _name
@@ -119,6 +121,76 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+# Secret redaction for the ``ps``/``pstree`` argv dump. Child processes routinely carry credentials
+# in argv (``docker exec -e LINEAR_API_KEY=...``), and the diag log is on disk long after the stop.
+# Order matters: PEM blocks collapse first so the KEY=VALUE rule never half-eats a key body.
+# (pattern, replacement) pairs are plain strings so the same list feeds the detached filter below.
+_REDACTION_RULES: List[tuple] = [
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", "[REDACTED-PRIVATE-KEY]"),
+    (r"\b(lin_api_|sbp_|gh[pousr]_|github_pat_|xox[baprs]-|sk-(?:ant-|proj-)?|AKIA)[A-Za-z0-9_\-]{12,}",
+     r"\1[REDACTED]"),
+    (r"(Bearer\s+)[A-Za-z0-9._~+/\-]{12,}=*", r"\1[REDACTED]"),
+    (r"\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Za-z0-9_]*)=(?!\[REDACTED)[^\s'\"]+",
+     r"\1=[REDACTED]"),
+]
+
+
+# Line-streaming redactor, kept as source text so the in-process ``redact_secrets`` and the detached
+# ``python -c`` filter run the exact same code. It never buffers more than one line: a PEM block that
+# spans lines is tracked with an ``in_key`` flag and its body lines are dropped, so a filter killed
+# mid-stream (systemd cgroup kill, hung ps holding the pipe) has already flushed every finished line
+# and never a partial key. The PEM rule (rules[0]) and the BEGIN check run before the KEY=VALUE rules
+# so ``EXPO_KEY=-----BEGIN ...`` cannot hide the start of a multi-line key. Fails closed per line.
+_REDACT_LINES_SRC = r'''
+def _redact_lines(lines, rules):
+    import re
+    begin = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+    end = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+    in_key = False
+    for line in lines:
+        try:
+            lead = ""
+            if in_key:
+                m = end.search(line)
+                if not m:
+                    continue
+                in_key, lead, line = False, "[REDACTED-PRIVATE-KEY]", line[m.end():]
+            line = re.sub(rules[0][0], rules[0][1], line)
+            m = begin.search(line)
+            if m:
+                in_key, line = True, line[:m.start()]
+            for p, r in rules[1:]:
+                line = re.sub(p, r, line)
+            line = lead + line
+        except Exception:
+            line = "[REDACTION-ERROR]\n"
+        yield line
+    if in_key:
+        yield "[REDACTED-PRIVATE-KEY-TRUNCATED]\n"
+'''
+_redact_ns: Dict[str, Any] = {}
+exec(_REDACT_LINES_SRC, _redact_ns)  # noqa: S102 — trusted module-local source, see comment above
+_redact_lines = _redact_ns["_redact_lines"]
+
+
+def redact_secrets(text: str) -> str:
+    """Mask credentials in free-form process listings. Never raises."""
+    try:
+        return "".join(_redact_lines(text.splitlines(keepends=True), _REDACTION_RULES))
+    except Exception:  # noqa: BLE001 — forensics must never break shutdown
+        return "[REDACTION-ERROR]\n"
+
+
+def _redaction_filter_source() -> str:
+    """Self-contained ``python -c`` stdin->stdout redactor: same ``_redact_lines``, flushed per line."""
+    return ("import sys\n"
+            f"{_REDACT_LINES_SRC}\n"
+            f"R={_REDACTION_RULES!r}\n"
+            "for o in _redact_lines((l.decode('utf-8','replace') for l in sys.stdin.buffer), R):\n"
+            "    sys.stdout.write(o)\n"
+            "    sys.stdout.flush()\n")
+
+
 def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
                            timeout_seconds: float = 5.0) -> Optional[int]:
     """Fire-and-forget ``ps``-style snapshot appended to ``log_path``: a detached subprocess (own
@@ -142,13 +214,26 @@ def spawn_async_diagnostic(log_path: Path, signal_name: str, *,
         "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
         "echo '=== end ==='"
     )
+    # argv can hold live credentials: the raw listing goes through redact_secrets' rules before it
+    # touches disk. The filter sits outside ``timeout`` and writes+flushes line by line, so if it is
+    # killed before EOF every completed (redacted) line is already in the log; only the in-flight
+    # line, or the rest of an open PEM block, is lost.
+    pipeline = (
+        f"timeout {timeout_seconds:.0f} bash -c {shlex.quote(script)} 2>&1 | "
+        f"{shlex.quote(sys.executable or 'python3')} -c {shlex.quote(_redaction_filter_source())}"
+    )
     try:  # O_APPEND so concurrent diagnostics from rapid signals don't trample each other
-        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     except OSError:
         return None
+    # os.fchmod is Unix-only: on Windows the attribute is absent entirely, so an
+    # AttributeError (not an OSError) would escape and raise inside the shutdown path.
+    # Same idiom as the suppress(OSError, AttributeError) probe above.
+    with contextlib.suppress(OSError, AttributeError):  # tighten pre-existing 0644 logs too
+        os.fchmod(fd, 0o600)
     try:  # start_new_session: outlive systemd killing our cgroup (KillMode=control-group) to flush
         return subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script], stdout=fd,
+            ["bash", "-c", pipeline], stdout=fd,
             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
             close_fds=True).pid
     except OSError:

@@ -119,6 +119,100 @@ class TestSpawnAsyncDiagnostic:
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
 
+    @pytest.mark.linux_only
+    def test_redacts_child_argv_secrets_and_uses_0600(self, tmp_path):
+        import subprocess
+        import sys
+        fake = "lin_api_" + "A1b2C3d4" * 5
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)",
+                                  f"LINEAR_API_KEY={fake}", "sbp_" + "ab12" * 10])
+        try:
+            time.sleep(0.3)
+            log_path = tmp_path / "diag.log"
+            pid = sf.spawn_async_diagnostic(log_path, "SIGTERM", timeout_seconds=3.0)
+            assert pid is not None
+            try:
+                os.waitpid(pid, 0)
+            except (ChildProcessError, OSError):
+                pass
+            contents = log_path.read_text(encoding="utf-8", errors="replace")
+            assert "shutdown diagnostic" in contents
+            assert "LINEAR_API_KEY=[REDACTED]" in contents  # child is visible, value masked
+            assert fake not in contents
+            assert "ab12ab12ab12" not in contents
+            assert (log_path.stat().st_mode & 0o777) == 0o600
+        finally:
+            child.kill()
+            child.wait()
+
+    def test_tightens_existing_log_mode(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "diag.log"
+        log_path.write_text("old\n")
+        os.chmod(log_path, 0o644)
+        monkeypatch.setattr(sf.subprocess, "Popen", lambda *a, **k: type("P", (), {"pid": 1})())
+        sf.spawn_async_diagnostic(log_path, "SIGTERM")
+        assert (log_path.stat().st_mode & 0o777) == 0o600
+
+
+class TestRedactSecrets:
+    def test_masks_known_token_shapes(self):
+        pem = "-----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkq-----END PRIVATE KEY-----"
+        raw = (f"docker exec -e EXPO_KEY={pem} -e SUPABASE_ACCESS_TOKEN=sbp_{'a1' * 20} "
+               f"-H 'Authorization: Bearer abcdefghijklmnop.qrs' ghp_{'x' * 36} sk-{'Z' * 30} "
+               "MY_SECRET=hunter2hunter2 plain=keep")
+        out = sf.redact_secrets(raw)
+        for leaked in ("MIIEvQ", "a1a1a1", "abcdefghijklmnop", "x" * 36, "Z" * 30, "hunter2"):
+            assert leaked not in out
+        assert "PRIVATE KEY-----" not in out
+        assert "plain=keep" in out and "docker exec" in out
+
+    def test_filter_source_matches_python_redactor(self):
+        import subprocess
+        import sys
+        raw = "A_TOKEN=secretvalue123 lin_api_" + "Q" * 40 + "\n"
+        res = subprocess.run([sys.executable, "-c", sf._redaction_filter_source()],
+                             input=raw.encode(), capture_output=True, check=True)
+        assert res.stdout.decode() == sf.redact_secrets(raw)
+
+    def test_multiline_pem_bodies_are_dropped(self):
+        body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\nBKcwggSjAgEAAoIBAQC7\n"
+        raw = (f"x EXPO_KEY=-----BEGIN PRIVATE KEY-----\n{body}-----END PRIVATE KEY----- tail A_TOKEN=zzz\n"
+               "next line\n")
+        out = sf.redact_secrets(raw)
+        assert "MIIEvQ" not in out and "BKcwgg" not in out and "zzz" not in out
+        assert "[REDACTED-PRIVATE-KEY]" in out and "next line" in out and "tail" in out
+        unterminated = sf.redact_secrets(f"k=-----BEGIN RSA PRIVATE KEY-----\n{body}")
+        assert "MIIEvQ" not in unterminated and "TRUNCATED" in unterminated
+
+    def test_filter_matches_python_redactor_multiline(self):
+        import subprocess
+        import sys
+        raw = ("a -----BEGIN PRIVATE KEY-----\nSECRETBODY\n-----END PRIVATE KEY----- b\n"
+               "c -----BEGIN PRIVATE KEY-----\nOPENBODY\n")
+        res = subprocess.run([sys.executable, "-c", sf._redaction_filter_source()],
+                             input=raw.encode(), capture_output=True, check=True)
+        assert res.stdout.decode() == sf.redact_secrets(raw)
+        assert "SECRETBODY" not in res.stdout.decode() and "OPENBODY" not in res.stdout.decode()
+
+    def test_filter_streams_lines_before_eof(self):
+        """Killed-before-EOF safety: completed lines reach stdout while stdin is still open."""
+        import select
+        import subprocess
+        import sys
+        proc = subprocess.Popen([sys.executable, "-c", sf._redaction_filter_source()],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            proc.stdin.write(b"MY_TOKEN=abcdef123456 first\n")
+            proc.stdin.flush()
+            ready, _, _ = select.select([proc.stdout], [], [], 10)
+            assert ready, "filter buffered until EOF"
+            line = proc.stdout.readline().decode()
+            assert line == "MY_TOKEN=[REDACTED] first\n"
+            proc.kill()  # simulate cgroup kill: nothing after this is required
+        finally:
+            proc.kill()
+            proc.wait()
+
 
 # ---------------------------------------------------------------------------
 # parse_systemd_duration_to_us

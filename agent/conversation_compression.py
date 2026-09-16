@@ -234,6 +234,35 @@ def _compressor_attempt_is_current(compressor: Any, generation: int) -> bool:
         return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
 
 
+def _mark_compressor_working_attempt(compressor: Any, generation: int) -> None:
+    """Publish the generation of the attempt that is ACTUALLY running summary work.
+
+    The entry claim is taken before the breaker gates and the per-session lock, so no-op
+    entries (lock sit-outs, transient gates) bump ``_compression_attempt_generation``
+    without doing any work. Candidate supersession must key on this separate marker,
+    published only when the summary dispatch begins, or those no-op claims discard a
+    completed candidate and compression livelocks. Slotted/frozen compressors that
+    cannot hold the attribute keep the entry-generation check as a conservative fallback.
+    """
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        with contextlib.suppress(Exception):
+            compressor._compression_working_attempt_generation = generation
+
+
+def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
+    """True when *generation* is still the last attempt that began summary work.
+
+    Without a published marker (attribute-less compressor, or the attempt never reached
+    dispatch) supersession falls back to the entry-generation ownership check."""
+    if not generation:
+        return True
+    with _COMPRESSOR_ATTEMPT_LOCK:
+        marker = getattr(compressor, "_compression_working_attempt_generation", None)
+        if marker is None:
+            return int(getattr(compressor, "_compression_attempt_generation", 0) or 0) == generation
+        return int(marker) == int(generation)
+
+
 def _install_compression_cancelled_check(compressor: Any, check: Any, generation: int) -> None:
     """Install the F4 cancellation consult, stamped with its owner attempt."""
     with _COMPRESSOR_ATTEMPT_LOCK:
@@ -2689,6 +2718,10 @@ def _run_summary_dispatch(
         _install_compression_cancelled_check(
             agent.context_compressor, lambda: commit_fence.is_cancelled, attempt_generation
         )
+    # From here this attempt is doing real summary work: publish it as the working
+    # attempt so later no-op entry claims (lock sit-outs on other paths) cannot
+    # supersede the candidate this run produces.
+    _mark_compressor_working_attempt(agent.context_compressor, attempt_generation)
 
     def _compression_cancel_requested() -> bool:
         return bool(
@@ -3213,13 +3246,20 @@ def _candidate_rejected(
             )
         return True
 
-    # A newer attempt claiming this compressor supersedes us; discard the late
-    # candidate. Fence poison alone misses a successor that minted its own fence.
-    if not _compressor_attempt_is_current(agent.context_compressor, attempt_generation):
+    # A newer WORKING attempt supersedes us; discard the late candidate. No-op
+    # entry claims (sit-outs that never ran a summary) do not: keying on them
+    # discards a completed candidate and livelocks compression. Without a
+    # published working marker, fence poison alone misses a successor that
+    # minted its own fence — fall back to the entry-generation check.
+    if not _working_attempt_is_current(agent.context_compressor, attempt_generation):
+        _working_gen = getattr(
+            agent.context_compressor, "_compression_working_attempt_generation", None
+        )
         logger.warning(
             "Discarding late compression candidate: attempt generation "
-            "%s was superseded by a newer attempt (current: %s) (session=%s).", attempt_generation,
-            getattr(agent.context_compressor, "_compression_attempt_generation", None),
+            "%s was superseded by a newer working attempt (current working: %s) (session=%s).",
+            attempt_generation,
+            _working_gen,
             agent.session_id or "none",
         )
         _restore_messages_snapshot(messages, messages_before_compression)

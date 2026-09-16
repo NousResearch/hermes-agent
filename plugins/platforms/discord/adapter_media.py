@@ -61,14 +61,12 @@ class DiscordMediaMixin:
             f"{limit_mb:.0f} MB upload limit for this channel. Compress the file or share a link instead."
         )
         try:
-            notifications_enabled = self.warning_notifications_enabled()
-            if notifications_enabled and not self._is_forum_parent(channel):
-                await channel.send(content=notice)
-            elif not notifications_enabled and caption:
+            text = self.warning_text(notice, caption)
+            if text and (text != notice or not self._is_forum_parent(channel)):
                 if self._is_forum_parent(channel):
-                    await self._send_to_forum(channel, caption)
+                    await self._send_to_forum(channel, text)
                 else:
-                    await channel.send(content=caption)
+                    await channel.send(content=text)
         except Exception:
             logger.debug("[%s] Failed to send oversized-file notice for %s", self.name, filename, exc_info=True)
         return SendResult(success=False, error=error)
@@ -225,15 +223,16 @@ class DiscordMediaMixin:
                 if not files:
                     # Everything in this chunk was skipped. Still surface any
                     # oversized-file notices so the drop is not silent.
-                    notifications_enabled = self.warning_notifications_enabled()
-                    if not notifications_enabled and captions:
+                    joined_notices = "\n".join(skip_notices)
+                    text = self.warning_text(joined_notices, captions[0] if captions else "")
+                    if text and text != joined_notices:
                         if self._is_forum_parent(channel):
-                            await self._send_to_forum(channel, captions[0])
+                            await self._send_to_forum(channel, text)
                         else:
-                            await channel.send(content=captions[0])
-                    if skip_notices and notifications_enabled and not self._is_forum_parent(channel):
+                            await channel.send(content=text)
+                    if text and text == joined_notices and not self._is_forum_parent(channel):
                         try:
-                            await channel.send(content="\n".join(skip_notices))
+                            await channel.send(content=text)
                         except Exception:
                             logger.debug(
                                 "[%s] Failed to send oversized-image notices",
@@ -242,8 +241,8 @@ class DiscordMediaMixin:
                     continue
                 # Use the first caption if any (Discord only has one message body for the group)
                 content = captions[0] if captions else None
-                if skip_notices and self.warning_notifications_enabled():
-                    content = "\n".join(([content] if content else []) + skip_notices)
+                if skip_notices:
+                    content = self.warning_text("\n".join(([content] if content else []) + skip_notices), content)
                 logger.info(
                     "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
                     self.name, len(files), chunk_idx + 1, len(chunks),

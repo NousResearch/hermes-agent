@@ -1509,15 +1509,15 @@ class GoogleChatAdapter(BasePlatformAdapter):
                                         thread_id: Optional[str]) -> SendResult:
         """Post the ``/setup-files`` notice (plus host path) when native delivery is
         unavailable. Always returns ``success=False``."""
-        lines = [caption] if caption else []
-        if self.warning_notifications_enabled():
-            lines.extend([
-                f"⚠️ No he podido adjuntar **{filename}**.",
-                "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
-                "Es un consentimiento único que se hace desde este chat.",
-                "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
-                f"Mientras tanto el archivo está en el host: `{path}`",
-            ])
+        requested = [caption] if caption else []
+        notice = [
+            f"⚠️ No he podido adjuntar **{filename}**.",
+            "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
+            "Es un consentimiento único que se hace desde este chat.",
+            "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
+            f"Mientras tanto el archivo está en el host: `{path}`",
+        ]
+        lines = requested + (notice if self.warning_text("notice") else [])
         try:
             if lines:
                 await self._create_message(chat_id, _thread_body("\n".join(lines), thread_id))

@@ -2872,6 +2872,16 @@ class BasePlatformAdapter(ABC):
             await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
         return SendResult(success=False, error=notice)
 
+    def warning_text(self, visible: str, hidden: Optional[str] = "", *, logical_platform=None, chat_id=None, metadata=None) -> Optional[str]:
+        """Project mixed content: the diagnostic variant when visible, else the requested remainder.
+
+        For payloads that combine a requested result (caption, answer) with an automatic
+        diagnostic. The requested part must be present in BOTH variants; never hide it.
+        """
+        if self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return visible
+        return hidden
+
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         """Presentation policy under the caller's owning profile; old plugins inherit it."""
         from gateway.warning_notifications import warning_notifications_enabled
@@ -3458,11 +3468,12 @@ class BasePlatformAdapter(ABC):
                     )
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
-                if not self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
-                    return result
-                notice = (
+                notice = self.warning_text(
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent.")
+                    "Please try again \u2014 your request was processed but the response could not be sent.",
+                    chat_id=chat_id, metadata=metadata)
+                if not notice:
+                    return result
                 try:
                     await _send(notice)
                 except Exception as notify_err:
@@ -3487,8 +3498,9 @@ class BasePlatformAdapter(ABC):
         """Last-resort send after a non-transient failure; platforms whose markup is not the
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
-            chat_id=chat_id, content=(f"(Response formatting failed, plain text:)\n\n{content[:3500]}"
-                                     if self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata) else content[:3500]),
+            chat_id=chat_id, content=self.warning_text(
+                f"(Response formatting failed, plain text:)\n\n{content[:3500]}", content[:3500],
+                chat_id=chat_id, metadata=metadata),
             reply_to=reply_to, metadata=metadata)
 
     @staticmethod
@@ -4073,14 +4085,14 @@ class BasePlatformAdapter(ABC):
                 _thread_metadata = _thread_metadata_for_event(event)
                 if diagnostic_wake_muted(event):
                     return _thread_metadata
-                diagnostics_enabled = self.warning_notifications_enabled(
-                    event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
                 error_detail = str(e)[:300] if str(e) else "no details available"
                 await self.send(
                     chat_id=event.source.chat_id,
-                    content=((f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                              "Try again or use /reset to start a fresh session.")
-                             if diagnostics_enabled else "Sorry, I encountered an error."),
+                    content=self.warning_text(
+                        f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
+                        "Try again or use /reset to start a fresh session.",
+                        "Sorry, I encountered an error.",
+                        logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata),
                     metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(

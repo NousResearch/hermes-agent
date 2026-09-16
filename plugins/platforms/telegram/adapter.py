@@ -5781,20 +5781,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # Inbound media fails before handle_message binds the routed profile.
         with self._media_delivery_scope(event.source):
             named = f" ({display_name})" if display_name else ""
-            if not self.warning_notifications_enabled():
-                event.text = self._append_observed_note(
-                    event.text, f"[The user attempted to send a {kind}{named} but it could not be downloaded.]",
-                )
-                return
-            try:
-                await msg.reply_text(
-                    f"\u26a0\ufe0f Couldn't download your {kind}{named} ({exc.__class__.__name__}). Please try sending it again.")
-            except Exception as reply_err:
-                logger.warning("[Telegram] Failed to notify user about %s cache failure: %s", kind, reply_err, exc_info=True)
+            notice = self.warning_text(
+                f"\u26a0\ufe0f Couldn't download your {kind}{named} ({exc.__class__.__name__}). Please try sending it again.")
+            if notice:
+                try:
+                    await msg.reply_text(notice)
+                except Exception as reply_err:
+                    logger.warning("[Telegram] Failed to notify user about %s cache failure: %s", kind, reply_err, exc_info=True)
+            # The agent-visible note is execution evidence, not a channel diagnostic; it stays in both modes.
             event.text = self._append_observed_note(
                 event.text,
-                f"[The user attempted to send a {kind}{named} but it could not be downloaded ({exc.__class__.__name__}); they have been asked to retry.]",
-           )
+                f"[The user attempted to send a {kind}{named} but it could not be downloaded ({exc.__class__.__name__}); they have been asked to retry.]"
+                if notice else f"[The user attempted to send a {kind}{named} but it could not be downloaded.]",
+            )
 
     def _observe_unmentioned_group_message(
         self, message: Message, msg_type: MessageType, update_id: Optional[int] = None, event: Optional[MessageEvent] = None) -> None:

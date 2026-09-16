@@ -2883,7 +2883,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             f"{dropped_chars} characters were not delivered; the full "
             f"response is in the session logs."
         )
-        if self.warning_notifications_enabled():
+        if self.warning_text(notice):
             kept.append(notice)
         return kept
 
@@ -4049,8 +4049,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 home = config.get_home_channel(target)
                 if not home or not getattr(home, "chat_id", None):
                     continue
-                if not self.warning_notifications_enabled(target):
-                    return  # A policy veto is not transport failure or permission to reroute.
                 msg = (
                     "⚠️ Unauthorized Discord slash attempt\n"
                     f"User: {user_name} ({user_id})\n"
@@ -4058,6 +4056,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     f"Command: {command_text}\n"
                     f"Reason: {reason}"
                 )
+                # Policy is the DISCORD owner's (self); a veto is not transport failure or permission to reroute.
+                if not self.warning_notifications_enabled(target):
+                    return
                 result = await adapter.send(str(home.chat_id), msg)
                 # Only return on confirmed delivery.
                 if getattr(result, "success", None) is False:
@@ -5837,9 +5838,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         # channel. Surface a short visible error so the user can retry once Discord
                         # recovers, and skip agent invocation for this message. See #20243.
                         await message.channel.send(
-                            ("⚠️ Hermes could not create a Discord thread for "
-                             "this message, so the request was not processed. Please retry.")
-                            if self.warning_notifications_enabled() else "The request was not processed. Please retry."
+                            self.warning_text(
+                                "⚠️ Hermes could not create a Discord thread for "
+                                "this message, so the request was not processed. Please retry.",
+                                "The request was not processed. Please retry.")
                         )
                     except Exception as notify_error:
                         logger.warning(

@@ -95,7 +95,10 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
         if name != "terminal":
             return None, args
         policy.append(args["command"])
-        return None, {**args, "command": commands[args["command"]]}
+        return None, {**args, "command": commands[args["command"]],
+                      "approval_purpose": "inspect the temporary workspace",
+                      "approval_effect": "remove absent test paths",
+                      "approval_risk": "test-local file removal"}
 
     def started(call_id, name, args):
         if name != "terminal":
@@ -122,6 +125,10 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
             second = published.get(timeout=5)
             assert [first["command"], second["command"]] == list(commands.values())
             assert policy == list(commands)
+            for prompt in (first, second):
+                assert "inspect the temporary workspace" in prompt["description"]
+                assert "remove absent test paths" in prompt["description"]
+                assert "test-local file removal" in prompt["description"]
             assert executed == []
             assert approval.ack_gateway_approval(key, second["request_id"])
             assert executed == []

@@ -63,15 +63,35 @@ automatically on crash and on user login.
 
 ## Alternative: one gateway for all profiles (multiplexing)
 
-The model above runs **one process per profile**. That is the default and is
-the right choice for most setups. But on a host with many profiles — or a
-container deployment where one process per profile is operationally heavy — you
-can instead run a **single multiplexing gateway**: the default profile's gateway
-becomes the sole inbound process and serves messages for *every* profile on the
-box.
+The model above runs **one process per profile**. The alternative is a
+**single multiplexing gateway**: the default profile's gateway becomes the sole
+inbound process and serves messages for *every* profile on the box.
 
-This is **opt-in** and **off by default**. When it's off, nothing on this page
-changes — every behavior below is inert.
+Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
+`true`), with one safety rule: an *unset* flag is a request the default gateway
+settles at boot, never a verdict. Each start it runs the same preflight as
+[`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
+multiplexes only when the fold would have been safe — the default profile, two
+or more profiles, no secondary still running its own gateway (live process or
+installed service), no duplicate bot credential, no port-binding platform
+without a `/p/<profile>/` ingress, and a host the migration understands (not an
+s6 container or Windows Scheduled Tasks). Otherwise it comes up exactly as
+before — serving the default profile only — and logs the blocker plus the
+`hermes gateway migrate --multiplex` one-liner. Nothing is changed on disk.
+
+An **explicit** value is never second-guessed:
+
+- `gateway.multiplex_profiles: true` (what the migration writes) multiplexes
+  regardless of the preflight — you, or the migration, made the call.
+- `gateway.multiplex_profiles: false` (what `--standalone` restores) keeps
+  per-profile gateways for good. When it's off, nothing on this page changes —
+  every behavior below is inert.
+- `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides both.
+
+Other processes (`hermes -p <name> gateway start`, the dashboard, `hermes gateway
+migrate`) never guess how an unset flag was settled: they read the running
+default gateway's `served_profiles` record, and fall back to the explicit flag
+only when no gateway runs.
 
 ### When to prefer multiplexing
 
@@ -84,13 +104,15 @@ Stick with one-process-per-profile when you want hard process-level isolation
 between profiles (separate memory footprints, independent crash domains, the
 ability to restart one profile without touching the others).
 
-### How to opt in
+### Pinning the flag
 
-Set the flag on the **default profile** (it owns the multiplexer) and restart
-its gateway:
+With the flag unset, the default gateway decides at each boot (above). To pin
+it, set it on the **default profile** (it owns the multiplexer) and restart its
+gateway — `true` forces multiplexing even where the boot preflight would have
+held back, `false` opts out durably:
 
 ```bash
-hermes config set gateway.multiplex_profiles true
+hermes config set gateway.multiplex_profiles true    # or false
 hermes gateway restart
 ```
 
@@ -102,7 +124,7 @@ gateway:
 ```
 
 (The flag is also accepted as a top-level `multiplex_profiles: true` for
-convenience.) On the next start the default gateway enumerates every profile,
+convenience.) When multiplexing, the default gateway enumerates every profile,
 brings up each profile's enabled platforms under that profile's own
 credentials, and routes each inbound message to the profile it belongs to. Each
 turn resolves the routed profile's config, skills, memory, SOUL, **and provider
@@ -818,9 +840,11 @@ grep -H 'TELEGRAM_BOT_TOKEN\|DISCORD_BOT_TOKEN' \
 ## Migrating from per-profile gateways
 
 If your profiles each run their own gateway today (one systemd unit or launchd
-agent per profile), you can fold them into a single multiplexed default gateway
-with one command — and roll back with another. Standalone per-profile gateways
-remain fully supported; this is an optional migration, not a removal.
+agent per profile), the default gateway's boot preflight keeps it standalone
+(the unset default never double-binds a running fleet). Fold them into a single
+multiplexed default gateway with one command — and roll back with another.
+Standalone per-profile gateways remain fully supported; this is an optional
+migration, not a removal.
 
 ```bash
 hermes gateway migrate --multiplex --dry-run   # print the plan and any blockers; changes nothing

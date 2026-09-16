@@ -4451,23 +4451,10 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         if recorded is not None:
             return normalize_profile_name(suffix) in {normalize_profile_name(p) for p in recorded}
 
-        from gateway.config import _env_multiplex_profiles_override
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path)
-
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
-            return False
-        if env_multiplex is not True:
-            if not cfg_path.exists():
-                return False
-            if not (cfg.get("multiplex_profiles") or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")):
-                return False
-
-        return True  # a multiplexing default gateway serves every named profile
+        # No record (older gateway): only an EXPLICIT opt-in counts. The unset default is settled by
+        # the gateway at boot (it may have stayed standalone); a CLI process must not guess it on.
+        from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+        return explicit_multiplex_flag(default_root) is True  # a multiplexer serves every named profile
     except Exception:
         logger.debug("Multiplexer-serving probe failed", exc_info=True)
         return False

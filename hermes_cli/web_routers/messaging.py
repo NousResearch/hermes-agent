@@ -807,7 +807,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
     secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, load_gateway_config
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
 
     if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
@@ -825,11 +825,12 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     if target in ("default", "custom"):
         return None
 
-    # The flag that matters is the one the shared gateway reads at startup: the DEFAULT
-    # profile's config (plus the process-wide GATEWAY_MULTIPLEX_PROFILES override).
-    with _config_profile_scope("default"):
-        if not load_gateway_config().multiplex_profiles:
-            return None
+    # The flag that matters is the one the shared gateway settled at startup: its served record when
+    # it runs, else the DEFAULT profile's explicit config (plus the process-wide
+    # GATEWAY_MULTIPLEX_PROFILES override). An unset flag is decided by the gateway, not guessed here.
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    if not default_gateway_multiplexes():
+        return None
 
     return (
         f"Cannot enable '{platform_id}' on profile '{target}': gateway.multiplex_profiles is on and the "

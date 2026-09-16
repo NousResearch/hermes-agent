@@ -13,9 +13,15 @@ import sys
 
 from pathlib import Path
 from typing import NoReturn
-from hermes_cli.cli_output import line_input
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
+
+
+def _line_input(prompt_text: str) -> str:
+    """Use enhanced input when this process did not retain the pre-update module."""
+    from hermes_cli import cli_output
+
+    return getattr(cli_output, "line_input", input)(prompt_text)
 
 
 def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[int]:
@@ -579,7 +585,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     import secrets
     print()
     try:
-        username = line_input("  Username [admin]: ").strip() or "admin"
+        username = _line_input("  Username [admin]: ").strip() or "admin"
         password = getpass.getpass("  Password: ")
         confirm = getpass.getpass("  Confirm password: ")
     except (EOFError, KeyboardInterrupt):

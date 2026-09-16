@@ -125,14 +125,15 @@ def _codex_auth_payload(entry, *, refresher=None) -> dict:
 
     Recent Codex CLI versions refuse an auth file that lacks ``id_token`` at
     parse time ("missing field id_token"). Pool entries only carry
-    access/refresh, so when no id_token is present — or the stored access
-    token is expiring — we obtain a full token set via ``refresher`` (the
-    shared refresh path rotates and persists the grant, and keeps a
-    short-lived local cache so hero + section images share one rotation).
-
-    Handing the CLI an expired access token without refreshing first is what
-    produces "refresh token was already used" 401s: the CLI attempts its own
-    refresh with a rotation that another process may already have consumed.
+    access/refresh, and shared-account grants are single-use rotated by the
+    Codex CLI (or another Hermes process) — so the stored copy is often
+    already stale even when it looks fresh. We therefore always route the
+    token set through ``refresher`` when one is provided: success rotates and
+    persists the grant; a relogin-required rejection is self-healed by the
+    shared refresh path adopting the canonical ~/.codex/auth.json token
+    before surfacing a hard 401. The refresher keeps a short-lived local
+    cache so hero + section images share one rotation per run. On refresher
+    failure or absence we degrade to the entry's stored tokens.
     """
     tokens = {
         "access_token": entry.access_token,
@@ -142,18 +143,11 @@ def _codex_auth_payload(entry, *, refresher=None) -> dict:
         value = getattr(entry, key, None)
         if value:
             tokens[key] = value
-    needs_refresh = "id_token" not in tokens
-    if not needs_refresh and tokens.get("access_token"):
+    if refresher is not None:
         try:
-            from hermes_cli.auth import _codex_access_token_is_expiring
-
-            needs_refresh = _codex_access_token_is_expiring(
-                tokens["access_token"], 120
-            )
+            fresh = refresher(entry)
         except Exception:
-            needs_refresh = False
-    if needs_refresh and refresher is not None:
-        fresh = refresher(entry)
+            fresh = None
         if fresh:
             for key in ("access_token", "refresh_token", "id_token", "account_id"):
                 value = fresh.get(key)

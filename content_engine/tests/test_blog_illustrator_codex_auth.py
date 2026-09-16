@@ -20,28 +20,31 @@ def _entry(**overrides):
     return SimpleNamespace(**base)
 
 
-def test_payload_uses_entry_fields_when_complete(monkeypatch):
-    import hermes_cli.auth as A
+def test_payload_prefers_refreshed_tokens_even_when_entry_looks_complete():
+    """A complete-looking entry still routes through the refresher.
 
-    monkeypatch.setattr(A, "_codex_access_token_is_expiring",
-                        lambda token, skew=0: False)
+    Stored grants are single-use rotated by other consumers (Codex CLI,
+    parallel Hermes processes), so "looks fine" is not a safe skip: the
+    refresh path is the single place that can self-heal via
+    ~/.codex/auth.json adoption before the CLI burns a dead grant.
+    """
     entry = _entry(id_token="id-xyz", account_id="acct-1")
     calls = []
 
     def refresher(_entry):
         calls.append(_entry)
-        return {"access_token": "should-not-be-used"}
+        return {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "id_token": "fresh-id",
+            "account_id": "acct-1",
+        }
 
     payload = _codex_auth_payload(entry, refresher=refresher)
-    assert payload == {
-        "tokens": {
-            "access_token": "access-abc",
-            "refresh_token": "refresh-def",
-            "account_id": "acct-1",
-            "id_token": "id-xyz",
-        }
-    }
-    assert calls == []
+    assert payload["tokens"]["access_token"] == "fresh-access"
+    assert payload["tokens"]["refresh_token"] == "fresh-refresh"
+    assert payload["tokens"]["id_token"] == "fresh-id"
+    assert calls == [entry]
 
 
 def test_payload_refreshes_when_access_token_expiring(monkeypatch):
@@ -106,6 +109,17 @@ def test_payload_degrades_when_refresh_fails():
             "refresh_token": "refresh-def",
         }
     }
+
+
+def test_payload_degrades_when_refresher_raises():
+    entry = _entry()
+
+    def refresher(_entry):
+        raise RuntimeError("network down")
+
+    payload = _codex_auth_payload(entry, refresher=refresher)
+    assert payload["tokens"]["access_token"] == "access-abc"
+    assert payload["tokens"]["refresh_token"] == "refresh-def"
 
 
 def test_output_shows_auth_failure_markers():

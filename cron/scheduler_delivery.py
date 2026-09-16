@@ -1879,12 +1879,25 @@ def _deliver_result(
     # Only deferred receipts need mutable terminal projections. Direct native
     # sends retain legacy delivered-plus-unverified behavior when default-off.
     if bot_receipts:
-        record_delivery_manifest(job.get("execution_id"), {
+        manifest = {
             "bot": bot_receipts,
             "delivered": native_count > native_suppressed or (not bot_receipts and not job.get("_notification_all_targets_suppressed")),
             "error": "; ".join(delivery_errors) if delivery_errors else None,
             "unverified": unverified_targets,
-        })
+        }
+        try:
+            record_delivery_manifest(job.get("execution_id"), manifest)
+        except Exception:
+            # Post-send bookkeeping: the sends above already happened and the receipts are
+            # durable. Park the manifest on them for the reconciler; never report a transport
+            # failure (which would discard the pending sibling or invite a resend).
+            logger.exception("Job '%s': delivery manifest not recorded; parked on receipts", job.get("id"))
+            from cron.bot_chat_delivery import attach_manifest
+            for ref in bot_receipts.values():
+                try:
+                    attach_manifest(ref["delivery_id"], manifest, str(job.get("execution_id") or ""))
+                except Exception:
+                    logger.exception("Job '%s': could not park manifest on receipt %s", job.get("id"), ref["delivery_id"])
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

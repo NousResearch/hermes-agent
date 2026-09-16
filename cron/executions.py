@@ -312,13 +312,38 @@ def record_delivery_manifest(execution_id: Optional[str], manifest: dict) -> Non
     if not execution_id:
         return
     with _transaction() as conn:
-        row = _fetch(conn, execution_id)
-        if row and row.get("delivery_manifest") == json.dumps({"external": True}, sort_keys=True):
-            manifest = {**manifest, "external": True}
-        conn.execute("UPDATE executions SET delivery_manifest=? WHERE id=? AND "
-                     "(delivery_manifest IS NULL OR delivery_manifest=?)",
-                     (json.dumps(manifest, sort_keys=True), execution_id,
-                      json.dumps({"external": True}, sort_keys=True)))
+        _store_manifest(conn, execution_id, manifest)
+
+
+def _store_manifest(conn, execution_id: str, manifest: dict) -> None:
+    """CAS the manifest onto a row that has none (or only the external placeholder)."""
+    placeholder = json.dumps({"external": True}, sort_keys=True)
+    row = _fetch(conn, execution_id)
+    if row and row.get("delivery_manifest") == placeholder:
+        manifest = {**manifest, "external": True}
+    conn.execute("UPDATE executions SET delivery_manifest=? WHERE id=? AND "
+                 "(delivery_manifest IS NULL OR delivery_manifest=?)",
+                 (json.dumps(manifest, sort_keys=True), execution_id, placeholder))
+
+
+def _recover_unrecorded_manifests() -> None:
+    """Replay manifests the worker could only park on its durable Bot Chat receipts.
+
+    A post-send ledger fault must not lose the receipt association: the worker attaches
+    the intended manifest to the receipt file, and the reconciler stores it here before
+    projecting. Idempotent through the same CAS as the primary write.
+    """
+    from cron import bot_chat_delivery
+    root = bot_chat_delivery._root()
+    if not root.is_dir():
+        return
+    for _, record in bot_chat_delivery._records(root):
+        manifest, execution_id = record.get("manifest"), record.get("execution_id")
+        if not manifest or not execution_id:
+            continue
+        with _transaction() as conn:
+            if _fetch(conn, execution_id) is not None:
+                _store_manifest(conn, execution_id, manifest)
 
 
 def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
@@ -378,6 +403,10 @@ def reconcile_delivery_projections() -> None:
     from cron.jobs import update_delivery_projection
     from cron.incidents import _initialize_schema as init_incidents
 
+    try:
+        _recover_unrecorded_manifests()
+    except Exception:
+        logging.getLogger(__name__).exception("Could not replay parked cron delivery manifests")
     with _transaction() as conn:
         records = [dict(row) for row in conn.execute(
             "SELECT * FROM executions WHERE delivery_manifest IS NOT NULL "

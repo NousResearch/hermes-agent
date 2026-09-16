@@ -376,16 +376,28 @@ _start_idle_reaper()
 # ── Plumbing ──────────────────────────────────────────────────────────
 
 
+def _launch_state_db_path() -> Path:
+    """``state.db`` under the launch home, resolved at first use.
+
+    Reads ``HERMES_HOME`` (or the platform default) directly and deliberately skips the
+    context-local override that ``get_hermes_home()`` honours — see ``_get_db``.
+    """
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    return Path(env_home if env_home else _hermes_home) / "state.db"
+
+
 def _get_db():
     global _db, _db_error
     if _db is None:
         from hermes_state_registry import acquire
         try:
-            # Pin to import-time launch home (#102526). A bare acquire() follows
-            # get_hermes_home(), which the desktop multiplex cron ticker temporarily
-            # overrides per profile at startup — first touch inside a foreign window
-            # permanently binds this process-wide handle to the wrong state.db.
-            _db, _db_error = acquire(Path(_hermes_home) / "state.db"), None
+            # Pin to the LAUNCH home, ignoring the context-local override (#102526): the
+            # desktop multiplex cron ticker overrides it per profile at startup, and a first
+            # touch inside a foreign window would permanently bind this process-wide handle
+            # to the wrong state.db. Resolve at first use rather than import time so a test
+            # harness that redirects HERMES_HOME after import is honoured (#112692) — the
+            # override, not the env var, is what #102526 guards against.
+            _db, _db_error = acquire(_launch_state_db_path()), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)

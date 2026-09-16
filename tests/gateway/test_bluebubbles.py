@@ -322,15 +322,85 @@ class TestBlueBubblesAttachmentSend:
 # ---------------------------------------------------------------------------
 
 
-class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+class TestBlueBubblesConnect:
+    def test_connect_fails_when_webhook_registration_fails(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_port="0")
 
-    def test_default_host(self, monkeypatch):
+        async def api_get(path):
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            return {"status": 200}
+
+        async def fail_register():
+            return False
+
+        monkeypatch.setattr(adapter, "_api_get", api_get)
+        monkeypatch.setattr(adapter, "_register_webhook", fail_register)
+
+        connected = asyncio.get_event_loop().run_until_complete(adapter.connect())
+
+        assert connected is False
+        assert adapter._runner is None
+        assert adapter.client is None
+
+    def test_connect_cleans_up_when_webhook_registration_raises(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_port="0")
+
+        async def api_get(path):
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            return {"status": 200}
+
+        async def raise_during_register():
+            raise ValueError("malformed response")
+
+        monkeypatch.setattr(adapter, "_api_get", api_get)
+        monkeypatch.setattr(adapter, "_register_webhook", raise_during_register)
+
+        connected = asyncio.get_event_loop().run_until_complete(adapter.connect())
+
+        assert connected is False
+        assert adapter._runner is None
+        assert adapter.client is None
+
+    def test_connect_does_not_log_server_password_on_api_failure(self, monkeypatch, caplog):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
-        assert str(adapter.webhook_port) in adapter._webhook_url
-        assert adapter.webhook_path in adapter._webhook_url
+
+        async def fail_api(path):
+            url = adapter._api_url(path)
+            request = httpx.Request("GET", url)
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError(f"failed: {url}", request=request, response=response)
+
+        monkeypatch.setattr(adapter, "_api_get", fail_api)
+
+        connected = asyncio.get_event_loop().run_until_complete(adapter.connect())
+
+        assert connected is False
+        assert adapter.client is None
+        assert "secret" not in caplog.text
+
+
+class TestBlueBubblesWebhookUrl:
+    def test_default_ipv4_listener_advertises_same_address_family(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        assert adapter._webhook_url == "http://127.0.0.1:8645/bluebubbles-webhook"
+
+    @pytest.mark.parametrize(
+        ("listener", "advertised"),
+        [
+            ("0.0.0.0", "127.0.0.1"),
+            ("::", "[::1]"),
+            ("::1", "[::1]"),
+            ("localhost", "localhost"),
+            ("bridge.internal", "bridge.internal"),
+        ],
+    )
+    def test_callback_host_is_reachable_and_ipv6_safe(self, monkeypatch, listener, advertised):
+        adapter = _make_adapter(monkeypatch, webhook_host=listener)
+
+        assert adapter._webhook_url == f"http://{advertised}:8645/bluebubbles-webhook"
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
@@ -416,6 +486,196 @@ class TestBlueBubblesWebhookRegistration:
             adapter._register_webhook()
         )
         assert ok is True
+
+
+    def test_register_subscribes_to_creation_events_only(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "client", self._mock_client())
+        payloads = []
+
+        async def no_existing(url):
+            return []
+
+        async def capture_post(path, payload):
+            payloads.append(payload)
+            return {"status": 200, "data": {"id": 42}}
+
+        monkeypatch.setattr(adapter, "_find_registered_webhooks", no_existing)
+        monkeypatch.setattr(adapter, "_api_post", capture_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert payloads[0]["events"] == ["new-message"]
+
+
+    def test_register_fails_closed_when_webhooks_cannot_be_listed(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "client", self._mock_client())
+        posted_payloads = []
+
+        async def fail_list(path):
+            raise httpx.ConnectError("offline")
+
+        async def capture_post(path, payload):
+            posted_payloads.append(payload)
+            return {"status": 200, "data": {"id": 42}}
+
+        monkeypatch.setattr(adapter, "_api_get", fail_list)
+        monkeypatch.setattr(adapter, "_api_post", capture_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert posted_payloads == []
+
+
+    @pytest.mark.parametrize(
+        "list_response",
+        [
+            {"status": 500, "data": []},
+            {"status": 200, "data": {}},
+        ],
+    )
+    def test_register_fails_closed_on_invalid_list_response(self, monkeypatch, list_response):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "client", self._mock_client())
+        posted_payloads = []
+
+        async def invalid_list(path):
+            return list_response
+
+        async def capture_post(path, payload):
+            posted_payloads.append(payload)
+            return {"status": 200, "data": {"id": 42}}
+
+        monkeypatch.setattr(adapter, "_api_get", invalid_list)
+        monkeypatch.setattr(adapter, "_api_post", capture_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert posted_payloads == []
+
+
+    @pytest.mark.parametrize(
+        "registration",
+        [
+            "not-an-object",
+            {"url": "http://127.0.0.1:8645/bluebubbles-webhook?password=secret", "events": {}},
+            {"url": "http://other/webhook", "events": ["new-message"]},
+        ],
+    )
+    def test_register_fails_closed_on_malformed_registration(self, monkeypatch, registration):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "client", self._mock_client())
+        posted_payloads = []
+
+        async def malformed_list(path):
+            return {"status": 200, "data": [registration]}
+
+        async def capture_post(path, payload):
+            posted_payloads.append(payload)
+            return {"status": 200, "data": {"id": 42}}
+
+        monkeypatch.setattr(adapter, "_api_get", malformed_list)
+        monkeypatch.setattr(adapter, "_api_post", capture_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert posted_payloads == []
+
+
+    def test_register_keeps_stale_callback_when_replacement_post_fails(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        current_url = adapter._webhook_register_url
+        legacy_url = current_url.replace("127.0.0.1", "localhost")
+        client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 8, "url": legacy_url, "events": ["new-message"]},
+            ]},
+        )
+        deleted_ids = []
+
+        async def capture_delete(url):
+            deleted_ids.append(url)
+            return type("Response", (), {"raise_for_status": lambda self: None})()
+
+        async def fail_post(path, payload):
+            return {"status": 500, "message": "failed"}
+
+        monkeypatch.setattr(client, "delete", capture_delete, raising=False)
+        monkeypatch.setattr(adapter, "client", client)
+        monkeypatch.setattr(adapter, "_api_post", fail_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert deleted_ids == []
+
+
+    def test_register_rolls_back_new_callback_when_stale_delete_fails(self, monkeypatch, caplog):
+        adapter = _make_adapter(monkeypatch)
+        current_url = adapter._webhook_register_url
+        legacy_url = current_url.replace("127.0.0.1", "localhost")
+        client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 8, "url": legacy_url, "events": ["new-message"]},
+            ]},
+            post_response={"status": 200, "data": {"id": 42}},
+        )
+        deleted_ids = []
+
+        async def delete_with_stale_failure(url):
+            webhook_id = url.rsplit("/", 1)[-1].split("?", 1)[0]
+            deleted_ids.append(webhook_id)
+            request = httpx.Request("DELETE", url)
+            if webhook_id == "8":
+                response = httpx.Response(500, request=request)
+                raise httpx.HTTPStatusError(f"failed: {url}", request=request, response=response)
+            return httpx.Response(204, request=request)
+
+        monkeypatch.setattr(client, "delete", delete_with_stale_failure, raising=False)
+        monkeypatch.setattr(adapter, "client", client)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is False
+        assert deleted_ids == ["8", "42"]
+        assert "secret" not in caplog.text
+
+
+    def test_register_replaces_stale_and_legacy_local_callbacks(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        current_url = adapter._webhook_register_url
+        legacy_url = current_url.replace("127.0.0.1", "localhost")
+        client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": current_url, "events": ["new-message", "updated-message"]},
+                {"id": 8, "url": legacy_url, "events": ["new-message"]},
+            ]},
+        )
+        deleted_ids = []
+        posted_payloads = []
+
+        async def capture_delete(url):
+            deleted_ids.append(url.rsplit("/", 1)[-1].split("?", 1)[0])
+            return type("Response", (), {"raise_for_status": lambda self: None})()
+
+        async def capture_post(path, payload):
+            posted_payloads.append(payload)
+            return {"status": 200, "data": {"id": 42}}
+
+        monkeypatch.setattr(client, "delete", capture_delete, raising=False)
+        monkeypatch.setattr(adapter, "client", client)
+        monkeypatch.setattr(adapter, "_api_post", capture_post)
+
+        ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+
+        assert ok is True
+        assert deleted_ids == ["7", "8"]
+        assert posted_payloads == [{"url": current_url, "events": ["new-message"]}]
 
 
     def test_register_reuses_existing(self, monkeypatch):

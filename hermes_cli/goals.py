@@ -421,6 +421,8 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    # Optional Plugin-owned candidate-DONE veto provider. Core remains the sole Goal state authority.
+    completion_gate: str = ""
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -447,6 +449,7 @@ class GoalState:
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
                 if isinstance(g, dict) and str(g.get("command") or "").strip()
             ],
+            completion_gate=str(data.get("completion_gate") or "").strip().lower(),
             **ints, **floats,
         )
 
@@ -622,6 +625,24 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     except Exception as exc:
         logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
         return None
+
+
+def is_stale_goal_event(session_id: str, event: Dict[str, Any]) -> bool:
+    """True when a background event began before the current active Goal was created.
+
+    ``replace`` creates a fresh GoalState timestamp. Late work from the superseded Goal may still be
+    displayed, but must not re-enter the model/judge lifecycle of the replacement.
+    """
+    state = load_goal(str(session_id or "").strip())
+    if state is None or state.status not in {"active", "paused"} or not state.created_at:
+        return False
+    raw_started = event.get("dispatched_at") if event.get("type") == "async_delegation" else event.get("started_at")
+    if raw_started is None:
+        return False
+    try:
+        return float(raw_started) < float(state.created_at)
+    except (TypeError, ValueError):
+        return False
 
 
 def save_goal(session_id: str, state: GoalState) -> None:
@@ -1129,7 +1150,10 @@ class GoalManager:
         self._pause_state(paused_reason)
         return _decision("paused", False, None, verdict, reason, message)
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
+    def set(
+        self, goal: str, *, max_turns: Optional[int] = None,
+        contract: Optional[GoalContract] = None, completion_gate: str = "",
+    ) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
@@ -1137,6 +1161,7 @@ class GoalManager:
             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             contract=contract if contract is not None else GoalContract(),
+            completion_gate=str(completion_gate or "").strip().lower(),
         )
         return self._save()
 
@@ -1438,6 +1463,8 @@ class GoalManager:
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[List[Dict[str, Any]]] = None,
         active_delegations: int = 0,
+        execution_incomplete: bool = False,
+        turn_id: str = "",
     ) -> Dict[str, Any]:
         """Run gates + judge and update state. Return a decision dict (``status``, ``should_continue``,
         ``continuation_prompt``, ``verdict``, ``reason``, ``message``). Both real user prompts and our
@@ -1452,6 +1479,18 @@ class GoalManager:
 
         state.turns_used += 1
         state.last_turn_at = time.time()
+
+        if execution_incomplete:
+            reason = "execution terminated before semantic completion"
+            state.last_verdict = "continue"
+            state.last_reason = reason
+            if state.turns_used >= state.max_turns:
+                return self._budget_pause(state, "continue", reason, note=" (execution ended before completion)")
+            self._save()
+            return _decision(
+                "active", True, self.next_continuation_prompt(), "continue", reason,
+                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}",
+            )
 
         # Gates run BEFORE the judge: a failing gate is deterministic evidence the goal is not done,
         # so the judge is skipped and the gate's output drives the next turn (same turn budget).
@@ -1489,6 +1528,43 @@ class GoalManager:
             )
 
         if verdict == "done":
+            if state.completion_gate:
+                from hermes_cli.plugins import evaluate_goal_completion_gate
+
+                gate = evaluate_goal_completion_gate(
+                    state.completion_gate,
+                    session_id=self.session_id,
+                    turn_id=str(turn_id or ""),
+                    generation=state.created_at,
+                    candidate_state="done",
+                    candidate_reason=reason,
+                    goal={
+                        "objective": state.goal,
+                        "contract": state.contract.to_dict(),
+                        "turns_used": state.turns_used,
+                        "max_turns": state.max_turns,
+                    },
+                )
+                gate_action = gate.get("action")
+                gate_reason = str(gate.get("reason") or "")
+                if gate_action == "blocked":
+                    return self._pause_decision(
+                        f"completion gate blocked: {gate_reason}", "blocked", gate_reason,
+                        f"🚫 Goal completion blocked by {state.completion_gate}: {gate_reason}",
+                    )
+                if gate_action == "continue":
+                    state.last_verdict = "continue"
+                    state.last_reason = gate_reason
+                    if state.turns_used >= state.max_turns:
+                        return self._budget_pause(
+                            state, "continue", gate_reason,
+                            note=f" (completion gate {state.completion_gate} requires more evidence)",
+                        )
+                    self._save()
+                    return _decision(
+                        "active", True, self.next_continuation_prompt(), "continue", gate_reason,
+                        f"↻ Completion gate {state.completion_gate} requires more work: {gate_reason}",
+                    )
             state.status = "done"
             self._save()
             return _decision("done", False, None, "done", reason, f"✓ Goal achieved: {reason}")

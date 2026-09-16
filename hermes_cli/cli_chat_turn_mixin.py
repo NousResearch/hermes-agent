@@ -72,7 +72,12 @@ class CLIChatTurnMixin:
 
         self._chat_stage_user_message(agent, message)
         if isinstance(message, TimelineNotification):
+            self._last_goal_execution_incomplete_event = bool(
+                getattr(message, "goal_execution_incomplete", False)
+            )
             message = str(message)  # UI metadata is on the staged row, never in model content.
+        else:
+            self._last_goal_execution_incomplete_event = False
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
@@ -484,6 +489,7 @@ class CLIChatTurnMixin:
         """
         from cli import _DIM, _RST, _cprint, _suspend_output_history
         response = turn.result.get("final_response", "") if turn.result else ""
+        self._last_turn_exit_reason = str(turn.result.get("turn_exit_reason") or "") if turn.result else ""
         # "failed"/"partial" with an empty final_response: no usable answer.
         if turn.result and (turn.result.get("failed") or turn.result.get("partial")) and not response:
             from hermes_cli.cli_chat_error_copy import chat_error_response

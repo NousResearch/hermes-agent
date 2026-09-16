@@ -178,6 +178,46 @@ def _media_file(root: Path, name: str) -> Path:
 
 
 @pytest.mark.asyncio
+async def test_queued_first_response_uses_current_claimed_attachment_snapshot():
+    snapshot = object()
+    turn_ctx = SimpleNamespace(
+        claimed_event=SimpleNamespace(
+            _hermes_claimed_response_parts_snapshot=snapshot,
+        ),
+        event_message_id=None,
+        inbound_message_id="claimed-head",
+        persist_user_display_kind=None,
+        run_generation=1,
+        session_key="agent:main:slack:channel:claimed-media",
+        source=_source(),
+        stream_consumer_holder=[None],
+        _status_thread_metadata=None,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner._run_agent_stream_confirmed_final_delivery = lambda *_args, **_kwargs: False
+    runner._is_intentional_silence = lambda *_args, **_kwargs: False
+    runner._deliver_queued_first_response = AsyncMock()
+    runner._pop_post_delivery_callback = lambda *_args: None
+    result = {
+        "_delivery_obligation_id": "owned-result",
+        "failed": False,
+        "final_response": "queued answer",
+    }
+
+    await runner._run_agent_deliver_first_response(
+        turn_ctx,
+        adapter=None,
+        response=result,
+        result=result,
+        stream_task=None,
+    )
+
+    assert runner._deliver_queued_first_response.await_args.kwargs[
+        "attachment_snapshot"
+    ] is snapshot
+
+
+@pytest.mark.asyncio
 async def test_text_success_then_image_failure_keeps_whole_response_failed(
     _isolated_ledger_and_media,
 ):

@@ -3706,7 +3706,7 @@ class GatewayTurnMixin:
                     session_key=session_key, inbound_message_id=turn_ctx.inbound_message_id,
                     delivery_obligation_id=_owned_delivery_id,
                     attachment_snapshot=getattr(
-                        claimed_event,
+                        turn_ctx.claimed_event,
                         "_hermes_claimed_response_parts_snapshot",
                         None,
                     ),
@@ -4263,6 +4263,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, context_prompt=context_prompt, history=history,
             session_id=session_id, _interrupt_depth=_interrupt_depth,
             event_message_id=event_message_id, inbound_message_id=inbound_message_id,
+            claimed_event=claimed_event,
             channel_prompt=channel_prompt, moa_config=moa_config,
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,

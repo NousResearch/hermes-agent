@@ -6,7 +6,9 @@ import logging
 import sys
 import time
 import types
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import unquote
 from unittest.mock import MagicMock
 
 import pytest
@@ -106,6 +108,13 @@ class MediaCaptureProgressAdapter(ProgressCaptureAdapter):
                 "metadata": metadata,
             }
         )
+
+
+def _resolved_file_images(images):
+    return [
+        (Path(unquote(url.removeprefix("file://"))).resolve(), caption)
+        for url, caption in images
+    ]
 
 
 class SmallLimitProgressAdapter(ProgressCaptureAdapter):
@@ -1489,19 +1498,14 @@ async def test_run_agent_queued_message_delivers_first_response_media(monkeypatc
 
     assert result["final_response"] == "follow-up processed"
     assert isinstance(adapter, MediaCaptureProgressAdapter)
-    assert {
-        "sent_texts": [call["content"] for call in adapter.sent],
-        "image_batches": adapter.image_batches,
-    } == {
-        "sent_texts": ["first response"],
-        "image_batches": [
-            {
-                "chat_id": "discord-thread",
-                "images": [(media_path.as_uri(), "")],
-                "metadata": {"thread_id": "discord-thread"},
-            }
-        ],
-    }
+    assert [call["content"] for call in adapter.sent] == ["first response"]
+    assert len(adapter.image_batches) == 1
+    image_batch = adapter.image_batches[0]
+    assert image_batch["chat_id"] == "discord-thread"
+    assert image_batch["metadata"] == {"thread_id": "discord-thread"}
+    assert _resolved_file_images(image_batch["images"]) == [
+        (media_path.resolve(), "")
+    ]
 
 
 @pytest.mark.asyncio
@@ -1535,12 +1539,12 @@ async def test_run_agent_queued_message_delivers_streamed_first_response_media(
     assert isinstance(adapter, MediaCaptureProgressAdapter)
     all_text = [call["content"] for call in adapter.sent + adapter.edits]
     assert all("MEDIA:" not in text for text in all_text)
-    assert adapter.image_batches == [
-        {
-            "chat_id": "discord-thread",
-            "images": [(media_path.as_uri(), "")],
-            "metadata": {"thread_id": "discord-thread"},
-        }
+    assert len(adapter.image_batches) == 1
+    image_batch = adapter.image_batches[0]
+    assert image_batch["chat_id"] == "discord-thread"
+    assert image_batch["metadata"] == {"thread_id": "discord-thread"}
+    assert _resolved_file_images(image_batch["images"]) == [
+        (media_path.resolve(), "")
     ]
 
 

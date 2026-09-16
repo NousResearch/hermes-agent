@@ -52,12 +52,13 @@ def _settled_path(home, n):
 
 # ---------------------------------------------------------------- vocabulary
 def test_no_target_busy_in_vocabulary():
-    assert len(q.STATUSES) == 7
+    assert len(q.STATUSES) == 8
     assert "target_busy" not in q.STATUSES
     assert set(q.STATUSES) == {
         "queued",
         "running",
         "delivered",
+        "acknowledged",
         "failed",
         "expired",
         "cancelled",
@@ -244,6 +245,31 @@ def test_settle_terminal_delivered(tmp_path):
     assert q.queue_depth(tmp_path, target_profile="bravo") == 0
     # idempotent replay of the same terminal outcome
     assert q.settle(tmp_path, _did(1), status="delivered")["status"] == "delivered"
+
+
+def test_acknowledge_transitions_delivered_to_acknowledged(tmp_path):
+    _admit(tmp_path, 1)
+    q.claim_next(tmp_path, target_profile="bravo", lease_ok=True)
+    q.settle(tmp_path, _did(1), status="delivered", reply="pong")
+    acked = q.acknowledge(tmp_path, _did(1))
+    assert acked["status"] == "acknowledged"
+    assert acked["reply"] == "pong"  # payload preserved, only status flips
+    assert _settled_path(tmp_path, 1).exists()
+    # idempotent re-ack
+    assert q.acknowledge(tmp_path, _did(1))["status"] == "acknowledged"
+    # still acknowledged when read back
+    reread = q.read_record(tmp_path, _did(1))
+    assert reread is not None and reread["status"] == "acknowledged"
+
+
+def test_acknowledge_refuses_non_delivered(tmp_path):
+    _admit(tmp_path, 1)
+    with pytest.raises(FileNotFoundError):
+        q.acknowledge(tmp_path, _did(1))  # still queued, not settled
+    q.claim_next(tmp_path, target_profile="bravo", lease_ok=True)
+    q.settle(tmp_path, _did(1), status="failed", error="boom")
+    with pytest.raises(ValueError):
+        q.acknowledge(tmp_path, _did(1))  # failed is not acknowledgeable
 
 
 def test_settle_rejects_non_terminal_and_conflicting_replay(tmp_path):

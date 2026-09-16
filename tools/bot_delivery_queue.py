@@ -48,6 +48,7 @@ SETTLED_DIR = "settled"
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_DELIVERED = "delivered"
+STATUS_ACKNOWLEDGED = "acknowledged"
 STATUS_FAILED = "failed"
 STATUS_EXPIRED = "expired"
 STATUS_CANCELLED = "cancelled"
@@ -57,15 +58,21 @@ STATUSES = (
     STATUS_QUEUED,
     STATUS_RUNNING,
     STATUS_DELIVERED,
+    STATUS_ACKNOWLEDGED,
     STATUS_FAILED,
     STATUS_EXPIRED,
     STATUS_CANCELLED,
     STATUS_AMBIGUOUS,
 )
 
+#: ``acknowledged`` is a receiver-written refinement of ``delivered``: the transport
+#: turn completed, and the receiving agent has since confirmed it read/accepts the
+#: message. It is terminal -- nothing may follow it -- and the sender proves (not
+#: infers) delivery by polling for it.
 TERMINAL_STATUSES = frozenset(
     {
         STATUS_DELIVERED,
+        STATUS_ACKNOWLEDGED,
         STATUS_FAILED,
         STATUS_EXPIRED,
         STATUS_CANCELLED,
@@ -569,7 +576,9 @@ def _queue_position(root: Path, record: dict[str, Any]) -> int | None:
 
 
 def _result_for_status(status: str) -> str:
-    if status == STATUS_DELIVERED:
+    if status in (STATUS_DELIVERED, STATUS_ACKNOWLEDGED):
+        # ``acknowledged`` is a refinement of ``delivered``: the sender still sees
+        # ``result: delivered``; the raw ``status`` field is what proves the ack.
         return RESULT_DELIVERED
     if status in (STATUS_FAILED, STATUS_EXPIRED, STATUS_CANCELLED):
         return RESULT_FAILED
@@ -864,6 +873,41 @@ def settle(
         _write(settled_path, updated)
         _fsync_dir(root / CLAIMED_DIR)
         _log("settled", updated, attempt=updated.get("attempts"))
+        return dict(updated)
+
+
+def acknowledge(
+    home: str | os.PathLike[str],
+    delivery_id: str,
+    *,
+    now_ns: int | None = None,
+) -> dict[str, Any]:
+    """Mark a ``delivered`` record as ``acknowledged`` (receiver-written).
+
+    Idempotent: re-acking an already-acknowledged record returns it unchanged.
+    Only a record settled as ``delivered`` may be acknowledged -- anything else
+    (still queued/running, or failed/expired) is refused, so the sender can never
+    mistake a transport receipt for the receiver's own confirmation.
+    """
+    key_id = validate_delivery_id(delivery_id)
+    now_ns = time.time_ns() if now_ns is None else int(now_ns)
+    with _locked(home) as root:
+        settled_path = root / SETTLED_DIR / f"{key_id}.json"
+        record = _read(settled_path)
+        if record is None:
+            raise FileNotFoundError(f"no settled record for {key_id}")
+        if record.get("status") == STATUS_ACKNOWLEDGED:
+            return dict(record)
+        if record.get("status") != STATUS_DELIVERED:
+            raise ValueError(
+                f"cannot acknowledge a {record.get('status')!r} record; "
+                f"only 'delivered' may be acknowledged"
+            )
+        updated = dict(record)
+        updated["status"] = STATUS_ACKNOWLEDGED
+        updated["updated_at"] = now_ns
+        _write(settled_path, updated)
+        _log("acknowledged", updated)
         return dict(updated)
 
 

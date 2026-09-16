@@ -27,6 +27,7 @@ DELIVERY_RUN_STATUS = {
     "queued": "queued",
     "running": "running",
     "delivered": "completed",
+    "acknowledged": "completed",
     "failed": "failed",
     "expired": "cancelled",
     "cancelled": "cancelled",
@@ -247,6 +248,17 @@ class RunIdempotencyStore:
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
+
+    def mark_acknowledged(self, run_id: str) -> bool:
+        """Stamp the receiver-written acknowledgement time so the pruner can drop the row
+        on the acknowledged retention window rather than the full one. Returns True if a
+        row was stamped, False if the run_id is unknown."""
+        with self._lock:
+            changed = self._conn.execute(
+                "UPDATE run_idempotency SET acknowledged_at=? WHERE run_id=?",
+                (time.time(), run_id)).rowcount
+            self._conn.commit()
+        return changed == 1
 
     def close(self) -> None:
         with self._lock:

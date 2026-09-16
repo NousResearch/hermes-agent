@@ -157,12 +157,10 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
-        from gateway.warning_notifications import warning_notifications_enabled
+        from gateway.warning_notifications import render_notification
         with _session_profile_runtime_scope(session):
-            muted = ((kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic"
-                     and not warning_notifications_enabled("tui"))
-        if not muted:
-            _emit("message.start", sid)
+            render_notification(lambda: _emit("message.start", sid), platform="tui",
+                                diagnostic=(kwargs.get("display_metadata") or {}).get("notification_category") == "diagnostic")
         _run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
         _notif_log_failure(what, exc)

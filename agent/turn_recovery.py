@@ -46,13 +46,11 @@ def _vlines(agent: Any, *lines: str) -> None:
 
 def _plines(agent: Any, *lines: str) -> None:
     """``print`` each line prefixed with ``agent.log_prefix``."""
-    from gateway.warning_notifications import warning_notifications_enabled
-    if not warning_notifications_enabled(
-            getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
-            getattr(agent, "_notification_config", None)):
-        return
-    for line in lines:
-        print(f"{agent.log_prefix}{line}")
+    from gateway.warning_notifications import render_notification
+    render_notification(
+        lambda: [print(f"{agent.log_prefix}{line}") for line in lines],
+        platform=getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
+        user_config=getattr(agent, "_notification_config", None))
 
 
 def _blines(agent: Any, *lines: str) -> None:

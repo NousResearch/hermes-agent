@@ -50,14 +50,15 @@ class CLIStreamMixin:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
         if getattr(getattr(self, "agent", None), "_mute_notification_reply", False):
             return
-        from gateway.warning_notifications import DiagnosticText, warning_notifications_enabled
-        if isinstance(text, DiagnosticText) and not warning_notifications_enabled("cli", getattr(getattr(self, "agent", None), "_notification_config", None)):
-            return
-        if not text:
-            self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
-        self._tool_start_time = 0.0  # clear tool timer when switching to thinking
-        self._invalidate()
+        from gateway.warning_notifications import DiagnosticText, render_notification
+        def show():
+            if not text:
+                self._flush_reasoning_preview(force=True)
+            self._spinner_text = text or ""
+            self._tool_start_time = 0.0  # clear tool timer when switching to thinking
+            self._invalidate()
+        render_notification(show, platform="cli", diagnostic=isinstance(text, DiagnosticText),
+                            user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
     def _on_notice(self, notice) -> None:
         """Queue an out-of-band AgentNotice for rendering at the next clean boundary.

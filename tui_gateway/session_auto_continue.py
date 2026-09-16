@@ -109,12 +109,13 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
-            from gateway.warning_notifications import warning_notifications_enabled
+            from gateway.warning_notifications import render_notification
             diagnostic = marker.get("notification_category") == "diagnostic"
             with _session_profile_runtime_scope(session):
-                if not diagnostic or warning_notifications_enabled("tui"):
+                def announce():
                     _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
                     _emit("message.start", sid)
+                render_notification(announce, platform="tui", diagnostic=diagnostic)
                 _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
                     **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:

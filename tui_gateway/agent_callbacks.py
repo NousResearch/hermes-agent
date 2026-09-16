@@ -89,6 +89,7 @@ def _agent_presentation_enabled(sid: str, *, diagnostic: bool) -> bool:
     if not diagnostic:
         return True
     with _session_profile_runtime_scope(session or {}):
+        # Sole TUI policy read for agent callbacks; sinks below call this instead of re-deriving it.
         return warning_notifications_enabled("tui", getattr((session or {}).get("agent"), "_notification_config", None))
 
 

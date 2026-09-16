@@ -37,30 +37,6 @@ interface ActiveTranscriptSession {
   profile?: string | null
 }
 
-function ownerRouteProfile(owner: SessionProfileRoute): string {
-  return (owner.targetProfile ?? owner.profile).trim() || 'default'
-}
-
-function visibleRowMatchesOwner(
-  row: { connection_id?: null | string; profile?: null | string },
-  owner: SessionProfileRoute
-): boolean {
-  const rowProfile = (row.profile ?? '').trim() || 'default'
-
-  if (rowProfile !== ownerRouteProfile(owner)) {
-    return false
-  }
-
-  const rowConnection = (row.connection_id ?? '').trim()
-  const ownerConnection = owner.connectionId.trim()
-
-  if (!rowConnection || !ownerConnection) {
-    return true
-  }
-
-  return rowConnection === ownerConnection
-}
-
 /** Only a bound tile's explicit route can override visible session ownership. */
 function preferredActiveTranscriptOwner(
   storedSessionId: string,
@@ -98,20 +74,13 @@ export function resolveActiveTranscriptSession(
   storedSessionId: string,
   runtimeSessionId?: null | string
 ): ActiveTranscriptSession | undefined {
-  const visibleRows = ownerLookupSessionRows().filter(session => sessionMatchesStoredId(session, storedSessionId))
   const verifiedOwner = preferredActiveTranscriptOwner(storedSessionId, runtimeSessionId)
 
   if (verifiedOwner) {
-    const matchingVisible = visibleRows.find(row => visibleRowMatchesOwner(row, verifiedOwner))
-
-    if (matchingVisible) {
-      return { ownerRoute: verifiedOwner, profile: matchingVisible.profile }
-    }
-
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
   }
 
-  const visible = visibleRows[0]
+  const visible = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
   if (visible) {
     return { profile: visible.profile }

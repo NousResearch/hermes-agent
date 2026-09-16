@@ -243,7 +243,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     assert len(adapter.sent_calls) == 1
     chat_id, message, metadata = adapter.sent_calls[0]
     assert chat_id == source.chat_id
-    assert "Gateway restarting" in message
+    assert "Hermes is restarting" in message
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 

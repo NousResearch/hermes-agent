@@ -26,6 +26,18 @@ from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_erro
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# A failed /update leaves the previous version running; the full pip/git log stays on the host
+# (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
+_UPDATE_FAILED_NOTICE = (
+    "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
+    "host to see the full error, or try /update again later.")
+
+
+def _update_output_tail(output: str, limit: int) -> str:
+    """Last ``limit`` chars of an update log, prefixed with an ellipsis when cut."""
+    return output if len(output) <= limit else "…" + output[-limit:]
+
+
 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 # Routing fields copied verbatim from a process watcher onto its synthetic completion event.
 _WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
@@ -584,8 +596,7 @@ class GatewayNotificationsMixin:
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
                     exit_code = self._update_exit_code(paths)
                     await target.send(
-                        "✅ Hermes update finished." if exit_code == 0
-                        else "❌ Hermes update failed (exit code {}).".format(exit_code)
+                        "✅ Hermes update finished." if exit_code == 0 else _UPDATE_FAILED_NOTICE
                     )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 self._clear_update_markers(paths, session_key)
@@ -661,16 +672,14 @@ class GatewayNotificationsMixin:
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
-                if output:
-                    if len(output) > 3500:
-                        output = "…" + output[-3500:]
-                    status = "✅ Hermes update finished." if exit_code == 0 else "❌ Hermes update failed."
-                    msg = f"{status}\n\n```\n{output}\n```"
+                if exit_code == 0:
+                    msg = "✅ Hermes update finished successfully."
+                    if output:
+                        msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
                 else:
-                    msg = (
-                        "✅ Hermes update finished successfully." if exit_code == 0 else
-                        "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                    )
+                    msg = _UPDATE_FAILED_NOTICE
+                    if output:
+                        msg = f"{msg}\n\nLast lines:\n```\n{_update_output_tail(output, 800)}\n```"
                 await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
                 logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
         except Exception as e:
@@ -790,6 +799,46 @@ class GatewayNotificationsMixin:
             return None
         return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
 
+    _planned_restart_notice_lock: Optional[asyncio.Lock] = None
+
+    async def _replay_pending_planned_restart_notification(self) -> None:
+        """Send the planned-restart online notice to every home channel still owed one; clear
+        ``.restart_pending.json`` only once all of them were reached.
+
+        Runs from the boot pass and again from ``_install_reconnected_adapter``, so a home whose
+        platform was down at boot gets its notice when the platform comes back (#112109). Delivered
+        targets are recorded in the marker so neither a later replay nor the next process (if this
+        one restarts first) notifies a home twice. The lock serializes a boot pass that outlived the
+        restore gate against a concurrent reconnect replay.
+        """
+        from gateway.run import _planned_restart_notification_path
+        from utils import atomic_json_write
+
+        if self._planned_restart_notice_lock is None:
+            self._planned_restart_notice_lock = asyncio.Lock()
+        async with self._planned_restart_notice_lock:
+            path = _planned_restart_notification_path()
+            if not path.exists():
+                return
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                delivered = {tuple(target) for target in data.get("delivered_targets", [])}
+                # Owed targets come from config, not live transports: a removed home or an opt-out
+                # (gateway_restart_notification=false) must not keep the marker alive forever.
+                owed = {
+                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+                    for platform, cfg in self.config.platforms.items()
+                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                }
+                delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
+                if owed <= delivered:
+                    path.unlink(missing_ok=True)
+                    return
+                data["delivered_targets"] = [list(target) for target in delivered]
+                atomic_json_write(path, data, indent=None)
+            except Exception:
+                logger.warning("Planned-restart notification remains pending", exc_info=True)
+
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:
@@ -844,7 +893,7 @@ class GatewayNotificationsMixin:
                 logger.info("state.db recovered before the home-channel warning went out; not broadcasting")
                 return
         from hermes_constants import get_default_hermes_root, profile_cli_selector
-        from hermes_state import _default_db_path, classify_persistence_error, format_session_db_unavailable
+        from hermes_state import _default_db_path, classify_persistence_error
         cause = classify_persistence_error(error)
         # Copy-pasteable, so name the real store and pin the profile: a bare `hermes` follows
         # active_profile, which may be a different database (#105887).
@@ -877,9 +926,12 @@ class GatewayNotificationsMixin:
                 "recovery tools or restore a backup unless `hermes doctor` confirms damage."
             )
         else:
+            from hermes_state_user_copy import describe_storage_failure
+            failure = describe_storage_failure(error)
             message = (
-                f"⚠️ Session database unavailable — messages may not be persisted. "
-                f"{format_session_db_unavailable()}\nRun `hermes doctor` for diagnostics."
+                "⚠️ Session database unavailable — messages may not be saved and /resume will be "
+                f"empty. Cause: {failure.gloss}. Run `hermes {profile_arg}doctor --fix` on the "
+                "gateway machine, then `hermes gateway restart`."
             )
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
@@ -1655,6 +1707,16 @@ class GatewayNotificationsMixin:
             new_output = _redact_gateway_user_facing_secrets(new_output)
         return new_output
 
+    async def _launching_turn_active(self, platform_name: str, watcher: dict) -> bool:
+        """Whether the session that launched *watcher*'s process is still inside a turn on its
+        adapter (``_active_sessions`` is the base adapter's busy guard)."""
+        session_key = str(watcher.get("session_key") or "").strip()
+        if not session_key:
+            return False
+        source = await asyncio.to_thread(self._build_process_event_source, watcher)
+        adapter = self._resolve_injection_adapter(platform_name, source)
+        return session_key in (getattr(adapter, "_active_sessions", None) or {})
+
     async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
         from gateway.run import _non_conversational_metadata
         source = await asyncio.to_thread(self._build_process_event_source, watcher)
@@ -1726,6 +1788,22 @@ class GatewayNotificationsMixin:
         header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
         return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
 
+    def arm_process_watcher(self, watcher: dict) -> bool:
+        """Start ``_run_process_watcher`` for a watcher registered mid-turn, from the agent's
+        tool thread. Waiting for the post-turn drain leaves a process that finishes while its
+        launching turn is still running with no watcher at all (#112033). False = the gateway
+        is not serving (startup, shutdown): the caller keeps the descriptor in
+        ``pending_watchers`` for the startup / post-turn drain."""
+        loop = getattr(self, "_gateway_loop", None)
+        if not getattr(self, "_running", False) or loop is None or not loop.is_running():
+            return False
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            self._run_process_watcher(watcher), loop, logger=logger,
+            log_message="Live process watcher arming failed",
+        )
+        return future is not None
+
     async def _run_process_watcher(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode
         (``display.background_process_notifications``): concise (default one-liner; failures append
@@ -1768,11 +1846,23 @@ class GatewayNotificationsMixin:
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break
+                    # Captured before injection: afterwards the key is busy either way (the injected
+                    # turn itself installs the guard).
+                    turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
                     if delivered is False:
                         # The process remains terminal; retry after failed adapter injection instead
                         # of suppressing the result.
                         continue
+                    # The agent normally reports the result itself, so the chat gets no separate receipt.
+                    # While the launching turn is still running the injection only queues a follow-up, and
+                    # the chat would stay mute for as long as that turn lasts (#112033): send the concise
+                    # receipt now.
+                    if turn_busy and (notify_mode in {"concise", "all", "result"} or (
+                        notify_mode == "error" and session.exit_code not in {0, None}
+                    )):
+                        message_text = self._format_process_final_message(session_id, session, "concise")
+                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
                     break
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).

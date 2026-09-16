@@ -37,6 +37,8 @@ def test_refused_input_commits_failed_mailbox_receipt(tmp_path):
         "_emit_settled_session_info": noop,
         "_routing_provenance_db": lambda _session: contextlib.nullcontext(None),
         "_reopen_routed_session_row": noop,
+        # Every dispatch binds the session's own row before the turn writes (#111999).
+        "_ensure_session_db_row": noop,
     })
     def terminal(outcome):
         mailbox.complete_delivery(tmp_path, queued["id"], status=outcome["status"],

@@ -510,6 +510,20 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #     reading real sessions into assertions and writing test rows into the
     #     real profile. Re-pin the constant to this test's home. (Several test
     #     files already do this locally; this makes it an invariant.)
+    # 3c. Multi-profile hosting is a process-global latch (``set_multiplex_active`` and the
+    #     launch-env snapshot flip once and stay). A test that routes one RPC/request to a named
+    #     profile would otherwise leave every later test in the file fail-closed (unscoped
+    #     ``get_env_value`` in a test body raises). Reset the latch per test.
+    secret_scope_mod = sys.modules.get("agent.secret_scope")
+    if secret_scope_mod is not None and hasattr(secret_scope_mod, "_MULTIPLEX_ACTIVE"):
+        monkeypatch.setattr(secret_scope_mod, "_MULTIPLEX_ACTIVE", False)
+    launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
+    if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
+        monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
+    tui_server_mod = sys.modules.get("tui_gateway.server")
+    if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
+        monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())
+
     hermes_state_mod = sys.modules.get("hermes_state")
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
         monkeypatch.setattr(
@@ -611,6 +625,56 @@ def _neutralize_git_safe_directory_read(request, monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_session_dbs():
+    """Close every SessionDB a test constructed but forgot to close.
+
+    Root cause of OOM incident 20260816: ~40 files under tests/hermes_cli/
+    build ``SessionDB(...)`` directly and never call ``close()``. Each open
+    instance holds the writer connection (state.db + -wal fds), up to
+    ``_READ_POOL_MAX`` pooled read connections, per-connection SQLite page
+    caches, and — once token accounting has run — an ``atexit`` registration
+    that pins the instance alive until interpreter exit. Under the sanctioned
+    per-file-process runner this is invisible, but a raw single-process
+    ``pytest tests/hermes_cli/`` accumulated 16-25 GB RSS and had to be
+    OOM-killed three times in one day.
+
+    Rather than editing every test file, ``SessionDB.__init__`` registers each
+    instance in ``hermes_state_guard._test_instance_registry`` (a WeakSet,
+    populated only when the ``HERMES_TEST_ISOLATION`` marker is set — i.e.
+    only under this suite). This teardown closes whatever the test left open.
+    ``close()`` is idempotent (``self._conn`` is None afterwards) and also
+    unregisters the pinning atexit hook, so instances become collectable.
+
+    Snapshotting the registry BEFORE the test and closing only NEW instances
+    is deliberately avoided: closing pre-existing instances is harmless (they
+    were leaked by an earlier test in the same process) and the simpler
+    close-everything sweep is what actually bounds the process.
+
+    Instances opened through ``hermes_state_registry.acquire()`` are skipped:
+    on those ``close()`` releases a refcount rather than closing, so a sweep
+    would silently retire a shared generation that a wider-scoped fixture
+    still holds. The registry owns that lifecycle (``close_all()``).
+    """
+    yield
+    try:
+        from hermes_state_guard import _test_instance_registry as registry
+    except Exception:
+        return
+    if not registry:
+        return
+    for db in list(registry):
+        if getattr(db, "_shared_registry_owned", False):
+            continue
+        try:
+            db.close()
+        except Exception:
+            # Teardown must never fail a passing test; a close that raises
+            # (cross-thread ProgrammingError, already-closed) leaves at most
+            # the one connection for the next sweep / process exit.
+            pass
 
 
 @pytest.fixture(autouse=True)
@@ -856,7 +920,7 @@ def _reset_tui_gateway_server_state():
     if mod is not None:
         snapshot = {
             "methods": dict(mod._methods),
-            "cfg": (mod._cfg_cache, mod._cfg_mtime, mod._cfg_path),
+            "cfg": (mod._cfg_cache, mod._cfg_sig, mod._cfg_path),
             "db": (mod._db, mod._db_error),
             "real_stdout": mod._real_stdout,
         }
@@ -887,7 +951,7 @@ def _reset_tui_gateway_server_state():
     if snapshot is not None:
         mod._methods.clear()
         mod._methods.update(snapshot["methods"])
-        mod._cfg_cache, mod._cfg_mtime, mod._cfg_path = snapshot["cfg"]
+        mod._cfg_cache, mod._cfg_sig, mod._cfg_path = snapshot["cfg"]
         mod._db, mod._db_error = snapshot["db"]
         mod._real_stdout = snapshot["real_stdout"]
     else:
@@ -895,7 +959,7 @@ def _reset_tui_gateway_server_state():
         # for the globals we could not snapshot (``_methods`` is left to
         # the importing file's fixture, see block comment above).
         mod._cfg_cache = None
-        mod._cfg_mtime = None
+        mod._cfg_sig = None
         mod._cfg_path = None
         mod._db = None
         mod._db_error = None
@@ -1163,8 +1227,43 @@ _OS_MARKS = {
 }
 
 
+def _relocate_basetemp_outside_operator_home(config) -> None:
+    """Move pytest's basetemp out of the operator's platform-native Hermes home.
+
+    Every per-test sandbox is ``<basetemp>/.../hermes_test``. ``get_default_hermes_root()``
+    prefers the platform-native home whenever ``HERMES_HOME`` sits *under* it, so a basetemp
+    inside ``~/.hermes`` (or ``%LOCALAPPDATA%\\hermes``, where ``TEMP`` commonly lives on
+    Windows) turns the sandbox back into the live install and ``get_profile_dir("default")``
+    writes fixtures over the operator's config.yaml / .env / MEMORY.md (#111101).
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    native = _get_platform_default_hermes_home().resolve()
+    factory = config._tmp_path_factory
+    given = factory._given_basetemp
+    candidate = given if given is not None else Path(
+        os.environ.get("PYTEST_DEBUG_TEMPROOT") or tempfile.gettempdir()
+    )
+    if not candidate.resolve().is_relative_to(native):
+        return
+    # The system temp dir may itself be inside the home (Windows TEMP under the
+    # Hermes home). The repo is no escape either: the default install checks it
+    # out *inside* the home (~/.hermes/hermes-agent). A sibling of the native
+    # home is outside it by construction.
+    safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else native.parent
+    safe = Path(tempfile.mkdtemp(prefix="hermes-pytest-basetemp-", dir=safe_root))
+    assert not safe.resolve().is_relative_to(native), (
+        f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
+        "refusing to run the suite against the live install (pass --basetemp outside it)"
+    )
+    factory._given_basetemp = safe
+    config.option.basetemp = str(safe)
+
+
+@pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
+    _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",
         f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "

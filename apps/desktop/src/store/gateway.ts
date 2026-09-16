@@ -991,9 +991,13 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
-  const route = await gatewayForProfile(profile, true)
+  // A user-initiated Settings-scoped RPC (the Vault tab's "Applies to" pick)
+  // dials `foreground` so a cold profile spawn is not queued behind background
+  // work (#111651); ambient callers keep the background default.
+  const route = await gatewayForProfile(profile, true, spawnPriority)
 
   try {
     if (!route.gateway) {
@@ -1520,15 +1524,17 @@ export async function ensureGatewayForAgent(
     return !signal?.aborted
   }
 
+  const activationEpoch = beginGatewayActivation()
+
   if (await isAttachedSharedRemote(connectionId, profile, 'foreground')) {
-    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
+    // A retained primary can be open while the foreground still points at a
+    // different source. Reusing its socket must also move the active route.
+    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted && applyActive(g.primaryProfile, activationEpoch))
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
     throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
   }
-
-  const activationEpoch = beginGatewayActivation()
 
   let entry = g.secondaries.get(scope)
 

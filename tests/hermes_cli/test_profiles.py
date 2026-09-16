@@ -20,6 +20,7 @@ import yaml
 
 from hermes_cli import profiles
 from hermes_cli.profiles import (
+    _clone_all_copytree_ignore,
     normalize_profile_name,
     validate_profile_name,
     get_profile_dir,
@@ -201,6 +202,31 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
+        """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
+        else changes: the clone still gets its own config/skills copies, never a live link."""
+        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
+
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        manifest = {"version": 1, "agents": {"claude-code": {
+            "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
+            "last_import": 1, "imported_skills": ["s1"]}}}
+        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest))
+
+        plain = create_profile("plain", clone_config=True, no_alias=True)
+        assert not (plain / SYNC_MANIFEST_NAME).exists()
+
+        synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
+        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
+        # Editing the source afterwards does not reach the clone: still an independent island.
+        (default_home / "config.yaml").write_text("model: changed")
+        assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
+
+    def test_sync_imports_requires_a_clone_source(self, profile_env):
+        with pytest.raises(ValueError, match="--sync-imports requires"):
+            create_profile("lonely", sync_imports=True, no_alias=True)
+
     def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
         # that inherits jobs.json fires every job twice (two gateways, same job ids).
@@ -215,6 +241,22 @@ class TestCreateProfile:
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
+    def test_clone_all_skips_special_files(self, profile_env):
+        # A live source profile holds special files copytree cannot copy (e.g. a suffixless
+        # agent-browser control socket); one of them must not abort the whole clone.
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        browser_dir = default_home / "home" / ".agent-browser"
+        browser_dir.mkdir(parents=True)
+        (browser_dir / "state.json").write_text("{}")
+        os.mkfifo(browser_dir / "control")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "home" / ".agent-browser" / "state.json").is_file()
+        assert not (profile_dir / "home" / ".agent-browser" / "control").exists()
 
 
 
@@ -846,7 +888,10 @@ class TestExportImport:
 
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
         """Profile data files end up in the archive (credentials excluded)."""
-        default_dir = get_profile_dir("default")
+        # Write through HERMES_HOME, not get_profile_dir("default"): the latter resolves to the
+        # OPERATOR's real install whenever basetest sits inside it, so this test used to
+        # overwrite the live config.yaml / .env / MEMORY.md with its fixtures.
+        default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("model: test")
         (default_dir / ".env").write_text("KEY=val")
         (default_dir / "SOUL.md").write_text("Be nice.")
@@ -875,7 +920,8 @@ class TestExportImport:
         symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
         symlinks; the link and its target are both retained.
         """
-        default_dir = get_profile_dir("default")
+        # Same reason as above: never resolve the operator's real default home from a test.
+        default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("ok")
         # Place broken symlink *inside* the allowed ``skills/`` tree so the
         # root-level allow-list passes the directory through; the
@@ -1218,3 +1264,66 @@ class TestResolveProfileEnvSpelling:
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
 
 
+# ===================================================================
+# TestCloneAllExcludesRuntimeTrees
+# ===================================================================
+
+class TestCloneAllExcludesRuntimeTrees:
+    """``--clone-all`` from the default profile must not copy the machine-scoped
+    runtime trees the local-models flow puts under ``~/.hermes``: ``models/``
+    (GGUF weights, tens of GB), ``runtimes/`` (llama.cpp binaries) and ``node/``
+    (managed Node). ``backup.py`` already excludes exactly these; the clone-all
+    ignore list had not followed.
+    """
+
+    RUNTIME_TREES = ("models", "runtimes", "node")
+
+    def _seed(self, home):
+        (home / "models").mkdir(); (home / "models" / "big.gguf").write_bytes(b"\0" * 64)
+        (home / "runtimes" / "llamacpp" / "bin").mkdir(parents=True)
+        (home / "runtimes" / "llamacpp" / "bin" / "llama-server").write_text("bin")
+        (home / "node" / "bin").mkdir(parents=True)
+        (home / "node" / "bin" / "node").write_text("bin")
+        (home / "skills" / "greet").mkdir(parents=True)
+        (home / "skills" / "greet" / "SKILL.md").write_text("# greet\n")
+        (home / "config.yaml").write_text("model: test\n")
+
+    def test_ignore_drops_runtime_trees_only_at_the_default_root(self, profile_env):
+        default_home = profile_env / ".hermes"
+        self._seed(default_home)
+        # a skill that happens to carry a nested models/ dir is user data
+        (default_home / "skills" / "greet" / "models").mkdir()
+        ignore = _clone_all_copytree_ignore(default_home)
+
+        at_root = ignore(str(default_home), ["models", "runtimes", "node", "skills", "config.yaml"])
+        nested = ignore(str(default_home / "skills" / "greet"), ["models", "SKILL.md"])
+
+        assert set(at_root) == set(self.RUNTIME_TREES)
+        assert not nested
+
+        # Gated on the default profile: a named profile that really has a
+        # models/ dir of its own must not have it dropped when used as source.
+        source = create_profile("source", no_alias=True)
+        for tree in self.RUNTIME_TREES:
+            (source / tree).mkdir()
+        assert not _clone_all_copytree_ignore(source)(str(source), [*self.RUNTIME_TREES, "SOUL.md"])
+
+    def test_runtime_trio_is_one_constant_shared_with_backup(self):
+        """backup's exclusion list and the clone-all root gate must be built from the same
+        constant; two literals drifting apart is how the models/ copy of #111718 crept in."""
+        from hermes_cli import backup, profiles
+        from hermes_constants import LOCAL_RUNTIME_ROOT_DIRS
+        assert LOCAL_RUNTIME_ROOT_DIRS == frozenset(self.RUNTIME_TREES)
+        assert backup._EXCLUDED_ROOT_DIRS is LOCAL_RUNTIME_ROOT_DIRS
+        assert LOCAL_RUNTIME_ROOT_DIRS <= profiles._CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+
+    def test_clone_all_from_default_skips_runtime_trees_but_keeps_the_rest(self, profile_env):
+        default_home = profile_env / ".hermes"
+        self._seed(default_home)
+
+        clone = create_profile("clone", clone_all=True, no_alias=True)
+
+        for name in self.RUNTIME_TREES:
+            assert not (clone / name).exists(), name
+        assert (clone / "skills" / "greet" / "SKILL.md").is_file()
+        assert (clone / "config.yaml").is_file()

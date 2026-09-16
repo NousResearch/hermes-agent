@@ -385,6 +385,40 @@ async def test_session_chat_stream_run_completed_carries_turn_transcript(adapter
     assert any(m.get("tool_calls") for m in messages)
 
 
+@pytest.mark.asyncio
+async def test_session_chat_stream_reports_interrupted_turn_as_not_completed(adapter, session_db):
+    """The SSE terminal payload is derived from the result, never hard-coded: an interrupted
+    turn streams ``completed: false`` / ``interrupted: true`` and ends with ``run.cancelled``,
+    and the run status matches (#111770)."""
+    import json as _json
+
+    session_id = session_db.create_session("interrupted-session", "api_server")
+
+    async def fake_run(**_kwargs):
+        return {"final_response": "Operation interrupted.", "interrupted": True, "completed": False,
+                "session_id": session_id}, {"total_tokens": 1}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "hello"})
+            body = await resp.text()
+
+    payloads = {}
+    for block in body.split("\n\n"):
+        lines = block.splitlines()
+        event = next((ln[7:] for ln in lines if ln.startswith("event: ")), None)
+        data = next((ln[6:] for ln in lines if ln.startswith("data: ")), None)
+        if event and data:
+            payloads[event] = _json.loads(data)
+
+    assert payloads["assistant.completed"]["completed"] is False
+    assert payloads["assistant.completed"]["interrupted"] is True
+    assert "run.cancelled" in payloads and "run.completed" not in payloads
+    assert payloads["run.cancelled"]["completed"] is False
+    assert next(iter(adapter._run_statuses.values()))["status"] == "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # Session-persisted model threading + provider-auth failure surfacing
 # (salvaged from PR #57947 by @FvanW and PR #59941 by @kaishi00)

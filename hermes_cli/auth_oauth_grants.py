@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.auth_constants import _decode_jwt_claims
+from utils import file_signature
 
 # Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
 logger = logging.getLogger("hermes_cli.auth")
@@ -382,14 +383,14 @@ def _heal_forked_provider_block(
     return adopted
 
 
-def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int]]:
-    """``(mtime_ns, size)`` from ONE stat, or None when absent — a torn pair from two stats could
+def _stat_sig(p: Optional[Path]) -> Optional[Tuple[int, int, int, int]]:
+    """File signature from ONE stat, or None when absent — a torn pair from two stats could
     leave a persisted clean mark matching a store rewritten between them."""
     try:
         st = p.stat() if p is not None else None
     except OSError:
         return None
-    return (st.st_mtime_ns, st.st_size) if st is not None else None
+    return file_signature(st) if st is not None else None
 
 
 def _pool_rows(store: Dict[str, Any], provider_id: str) -> Tuple[Any, List[Any]]:
@@ -573,9 +574,9 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
     # this heal consolidates root -> profile, so a new forked grant appearing in ROOT must
     # invalidate the mark. The in-memory mark omitted it and got away with it because it died
     # with the process; a persisted mark would otherwise keep skipping a heal that has become
-    # necessary. Sizes ride along with the mtimes for the same reason: a metadata-preserving
-    # rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave a stale mark looking
-    # current indefinitely rather than for one process.
+    # necessary. Sizes, inodes and ctimes ride along with the mtimes for the same reason:
+    # a metadata-preserving rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave
+    # a stale mark looking current indefinitely rather than for one process.
     fingerprint = (
         str(profile_path), _stat_sig(profile_path), _stat_sig(profile_singleton),
         str(root_path), _stat_sig(root_path), _stat_sig(root_singleton),

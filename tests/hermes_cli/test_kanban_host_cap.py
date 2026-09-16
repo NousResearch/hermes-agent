@@ -313,3 +313,70 @@ def test_review_budget_still_bounded_by_shared_cap(
 
     # Budget 2 total across both lanes, reservation notwithstanding.
     assert len(res.spawned) == 2
+
+
+def test_guarded_review_row_releases_reservation_for_ready_lane(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A guard-deferred review row must not starve the ready lane.
+
+    Regression for the respawn-guard-unaware reservation: with one free
+    slot (``spawn_budget == 1``) a single review row that the review loop
+    itself will defer via ``check_respawn_guard`` must not hold that slot
+    back — otherwise ``ready_budget`` drops to 0 and the ready loop breaks
+    before spawning anything, every tick.
+    """
+    import hermes_cli.config as cfgmod
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="ready-1", assignee="alice")
+        review_id = _park_in_review(conn, "guarded-review", "reviewer")
+        # Last failure smells of quota/auth → the review loop will defer
+        # this row via the respawn guard (blocker_auth).
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                ("exited rate-limited (quota wall) — access denied", review_id),
+            )
+        assert kbd.check_respawn_guard(conn, review_id, lane="review") == "blocker_auth"
+
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=1,
+        )
+
+    # The only slot goes to the spawnable ready row, not to a review row
+    # that cannot spawn this tick.
+    assert len(res.spawned) == 1
+    assert res.spawned[0][0] != review_id
+    assert res.spawned[0][1] == "alice"
+
+
+def test_unguarded_review_row_still_reserves_slot(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """The reservation itself stays: an unguarded review row still holds one
+    slot back for the review lane under a ready backlog."""
+    import hermes_cli.config as cfgmod
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        for title in ("ready-1", "ready-2"):
+            kb.create_task(conn, title=title, assignee="alice")
+        review_id = _park_in_review(conn, "review-me", "reviewer")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
+        )
+
+    # Budget 2: one ready + the reserved review slot — the guard-aware
+    # predicate must not weaken the fair split.
+    assert len(res.spawned) == 2
+    assert review_id in [s[0] for s in res.spawned]

@@ -2009,15 +2009,28 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
+def _any_spawnable_review(
+    conn: sqlite3.Connection,
+    review_rows: list[sqlite3.Row],
+) -> bool:
     """Mirrors the review loop's own gate so human-pulled control-plane lanes
-    don't tax ready throughput; assumes spawnable when profiles are unimportable."""
+    don't tax ready throughput; assumes spawnable when profiles are
+    unimportable. The respawn guard is part of that gate: a review row the
+    loop itself would defer (quota/auth blocker, rate-limit cooldown) never
+    consumes the reserved slot — otherwise one guarded row pins ready_budget
+    to 0 and starves the ready lane until the guard clears."""
     if not review_rows:
         return False
     profile_exists = _profile_exists_fn()
-    if profile_exists is None:
-        return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+    for row in review_rows:
+        if not row["assignee"]:
+            continue
+        if profile_exists is not None and not profile_exists(row["assignee"]):
+            continue
+        if check_respawn_guard(conn, row["id"], lane="review") is not None:
+            continue
+        return True
+    return False
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2078,7 +2091,14 @@ def _dispatch_once_locked(
     # backlog. When spawnable review work exists and there is any budget, hold
     # one slot back.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(review_rows):
+    if (
+        spawn_budget is not None
+        and spawn_budget > 0
+        and _any_spawnable_review(
+            conn,
+            review_rows,
+        )
+    ):
         ready_budget = max(spawn_budget - 1, 0)
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".

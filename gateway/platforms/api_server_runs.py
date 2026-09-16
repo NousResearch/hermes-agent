@@ -153,8 +153,9 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     redact_sensitive_text = _api_server.redact_sensitive_text
 
     def _push(event: Dict[str, Any]) -> None:
-        self._set_run_status(
-            run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
+        if not str(event.get("event", "")).startswith("research."):
+            self._set_run_status(
+                run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
         q = self._run_streams.get(run_id)
         if q is not None:
             with suppress(Exception):
@@ -177,6 +178,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
                     redact = key in _SUBAGENT_TEXT_KEYS and isinstance(value, str)
                     event[key] = redact_sensitive_text(value, force=True) if redact else value
             _push(event)
+        elif event_type.startswith("research."):
+            # Research events are shaped and bounded by tools.research_trace;
+            # forward only that namespace to the existing durable SSE journal.
+            _push(_run_event(run_id, event_type, **kwargs))
 
     return _callback
 
@@ -508,7 +513,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
-def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
+def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server, trace_callback=None):
     """Executor-thread body of one run; returns ``(result, usage)``."""
     from gateway.session_context import clear_session_vars
     from gateway.hosted_room_execution_policy import (
@@ -557,9 +562,11 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
-            r = agent.run_conversation(
-                user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+            from tools.research_trace import trace_context
+            with trace_context(trace_callback):
+                r = agent.run_conversation(
+                    user_message=run.user_message, conversation_history=run.conversation_history,
+                    task_id=effective_task_id, **author_kwargs)
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -617,6 +624,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
             run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+        _trace_event({"type": "research.completed", "status": status})
+
+    def _trace_event(event: dict[str, Any]) -> None:
+        event = dict(event or {})
+        event_type = event.pop("type", None)
+        if isinstance(event_type, str) and event_type.startswith("research."):
+            self._make_run_event_callback(run_id, loop)(event_type, **event)
 
     try:
         self._set_run_status(run_id, "running")
@@ -630,7 +644,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage = await loop.run_in_executor(
-            None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+            None, lambda: _run_agent_sync(
+                self, run, agent, approval_notify, _api_server=_api_server, trace_callback=_trace_event))
         if not isinstance(result, dict):
             result = {}
         if run_id in self._stopping_run_ids and result.get("interrupted") is True:

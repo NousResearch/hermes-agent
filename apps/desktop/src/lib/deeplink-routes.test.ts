@@ -63,14 +63,7 @@ describe('resolveDeepLinkAction', () => {
       params: Object.fromEntries(url.searchParams)
     })).toEqual({ type: 'skill-install', identifier })
 
-    const invalidParams: Record<string, string>[] = [
-      {},
-      { identifier: '' },
-      { identifier: '   ' },
-      { identifier: ' official/skill ' }
-    ]
-
-    for (const params of invalidParams) {
+    for (const params of [{}, { identifier: '' }, { identifier: '   ' }, { identifier: ' official/skill ' }]) {
       expect(resolveDeepLinkAction({ kind: 'skill', name: 'install', params })).toEqual({ type: 'ignore' })
     }
     expect(resolveDeepLinkAction({ kind: 'skill', name: 'remove', params: { identifier } })).toEqual({ type: 'ignore' })

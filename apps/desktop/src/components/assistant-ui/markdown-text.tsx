@@ -757,9 +757,12 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
  * so the canonical link component can route them to inline players/previews.
  * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
  * outside a session — a Bot Mode group room — has no session to own artifact
- * versions. */
-export function MessageTextContent({ text }: { text: string }) {
-  return <MarkdownTextContent disableArtifacts isRunning={false} text={renderMediaTags(text)} />
+ * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
+ * against the ACTIVE gateway, so a message written on another machine (a
+ * Connections Bot in a cross-machine room) must not have its path read here —
+ * that is a broken image at best and a same-path local file at worst. */
+export function MessageTextContent({ media = true, text }: { media?: boolean; text: string }) {
+  return <MarkdownTextContent disableArtifacts isRunning={false} text={media ? renderMediaTags(text) : text} />
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {

@@ -13,7 +13,10 @@ import { expect, test } from './test'
 // go through the same message renderer as the 1:1 chat.
 
 const SHOT_DIR = '/tmp/batchbots/panes-layout-cron-tile/shots'
-const LONG_LINE = 'const veryLongIdentifierNameForTheGroupChatCodeBlockRepro = computeSomethingWith(argumentNumberOne, argumentNumberTwo, argumentNumberThree)'
+// One unbroken 600+ char token: it cannot wrap, so it MUST overflow the
+// message column — the probe asserts that overflow exists before asserting
+// nothing clips it (a line that fits proves nothing about #91878).
+const LONG_LINE = `const veryLongIdentifierNameForTheGroupChatCodeBlockRepro_${'x'.repeat(600)} = 1`
 // 1x1 PNG.
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
@@ -123,19 +126,25 @@ test('a group reply renders its code block inside the message and its MEDIA: lin
     const clippedWithoutScroll = chain.filter(
       box => box.scrollWidth > box.clientWidth + 1 && !['auto', 'scroll'].includes(box.overflowX)
     )
+    const scrollingPre = chain.find(
+      box => box.tag === 'pre' && box.scrollWidth > box.clientWidth + 1 && ['auto', 'scroll'].includes(box.overflowX)
+    )
 
     return {
       body: { left: bodyRect.left, right: bodyRect.right },
       pre: { left: preRect.left, right: preRect.right, width: preRect.width },
       chain,
       clippedWithoutScroll,
+      scrollingPre,
       rawMedia: body.textContent?.includes('MEDIA:') ?? false,
       inlineMedia: Boolean(body.querySelector('img, audio, video'))
     }
   })
 
   console.log('GROUP CODE BLOCK GEOMETRY', JSON.stringify(geometry))
-  // The code block stays inside the message column...
+  // The fixture really overflows and the code block scrolls to show it...
+  expect.soft(geometry.scrollingPre).toBeDefined()
+  // ...while staying inside the message column...
   expect.soft(geometry.pre.right).toBeLessThanOrEqual(geometry.body.right + 1)
   // ...and no box between the code and the message clips text it cannot scroll.
   expect.soft(geometry.clippedWithoutScroll).toEqual([])

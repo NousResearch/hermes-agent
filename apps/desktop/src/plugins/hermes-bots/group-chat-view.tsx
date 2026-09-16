@@ -1030,7 +1030,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             data-selectable-text="true"
           >
             {MessageTextContent ? (
-              <MessageTextContent text={entry.text} />
+              <MessageTextContent media={!member?.remoteSource} text={entry.text} />
             ) : Streamdown ? (
               <Streamdown>{entry.text}</Streamdown>
             ) : (

@@ -2469,6 +2469,18 @@ def _record_route_info(
         route_info["task_endpoint_override"] = "true" if task_endpoint_override else "false"
 
 
+def _endpoint_overrides_main(selected_base_url: Any, main_base_url: Any) -> bool:
+    """Whether a selected auxiliary endpoint differs from the live main route."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    selected = str(selected_base_url or "")
+    return bool(
+        selected
+        and normalize_route_base_url(selected)
+        != normalize_route_base_url(str(main_base_url or ""))
+    )
+
+
 def _relay_auxiliary_metadata(
     *, provider: str | None = None, api_mode: str | None = None
 ) -> tuple[str, str, dict[str, Any]] | None:
@@ -6845,8 +6857,6 @@ def _prepare_aux_request(
             extra_body=effective_extra_body,
         )
     _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
-    from hermes_cli.route_identity import normalize_route_base_url
-
     main_base_url = base_url if base_url is not None else main_runtime.get("base_url")
     _record_route_info(
         route_info,
@@ -6855,9 +6865,7 @@ def _prepare_aux_request(
         task_endpoint_override=bool(
             task
             and not bypass_task_route
-            and resolved_base_url
-            and normalize_route_base_url(resolved_base_url)
-            != normalize_route_base_url(main_base_url)
+            and _endpoint_overrides_main(resolved_base_url, main_base_url)
         ),
     )
     if async_mode:
@@ -7178,7 +7186,15 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
         # their turn), then discovery where the selection policy allows it.
         for _pass in range(2):
-            _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+            _record_route_info(
+                route.route_info,
+                _fallback_provider_from_label(fb_label),
+                fb_model,
+                task_endpoint_override=_endpoint_overrides_main(
+                    getattr(fb_client, "base_url", ""),
+                    (route.main_runtime or {}).get("base_url"),
+                ),
+            )
             fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
             if fb_resp is not None:
                 return fb_resp

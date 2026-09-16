@@ -194,6 +194,54 @@ class TestGenerateSummaryTruncationGuard:
         assert calls[1]["base_url"] == "https://main.example/v1"
         assert calls[1]["bypass_task_route"] is True
 
+    def test_same_provider_model_fallback_endpoint_still_falls_back(self):
+        from agent.auxiliary_client import call_llm as actual_call_llm
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="anthropic",
+                base_url="https://main.example/v1", quiet_mode=True,
+            )
+
+        primary = MagicMock(base_url="https://primary.example/v1")
+        capacity_error = Exception("rate limit exceeded")
+        capacity_error.status_code = 429
+        primary.chat.completions.create.side_effect = capacity_error
+        fallback = MagicMock(base_url="https://aux.example/v1")
+        fallback.chat.completions.create.return_value = _mock_response("partial summary", "length")
+        main = MagicMock(base_url="https://main.example/v1")
+        main.chat.completions.create.return_value = _mock_response("full summary", "stop")
+
+        with (
+            patch("agent.context_compressor.call_llm", side_effect=actual_call_llm),
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                side_effect=[
+                    ("anthropic", "main-model", "https://primary.example/v1", "aux-key", None),
+                    ("anthropic", "main-model", "https://main.example/v1", "main-key", None),
+                ],
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_call_client",
+                side_effect=[
+                    (primary, "main-model", "anthropic", "anthropic"),
+                    (main, "main-model", "anthropic", "anthropic"),
+                ],
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fallback, "main-model", "anthropic"),
+            ),
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+        ):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert "full summary" in result
+        assert primary.chat.completions.create.call_count == 1
+        assert fallback.chat.completions.create.call_count == 1
+        assert main.chat.completions.create.call_count == 1
+
     def test_same_provider_model_and_endpoint_does_not_retry(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(

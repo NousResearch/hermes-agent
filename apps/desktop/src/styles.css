@@ -994,6 +994,25 @@
 }
 
 @layer utilities {
+  /* Keep relational selectors on their owning row, not inside a universal
+     group-has descendant match: that invalidates unrelated chat panes. */
+  .row-hover:has([data-pr-link]:hover) .session-row-tail {
+    opacity: 1;
+  }
+
+  .row-hover:has([data-pr-link]:hover) .session-row-kebab {
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  [data-sidebar='menu-item']:has(> [data-sidebar='menu-action']) > [data-sidebar='menu-button'] {
+    padding-right: calc(var(--spacing) * 8);
+  }
+
+  [data-tab-key-hint] + .tab-key-hint-icon {
+    visibility: hidden;
+  }
+
   [class*='rounded-full'],
   [class*=':rounded-full'] {
     border-radius: calc(var(--radius-scalar) * 9999rem);
@@ -2814,7 +2833,7 @@ button[data-slot='aui_msg-reactions'] svg {
    the tinted sheet is the thing that reads as a desktop window parked on the
    action, and it is most of the HUD's rectangle. Streaming shows words on the
    game; sitting down to read promotes the surface. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+[data-hud-shell][data-hud-typing] [data-hud-glass] {
   translate: none;
   opacity: 1;
   transition-duration: var(--hud-reveal);
@@ -2866,7 +2885,7 @@ button[data-slot='aui_msg-reactions'] svg {
 /* Engaged, the field steps up the same way the docked thread's does — but
    never below the resting tint, so a high lever cannot make focusing the
    composer paint MORE transparent than glancing at it. */
-:root[data-hermes-glass-on] [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+:root[data-hermes-glass-on] [data-hud-shell][data-hud-typing] [data-hud-glass] {
   background: rgb(12 14 18 / 0.72);
 }
 
@@ -2876,7 +2895,7 @@ button[data-slot='aui_msg-reactions'] svg {
    to use it, and the transcript flew open every time it was moved. Hit-testing
    below stays on :focus-within — being permissive about what can be clicked is
    harmless, being permissive about what lights up is not. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+[data-hud-shell][data-hud-typing] [data-hud-glass] {
   background: rgb(12 14 18 / 0.82);
 }
 
@@ -2910,7 +2929,7 @@ button[data-slot='aui_msg-reactions'] svg {
    so an interactive band IS a dead zone over the action). Sitting down in the
    composer is the deliberate act that makes the transcript a surface you can
    scroll and click links in. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
+[data-hud-shell][data-hud-typing] [data-slot='composer-bounds'] {
   pointer-events: auto;
 }
 
@@ -3053,7 +3072,7 @@ button[data-slot='aui_msg-reactions'] svg {
   color: var(--hud-overlay-ink-user) !important;
 }
 
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
+[data-hud-shell][data-hud-typing] [data-slot='composer-bounds'] {
   opacity: 1;
   translate: none;
   transition-duration: var(--hud-reveal);
@@ -3066,7 +3085,7 @@ button[data-slot='aui_msg-reactions'] svg {
    goes fully opaque and the band falls back behind it: dimmer, fractionally
    smaller, slightly out of focus. Scaled from the bar's edge, so it reads as
    depth rather than as the panel shrinking. */
-[data-hud-shell]:has([data-slot='composer-completion-drawer']) :is([data-slot='composer-bounds'], [data-hud-glass]) {
+[data-hud-shell][data-hud-drawer] :is([data-slot='composer-bounds'], [data-hud-glass]) {
   opacity: 0.25 !important;
   scale: 0.97;
   filter: blur(1.5px);
@@ -3099,7 +3118,7 @@ button[data-slot='aui_msg-reactions'] svg {
 /* No bubble in the HUD, ever. The band's ink already distinguishes the two
    voices (white agent / gold yours), and a light card behind gold text is the
    one thing in here that fights the overlay's own contrast. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) {
+[data-hud-shell][data-hud-typing] {
   --hud-bubble-fill: transparent;
   --hud-bubble-stroke: transparent;
 }
@@ -3408,7 +3427,7 @@ button[data-slot='aui_msg-reactions'] svg {
    shadow is sawn off by the window before any CSS can shape it, and paying for
    the clearance moves the bar. Recolouring what is already drawn costs no
    space, cannot be clipped, and leaves the working arc as the only ring. */
-[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
+[data-hud-shell][data-hud-typing] [data-slot='composer-surface'] {
   border-color: var(--dt-primary) !important;
 }
 
@@ -3561,16 +3580,16 @@ button[data-slot='aui_msg-reactions'] svg {
    (1) is ours to fix in CSS; inner scrollers yield to the window instead of
    their own floor. (2) is why the menus are compact here rather than roomy —
    a HUD is a small window and a 400px menu cannot fit in it. */
-html:has([data-hud-shell]) [data-slot='dropdown-menu-content'] [class*='max-h-'],
-html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
+html[data-hud-window] [data-slot='dropdown-menu-content'] [class*='max-h-'],
+html[data-hud-window] [data-slot='popover-content'] [class*='max-h-'] {
   max-height: max(5rem, calc(100dvh - 9rem)) !important;
 }
 
 /* The menu panels themselves: never taller than the window minus the bar.
    Portalled out of the shell, they must still take the pointer — the HUD
    defaults to none and a right-click menu that cannot be clicked is dead. */
-html:has([data-hud-shell]) [data-slot='dropdown-menu-content'],
-html:has([data-hud-shell]) [data-slot='popover-content'] {
+html[data-hud-window] [data-slot='dropdown-menu-content'],
+html[data-hud-window] [data-slot='popover-content'] {
   max-height: calc(100dvh - 4.5rem) !important;
   overflow-y: auto;
   pointer-events: auto;

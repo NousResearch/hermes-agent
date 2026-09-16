@@ -1916,12 +1916,9 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "profiles": {  # Profile creation defaults.
-        # Where a NEW profile's gateway will be supervised. "auto" = follow the gateway serving
-        # the active profile (a containerized one means the container's supervisor owns the new
-        # profile too); "container" = the container's supervisor; "native" = this machine's
-        # service manager. "auto" reads the runtime_kind the serving gateway stamps into its
-        # gateway_state.json, so it resolves to "native" wherever nothing containerized is
-        # running — which is today's behaviour for every plain host install.
+        # Where a NEW profile's gateway will be supervised: "auto" follows the runtime_kind the
+        # serving gateway stamps into gateway_state.json (native wherever nothing containerized
+        # runs, today's behaviour), "container" / "native" force it.
         "runtime": "auto",
         # Container name used ONLY to render the exact `docker exec <name> ...` hand-off command
         # after creating a containerized profile. Never shelled out to and never inspected.

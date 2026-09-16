@@ -933,9 +933,11 @@ class TestWindowlessGatewayRestartSpec:
     hidden-console respawn spec (normalized interpreter + stable cwd + env
     overlay)."""
 
-    def test_noop_on_non_windows(self):
+    def test_noop_on_non_windows(self, monkeypatch):
+        import sys
         import hermes_cli.gateway_windows as gw
 
+        monkeypatch.setattr(sys, "platform", "linux")
         argv = ["/path/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
         new_argv, cwd, env = gw.windowless_gateway_restart_spec(list(argv))
         assert new_argv == argv

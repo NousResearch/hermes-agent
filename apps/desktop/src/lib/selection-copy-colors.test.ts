@@ -288,6 +288,50 @@ describe('installSelectionCopyColorGuard', () => {
     }
   })
 
+  // The guard must DECLINE off-scheme KaTeX selections so the Markdown
+  // surface's canonical `$…$` serializer can own `text/plain`. The fixture
+  // deliberately carries no MathML `<math>` subtree: jsdom throws inside
+  // `getComputedStyle` on MathML elements, and that crash — not the skip —
+  // would otherwise be what stops the guard, hiding a missing skip branch.
+  it('leaves KaTeX selections to the Markdown LaTeX copy handler', () => {
+    const dispose = installSelectionCopyColorGuard(document)
+
+    const host = armSelection(
+      '<p style="color: rgb(230, 237, 243)">before <span class="katex"><span class="katex-html">x²</span></span> after</p>'
+    )
+
+    try {
+      const { event, setData, preventDefault } = makeCopyEvent()
+
+      document.body.dispatchEvent(event)
+
+      expect(preventDefault).not.toHaveBeenCalled()
+      expect(setData).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+      host.remove()
+    }
+  })
+
+  // Guard against over-skipping: prose with no math anywhere must still get
+  // the off-scheme payload rewrite the guard exists to perform.
+  it('still owns the payload for off-scheme selections without math', () => {
+    const dispose = installSelectionCopyColorGuard(document)
+    const host = armSelection('<p style="color: rgb(230, 237, 243)">plain bright prose</p>')
+
+    try {
+      const { event, setData, preventDefault } = makeCopyEvent()
+
+      document.body.dispatchEvent(event)
+
+      expect(preventDefault).toHaveBeenCalled()
+      expect(setData.mock.calls.find(([type]) => type === 'text/plain')?.[1]).toContain('plain bright prose')
+    } finally {
+      dispose()
+      host.remove()
+    }
+  })
+
   it('stops intercepting after disposal', () => {
     const dispose = installSelectionCopyColorGuard(document)
     const host = armSelection('<p style="color: rgb(230, 237, 243)">bright transcript ink</p>')

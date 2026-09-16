@@ -1981,33 +1981,63 @@ def count_running_tasks(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
-    """Total ``running`` tasks across every board EXCEPT ``board``.
+def _own_board_db_path(slug: str) -> Path:
+    """``slug``'s OWN ``kanban.db``, ignoring ``HERMES_KANBAN_DB``.
 
-    Caps bound the HOST, but each board's tick only sees its own DB; without
-    this a derived cap of N gets multiplied by the number of active boards.
-    Boards are matched by resolved DB path, so ``HERMES_KANBAN_DB`` (pins every
-    board to one file) yields 0. Fails open per board.
+    The dispatcher pins that env var to *the worker's own* board, and the pin
+    outranks the ``board=`` slug in :func:`kanban_db.kanban_db_path` — so
+    resolving a board list through the ordinary resolver maps every slug onto the
+    caller's own file. Enumerating OTHER boards must not go through the pin.
+    """
+    return _kb._board_own_db_path(slug)
+
+
+def _other_board_db_paths(board: Optional[str] = None) -> list[Path]:
+    """Own DB path of every live board EXCEPT the one ``board`` resolves to.
+
+    The excluded board is the file the CALLER's ``conn`` is on — the pin-aware
+    resolution of ``board`` — because that DB is already counted board-locally by
+    ``count_running_tasks(conn)``. Raises if board enumeration itself fails, so
+    each caller keeps its own fail-open default.
     """
     try:
         current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
     except Exception:
         current_path = None
-    try:
-        boards = _kb.list_boards(include_archived=False)
-    except Exception:
-        return 0
-    total = 0
-    for meta in boards:
+    paths: list[Path] = []
+    for meta in _kb.list_boards(include_archived=False):
         slug = meta.get("slug") or _kb.DEFAULT_BOARD
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
-            resolved = str(path.resolve())
-            if current_path is not None and resolved == current_path:
+            path = _own_board_db_path(slug).expanduser()
+            if current_path is not None and str(path.resolve()) == current_path:
                 continue
             if not path.exists():
                 continue
-            other = _kbc.connect(board=slug)
+            paths.append(path)
+        except Exception:
+            continue
+    return paths
+
+
+def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
+    """Total ``running`` tasks across every board EXCEPT ``board``.
+
+    Caps bound the HOST, but each board's tick only sees its own DB; without
+    this a derived cap of N gets multiplied by the number of active boards.
+    Boards are enumerated by their OWN DB path (:func:`_own_board_db_path`), not
+    through the pin-aware resolver: inside a dispatcher-spawned worker
+    ``HERMES_KANBAN_DB`` pins every slug to that worker's board, so a pin-aware
+    walk would exclude every board and report 0 — the host load reads as empty
+    from exactly the process that dispatches. Fails open per board.
+    """
+    try:
+        others = _other_board_db_paths(board)
+    except Exception:
+        return 0
+    total = 0
+    for path in others:
+        try:
+            other = _kbc.connect(db_path=path)
             try:
                 total += count_running_tasks(other)
             finally:
@@ -2045,29 +2075,19 @@ def count_running_tasks_other_boards_by_assignee(
     The per-profile cap bounds a PROFILE's local model / API quota / browser
     pool, which no single board owns: seeded board-locally, N active boards
     each running N workers read as "under cap" and multiply the fan-out the
-    cap exists to prevent. Boards are matched by resolved DB path, so
-    ``HERMES_KANBAN_DB`` (pins every board to one file) yields ``{}``. Fails
-    open per board.
+    cap exists to prevent. Boards are enumerated by their OWN DB path
+    (:func:`_own_board_db_path`), not through the pin-aware resolver — under a
+    worker's ``HERMES_KANBAN_DB`` pin every slug resolves to that worker's own
+    file and the walk returns ``{}``. Fails open per board.
     """
     try:
-        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
-    except Exception:
-        current_path = None
-    try:
-        boards = _kb.list_boards(include_archived=False)
+        others = _other_board_db_paths(board)
     except Exception:
         return {}
     totals: dict[str, int] = {}
-    for meta in boards:
-        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+    for path in others:
         try:
-            path = _kb.kanban_db_path(board=slug).expanduser()
-            resolved = str(path.resolve())
-            if current_path is not None and resolved == current_path:
-                continue
-            if not path.exists():
-                continue
-            other = _kbc.connect(board=slug)
+            other = _kbc.connect(db_path=path)
             try:
                 for name, count in count_running_tasks_by_assignee(other).items():
                     totals[name] = totals.get(name, 0) + count

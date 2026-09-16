@@ -213,9 +213,23 @@ class TestDeletedProfileTombstone:
             resolve_profile_env("ghost")
         assert Path(resolve_profile_env("legacy")) == legacy
 
-        recreated = create_profile("ghost", no_alias=True, no_skills=True)
-        assert recreated == shell and (shell / ".env").exists()
-        assert "ghost" in _named_homes(profile_env)
+        # A live marker-less dir may still hold user files: ``profile create`` must fail closed,
+        # naming the stray dir, and leave every byte in place (never rmtree a non-tombstoned dir).
+        (shell / "skills" / "my-skill").mkdir(parents=True)
+        (shell / "skills" / "my-skill" / "SKILL.md").write_text("# mine\n", encoding="utf-8")
+        with pytest.raises(FileExistsError, match=str(shell)):
+            create_profile("ghost", no_alias=True, no_skills=True)
+        assert (shell / "skills" / "my-skill" / "SKILL.md").exists()
+        assert "ghost" not in _named_homes(profile_env)
+
+    def test_dangling_symlink_marker_is_still_identity(self, profile_env):
+        """A profile whose only marker is a dangling symlinked ``config.yaml`` (clone/migration
+        leftover) stays resolvable: ``is_file()`` follows links and would make it invisible."""
+        legacy = profile_env / ".hermes" / "profiles" / "legacy"
+        legacy.mkdir(parents=True)
+        (legacy / "config.yaml").symlink_to(profile_env / "gone" / "config.yaml")
+        assert profile_exists("legacy")
+        assert Path(resolve_profile_env("legacy")) == legacy
 
     def test_create_after_delete_replaces_empty_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)

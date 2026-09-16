@@ -936,10 +936,16 @@ def create_profile(
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and not named_profile_has_identity(profile_dir):
-        # An identity-less shell (post-delete mkdir, pre-tombstone ghost) is invisible to
-        # ``profile list`` and may be replaced. Identity files mean the leftover is not a shell —
-        # fail closed, no rmtree.
-        shutil.rmtree(profile_dir)
+        if named_profile_is_deleted(profile_dir):
+            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace.
+            shutil.rmtree(profile_dir)
+        else:
+            # A live marker-less dir is invisible to ``profile list`` but may still hold user
+            # files (skills/, memories/, cron/jobs.json): fail closed and name it, never rmtree.
+            raise FileExistsError(
+                f"Cannot create profile '{canon}': {profile_dir} exists but carries no profile identity "
+                "file, so it is not listed as a profile. Move or remove that directory first."
+            )
     if profile_dir.exists():
         raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None

@@ -273,8 +273,10 @@ _PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "
 
 
 def named_profile_has_identity(profile_home: str | Path) -> bool:
+    # A dangling symlinked marker (clone/migration leftover) is still an identity claim:
+    # ``is_file()`` follows links, so it alone would make such a profile unlistable.
     home = Path(profile_home)
-    return any((home / marker).is_file() for marker in _PROFILE_IDENTITY_MARKERS)
+    return any((home / marker).is_file() or (home / marker).is_symlink() for marker in _PROFILE_IDENTITY_MARKERS)
 
 
 def named_profile_is_live(profile_home: str | Path) -> bool:

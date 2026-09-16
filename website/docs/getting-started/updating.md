@@ -75,9 +75,9 @@ hermes update --check --branch experimental   # preview behindness only
 
 If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
 
-### Skip gateway restart: `--no-restart`
+### Skip gateway restart: `--no-gateway-restart`
 
-After a successful update, Hermes restarts running gateway profiles so they load the new code. Pass `--no-restart` to skip that step. Dependency install and post-install hooks still run. Use this when an outer supervisor (for example systemd) will restart the processes itself.
+After a successful update, Hermes restarts running gateway profiles so they load the new code. Pass `--no-gateway-restart` to defer that step (the pending-restart marker is kept for the next normal update). Dependency install and post-install hooks still run. See [Automated updates from inside the gateway](#automated-updates-from-inside-the-gateway---no-gateway-restart) for cron/automation use.
 
 ### Pinning to a git tag or commit: `--ref`
 

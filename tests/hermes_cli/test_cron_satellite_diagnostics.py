@@ -21,13 +21,18 @@ def profile(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
     monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
-    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
+    # Model the default gateway's identity, not merely a live pytest PID. The satellite has no lock.
+    monkeypatch.setattr(
+        "gateway.status.is_gateway_runtime_lock_active",
+        lambda lock_path=None: lock_path == root / "gateway.lock",
+    )
+    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: "hermes gateway run")
     root.joinpath("gateway.pid").write_text(json.dumps({"pid": os.getpid()}))
     root.joinpath("config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
     return root
 
 
-@pytest.mark.parametrize("mode", ["missing", "fresh", "stale", "disabled", "excluded", "local", "external"])
+@pytest.mark.parametrize("mode", ["missing", "fresh", "stale", "disabled", "excluded", "local", "external", "unrelated_pid"])
 def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, mode):
     from cron import jobs
     from hermes_cli import cron
@@ -39,11 +44,13 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
     if mode == "disabled":
         profile.joinpath("config.yaml").write_text("gateway:\n  multiplex_profiles: false\n")
     if mode == "excluded":
-        profile.joinpath("config.yaml").write_text("gateway:\n  multiplex_profiles: true\n  multiplex_profile_allowlist: [other]\n")
+        profile.joinpath("gateway_state.json").write_text(json.dumps({"served_profiles": ["other"]}))
     if mode == "local":
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [os.getpid()])
     if mode == "external":
         monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "managed-test")
+    if mode == "unrelated_pid":
+        monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: "python -m pytest")
 
     cron.cron_status()
     output = capsys.readouterr().out

@@ -184,7 +184,10 @@ def test_status_surfaces_agree_for_a_satellite_profile(served_root, monkeypatch)
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    assert "NOT fire" not in buf.getvalue() and "multiplexer" in buf.getvalue()
+    assert "Scheduler host: default-profile multiplexer" in buf.getvalue()
+    # A live scheduler host alone does not prove this satellite's ticker is healthy.
+    assert "has not reported a heartbeat" in buf.getvalue()
+    assert "will fire automatically" not in buf.getvalue()
 
 
 def test_dashboard_liveness_ladder_reports_served_profile_running(served_root):

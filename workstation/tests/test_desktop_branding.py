@@ -24,3 +24,5 @@ def test_hermes_work_branding_preserves_update_and_profile_identity():
     assert "app.setPath('userData', path.join(app.getPath('appData'), 'Hermes'))" in main_source
     assert "app.setAppUserModelId('com.nousresearch.hermes')" in main_source
     assert "process.env.HERMES_DESKTOP_APP_NAME || 'Hermes Work'" in main_source
+    assert "path.join(SOURCE_REPO_ROOT, 'Hermes Work.ico')" in main_source
+    assert "mainWindow.setIcon(appIcon)" in main_source

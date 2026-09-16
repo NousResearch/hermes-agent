@@ -66,6 +66,39 @@ if (-not $env:HERMES_DESKTOP_CDP_PORT) {
   $WorkstationDisabledRendererCdp = $false
 }
 
+if ($env:OS -match "Windows_NT" -or $IsWindows) {
+  try {
+    $icoPath = Join-Path $Root "Hermes Work.ico"
+    if (Test-Path $icoPath) {
+      $shell = New-Object -ComObject WScript.Shell
+      $shortcutTargets = @(
+        (Join-Path ([Environment]::GetFolderPath('Programs')) 'Hermes Work.lnk'),
+        (Join-Path ([Environment]::GetFolderPath('Desktop')) 'Hermes Work.lnk')
+      )
+      $shortcutUpdated = $false
+      foreach ($lnkPath in $shortcutTargets) {
+        if (Test-Path $lnkPath) {
+          try {
+            $sc = $shell.CreateShortcut($lnkPath)
+            if ($sc.IconLocation -ne "$icoPath,0") {
+              $sc.IconLocation = "$icoPath,0"
+              $sc.Save()
+              $shortcutUpdated = $true
+            }
+          } catch {
+            # Silently tolerate locked shortcuts
+          }
+        }
+      }
+      if ($shortcutUpdated) {
+        & ie4uinit.exe -show 2>$null
+      }
+    }
+  } catch {
+    # Best-effort
+  }
+}
+
 Push-Location $Root
 try {
   Write-Host "Starting Hermes Desktop with Workstation Browser..." -ForegroundColor Cyan

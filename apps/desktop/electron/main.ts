@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -846,7 +847,13 @@ const WINDOW_BUTTON_POSITION = {
 // back to the padded PNG if the ico is missing.
 const APP_ICON_PATHS = [
   ...(IS_WINDOWS
-    ? [path.join(process.resourcesPath ?? '', 'icon.ico'), path.join(APP_ROOT, 'assets', 'icon.ico')]
+    ? [
+        path.join(SOURCE_REPO_ROOT, 'Hermes Work.ico'),
+        path.join(APP_ROOT, 'Hermes Work.ico'),
+        path.join(APP_ROOT, 'assets', 'Hermes Work.ico'),
+        path.join(process.resourcesPath ?? '', 'icon.ico'),
+        path.join(APP_ROOT, 'assets', 'icon.ico')
+      ]
     : []),
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
@@ -6315,6 +6322,19 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+function getAppIcon() {
+  const iconPath = getAppIconPath()
+  if (!iconPath) {
+    return undefined
+  }
+  try {
+    const img = nativeImage.createFromPath(iconPath)
+    return img.isEmpty() ? iconPath : img
+  } catch {
+    return iconPath
+  }
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -11270,7 +11290,8 @@ function focusWindow(win) {
 }
 
 function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?: boolean } = {}) {
-  const icon = getAppIconPath()
+  const appIcon = getAppIcon()
+  const icon = typeof appIcon === 'string' ? appIcon : getAppIconPath()
 
   const win = new BrowserWindow({
     width: SESSION_WINDOW_MIN_WIDTH,
@@ -11282,7 +11303,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     ...chatWindowSurfaceOptions(),
-    icon,
+    icon: (appIcon && typeof appIcon !== 'string') ? appIcon : icon,
     // Don't show until the renderer's first themed paint is ready. macOS
     // `vibrancy` ignores `backgroundColor` and paints a translucent OS
     // material (which follows the OS appearance, not the app theme), so a
@@ -11292,6 +11313,10 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     show: false,
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  if (appIcon && typeof (win as any).setIcon === 'function') {
+    win.setIcon(appIcon)
+  }
 
   // Chat-surface registration: applyWindowTranslucency swaps this window's
   // backing between opaque-themed and alpha-0 when glass toggles.
@@ -11375,7 +11400,8 @@ function nextInstanceBounds() {
 // (the renderer's getConnection() joins the already-running one), and loads the
 // plain renderer URL so the full app renders.
 function createInstanceWindow() {
-  const icon = getAppIconPath()
+  const appIcon = getAppIcon()
+  const icon = typeof appIcon === 'string' ? appIcon : getAppIconPath()
 
   const win = new BrowserWindow({
     ...nextInstanceBounds(),
@@ -11386,10 +11412,14 @@ function createInstanceWindow() {
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     ...chatWindowSurfaceOptions(),
-    icon,
+    icon: (appIcon && typeof appIcon !== 'string') ? appIcon : icon,
     show: false,
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  if (appIcon && typeof (win as any).setIcon === 'function') {
+    win.setIcon(appIcon)
+  }
 
   instanceWindows.add(win)
 
@@ -12304,7 +12334,8 @@ function closeQuickEntryWindow() {
 }
 
 function createWindow() {
-  const icon = getAppIconPath()
+  const appIcon = getAppIcon()
+  const icon = typeof appIcon === 'string' ? appIcon : getAppIconPath()
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
     ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),
@@ -12321,7 +12352,7 @@ function createWindow() {
     titleBarOverlay: getTitleBarOverlayOptions(),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     ...chatWindowSurfaceOptions(),
-    icon,
+    icon: (appIcon && typeof appIcon !== 'string') ? appIcon : icon,
     // Hidden until the first themed paint so macOS `vibrancy` (which ignores
     // `backgroundColor` and follows the OS appearance) can't flash a light
     // material before the renderer paints the app theme. See createSessionWindow.
@@ -12338,6 +12369,10 @@ function createWindow() {
 
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
+
+  if (appIcon && typeof (mainWindow as any).setIcon === 'function') {
+    mainWindow.setIcon(appIcon)
+  }
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -12358,12 +12393,19 @@ function createWindow() {
     }
   }
 
-  if (savedWindowState?.isMaximized) {
-    mainWindow.maximize()
-  }
-
   const revealController = wireWindowReveal(createdMainWindow, {
+    show: () => {
+      createdMainWindow.show()
+      if (savedWindowState?.isMaximized) {
+        createdMainWindow.maximize()
+      }
+      createdMainWindow.focus()
+    },
     onRevealed: () => {
+      if (savedWindowState?.isMaximized && !createdMainWindow.isMaximized()) {
+        createdMainWindow.maximize()
+      }
+
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
       schedulePersistWindowState()

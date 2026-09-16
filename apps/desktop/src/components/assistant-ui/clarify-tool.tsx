@@ -38,7 +38,9 @@ import {
   warnDroppedChoices
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
+import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
 
 import { handleClarifySubmitShortcut } from './clarify-submit-shortcut'
@@ -49,7 +51,7 @@ interface ClarifyArgs {
   question?: string
   choices?: string[] | null
   multiSelect?: boolean
-  questions?: { question: string; choices?: string[] | null; header?: string; multiSelect?: boolean }[]
+  questions?: { question: string; choices?: string[] | null; multiSelect?: boolean }[]
 }
 
 interface ClarifyResult {
@@ -68,7 +70,7 @@ function stringField(row: Record<string, unknown>, ...keys: string[]): string | 
   }
 }
 
-export function readClarifyArgs(args: unknown): ClarifyArgs {
+function readClarifyArgs(args: unknown): ClarifyArgs {
   const row = parseMaybeObject(args)
   const rawChoices = row.choices
   const choices = normalizeChoices(rawChoices)
@@ -93,25 +95,11 @@ export function readClarifyArgs(args: unknown): ClarifyArgs {
           return null
         }
 
-        const legacyChoices = normalizeChoices(item.choices)
-
-        const richChoices = Array.isArray(item.options)
-          ? normalizeChoices(
-              item.options.map(option => {
-                const row = parseMaybeObject(option)
-                const label = stringField(row, 'label')
-
-                return label && row.recommended === true ? `${label} ${RECOMMENDED_LABEL}` : label
-              })
-            )
-          : []
-
-        const itemChoices = legacyChoices.length > 0 ? legacyChoices : richChoices
+        const itemChoices = normalizeChoices(item.choices)
 
         return {
           choices: itemChoices.length > 0 ? itemChoices : null,
-          header: stringField(item, 'header'),
-          multiSelect: (item.multi_select === true || item.multiSelect === true) && itemChoices.length > 0,
+          multiSelect: item.multi_select === true && itemChoices.length > 0,
           question: text
         }
       })
@@ -130,63 +118,35 @@ export function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
-type ClarifyResponseStatus = 'answered' | 'skipped' | 'timed_out' | 'cancelled'
-
 interface ClarifyBatchResponse {
   id?: string
   question?: string
   answer?: string | string[]
-  status: ClarifyResponseStatus
 }
 
-/** Parse batch clarify and AskUserQuestions results without losing interruption status. */
+/** Parse batch clarify tool JSON (`responses` array + optional timed_out). */
 export function readClarifyBatchResult(result: unknown): {
   responses: ClarifyBatchResponse[]
-  cancelled: boolean
   timedOut: boolean
 } {
   const row = parseMaybeObject(result)
-  const rawResponses = Array.isArray(row.responses) ? row.responses : Array.isArray(row.answers) ? row.answers : null
-  const cancelled = row.cancelled === true
-  const timedOut = row.timed_out === true
 
-  if (!rawResponses) {
-    return { cancelled, responses: [], timedOut }
+  if (!Array.isArray(row.responses)) {
+    return { responses: [], timedOut: false }
   }
 
-  const responses = rawResponses.map((entry): ClarifyBatchResponse => {
+  const responses = row.responses.map((entry): ClarifyBatchResponse => {
     const item = parseMaybeObject(entry)
-    const answer = Array.isArray(item.selected) ? item.selected : (item.user_response ?? item.answer)
-    const normalizedAnswer = Array.isArray(answer) ? answer.map(String) : typeof answer === 'string' ? answer : undefined
-
-    const hasAnswer = Array.isArray(normalizedAnswer)
-      ? normalizedAnswer.length > 0
-      : Boolean(normalizedAnswer?.trim())
-
-    const rawStatus = stringField(item, 'status')
-
-    const status: ClarifyResponseStatus =
-      rawStatus === 'answered' || rawStatus === 'skipped' || rawStatus === 'timed_out' || rawStatus === 'cancelled'
-        ? rawStatus
-        : hasAnswer
-          ? 'answered'
-          : timedOut
-            ? 'timed_out'
-            : cancelled
-              ? 'cancelled'
-              : 'skipped'
-
-    const id = stringField(item, 'id')
+    const answer = item.user_response
 
     return {
-      answer: normalizedAnswer,
-      ...(id ? { id } : {}),
-      question: stringField(item, 'question'),
-      status
+      answer: Array.isArray(answer) ? answer.map(String) : typeof answer === 'string' ? answer : undefined,
+      id: stringField(item, 'id'),
+      question: stringField(item, 'question')
     }
   })
 
-  return { cancelled, responses, timedOut }
+  return { responses, timedOut: row.timed_out === true }
 }
 
 /** Parse clarify tool JSON (`question` + `user_response`). */
@@ -276,7 +236,6 @@ function ChoiceButton({
   active = false,
   char,
   choice,
-  description,
   disabled,
   keyShortcuts,
   onClick,
@@ -286,7 +245,6 @@ function ChoiceButton({
   active?: boolean
   char: string
   choice: string
-  description?: string
   disabled?: boolean
   keyShortcuts?: string
   onClick: () => void
@@ -320,11 +278,8 @@ function ChoiceButton({
         type="button"
       >
         <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
-        <span className="grid flex-1 wrap-anywhere">
-          <span>
-            <ChoiceLabel choice={choice} />
-          </span>
-          {description ? <span className="text-[0.625rem] text-(--ui-text-tertiary)">{description}</span> : null}
+        <span className="flex-1 wrap-anywhere">
+          <ChoiceLabel choice={choice} />
         </span>
       </button>
     </Tip>
@@ -515,7 +470,7 @@ function ClarifyToolSinglePending({
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
 
         return
       }
@@ -523,22 +478,9 @@ function ClarifyToolSinglePending({
       setSubmitting(true)
 
       try {
-        // Route through the session's OWNER (tile route → hint → tagged row);
-        // legacy ambient is allowed only when it is provably the sole backend.
-        // The ambient socket follows foreground focus, so after a profile / Bot
-        // Chat switch it can point at a backend that never held this clarify —
-        // and the owner stays blocked (#91684 client half, like approval.respond).
-        await requestForOwnedSession<{ ok?: boolean }>(
-          matchingRequest.sessionId,
-          // Bound (not wrapped) so the ambient fallback keeps the exact 2-arg
-          // call shape gateway.request callers assert on.
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.respond',
-          {
-            request_id: matchingRequest.requestId,
-            answer
-          }
-        )
+        // The response frame goes back over the socket the request arrived on —
+        // the owner backend by construction (#91684's class cannot recur).
+        respondToServerRequest(matchingRequest.requestId, { answer })
         triggerHaptic('submit')
         onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
@@ -876,7 +818,7 @@ function ClarifyToolSinglePending({
 // ─── Batch (multi-question) clarify ─────────────────────────────────────────
 
 /** Settled batch card: every question with its locked (or absent) answer. */
-function ClarifyToolBatchSettled({ responses }: { responses: ClarifyBatchResponse[] }) {
+function ClarifyToolBatchSettled({ responses }: { responses: { question?: string; answer?: string | string[] }[] }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
 
@@ -885,9 +827,6 @@ function ClarifyToolBatchSettled({ responses }: { responses: ClarifyBatchRespons
       {responses.map((row, index) => {
         const answer = Array.isArray(row.answer) ? row.answer.join(', ') : (row.answer ?? '')
         const blank = !answer.trim()
-
-        const blankLabel =
-          row.status === 'timed_out' ? copy.timedOut : row.status === 'cancelled' ? copy.cancelled : copy.skipped
 
         return (
           <div className="grid gap-1" key={`${index}-${row.question ?? ''}`}>
@@ -906,7 +845,7 @@ function ClarifyToolBatchSettled({ responses }: { responses: ClarifyBatchRespons
                 )}
                 data-clarify-answer=""
               >
-                {blank ? blankLabel : answer}
+                {blank ? copy.skipped : answer}
               </p>
             </ClarifyLine>
           </div>
@@ -939,11 +878,8 @@ function BatchQuestionBlock({
   return (
     <div className="grid gap-1" data-clarify-batch-question={question.qid} data-locked={locked || undefined}>
       <div className="flex items-start gap-2">
-        <span className="grid flex-1 gap-px whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
-          {question.header ? (
-            <span className="text-[0.625rem] uppercase tracking-wide text-(--ui-text-tertiary)">{question.header}</span>
-          ) : null}
-          <span>{question.question}</span>
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+          {question.question}
         </span>
         {locked ? (
           <span className="shrink-0 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)">
@@ -958,7 +894,6 @@ function BatchQuestionBlock({
             <ChoiceButton
               char={letterFor(index)}
               choice={choice}
-              description={question.options?.[index]?.description}
               disabled={disabled}
               key={`${index}-${choice}`}
               onClick={() => onToggle(choice)}
@@ -1009,22 +944,11 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
 
   // qids only exist on the gateway request — args are a hydration-race
   // fallback for display, never answerable (no ids to respond with).
-  const questions = useMemo(() => request?.questions ?? [], [request?.questions])
+  const questions = request?.questions ?? []
   const ready = Boolean(request?.requestId) && questions.length > 0
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
-  const [nowSeconds, setNowSeconds] = useState(() => Date.now() / 1000)
-
-  useEffect(() => {
-    if (!request?.expiresAt) {
-      return
-    }
-
-    const timer = window.setInterval(() => setNowSeconds(Date.now() / 1000), 1000)
-
-    return () => window.clearInterval(timer)
-  }, [request?.expiresAt])
 
   // Reconnect replay: answers the server already locked (an earlier window's
   // partial progress) pre-stage their questions so the restored card shows
@@ -1090,11 +1014,10 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
 
   const answeredCount = questions.filter(q => stagedAnswer(q) !== null).length
   const allStaged = answeredCount === questions.length
-  const expiresIn = request?.expiresAt ? Math.max(0, Math.ceil(request.expiresAt - nowSeconds)) : null
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
+      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
 
       return
     }
@@ -1102,13 +1025,27 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     setSubmitting(true)
 
     try {
-      const answers = Object.fromEntries(questions.map(question => [question.qid, stagedAnswer(question) ?? '']))
-      await requestForOwnedSession<{ ok?: boolean }>(
-        request.sessionId,
-        gateway.request.bind(gateway) as typeof gateway.request,
-        'clarify.respond',
-        { answers, request_id: request.requestId }
-      )
+      // Sequential, not Promise.all: the LAST lock resolves the blocked
+      // server request, so every earlier lock must already be accepted when
+      // it lands — a reordered burst could complete the batch with a missing
+      // answer. `clarify.lock` is a normal RPC; it rides the session's OWNER
+      // socket (a profile / Bot Chat switch re-points ambient elsewhere).
+      for (const question of questions) {
+        const answer = stagedAnswer(question)
+
+        await requestForOwnedSession<{ remaining?: string[]; status?: string }>(
+          request.sessionId,
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'clarify.lock',
+          {
+            answer: answer ?? '',
+            question_id: question.qid,
+            request_id: request.requestId
+          }
+        )
+      }
+
+      forgetServerRequest(request.requestId)
 
       triggerHaptic('submit')
       onAnswered()
@@ -1146,27 +1083,9 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     onAnswered()
     clearClarifyRequest(request.requestId, request.sessionId)
 
-    try {
-      if (gateway) {
-        // Owner-routed like the locks above — a skip sent to the wrong backend
-        // is a silent no-op that leaves the agent waiting out its timeout.
-        const answers = Object.fromEntries(
-          questions
-            .map(question => [question.qid, stagedAnswer(question)] as const)
-            .filter((entry): entry is readonly [string, string] => entry[1] !== null)
-        )
-
-        await requestForOwnedSession(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.respond',
-          { answers, cancelled: true, request_id: request.requestId }
-        )
-      }
-    } catch {
-      // The tool times out on its own; a failed skip must never block the UI.
-    }
-  }, [gateway, onAnswered, questions, request, stagedAnswer])
+    // A response with no `answers` is the cancel-all (the plain Esc path).
+    respondToServerRequest(request.requestId, {})
+  }, [gateway, onAnswered, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -1198,7 +1117,6 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
             {copy.questionProgress(answeredCount, questions.length)}
-            {expiresIn !== null ? ` · expires in ${expiresIn}s` : ''}
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>

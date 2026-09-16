@@ -645,6 +645,7 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     conn = _sqlite_connect(path)
     try:
         conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
         with _INIT_LOCK:
             # WAL doesn't work on network filesystems; the helper falls back to
             # DELETE with one ERROR log (see hermes_state_wal._WAL_INCOMPAT_MARKERS).
@@ -678,6 +679,17 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    from agent.delegation_context import kanban_path_is_fenced
+    if kanban_path_is_fenced(path):
+        # Reads must not enter schema/backfill write transactions. Never create a
+        # missing board or migrate on a descendant's behalf; the owner initializes it.
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.text_factory = _kb._lossy_text
+        if not _schema_is_present(conn):
+            conn.close()
+            raise PermissionError("Kanban descendants require an initialized board; ask its owner to initialize it")
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Fast path: once THIS process has initialized this path, skip the
@@ -804,6 +816,7 @@ _LATER_TASK_COLUMNS = (
     # Ralph-style goal loop toggle; 0 = classic single-shot worker.
     ("goal_mode", "goal_mode INTEGER NOT NULL DEFAULT 0"),
     ("goal_max_turns", "goal_max_turns INTEGER"),
+    ("completion_contract", "completion_contract TEXT"),
     ("session_id", "session_id TEXT"),
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
@@ -821,6 +834,8 @@ _LATER_TASK_COLUMNS = (
     ("archived_at", "archived_at INTEGER"),
     ("task_kind", "task_kind TEXT NOT NULL DEFAULT 'task'"),
     ("parent_task_id", "parent_task_id TEXT"),
+    # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
+    ("worker_started_at", "worker_started_at INTEGER"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -832,6 +847,12 @@ _NOTIFY_SUB_COLUMNS = (
     # (which prefers ``user_id_alt``). NULL is inert.
     ("user_id_alt", "user_id_alt TEXT"),
     ("delivery_metadata", "delivery_metadata TEXT"),
+)
+
+_TASK_RUN_COLUMNS = (
+    # Spawn-time start fingerprint of the run's worker_pid (PID-reuse guard for the
+    # terminal-worker reaper; NULL = legacy row, never signalled).
+    ("worker_started_at", "worker_started_at INTEGER"),
 )
 
 
@@ -859,7 +880,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     # KENSEI COMBINE: last_ping_event_id (independent ping cursor) added after
     # v1 — legacy DBs get it via ADD COLUMN so notifier pings checkpoint cleanly.
-    if "last_ping_event_id" not in _column_names(conn, "kanban_notify_subs"):
+    # Guarded: the notify table is created later in the schema pass; a fresh or
+    # minimal test DB reaching this migration first must not crash on it.
+    if _table_exists(conn, "kanban_notify_subs") and "last_ping_event_id" not in _column_names(conn, "kanban_notify_subs"):
         _add_column_if_missing(conn, "kanban_notify_subs", "last_ping_event_id",
                                "INTEGER NOT NULL DEFAULT 0")
 
@@ -930,6 +953,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        run_cols = _column_names(conn, "task_runs")
+        for name, ddl in _TASK_RUN_COLUMNS:
+            if name not in run_cols:
+                _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
     # KENSEI CUSTOM (fork re-anchor): v2 epics table (JIRA-style grouping).
@@ -1074,7 +1101,7 @@ _REBUILD_SPECS = {
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
-        " worker_pid INTEGER, max_runtime_seconds INTEGER,"
+        " worker_pid INTEGER, worker_started_at INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
@@ -1217,6 +1244,17 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
+    """Filesystem path of *conn*'s main database (None for in-memory / unreadable)."""
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list") or ():
+            if name == "main":
+                return file or None
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    return None
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False, internal: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
@@ -1239,8 +1277,9 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False, internal:
         # Schema/maintenance migrations pass internal=True: they are system-internal
         # (idempotent backfills on connect), not user mutations, and must not be
         # blocked by the delegate-child guard — otherwise a delegate descendant
-        # cannot even READ a board that still needs migration.
-        _kb._assert_not_delegated_child_mutation()
+        # cannot even READ a board that still needs migration. Upstream now scopes
+        # the guard to the mutated DB via _main_db_file(conn).
+        _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
     nested = getattr(conn, "in_transaction", False)
     _lock_handle = None
     if not nested:
@@ -1323,7 +1362,4 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False, internal:
             finally:
                 _lock_handle.close()
 
-
-# Late-bound origin namespace (see module docstring); imported LAST so this
-# module is fully populated before ``kanban_db`` imports from it.
 from hermes_cli import kanban_db as _kb  # noqa: E402

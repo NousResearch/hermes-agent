@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -751,9 +752,12 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     if scheme not in {"http", "https"} or not parsed.netloc:
         return False
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
+    # Loopback readiness must not route through getproxies() (env or macOS system proxy, #110565).
+    handlers = [urllib.request.ProxyHandler({})] if is_loopback_host(parsed.hostname) else []
+    opener = urllib.request.build_opener(*handlers)
     for probe in (f"{root}/json/version", f"{root}/json"):
         try:
-            with urllib.request.urlopen(probe, timeout=timeout) as resp:
+            with opener.open(probe, timeout=timeout) as resp:
                 if 200 <= getattr(resp, "status", 200) < 300:
                     return True
         except Exception:

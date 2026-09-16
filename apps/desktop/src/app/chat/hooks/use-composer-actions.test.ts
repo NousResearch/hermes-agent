@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
 import { $connection } from '@/store/session'
 
+import { droppedFileInlineRefs } from '../composer/inline-refs'
+
 import {
   attachmentPreviewDataUrl,
   type DroppedFile,
@@ -87,9 +89,14 @@ interface StubEntry {
   isDirectory: boolean
 }
 
-function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { _pathByFile: Map<File, string> } {
+function stubTransfer(
+  entries: StubEntry[],
+  internalRaw = '',
+  uriList = ''
+): DataTransfer & { _pathByFile: Map<File, string> } {
   const files = entries.map(entry => new File(['x'], entry.path.split('/').pop() || 'f'))
-  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path]))
+  // A virtual shortcut File (browser link drag on Windows) has a name but no path.
+  const pathByFile = new Map(files.map((file, i) => [file, entries[i].path.includes('/') ? entries[i].path : '']))
 
   const items: Record<number | string, unknown> = { length: entries.length }
   entries.forEach((entry, i) => {
@@ -101,7 +108,7 @@ function stubTransfer(entries: StubEntry[], internalRaw = ''): DataTransfer & { 
   })
 
   return {
-    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : ''),
+    getData: (mime: string) => (mime === HERMES_PATHS_MIME ? internalRaw : mime === 'text/uri-list' ? uriList : ''),
     files: {
       length: files.length,
       item: (i: number) => files[i] ?? null
@@ -172,6 +179,41 @@ describe('extractDroppedFiles', () => {
     expect(inAppRefs.map(entry => entry.path)).toEqual(['/abs/src'])
     expect(inAppRefs[0]?.isDirectory).toBe(true)
     expect(osDrops.map(entry => entry.path)).toEqual(['/abs/notes.txt'])
+  })
+
+  it('turns a browser link drag into an @url chip instead of failing on the virtual .url stub', () => {
+    // Dragging a link out of a browser on Windows lands as `text/uri-list` plus a
+    // path-less `<title>.url` shortcut File. That stub used to reach the upload
+    // pipeline and toast "Could not attach agent-wiki.url".
+    const transfer = stubTransfer(
+      [{ path: 'agent-wiki.url', isDirectory: false }],
+      '',
+      'https://example.com/wiki/agent?x=1\r\n'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ path: '', url: 'https://example.com/wiki/agent?x=1' }])
+    expect(partitionDroppedFiles(result).osDrops).toEqual([])
+    expect(droppedFileInlineRefs(result, '/w')).toEqual(['@url:https://example.com/wiki/agent?x=1'])
+  })
+
+  it('keeps a path-less image dragged off a web page as an upload, not a link chip', () => {
+    const transfer = stubTransfer(
+      [{ path: 'logo.png', isDirectory: false }],
+      '',
+      'https://example.com/logo.png'
+    ) as DataTransfer & { _pathByFile: Map<File, string> }
+
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.file).toBeInstanceOf(File)
+    expect(result[0]?.url).toBeUndefined()
   })
 
   it('does not duplicate a folder that appears in both items and files', () => {

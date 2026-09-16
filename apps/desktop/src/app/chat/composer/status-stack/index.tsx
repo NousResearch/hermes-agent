@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
+import { useComposerSurfaceId } from '@/app/chat/composer/scope'
 import { AGENTS_ROUTE } from '@/app/routes'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
@@ -32,7 +33,7 @@ import {
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import {
   createTodoMutationController,
   humanTodoTarget,
@@ -47,6 +48,7 @@ import {
   currentSessionTodoSnapshot,
   setSessionTodoSnapshot
 } from '@/store/todos'
+import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
@@ -134,7 +136,13 @@ export function ComposerStatusStack({ onSubmit, queue, requestGateway, sessionId
   const previews = useSessionSlice($previewStatusBySession, sessionId)
   const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
-  const scrolledUp = useStore($threadScrolledUp)
+  const surfaceId = useComposerSurfaceId()
+  const scrollSessionId = sessionId ?? surfaceId
+
+  const scrolledUp = useStoreSelector($threadScrolledUpBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
+
   const billing = useStore($billingBlock)
   const freeTierStatus = useStore($freeTierStatus)
   const freeTierRoute = useStore($freeTierRoute)
@@ -479,7 +487,7 @@ export function ComposerStatusStack({ onSubmit, queue, requestGateway, sessionId
   // Artifact links stay visible at the bottom, nearest the composer, even when
   // the queue or background group expands.
   if (previewRows.length > 0) {
-    sections.push({ key: 'preview', node: <div className="px-1 py-0.5">{previewRows}</div> })
+    sections.push({ key: 'preview', node: <div className="status-artifacts">{previewRows}</div> })
   }
 
   // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
@@ -500,35 +508,43 @@ export function ComposerStatusStack({ onSubmit, queue, requestGateway, sessionId
   const completingTodo = todoConfirm?.status === 'completed'
 
   return (
-    <>
-      {visible && (
+    <div
+      // In flow in the dock column, directly above the composer. The dock is
+      // bottom-anchored, so this grows upward over the thread without needing
+      // to be positioned — and it shares the dock's left edge for free.
+      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
+      data-slot="composer-status-stack"
+      onPointerDownCapture={() => blurComposerInput()}
+    >
+      {/* The card paints the shared --composer-fill (rest / scrolled / focused
+          all match the composer surface by construction); on scroll we only
+          ghost the CONTENT — element opacity on the card would kill the blur.
+          Rounded top, square bottom; the bottom border is TRANSPARENT — the
+          composer surface's visible top border (which sits at a higher z) is the
+          single shared seam, so the two read as one fused capsule. */}
+      {sections.length > 0 && (
         <div
           className={cn(
             composerDockCard('top'),
             // Inset (mx-2) so the stack reads slightly narrower than the composer
             // surface below it — the original look.
-            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent'
+            'mx-2 flex min-h-0 max-h-[inherit] shrink flex-col overflow-hidden rounded-b-none border-b border-b-transparent'
           )}
         >
-          {/* The card paints the shared --composer-fill (rest / scrolled / focused
-              all match the composer surface by construction); on scroll we only
-              ghost the CONTENT — element opacity on the card would kill the blur.
-              Rounded top, square bottom; the bottom border is TRANSPARENT — the
-              composer surface's visible top border (which sits at a higher z) is the
-              single shared seam, so the two read as one fused capsule. */}
-          <div
-            className={cn(
-              composerDockCard('top'),
-              // Inset (mx-2) so the stack reads slightly narrower than the composer
-              // surface below it — the original look.
-              'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-              'transition-opacity duration-200 ease-out',
-              scrolledUp && !hasTodoRows ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
-            )}
-          >
-            {sections.map(section => (
-              <div key={section.key}>{section.node}</div>
-            ))}
+          <div className="min-h-0 overflow-y-auto overscroll-y-contain" data-slot="status-stack-scroll">
+            <div
+              className={cn(
+                'transition-opacity duration-200 ease-out',
+                scrolledUp && !hasTodoRows ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+              )}
+              data-slot="status-stack-content"
+            >
+              {sections.map(section => (
+                <div data-slot="status-stack-section" key={section.key}>
+                  {section.node}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}

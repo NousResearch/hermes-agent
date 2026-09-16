@@ -1,4 +1,4 @@
-import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
 
 export interface ActiveTool {
   context?: string
@@ -100,6 +100,8 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
+  /** Server→client request id; the answer is the response frame for it. */
+  requestId: string
   smartDenied?: boolean
 }
 
@@ -200,41 +202,16 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
   name: string
   tools: number
   transport: string
 }
 
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
-
-export interface SessionInfo {
-  agent_mode?: string
-  cwd?: string
-  fast?: boolean
-  install_warning?: string
-  lazy?: boolean
-  mcp_servers?: McpServerStatus[]
-  model: string
-  profile_name?: string
-  project?: null | ProjectInfo
-  reasoning_effort?: string
-  running?: boolean
-  release_date?: string
-  service_tier?: string
-  skills: Record<string, string[]>
-  system_prompt?: string
-  tools: Record<string, string[]>
-  update_behind?: number | null
-  update_command?: string
-  usage?: Usage
-  version?: string
-}
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
+// KENSEI CUSTOM: agent_mode is fork-only (agent-modes skill); intersect onto the generated shape.
+export type SessionInfo = SessionLiveInfo & { agent_mode?: string }
+export type { ProjectInfo }
 
 export interface SudoReq {
   requestId: string

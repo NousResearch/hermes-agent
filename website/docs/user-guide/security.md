@@ -140,6 +140,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
+The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
+
 ### User-Defined Deny Rules (`approvals.deny`)
 
 The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
@@ -265,6 +267,14 @@ command_allowlist:
 
 These patterns are loaded at startup and silently approved in all future sessions.
 
+Entries can be exact command text, a shell-style glob (`podman *`), or a
+dangerous-pattern rule key such as `script execution via heredoc` (the key shown
+in the approval prompt). Rule keys are honored on every surface, including
+unattended ones: a cron job, `hermes chat -q` run or webhook session under
+`cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
+detected rule key is in `command_allowlist`, while Tirith content-security
+findings on the same command continue to block it.
+
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to
 re-save it with `hermes config edit`. Other malformed values are ignored with
@@ -315,6 +325,13 @@ Safety rules:
   every hardline class are excluded outright. `rm -rf build/` approved 100
   times still never yields an `rm` entry.
 - Proposals already covered by your existing `command_allowlist` are skipped.
+- **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
+  URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
+  examples and the `--json` payload, using the same redactor as terminal
+  output. Masked text is never used as an allowlist pattern: a command whose
+  glob would embed a credential (`TOKEN=… git …`) is proposed under its
+  dangerous-class key instead. The session database itself still holds the
+  command as it was executed.
 
 Useful flags: `--days N` (history window, default 90), `--min-count N`
 (minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.
@@ -330,8 +347,10 @@ These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
 | Category | Examples |
 |----------|----------|
 | OS credential stores | `~/.ssh/` (keys, `authorized_keys`), `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
-| Hermes credential stores | `auth.json`, `.env`, `.anthropic_oauth.json`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root) |
-| Project secret files | `.env`, `.env.local`, `.env.production`, `.envrc` anywhere on disk |
+| Hermes secret stores | `.env`, `.anthropic_oauth.json`, `auth/google_oauth.json`, Bitwarden cache (`cache/bws_cache.json`, `cache/bws_cache.enc.json`), `vault/`, `browser-profile/`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root). Control files (`auth.json`, `config.yaml`, `webhook_subscriptions.json`) are read-denied but stay writable. |
+| Windows NT/device-namespace paths | `\??\...`, `\\.\...`, `\\?\UNC\...`, `\\?\GLOBALROOT...` — rejected for both reads and writes on every platform. On Windows, merely *resolving* such a path (e.g. `\??\UNC\host\share`) triggers outbound SMB authentication and can leak the user's NTLM hash; the prefixes also bypass normal path normalization. Ordinary extended-length local paths (`\\?\C:\...`) and plain UNC shares (`\\server\share`) are unaffected. |
+
+Project-local `.env`, `.env.local`, `.env.production` and `.envrc` files are **read-denied** anywhere on disk (the file tools refuse to read them) but remain writable: the agent can create or edit them for you, it just cannot read the values back.
 
 Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
 
@@ -368,7 +387,7 @@ Unset the variable to restore unrestricted writes (subject to the protected-path
 Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
 
 :::note Defense-in-depth, not a hard boundary
-Write guards apply to `write_file` and `patch` only. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
+Write guards apply to `write_file` and `patch` only, with one exception: the Windows NT/device-namespace row is also enforced on reads — `read_file`, `search_files`, `@file:`/`@folder:` context references and the ACP file bridge all refuse those paths on the raw string, before anything resolves them. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
 :::
 
 ## User Authorization (Gateway)
@@ -407,6 +426,8 @@ DISCORD_ALLOW_ALL_USERS=true
 GATEWAY_ALLOW_ALL_USERS=true
 ```
 
+The global allow-all can also live in `config.yaml` as `gateway.allow_all_users: true` (or top-level `allow_all_users: true`); a true value is bridged to `GATEWAY_ALLOW_ALL_USERS` at gateway startup (re-derived on every config load and restart, so flipping it back to `false` closes the gate), an explicit env var wins, and the gateway logs a warning naming `config.yaml` as the grant source. In a multi-profile gateway a secondary profile sets `GATEWAY_ALLOW_ALL_USERS` in its own `.env` (its `config.yaml` is never bridged into the process environment).
+
 :::warning
 If **no allowlists are configured** and `GATEWAY_ALLOW_ALL_USERS` is not set, **all users are denied**. The gateway logs a warning at startup:
 
@@ -439,6 +460,7 @@ whatsapp:
 
 - `pair` is the default for chat-style DM platforms. Unauthorized DMs get a pairing code reply.
 - `ignore` silently drops unauthorized DMs.
+- `decline` sends one short, polite decline ("I can only chat with my owner") instead of a pairing code, then ignores further messages from that sender for 24 hours. Customize the text with `unauthorized_dm_decline_message`.
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing on Telegram while keeping WhatsApp silent.
 

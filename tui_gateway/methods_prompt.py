@@ -438,28 +438,42 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     return None, fields
 
 
+def _storage_error_data(failure, raw) -> dict:
+    """Machine-readable error data: ``code`` lets a GUI pick a "Run doctor" / "Retry" action."""
+    from hermes_state_user_copy import storage_failure_details
+    return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
+
+
 def _persist_session_row_for_submit(rid, session):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
+            failure = describe_storage_failure(_db_error)
             error = _err(
                 rid, 5072,
-                "session storage unavailable: "
-                f"{_db_error or 'state.db could not be opened'} — the message "
-                "was not saved; repair state.db and try again")
+                f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
+                f"{failure.action} Then send your message again.",
+                data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
             return None
     except Exception as exc:
-        from hermes_state_errors import is_disk_full_error
-        if is_disk_full_error(exc):
+        failure = describe_storage_failure(exc)
+        if failure.code == "disk_full":
             error = _err(
                 rid, 5070,
-                "disk full: session storage could not be written — free some disk space and try again")
+                "Session storage could not be written, so this message was not saved: the disk is full. "
+                "Free some disk space, then send your message again.",
+                data=_storage_error_data(failure, exc))
         else:
             logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(rid, 5071, f"session storage could not be written: {exc}")
+            error = _err(
+                rid, 5071,
+                f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
+                f"{failure.action} Then send your message again.",
+                data=_storage_error_data(failure, exc))
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
@@ -539,36 +553,6 @@ def _lock_in_submit_turn(
 
 # Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
 _CLIENT_SURFACES = frozenset({"hud", "voice-live"})
-
-
-@method("prompt.optimize.preview")
-def _(rid, params: dict) -> dict:
-    """Return a structured optimisation preview for the TUI overlay."""
-    session_id = params.get("session_id") or ""
-    text = params.get("text") or ""
-    if not text:
-        return _err(rid, 4004, "text required")
-    if not session_id:
-        return _err(rid, 4001, "session_id required")
-
-    session = _sessions.get(session_id)
-    model = ""
-    provider = ""
-    if session:
-        agent = session.get("agent")
-        if agent:
-            model = getattr(agent, "model", "") or ""
-            provider = getattr(agent, "provider", "") or ""
-
-    try:
-        from hermes_plugins.prompt_optimizer import get_tui_preview
-
-        preview = get_tui_preview(session_id, text, model, provider)
-        return _ok(rid, preview)
-    except ImportError:
-        return _ok(rid, {"status": "bypass", "reason": "plugin_not_loaded"})
-    except Exception as e:
-        return _ok(rid, {"status": "bypass", "reason": f"error: {e}"})
 
 
 @method("prompt.submit")
@@ -685,422 +669,6 @@ def _(rid, params: dict) -> dict:
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
             rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
-
-def _(rid, params: dict) -> dict:
-    from hermes_cli.input_sanitize import sanitize_user_prompt_text
-    sid = params.get("session_id", "")
-    raw_text = params.get("text", "")
-    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
-    # Off-screen sends (widget intents) type the row so no client renders a bubble;
-    # whitelisted to "hidden" — this RPC must not mint kinds.
-    display_kind = "hidden" if params.get("display_kind") == "hidden" else None
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
-        return stopped
-    if params.get("interrupted"):
-        # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
-        mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    hosted_task = params.get("_hosted_task")
-    hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
-    err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
-    if err is not None:
-        return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
-    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
-    if has_truncation and isinstance(text, str):
-        # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
-    turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
-    if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
-            return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
-        if busy_response is not None:
-            return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
-    requested_rebind_ids = (
-        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
-        if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
-    if err is not None:
-        return err
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
-        if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return isolated_response
-        # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
-        # submit sends a request that is indistinguishable, field by field, from a real rewind — same
-        # method, same shape, an in-range target — and the cut it asks for is a destructive
-        # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
-        # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
-        # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
-        # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
-        # heal-stamping live history dicts that row-id resolution performs.
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s", sid,
-            isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
-    # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
-
-def _(rid, params: dict) -> dict:
-    from hermes_cli.input_sanitize import sanitize_user_prompt_text
-    sid = params.get("session_id", "")
-    raw_text = params.get("text", "")
-    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
-    # Off-screen sends (widget intents) type the row so no client renders a bubble;
-    # whitelisted to "hidden" — this RPC must not mint kinds.
-    display_kind = "hidden" if params.get("display_kind") == "hidden" else None
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
-        return stopped
-    if params.get("interrupted"):
-        # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
-        mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    hosted_task = params.get("_hosted_task")
-    hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
-    err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
-    if err is not None:
-        return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
-    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
-    if has_truncation and isinstance(text, str):
-        # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
-    turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
-    if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
-            return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
-        if busy_response is not None:
-            return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
-    requested_rebind_ids = (
-        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
-        if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
-    if err is not None:
-        return err
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
-        if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return isolated_response
-        # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
-        # submit sends a request that is indistinguishable, field by field, from a real rewind — same
-        # method, same shape, an in-range target — and the cut it asks for is a destructive
-        # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
-        # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
-        # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
-        # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
-        # heal-stamping live history dicts that row-id resolution performs.
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s", sid,
-            isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
-    # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
-
-def _(rid, params: dict) -> dict:
-    from hermes_cli.input_sanitize import sanitize_user_prompt_text
-    sid = params.get("session_id", "")
-    raw_text = params.get("text", "")
-    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
-    # Off-screen sends (widget intents) type the row so no client renders a bubble;
-    # whitelisted to "hidden" — this RPC must not mint kinds.
-    display_kind = "hidden" if params.get("display_kind") == "hidden" else None
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
-        return stopped
-    if params.get("interrupted"):
-        # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
-        mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    hosted_task = params.get("_hosted_task")
-    hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
-    err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
-    if err is not None:
-        return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
-    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
-    if has_truncation and isinstance(text, str):
-        # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
-    turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
-    if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
-            return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
-        if busy_response is not None:
-            return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
-    requested_rebind_ids = (
-        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
-        if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
-    if err is not None:
-        return err
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
-        if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return isolated_response
-        # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
-        # submit sends a request that is indistinguishable, field by field, from a real rewind — same
-        # method, same shape, an in-range target — and the cut it asks for is a destructive
-        # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
-        # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
-        # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
-        # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
-        # heal-stamping live history dicts that row-id resolution performs.
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s", sid,
-            isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
-    # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
-    return _ok(rid, {"status": "streaming", **survivor_fields})
-
-def _(rid, params: dict) -> dict:
-    from hermes_cli.input_sanitize import sanitize_user_prompt_text
-    sid = params.get("session_id", "")
-    raw_text = params.get("text", "")
-    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
-    # Off-screen sends (widget intents) type the row so no client renders a bubble;
-    # whitelisted to "hidden" — this RPC must not mint kinds.
-    display_kind = "hidden" if params.get("display_kind") == "hidden" else None
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
-        return stopped
-    if params.get("interrupted"):
-        # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
-        mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
-    hosted_task = params.get("_hosted_task")
-    hosted_terminal_callback = params.get("_hosted_terminal_callback")
-    internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
-    err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
-    if err is not None:
-        return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
-    has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
-    if has_truncation and isinstance(text, str):
-        # A rewind replays what the transcript shows: re-expand a skill invocation or
-        # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
-    turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
-    if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
-            return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")))
-        if busy_response is not None:
-            return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
-    requested_rebind_ids = (
-        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
-        if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
-    if err is not None:
-        return err
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
-        if not isolated_response.get("error"):
-            # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return isolated_response
-        # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
-        # submit sends a request that is indistinguishable, field by field, from a real rewind — same
-        # method, same shape, an in-range target — and the cut it asks for is a destructive
-        # replace_messages() the user never requested (#80763: 296 -> 52 messages, 244 durable rows gone).
-        # Only the client knows whether this submit is a rewind/edit/regenerate, so it has to say so; refuse
-        # the cut when it doesn't. Consent is checked BEFORE target resolution: an unconfirmed
-        # (leaked-state) request must refuse with 4029 without paying the durable transcript read or
-        # heal-stamping live history dicts that row-id resolution performs.
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s", sid,
-            isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
-    # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -1539,27 +1107,98 @@ def _(rid, params: dict) -> dict:
         cwd=preview_cwd, cleanup=cleanup)
 
 
-# ── late-answer RPCs for tool-driven UI cards ───────────────────────────────
-# allow_expired=True everywhere: a tool's bounded wait can expire (its _pending entry
-# popped) while the card is still visible; a late answer must not surface the raw 4009.
+# ── batch clarify locks ─────────────────────────────────────────────────────
+# A batch ``clarify`` server request is answered one question at a time: each lock is a normal RPC
+# (update-in-place, editable until every qid is locked); the LAST lock resolves the request itself.
+# A cancel-all is the plain response frame with no ``answers``.
 
 
-@method("clarify.respond")
+@method("clarify.lock")
 def _(rid, params: dict) -> dict:
-    if proxied := _respond_compute_host_clarify(rid, params):
+    request_id = str(params.get("request_id") or "")
+    question_id = str(params.get("question_id") or "")
+    if not request_id or not question_id:
+        return _err(rid, 4002, "request_id and question_id required")
+    answer = params.get("answer", "")
+    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
-    return _respond(rid, params, "answer", allow_expired=True)
+    from tui_gateway import server_requests
+    try:
+        remaining = server_requests.lock_answer(request_id, question_id, answer)
+    except ValueError as e:
+        return _err(rid, 4002, str(e))
+    if remaining is None:
+        # The wait already ended (timeout / cancel) while the card was still visible: not an error.
+        return _ok(rid, {"status": "expired"})
+    return _ok(rid, {"status": "ok", "remaining": remaining})
 
 
-_LATE_RESPOND_KEYS = {
-    "ask_user_questions.respond": "answers",  # KENSEI CUSTOM: multi-question batched prompt (agent-modes)
-    "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
-    "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
-    "vault.save_login.respond": "login", "vault.code.respond": "code"}
-for _name, _key in _LATE_RESPOND_KEYS.items():
-    method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
-del _name, _key
+@method("ask_user_questions.respond")
+def _(rid, params: dict) -> dict:
+    """KENSEI CUSTOM (agent-modes): answer a legacy multi-question batch prompt.
+
+    The primary AUQ path now rides the clarify lane (``clarify.lock`` /
+    response frames); this RPC stays for older renderers that still send
+    ``ask_user_questions.respond``. A response frame with ``answers``
+    resolves any open ``ask_user_questions`` server request; without one it
+    is a cancel-all.
+    """
+    request_id = str(params.get("request_id") or "")
+    answers = params.get("answers")
+    if not request_id:
+        return _err(rid, 4002, "request_id required")
+    from tui_gateway import server_requests
+    frame = {"jsonrpc": "2.0", "id": request_id, "result": {"answers": answers} if isinstance(answers, dict) else {}}
+    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+        return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "expired"})
+
+
+@method("request.answer")
+def _(rid, params: dict) -> dict:
+    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
+    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
+    the norm; this is the proxy for it. ``expired`` when the request already ended."""
+    request_id = str(params.get("id") or "")
+    result = params.get("result")
+    if not request_id or not isinstance(result, dict):
+        return _err(rid, 4002, "id and an object result required")
+    from tui_gateway import server_requests
+    frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
+    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+        return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "expired"})
+
+
+@method("prompt.optimize.preview")
+def _(rid, params: dict) -> dict:
+    """Return a structured optimisation preview for the TUI overlay."""
+    session_id = params.get("session_id") or ""
+    text = params.get("text") or ""
+    if not text:
+        return _err(rid, 4004, "text required")
+    if not session_id:
+        return _err(rid, 4001, "session_id required")
+
+    session = _sessions.get(session_id)
+    model = ""
+    provider = ""
+    if session:
+        agent = session.get("agent")
+        if agent:
+            model = getattr(agent, "model", "") or ""
+            provider = getattr(agent, "provider", "") or ""
+
+    try:
+        from hermes_plugins.prompt_optimizer import get_tui_preview
+
+        preview = get_tui_preview(session_id, text, model, provider)
+        return _ok(rid, preview)
+    except ImportError:
+        return _ok(rid, {"status": "bypass", "reason": "plugin_not_loaded"})
+    except Exception as e:
+        return _ok(rid, {"status": "bypass", "reason": f"error: {e}"})
 
 
 # ── approvals ───────────────────────────────────────────────────────────────

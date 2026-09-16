@@ -41,6 +41,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -998,6 +999,7 @@ class SlackAdapter(BasePlatformAdapter):
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
+    _CLARIFY_MESSAGE_MAX = 1000
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -1046,6 +1048,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
+        # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
+        # card whose clarify ended without a click (timeout, reset, superseding prose).
+        self._clarify_messages: Dict[str, Tuple[str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -1904,8 +1909,14 @@ class SlackAdapter(BasePlatformAdapter):
     def scope_id_for_chat(self, chat_id: str) -> Optional[str]:
         """Return the workspace id owning ``chat_id``.
         ``None`` for unknown channels and for channels claimed by several workspaces (dropped from
-        the map) — no scope beats a wrong one."""
+        the map) — no scope beats a wrong one. A channel unseen since boot (the map only fills from
+        inbound events) still resolves when exactly one workspace is authenticated: every inbound
+        reply will carry that team_id, so a caller keying a session on it must match (#111896)."""
         team_id = chat_id and (getattr(self, "_channel_team", None) or {}).get(str(chat_id))
+        if not team_id and chat_id and str(chat_id) not in (getattr(self, "_channel_teams", None) or {}):
+            team_clients = getattr(self, "_team_clients", None) or {}
+            if len(team_clients) == 1:
+                team_id = next(iter(team_clients))
         return str(team_id) if team_id else None
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
@@ -2008,6 +2019,13 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         return self._workspace_thread_key(
             self._metadata_team_id(metadata), chat_id, str(thread_ts))
+
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Placement eligibility independent of connection/stream availability."""
+        return self._native_task_card_key(chat_id, reply_to, metadata) is not None
 
     async def send_native_task_card_progress(
         self, chat_id: str, tasks: List[Dict[str, str]], *, title: str = "Hermes is working",
@@ -2335,9 +2353,12 @@ class SlackAdapter(BasePlatformAdapter):
                     message_id, chat_id, e, exc_info=True)
                 return SendResult(
                     success=False, error=str(e), retryable=True, error_kind="transient")
+            # An HTTP 200 + ``ok=false`` reply raises too; its ``str()`` reads like a transport
+            # failure ("status: 200") while the real cause is the body's error code.
+            api_error = _slack_response_payload(getattr(e, "response", None)).get("error")
             logger.error(
-                "[Slack] Failed to edit message %s in channel %s: %s", message_id, chat_id, e,
-                exc_info=True)
+                "[Slack] Failed to edit message %s in channel %s: api_error=%s: %s",
+                message_id, chat_id, api_error or "none", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
@@ -4289,8 +4310,28 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         if await self._drop_bot_sender(event):
             return None
-        # Edits were normalized above so an @mention added by edit can wake the bot once.
-        if event.get("subtype") == "message_deleted":
+        # Edits were normalized above so an @mention added by edit can wake the bot once;
+        # the normalized event retains the edited message's own subtype.
+        # Housekeeping subtypes (joins/leaves, topic/name/purpose changes, convert_to_private/
+        # public, pins, deletions, file comments...) are not a person speaking, so they must
+        # not start a turn in free-response channels (#110778). Allowlist rather than denylist
+        # so subtypes Slack adds later are dropped instead of silently readmitted.
+        # ``file_share`` passes: a human attaching a file is a person speaking, and the
+        # ``file_shared`` fallback synthesizes exactly this subtype. ``thread_broadcast``
+        # passes: a human sharing a threaded reply into the channel carries user/text.
+        # ``me_message`` passes: ``/me`` is a person speaking.
+        # ``bot_message`` already passed allow_bots above; document_mention is an
+        # explicit app mention from a Slack canvas, not a lifecycle notification.
+        # ``file_comment`` stays in the drop set deliberately (triage decision on
+        # #110778): a comment left on a file is not the owner talking to the bot.
+        subtype = event.get("subtype")
+        if subtype not in (
+            None, "", "file_share", "thread_broadcast", "me_message",
+            "bot_message", "document_mention",
+        ):
+            logger.debug(
+                "[Slack] Dropping non-conversational message subtype=%s in channel %s",
+                subtype, channel_id)
             return None
         return event, dedup_team_id, channel_id
 
@@ -4703,7 +4744,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] %s failed: %s", label, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
-    _EA_HEADER = ":warning: *Command Approval Required*\n"
+    _EA_HEADER = f":warning: *{EA_HEADER_TEXT}*\n"
     _EA_CODE_OPEN = "```"
     _EA_CODE_CLOSE = "```\n"
     _EA_SMART_DENY_LINE = "\n*Smart DENY:* owner override applies to this one operation only."
@@ -4715,7 +4756,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # execute_code approvals embed the whole script, so budget the preview against the cap.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0))
         return max(0, self._EA_SECTION_CAP - fixed)
 
@@ -5193,10 +5234,16 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Bare-ts key (not workspace-scoped) so the action handler's atomic-pop guard
         # can reject double-clicks (mirrors _approval_resolved).
-        return await self._send_interactive_prompt(
+        result = await self._send_interactive_prompt(
             chat_id, metadata, _build, "send_clarify",
             resolved=self._clarify_resolved, resolved_max=self._CLARIFY_RESOLVED_MAX,
             team_scoped_key=False, sanitize=False)
+        if result.success and result.message_id:
+            question_text, _blocks = _build()
+            response_channel = str((result.raw_response or {}).get("channel") or chat_id)
+            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
+            self._trim_oldest_dict_entries(self._clarify_messages, self._CLARIFY_MESSAGE_MAX)
+        return result
 
     def _is_interactive_user_authorized(
         self, user_id: str, *, channel_id: str = "", user_name: Optional[str] = None,
@@ -5398,6 +5445,22 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, msg_ts, question_text, decision_text, "Clarification", "clarify", sanitize=False
         )
 
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Rewrite a still-live clarify card into a terminal, button-less state.
+
+        The gateway calls this whenever it ends a clarify without a button click — the wait
+        timed out, the session was reset, or unmatched free prose superseded the prompt — so
+        the card stops advertising an answer path the released clarify can no longer accept.
+        Keyed by clarify_id, so a late call cannot touch a newer prompt; no-op once resolved.
+        """
+        target = self._clarify_messages.pop(clarify_id, None)
+        if target is None:
+            return
+        channel_id, msg_ts, question_text = target
+        # A late action handler must be a no-op while the best-effort chat.update is in flight.
+        self._clarify_resolved[msg_ts] = True
+        await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
+
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
@@ -5419,8 +5482,11 @@ class SlackAdapter(BasePlatformAdapter):
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
                 # Entry evicted/gateway restarted — a typed answer would go nowhere.
+                self._clarify_messages.pop(clarify_id, None)
                 await self._update_clarify_message(channel_id, msg_ts, original_text, expired_text)
                 return
+            # Not terminal: the clarify stays pending for typed text, so keep the card entry —
+            # the gateway still has to retire it on timeout / reset / typed answer.
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text, f"✏️ Awaiting typed answer from {user_name}…")
             return
@@ -5429,6 +5495,8 @@ class SlackAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             logger.warning("[Slack] Invalid clarify choice token: %s", token)
             return
+        # A choice click is terminal either way (✅ or expired): the card no longer needs retiring.
+        self._clarify_messages.pop(clarify_id, None)
         # Canonical choice text from the entry; positional fallback on timeout/reset race.
         resolved_text: Optional[str] = None
         try:

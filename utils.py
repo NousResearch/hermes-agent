@@ -35,6 +35,18 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def file_signature(st: os.stat_result) -> "tuple[int, int, int, int]":
+    """Change-detection key for a stat result: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
+
+    mtime + size alone miss a replacement that preserves both (``cp -p``, ``rsync -t``, a tar
+    restore, a script pinning the timestamp with ``os.utime``). The inode changes on an atomic
+    replace and ctime cannot be backdated from user space, so the pair catches those writers.
+    On Windows ``st_ino`` may be 0 and ``st_ctime_ns`` is the creation time — both stable across
+    an in-place rewrite, so the key degrades to mtime + size there rather than misfiring.
+    """
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
+
+
 def _preserve_file_mode(path: Path) -> "int | None":
     """Permission bits of *path* if it exists, else ``None``."""
     try:
@@ -228,7 +240,12 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     also fsyncs the parent so the rename itself is durable. The temp file is removed on any
     failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # A profile delete leaves a tombstone beside its removed home.  Background
+    # writers may retain that home in a context variable, so a plain mkdir here
+    # would resurrect the profile before the write can fail.
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -319,7 +336,7 @@ def read_json_or_empty(path: Union[str, Path]) -> dict:
     (memory-provider ``save_config``), so a corrupt sidecar degrades to defaults instead of
     taking the provider down."""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))  # utf-8-sig: a Windows-editor BOM must not wipe the config
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -411,7 +428,9 @@ def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: A
     from hermes_cli.config import _greedy_literal_match, _split_key_path
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     yaml_rt, config = _roundtrip_load(path)
     current = config
     keys = _split_key_path(key_path)
@@ -455,7 +474,9 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+
+    mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 

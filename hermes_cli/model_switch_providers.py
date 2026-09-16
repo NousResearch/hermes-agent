@@ -739,10 +739,12 @@ class _PickerBuild:
 
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
-    from hermes_cli.model_switch import _declared_model_ids
+    from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
-        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
+        # Per-profile scope, never raw os.environ: a secondary profile's picker otherwise listed the
+        # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
+        if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -764,7 +766,8 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
     if overlay.auth_type == "aws_sdk":
         has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
     else:
-        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
+        from hermes_cli.model_switch import _scoped_key_env
+        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
     # External-process providers (copilot-acp) hold no key/token/pool entry by design — the
     # spawned ACP subprocess brings its own auth. "Configured" means the executable resolves.
     # "Configured" means the executable resolves, which is exactly what get_auth_status() reports for them;

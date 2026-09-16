@@ -299,31 +299,66 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
     return _BodyCapTransport(inner_transport)
 
 
+# Node budget for ``_iter_exception_nodes`` (the visited set breaks cycles; this bounds acyclic blow-ups).
+# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
+_EXC_TRAVERSAL_MAX_NODES = 10_000
+
+
 def _exc_children(exc: BaseException) -> List[BaseException]:
-    """Sub-exceptions of a group, else ``__cause__``/``__context__`` when they are exceptions."""
-    nested = getattr(exc, "exceptions", None)
-    return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
+    """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
+    group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
+    skipped."""
+    nested = getattr(exc, "exceptions", None) or ()
+    return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
+
+
+def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+    """Pre-order, left-to-right walk of an exception tree/chain, each node once. ``__cause__``/``__context__``
+    can point back at an ancestor (a raised-and-caught pair does this routinely, e.g. the same OAuth error
+    raised on the Streamable-HTTP attempt and again on the SSE fallback), so a naive recursive walk dies with
+    RecursionError and hides the real connect error; the visited set breaks cycles, the budget bounds acyclic
+    blow-ups."""
+    stack = [exc]
+    seen: set[int] = set()
+    ordered: List[BaseException] = []
+    while stack and len(ordered) < _EXC_TRAVERSAL_MAX_NODES:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        ordered.append(current)
+        stack.extend(reversed(_exc_children(current)))
+    return ordered
 
 
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
-            if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
-            if match:
-                return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
+    nodes = _iter_exception_nodes(exc)
 
-    def _flatten_messages(current: BaseException) -> List[str]:
-        # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+    def _find_missing() -> Optional[str]:
+        for current in nodes:
+            if isinstance(current, FileNotFoundError):
+                if getattr(current, "filename", None):
+                    return str(current.filename)
+                match = re.search(r"No such file or directory: '([^']+)'", str(current))
+                if match:
+                    return match.group(1)
+        return None
+
+    def _flatten_messages() -> List[str]:
+        messages: List[str] = []
+        for current in nodes:
+            # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
+            text = "" if getattr(current, "exceptions", None) else str(current).strip()
+            if text:
+                messages.append(text)
+            elif not _exc_children(current):
+                messages.append(current.__class__.__name__)
+        return messages or [exc.__class__.__name__]
+
+    missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
@@ -378,34 +413,20 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "unknown session", "session terminated", "closedresourceerror", "closed resource",
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
-# Node budget for ``_is_session_expired_error`` (the visited set breaks cycles; this bounds acyclic blow-ups).
-# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
-_EXC_TRAVERSAL_MAX_NODES = 10_000
-
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """True if ``exc`` looks like a transport session expiry (Streamable-HTTP servers GC session state on idle TTL /
     restart / pod rotation while the OAuth token stays valid) — the fix is a transport reconnect, not an OAuth
-    refresh. Iterative walk over ``exceptions`` / ``__cause__`` / ``__context__`` with a visited set AND a node
-    budget; every reachable node is inspected so an InterruptedError anywhere overrides transport markers, and the
-    chain walk matters because SDK wrappers raise a generic RuntimeError *from* a message-less ClosedResourceError."""
+    refresh. Every node ``_iter_exception_nodes`` reaches is inspected so an InterruptedError anywhere overrides
+    transport markers; the chain walk matters because SDK wrappers raise a generic RuntimeError *from* a
+    message-less ClosedResourceError."""
     # AnyIO stream exceptions are often message-less, so type checks complement marker matching.
     transport_error_types = tuple(_optional_types("anyio", "BrokenResourceError", "ClosedResourceError", "EndOfStream"))
-    stack: "list[BaseException | None]" = [exc]
-    seen: set[int] = set()
     found = False
-    budget = _EXC_TRAVERSAL_MAX_NODES
-    while stack and budget > 0:
-        current = stack.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        budget -= 1
+    for current in _iter_exception_nodes(exc):
         if isinstance(current, InterruptedError):
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()
         found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
-        stack.extend((*getattr(current, "exceptions", ()), getattr(current, "__cause__", None),
-                      getattr(current, "__context__", None)))
     return found

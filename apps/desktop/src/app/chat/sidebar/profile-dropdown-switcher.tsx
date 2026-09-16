@@ -44,8 +44,8 @@ import { runImportProfileFlow } from '@/store/profile-share'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-import { ConnectionGlyph } from './connection-glyph'
-import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
+import { ConnectionGlyph, GatewayConditionDot } from './connection-glyph'
+import { buildRestGroups, type FleetAgent, fleetGatewayCondition, fleetRouteKey } from './fleet-rail'
 import { useFleetRoster } from './use-fleet-roster'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -200,7 +200,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
               <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
                 <ConnectionGlyph connection={group} />
                 <span className="truncate">{group.label}</span>
-                {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
+                <GatewayConditionDot condition={fleetGatewayCondition(group)} />
               </DropdownMenuLabel>
               {[group.defaultAgent, ...group.named].map(agent => (
                 <DropdownMenuItem

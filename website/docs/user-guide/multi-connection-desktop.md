@@ -226,10 +226,14 @@ that live on one gateway.
   **Rename**, **Edit SOUL.md** and **Delete**, all executed on the square's
   own gateway; the delete confirmation names the machine.
 - A gateway the last enumeration could not reach keeps its squares, marked
-  with an amber dot on its glyph — a sleeping box is still yours. Two
-  registrations of one backend collapse to a single group. Past thirteen
-  squares across the fleet, the strip condenses into one menu sectioned by
-  gateway.
+  with an **amber** dot on its glyph — a sleeping box is still yours. A gateway
+  the app deliberately did not dial gets a **muted** dot and reads *not
+  connected — click to connect* instead: an SSH connection before its first use,
+  and **This device** while a remote gateway is Primary (enumerating it would
+  start a local backend you never asked for). Clicking any of its squares
+  connects it. Two registrations of one backend collapse to a single group.
+  Past thirteen squares across the fleet, the strip condenses into one menu
+  sectioned by gateway.
 - The selected gateway survives a quit and relaunch only when **Settings →
   Gateways → At startup, return to Sessions on the last-used gateway** is on.
   The preference and gateway id live in the app's user-data registry, so
@@ -352,6 +356,10 @@ multi-gateway roster is the reference consumer.
 - **A remote gateway is missing from the roster** — its backend is down or
   unreachable; the roster lists it under gateways with the error. SSH connections
   show *connect-on-demand* until first use — that's by design, not a failure.
+- **A gateway reads "not connected — click to connect"** — nothing is wrong with
+  it; the app has not dialed it yet and will when you click one of its squares.
+  **This device** shows this whenever a remote gateway is Primary. An actual
+  failure reads *unreachable* and carries an amber dot instead.
 - **"Update Hermes Desktop to chat with agents on other connections"** — the
   app predates the multi-connection stack; update the desktop app itself.
 - **Duplicate device names** — not possible; names are enforced unique at

@@ -2360,6 +2360,7 @@ export const en: Translations = {
     fleet: {
       allOnGateway: 'All profiles on this gateway',
       gateway: gateway => `Profiles on ${gateway}`,
+      gatewayOnDemand: gateway => `${gateway} · not connected — click to connect`,
       gatewayUnreachable: gateway => `${gateway} · unreachable`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `Switch to ${name} on ${gateway}`,

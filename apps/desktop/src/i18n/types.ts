@@ -2037,6 +2037,7 @@ export interface Translations {
     fleet: {
       allOnGateway: string
       gateway: (gateway: string) => string
+      gatewayOnDemand: (gateway: string) => string
       gatewayUnreachable: (gateway: string) => string
       onGateway: (name: string, gateway: string) => string
       switchTo: (name: string, gateway: string) => string

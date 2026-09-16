@@ -457,6 +457,50 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
 
 # ── Dispatch: hybrid batch-prefetch path ──────────────────────────────────
 
+
+def test_luxtts_barge_in_does_not_generate_queued_sentences(monkeypatch):
+    """A stopped LuxTTS turn must not advance synthesis queued behind the active sentence."""
+    from tools.tts_tool_speaker import _StreamerPlayback
+
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_done = threading.Event()
+    generated: list[str] = []
+
+    def _generate(text, _config):
+        generated.append(text)
+        if len(generated) == 1:
+            first_started.set()
+            assert release_first.wait(timeout=5.0)
+        return [0.0]
+
+    streamer = object.__new__(ts.LuxTTSStreamer)
+    streamer.tts_config = {}
+    streamer.section = {}
+    stop = threading.Event()
+    monkeypatch.setattr("tools.tts_tool_local._generate_luxtts_waveform", _generate)
+    monkeypatch.setattr(_StreamerPlayback, "_open_output_stream", lambda _self: None)
+    monkeypatch.setattr(_StreamerPlayback, "_playback_worker", lambda _self: None)
+    playback = _StreamerPlayback(streamer, stop)
+
+    playback.speak("First sentence.")
+    assert first_started.wait(timeout=5.0)
+
+    def _queue_second():
+        playback.speak("Second sentence.")
+        second_done.set()
+
+    queued = threading.Thread(target=_queue_second)
+    queued.start()
+    stop.set()
+    release_first.set()
+    assert second_done.wait(timeout=5.0)
+    queued.join(timeout=5.0)
+    playback.finish()
+
+    assert generated == ["First sentence."]
+
+
 @pytest.mark.skipif(
     sys.platform == "darwin",
     reason="macOS deliberately skips the sounddevice OutputStream path (PR #62601)",

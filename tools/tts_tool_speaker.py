@@ -129,10 +129,12 @@ class _SyncSentencePipeline:
 class _StreamerPlayback:
     """Prefetch + FIFO playback for a chunked :class:`StreamingTTSProvider`.
 
-    ``speak(text)`` starts ``streamer.stream()`` immediately on a prefetch thread (at most 3 in
-    flight) buffering into a bounded per-sentence queue; one playback worker drains those in order,
-    so sentence N+1 arrives while N plays. Output is a PortAudio stream when one opened, else temp
-    WAV files; a failing write is retried on a reinitialized stream up to ``_MAX_REINIT`` times."""
+    ``speak(text)`` starts ``streamer.stream()`` immediately on a bounded set of prefetch threads,
+    buffering into a bounded per-sentence queue; one playback worker drains those in order, so
+    sentence N+1 arrives while N plays. Providers choose their safe concurrency (chunked remote
+    APIs default to 3; full-waveform local models may use 1). Output is a PortAudio stream when one
+    opened, else temp WAV files; a failing write is retried on a reinitialized stream up to
+    ``_MAX_REINIT`` times."""
 
     _MAX_REINIT = 3
     _CHUNK_QUEUE_MAX = 64
@@ -142,7 +144,7 @@ class _StreamerPlayback:
         self.output_stream = self._open_output_stream()
         self._audio_queue: "queue.Queue[Optional[queue.Queue[Optional[bytes]]]]" = queue.Queue()
         self._prefetch_threads: List[threading.Thread] = []
-        self._prefetch_sem = threading.Semaphore(3)
+        self._prefetch_sem = threading.Semaphore(max(1, int(streamer.prefetch_concurrency)))
         self._worker = threading.Thread(target=self._playback_worker, daemon=True)
         self._worker.start()
 
@@ -177,12 +179,20 @@ class _StreamerPlayback:
 
     def speak(self, text: str) -> None:
         """Start ``streamer.stream(text)`` and prefetch its chunks immediately."""
+        while not self.stop_event.is_set():
+            if self._prefetch_sem.acquire(timeout=0.1):
+                break
+        else:
+            return
+        if self.stop_event.is_set():
+            self._prefetch_sem.release()
+            return
         try:
             audio_iter = self.streamer.stream(text)
         except Exception as exc:
             logger.warning("Streaming TTS synthesis failed: %s", exc)
+            self._prefetch_sem.release()
             return
-        self._prefetch_sem.acquire()
         chunk_queue: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=self._CHUNK_QUEUE_MAX)
         self._audio_queue.put(chunk_queue)
         self._prefetch_threads.append(threading.Thread(
@@ -191,15 +201,32 @@ class _StreamerPlayback:
 
     def _consume_to_queue(self, audio_iter: Iterator[bytes], chunk_queue: "queue.Queue[Optional[bytes]]") -> None:
         try:
-            for chunk in audio_iter:
-                if self.stop_event.is_set():
-                    logger.info("TTS CUT: prefetch cancelled (stop_event set mid-sentence) — partial audio only")
+            iterator = iter(audio_iter)
+            while not self.stop_event.is_set():
+                try:
+                    chunk = next(iterator)
+                except StopIteration:
                     break
-                chunk_queue.put(chunk, timeout=30.0)
+                if self.stop_event.is_set():
+                    break
+                while not self.stop_event.is_set():
+                    try:
+                        chunk_queue.put(chunk, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+            if self.stop_event.is_set():
+                logger.info("TTS CUT: prefetch cancelled (stop_event set mid-sentence) — partial audio only")
         except Exception as exc:
             logger.warning("TTS CUT: streaming TTS prefetch failed mid-sentence (partial audio only): %s", exc)
         finally:
-            chunk_queue.put(None)  # sentinel: no more chunks
+            if self.stop_event.is_set():
+                with contextlib.suppress(queue.Empty):
+                    while True:
+                        chunk_queue.get_nowait()
+                chunk_queue.put_nowait(None)
+            else:
+                chunk_queue.put(None)  # sentinel: no more chunks
             self._prefetch_sem.release()
 
     def _play_sentence_via_tempfile(self, chunk_queue) -> None:

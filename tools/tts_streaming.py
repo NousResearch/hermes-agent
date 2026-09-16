@@ -102,6 +102,7 @@ class StreamingTTSProvider(ABC):
     sample_rate: int = 24000
     channels: int = 1
     sample_width: int = 2  # bytes/sample (int16)
+    prefetch_concurrency: int = 3
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -175,6 +176,9 @@ class LuxTTSStreamer(StreamingTTSProvider):
     """Sentence-level LuxTTS: complete 48 kHz waveform per sentence, then bounded PCM chunks."""
 
     sample_rate = 48000
+    # LuxTTS generates a complete waveform and serializes access to one shared model.
+    # Keep only the sentence being synthesized in flight so barge-in can discard the rest.
+    prefetch_concurrency = 1
 
     @staticmethod
     def available() -> bool:

@@ -39,10 +39,14 @@ _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 _CLONE_ALL_STRIP: list[str] = [
     "gateway.pid", "gateway_state.json", "processes.json",
     # Bot Desktop runtime identity: pid + create_time of the SOURCE's launcher, its DISPLAY/XAUTHORITY and
-    # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. The persistent
-    # browser profile beside them is user data and stays.
+    # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. Browser user data
+    # stays, but Chromium's process markers must not let the clone attach to the source's live browser.
     "bot-desktop/launcher.pid", "bot-desktop/env", "bot-desktop/rfb.sock",
     "bot-desktop/lease.json", "bot-desktop/lease.lock",
+    "bot-desktop/browser-profile/DevToolsActivePort",
+    "bot-desktop/browser-profile/SingletonLock",
+    "bot-desktop/browser-profile/SingletonCookie",
+    "bot-desktop/browser-profile/SingletonSocket",
 ]
 
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile

@@ -9,6 +9,7 @@ import json
 import io
 import os
 import shutil
+import socket
 import sys
 import tarfile
 import types
@@ -216,24 +217,53 @@ class TestCreateProfile:
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
 
-    def test_clone_all_does_not_inherit_the_source_screens_identity(self, profile_env):
-        """launcher.pid / env / lease name the SOURCE's live X server; a clone that inherits them believes it
-        owns that screen and `screen stop` on the clone kills the source's desktop. The browser profile
-        beside them is user data (logins) and must come along."""
+    def test_clone_all_does_not_inherit_the_source_screen_or_browser_process_artifacts(self, profile_env):
+        """A clone keeps browser data, never the source's screen or Chromium runtime files."""
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test")
         bd = default_home / "bot-desktop"
-        (bd / "browser-profile" / "Default").mkdir(parents=True)
-        (bd / "browser-profile" / "Default" / "Cookies").write_text("jar")
+        browser_profile = bd / "browser-profile"
+        (browser_profile / "Default").mkdir(parents=True)
+        (browser_profile / "Default" / "Cookies").write_text("jar")
         (bd / "launcher.pid").write_text("4242 1.5")
         (bd / "env").write_text("DISPLAY=:21\nXAUTHORITY=/x\n")
         (bd / "lease.json").write_text(json.dumps({"holder": "human", "viewer_id": "v", "epoch": 3}))
+        process_markers = ("DevToolsActivePort", "SingletonLock", "SingletonCookie", "SingletonSocket")
+        for process_marker in process_markers:
+            (browser_profile / process_marker).write_text("source-process")
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
 
         for runtime_file in ("launcher.pid", "env", "lease.json"):
             assert not (profile_dir / "bot-desktop" / runtime_file).exists(), runtime_file
-        assert (profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies").read_text() == "jar"
+        for process_marker in process_markers:
+            assert not (cloned_browser / process_marker).exists(), process_marker
+        assert (cloned_browser / "Default" / "Cookies").read_text() == "jar"
+
+    @pytest.mark.linux_only
+    def test_clone_all_does_not_attach_to_the_source_profiles_live_browser(self, profile_env):
+        """Copied Chromium markers must not route the clone through the source profile's CDP port."""
+        from tools.bot_desktop.browser import running_instance_cdp_port
+
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        browser_profile = default_home / "bot-desktop" / "browser-profile"
+        browser_profile.mkdir(parents=True)
+
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            (browser_profile / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/source\n")
+            (browser_profile / "SingletonLock").symlink_to(f"host-{os.getpid()}")
+            assert running_instance_cdp_port(str(browser_profile)) == port
+
+            profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+            cloned_browser = profile_dir / "bot-desktop" / "browser-profile"
+
+            assert running_instance_cdp_port(str(cloned_browser)) is None
+            assert running_instance_cdp_port(str(browser_profile)) == port
 
 
 

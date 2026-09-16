@@ -851,6 +851,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries, model = 1, api_kwargs.get("model")
+    attempt_started_at = [time.time()]
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
     # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
@@ -873,11 +874,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         return lambda value: fn(value) if _request_is_current() else None
 
     def _on_text_delta(text: str) -> None:
+        if getattr(agent, "_last_api_first_chunk_at", None) is None:
+            _now = time.time()
+            agent._last_api_first_chunk_at = _now
+            agent._last_api_ttft = max(0.0, _now - attempt_started_at[0])
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
     def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
         now = time.time()
+        if getattr(agent, "_last_api_first_chunk_at", None) is None:
+            agent._last_api_first_chunk_at = now
+            agent._last_api_ttft = max(0.0, now - attempt_started_at[0])
         has_progress = _codex_event_has_content(event)
         if watchdog_state is not None:
             with watchdog_state.lock:
@@ -958,6 +966,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
     for attempt in range(max_stream_retries + 1):
+        attempt_started_at[0] = time.time()
         if not _request_is_current():
             raise TimeoutError("Codex Responses stream request retired before retry")
         if agent._interrupt_requested:

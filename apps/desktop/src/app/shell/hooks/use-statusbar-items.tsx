@@ -26,11 +26,19 @@ import {
   Hash,
   Layers3,
   Loader2,
+  Stopwatch,
   Terminal,
   Zap
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import {
+  cacheHitLabel,
+  contextBarLabel,
+  LiveDuration,
+  timeToFirstTokenLabel,
+  tokensPerSecondLabel,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -302,6 +310,7 @@ export function useStatusbarItems({
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
+  const timeToFirstToken = timeToFirstTokenLabel(currentUsage)
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
@@ -654,6 +663,14 @@ export function useStatusbarItems({
         label: tokensPerSecond || '—',
         title: copy.tokensPerSecondTitle,
         toggleLabel: copy.toggleTokensPerSecond,
+        variant: 'text'
+      },
+      {
+        icon: <Stopwatch className="size-3" />,
+        id: 'time-to-first-token',
+        label: timeToFirstToken || '—',
+        title: copy.timeToFirstTokenTitle,
+        toggleLabel: copy.toggleTimeToFirstToken,
         variant: 'text'
       },
       {

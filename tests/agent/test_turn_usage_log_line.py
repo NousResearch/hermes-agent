@@ -64,3 +64,45 @@ def test_forensics_parser_reads_the_new_fields(tmp_path):
     assert [c["n"] for c in calls] == [3, 4]
     assert calls[0]["write"] == 28604 and calls[0]["id"] == "gen-1788636728-qMa1" and calls[0]["upstream"] == "Claude Platform on AWS"
     assert "write" not in calls[1] and "id" not in calls[1]
+
+
+def test_turn_usage_records_ttft_history(tmp_path, monkeypatch):
+    from agent import turn_usage
+    from tui_gateway import server
+    a = _agent(tmp_path, monkeypatch)
+    try:
+        # 1. Normal record with _last_api_ttft set
+        a._last_api_ttft = 0.35
+        turn_usage.record_response_usage(
+            a, SimpleNamespace(usage=_usage(0, 0, 100)),
+            messages=[{"role": "user", "content": "hi"}],
+            api_call_count=1, api_duration=1.2, compression_attempts=0, max_compression_attempts=3
+        )
+        assert list(a._api_ttft_history) == [0.35]
+        usage = server._get_usage(a)
+        assert usage["avg_ttft_s"] == 0.35
+
+        # 2. Defensive initialization if _api_ttft_history was deleted/uninitialized
+        del a._api_ttft_history
+        a._last_api_ttft = 0.52
+        turn_usage.record_response_usage(
+            a, SimpleNamespace(usage=_usage(0, 0, 100)),
+            messages=[{"role": "user", "content": "hi"}],
+            api_call_count=2, api_duration=1.0, compression_attempts=0, max_compression_attempts=3
+        )
+        assert list(a._api_ttft_history) == [0.52]
+
+        # 3. Fallback when _last_api_ttft is None but _last_api_first_chunk_at is set
+        import time
+        a._last_api_ttft = None
+        now = time.time()
+        a._last_api_first_chunk_at = now - 0.6  # 0.4s after approx_start (now - 1.0)
+        turn_usage.record_response_usage(
+            a, SimpleNamespace(usage=_usage(0, 0, 100)),
+            messages=[{"role": "user", "content": "hi"}],
+            api_call_count=3, api_duration=1.0, compression_attempts=0, max_compression_attempts=3
+        )
+        assert len(a._api_ttft_history) == 2
+        assert 0.35 < a._api_ttft_history[-1] < 0.45
+    finally:
+        a.close()

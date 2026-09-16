@@ -77,6 +77,28 @@ it('keeps concurrent profile renames isolated by connection and identity', async
   expect(migration.recoverPendingProfileRenameState('renamed', 'local')).toBe(false)
 })
 
+it('applies a completed rename broadcast from another renderer window', async () => {
+  window.localStorage.setItem('hermes.desktop.lastRoute.profile.work', '/session-1')
+  await import('./profile-rename-state')
+
+  window.dispatchEvent(
+    new StorageEvent('storage', {
+      key: 'hermes.desktop.completedProfileRename.v1:attempt-a',
+      newValue: JSON.stringify({
+        attemptId: 'attempt-a',
+        connectionId: 'local',
+        oldName: 'work',
+        newName: 'personal',
+        oldNavigationSuffix: '',
+        newNavigationSuffix: ''
+      })
+    })
+  )
+
+  expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.work')).toBeNull()
+  expect(window.localStorage.getItem('hermes.desktop.lastRoute.profile.personal')).toBe('/session-1')
+})
+
 it('re-homes every persisted session route after a profile rename', async () => {
   const oldName = 'work'
   const newName = 'hutnik-projectmanager'

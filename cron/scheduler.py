@@ -433,7 +433,9 @@ def _civic_assure_model_request_snapshot(agent):
 
 def _civic_assure_check_model_request_timeout(agent):
     """Run the single scheduler-poll deadline check for one request."""
-    if agent is None:
+    if agent is None or not isinstance(
+        getattr(agent, "_civic_assure_model_request_binding", None), dict
+    ):
         return None
     return _civic_assure_model_request_module().check_deadline(agent)
 

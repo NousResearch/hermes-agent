@@ -3,17 +3,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { $rightRailActiveTabId, selectRightRailTab } from './layout'
 import {
   $browserPages,
+  $dismissedPreviewTargets,
   $previewServerRestart,
   $previewServerRestartStatus,
   $previewTabs,
   $previewTarget,
   beginPreviewServerRestart,
+  closeArtifactPreviewTabs,
   closeBrowserPreviewMatchingLiveUrl,
   closePreviewForSource,
   closePreviewMatching,
   closeRightRail,
   closeRightRailTab,
   commitBrowserTabLocation,
+  isPreviewDismissed,
   newBrowserTab,
   noteBrowserPage,
   openPreview,
@@ -41,6 +44,7 @@ describe('preview store', () => {
     $browserPages.set({})
     $previewServerRestart.set(null)
     closeRightRail()
+    $dismissedPreviewTargets.set([])
     window.localStorage.clear()
   })
 
@@ -48,6 +52,7 @@ describe('preview store', () => {
     $browserPages.set({})
     $previewServerRestart.set(null)
     closeRightRail()
+    $dismissedPreviewTargets.set([])
     window.localStorage.clear()
   })
 
@@ -305,6 +310,57 @@ describe('preview store', () => {
     expect(closePreviewMatching('   ')).toBe(false)
     expect(closePreviewMatching('https://missing.example')).toBe(false)
     expect($previewTabs.get()).toHaveLength(1)
+  })
+
+  // Closing a tab is a user verdict that must survive replay: session reload
+  // re-delivers preview.open, and without a durable marker the tab resurrects
+  // (#92975). Both the raw source and the resolved url are remembered.
+  it('marks a closed tab dismissed by its source and url', () => {
+    openPreview(fileTarget('/tmp/test.html'))
+
+    expect(closePreviewForSource('/tmp/test.html')).toBe(true)
+    expect(isPreviewDismissed('/tmp/test.html')).toBe(true)
+    expect(isPreviewDismissed('file:///tmp/test.html')).toBe(true)
+    expect(isPreviewDismissed('/tmp/other.html')).toBe(false)
+  })
+
+  it('marks every tab dismissed when the whole rail closes', () => {
+    openPreview(fileTarget('/work/one.html'))
+    openPreview(urlTarget('http://localhost:5174'))
+
+    closeRightRail()
+
+    expect(isPreviewDismissed('/work/one.html')).toBe(true)
+    expect(isPreviewDismissed('http://localhost:5174')).toBe(true)
+  })
+
+  // Registry cleanup is a lifecycle event, not a dismissal — artifact targets
+  // are never opened by a replayed event, so they must not fill the list.
+  it('does not mark artifact tabs dismissed when their registry clears', () => {
+    openPreview(artifactTarget('session-1:dashboard'))
+
+    closeArtifactPreviewTabs()
+
+    expect($previewTabs.get()).toHaveLength(0)
+    expect(isPreviewDismissed('session-1:dashboard')).toBe(false)
+  })
+
+  it('clears the dismissal when the target is opened again by hand', () => {
+    openPreview(fileTarget('/tmp/test.html'))
+    closePreviewForSource('/tmp/test.html')
+
+    openPreview(fileTarget('/tmp/test.html'))
+
+    expect(isPreviewDismissed('/tmp/test.html')).toBe(false)
+    expect(isPreviewDismissed('file:///tmp/test.html')).toBe(false)
+    expect($previewTabs.get()).toHaveLength(1)
+  })
+
+  it('persists dismissed targets so they survive a reload', () => {
+    openPreview(fileTarget('/tmp/test.html'))
+    closePreviewForSource('/tmp/test.html')
+
+    expect(window.localStorage.getItem('hermes.desktop.dismissedPreviewTargets.v1') ?? '').toContain('/tmp/test.html')
   })
 
   it('persists file and url tabs but never artifacts, whose content is memory-only', () => {

@@ -11,6 +11,7 @@ import {
   closeDockedPreviewMatching,
   closeRightRail,
   completePreviewServerRestart,
+  isPreviewDismissed,
   openPreview,
   progressPreviewServerRestart,
   renderedHtmlTarget,
@@ -85,10 +86,12 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
         // session that is NOT visible anywhere still can't yank the pane
         // open (offer, don't hijack). Routes through the same normalizer as
         // the file browser so URLs, localhost, and file paths all resolve.
+        // A target the user closed stays closed: replay re-delivers
+        // preview.open on every session load, and user intent wins (#92975).
         const { url, label } = asRecord(event.payload)
         const target = typeof url === 'string' ? url.trim() : ''
 
-        if (target && (!event.session_id || sessionIsOnScreen(event.session_id))) {
+        if (target && !isPreviewDismissed(target) && (!event.session_id || sessionIsOnScreen(event.session_id))) {
           void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(
             async resolved => {
               if (!resolved) {

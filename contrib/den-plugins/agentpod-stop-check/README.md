@@ -1,99 +1,120 @@
 # agentpod-stop-check
 
-A **runtime stop gate** for one opted-in supervisory session: the turn cannot
-conclude *"no material change"* / *"all done"* while the project board still has
-unfinished cards that nobody is actually attending.
+A runtime stop gate for **one opted-in supervisory session on one opted-in
+project**: while the board still holds unattended unfinished work, the
+supervision turn may not end.
 
-Built for the 2026-09-16 defect: the default supervisor repeatedly returned
-"no material change" while `t_cefa1028` / `t_fd00ad81` sat on stale supervisor
-holds and `t_f7fad689` needed scoped safe work. One progressing PR worker was
-treated as whole-board coverage. Lifecycle wakes (`kanban-wake`, card
-`t_5d94b7f9`) and completion notifications already work — nothing enforced
-*whole-project reconciliation before a quiet stop*. This does.
+Not installed by default. Opt-in via `config.yaml`, inert everywhere else.
 
-## What it does
+## What actually enforces what
 
-On every non-interrupted turn of the scoped session, `transform_llm_output`
-(fired in `agent/turn_finalizer.py`) inspects the drafted answer. If it reads as
-a quiet conclusion, the plugin reconciles the **whole board** through the
-installed read-only `hermes_cli.kanban_db` interface and decides per unfinished
-card (`triage/todo/scheduled/ready/running/blocked/review`):
+| Hook | Role | Guarantee |
+|---|---|---|
+| `pre_llm_call` (observer) | records this turn's **user message** | supervision context comes from the user, never from the model's own answer |
+| `pre_verify` | **primary enforcement** — `{"action": "continue", …}` | the agent really keeps working the turn (it can call tools and act), bounded by `agent.max_verify_nudges` and a cross-process ledger |
+| `transform_llm_output` | **fallback only** | a still-quiet answer is **replaced** (never appended to) by a short blocker sized to the platform budget |
 
-| evidence | verdict |
-|---|---|
-| active run + fresh heartbeat + live worker pid + unexpired claim | attended (`progressing_executor`) |
-| typed block kind `needs_input` / `capability`, or a `STOP-CHECK-GATE:` comment | attended (human/external gate — stays gated) |
-| `STOP-CHECK-CHECKPOINT: <iso8601> wake=<mechanism>` in the future, wake is real | attended (`future_checkpoint`) |
-| claim looks live but heartbeat stale / pid dead / claim expired | **actionable** `stale_claim` |
-| last run ended, card still unfinished | **actionable** `owner_stopped` (hand back to the SAME owner) |
-| checkpoint overdue | **actionable** `overdue_checkpoint` |
-| checkpoint without a real wake path | **actionable** `checkpoint_without_wake` |
-| blocked with none of the above | **actionable** `stale_hold` / `unowned_blocker` |
-| any other idle unfinished card | **actionable** `idle_card` |
-| board read failed **or returned zero rows** | **explicit error** — never "no work" |
+On turns that edited no files — which is what a supervision sweep usually is —
+`pre_verify` only fires when the general core setting
+`agent.pre_verify_on_no_edit_turns: true` is enabled (default `false`, shipped
+behaviour unchanged for everyone else). That setting is not AgentPod-specific:
+it is the supported way for any policy hook whose subject is not the diff to
+continue a no-edit turn.
 
-Comments are never execution proof; only runs, pids, heartbeats, claims and the
-two structured markers count.
+## Evidence rules
 
-If anything is actionable, the quiet text is replaced with an explicit
-stop-check report naming each card and its concrete next step. On edit turns
-`pre_verify` additionally returns `{"action": "continue", ...}` so the agent is
-really kept going, bounded by `agent.max_verify_nudges` **and** the plugin's own
-`max_continuations` per (session, board-state).
+Attendance requires **observable, verifiable** evidence:
 
-## Integration limitation (stated, not papered over)
+* **Verified external owner** — a row in the runtime process registry
+  (`$HERMES_HOME/processes.json`) whose pid is alive **and** whose kernel start
+  time still matches the value recorded at spawn (small drift tolerated;
+  measured on macOS/psutil as a consistent 1.00s offset on live workers, so
+  exact equality would have declared running owners dead). Its **deadline**
+  (`gtimeout N` in the command, else the configured ceiling) is checked, and
+  its **completion handle** (`notify_on_complete` / watcher) is reported.
+* **Live kanban claim** — active run + live pid + fresh heartbeat + unexpired
+  claim.
+* **Verified wake** — `wake=cron:<job_id>` checked against the real job store
+  (exists, enabled, armed, fires before the deadline), `wake=process:<handle>`
+  checked against a live registry row, `wake=dispatcher` checked against the
+  card actually being dispatchable. A bare mechanism word (`wake=cron`) is
+  **not** a wake.
+* **Qualified human gate** — a `STOP-CHECK-GATE:` comment written by a
+  configured authority (never by the card's own worker), carrying `until=<ts>`
+  or younger than `max_gate_age_seconds`, and not superseded by a later
+  `STOP-CHECK-GATE-RESOLVED:`.
+* **Typed hold** (`needs_input` / `capability`) — attended while fresh; past
+  `max_hold_age_seconds` it becomes `stale_hold` and must be **requalified**.
+  Requalification means re-confirming with the human — it is never permission
+  to perform the held action.
 
-Hermes has **no supported hook that can continue a turn which made no file
-edits** — `pre_verify` only fires when `_turn_file_mutation_paths` is non-empty
-(`agent/conversation_loop.py`). For those turns this plugin is a **fail-explicit
-output gate**: the quiet conclusion cannot ship and the required next step is
-stated, but the agent is not forced to act, and the report says so in its own
-text. No message injection, no dispatch, no subprocess, no cron, no gateway
-restart is used to simulate continuation.
+Three properties are stated, never blurred:
 
-Other bounds: it never writes to the board, never spawns or kills workers,
-never bypasses a gate, and it is inert for every session except the configured
-one. A user `/stop` (interrupted turn) never reaches the hook; `/new` changes
-the session id and therefore leaves scope.
+* **Liveness is not progress.** A verified owner proves a process exists. It
+  does not prove tool calls, output, or board movement, and the text says so.
+* **Unknown is explicit.** No evidence either way (in-flight status with no
+  verifiable owner, or an alive pid whose identity will not confirm) is
+  `owner_unknown` — a bounded qualification step, never silence and never a
+  claim that the card is idle.
+* **Requested is not executed.** The gate **dispatches nothing**: no spawn, no
+  claim, no board write, no kill, no gate bypass. Every report says so.
 
-## Activation (supported, reversible) — NOT yet installed
+A dead owner is never hidden by a future checkpoint someone wrote. A comment —
+however recent, however substantive — is never execution proof.
 
-1. Copy the directory to `~/.hermes/plugins/agentpod-stop-check/`.
-2. Add config to the default profile's `config.yaml`:
+Failed or zero-row board reads are explicit errors, never "no work".
+
+## Honest limitations
+
+* `transform_llm_output` is first-non-empty-wins (`agent/turn_finalizer.py`),
+  and registration order is directory-name sort. A transform plugin sorting
+  earlier **can preempt the fallback text** — proven in `test_19`. That is
+  precisely why enforcement lives in `pre_verify`, which runs before any
+  transform and is unaffected by transform ordering; `test_19` also proves the
+  continuation still fires under that adverse ordering.
+* The continuation bound is a real cross-process ledger under `$HERMES_HOME`
+  (`test_21` proves a separate OS process is denied). It bounds
+  **continuations**, not dispatches — there are no dispatches to duplicate.
+* Precision is improved, not perfect. On a read-only copy of the live board the
+  unattended count went from 10 to 8, with both live external workers correctly
+  attended; the remaining 8 are genuinely unowned, parked, or stopped.
+
+## Configuration
 
 ```yaml
-plugins:
-  enabled: ["reply-judge", "kanban-wake", "kanban-pipeline", "agentpod-stop-check"]
+agent:
+  pre_verify_on_no_edit_turns: true   # core setting; required for no-edit sweeps
 
 agentpod_stop_check:
   enabled: true
-  board: agentpod                    # or db_path: /abs/path/kanban.db
-  session_ids: ["<supervisor session id>"]   # empty/absent = fully inert
+  board: agentpod                     # or db_path:
+  project_id: agentpod                # optional narrowing (with tenant:)
+  session_ids: ["<supervisor session id>"]
+  gate_authorities: ["den"]           # who may record a human gate
   heartbeat_stale_seconds: 900
-  max_findings: 10
+  max_gate_age_seconds: 259200
+  max_hold_age_seconds: 259200
+  max_owner_runtime_seconds: 3600
+  max_findings: 5
+  max_report_chars: 700               # platform budget for the fallback text
   max_continuations: 2
 ```
 
-3. Plugins load at gateway startup (`discover_plugins()` in `gateway/run.py`).
-   The hook is live only after the gateway hosting that chat restarts through a
-   **supported external lifecycle handoff** — a session cannot restart its own
-   gateway. Until that happens the correct status is *"installed, tested,
-   activates on next restart"*, not *"live"*.
-
-**Reversal:** remove `agentpod-stop-check` from `plugins.enabled` (or set
-`agentpod_stop_check.enabled: false`) and restart the same way. Deleting the
-directory also fully reverts; nothing else in the tree is touched.
+Scope: only the listed session, only the configured board/project. Other
+projects, profiles, boards and sessions are never read. A same-session user
+stop/topic change ("stop the board sweep, forget it for now") wins immediately;
+an unrelated question is untouched no matter how its answer is phrased.
 
 ## Tests
 
 ```bash
-~/.hermes/hermes-agent/venv/bin/python -m pytest \
-  contrib/den-plugins/agentpod-stop-check/test_stop_check.py -q
+scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py -q
+scripts/run_tests.sh tests/run_agent/test_pre_verify_no_edit_turns.py tests/agent/test_verify_hooks.py -q
 ```
 
-Ten acceptance tests drive the real discovery path, the real
-`agent.turn_finalizer.finalize_turn` (the actual `transform_llm_output` fire
-site) and the real `hermes_cli.plugins.get_pre_verify_continue_message()`
-aggregator, against isolated temp boards and tiny fixture processes the tests
-own. Test 10 is a mutation control: with the enforcement hook unregistered the
-gate must disappear, so documentation alone cannot make the suite pass.
+24 tests: the 10 acceptance scenarios plus the independent review's adversarial
+findings converted into invariants (`test_11`–`test_23`), including a real
+`AIAgent.run_conversation` run proving a no-edit turn continues into a tool call
+and then completes (`test_20`). Test 10 is a mutation control. Red-green: check
+the previous plugin revision out over this directory and re-run — 14 of these
+tests fail against it.

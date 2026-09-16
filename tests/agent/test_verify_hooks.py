@@ -51,3 +51,26 @@ class TestCodingVerifyGuidance:
     def test_opt_out_via_config(self):
         off = {"agent": {"verify_guidance": False}}
         assert verify_hooks.coding_verify_guidance(off) is None
+
+
+class TestPreVerifyOnNoEditTurns:
+    """The no-edit gate is opt-in: default off, config-driven, never env-driven."""
+
+    def test_off_by_default(self):
+        assert verify_hooks.pre_verify_on_no_edit_turns({}) is False
+        assert verify_hooks.pre_verify_on_no_edit_turns({"agent": {}}) is False
+
+    def test_reads_truthy_config(self):
+        for raw in (True, "true", "yes", 1):
+            cfg = {"agent": {"pre_verify_on_no_edit_turns": raw}}
+            assert verify_hooks.pre_verify_on_no_edit_turns(cfg) is True, raw
+
+    def test_falsey_and_garbage_stay_off(self):
+        for raw in (False, "false", "no", 0, "banana", None):
+            cfg = {"agent": {"pre_verify_on_no_edit_turns": raw}}
+            assert verify_hooks.pre_verify_on_no_edit_turns(cfg) is False, raw
+
+    def test_config_default_ships_disabled(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["agent"]["pre_verify_on_no_edit_turns"] is False

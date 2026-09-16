@@ -42,6 +42,25 @@ def max_verify_nudges(config: Optional[dict[str, Any]] = None) -> int:
         return DEFAULT_MAX_VERIFY_NUDGES
 
 
+def pre_verify_on_no_edit_turns(config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether ``pre_verify`` may also fire on turns that edited no files.
+
+    Default **false**: the gate keeps its shipped shape (edited-code turns
+    only), so no registered hook sees a new call and no turn gains a new
+    continuation path unless the user opts in with
+    ``agent.pre_verify_on_no_edit_turns: true`` in ``config.yaml``.
+
+    When enabled, the same call site fires with ``changed_paths=[]`` — same
+    payload shape, same ``agent.max_verify_nudges`` bound, same ``has_hook``
+    guard. It exists for policy hooks whose subject is not the diff (board /
+    backlog / review-state reconciliation), which previously had no supported
+    way to continue a no-edit turn.
+    """
+    return is_truthy_value(
+        _agent_cfg(config).get("pre_verify_on_no_edit_turns", False), default=False
+    )
+
+
 def coding_verify_guidance(config: Optional[dict[str, Any]] = None) -> Optional[str]:
     """Return the optional guidance appended to verification-stop nudges."""
     if not is_truthy_value(_agent_cfg(config).get("verify_guidance", True), default=True):
@@ -66,4 +85,5 @@ __all__ = [
     "DEFAULT_MAX_VERIFY_NUDGES",
     "coding_verify_guidance",
     "max_verify_nudges",
+    "pre_verify_on_no_edit_turns",
 ]

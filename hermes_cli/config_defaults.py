@@ -247,6 +247,10 @@ DEFAULT_CONFIG = {
         # Upper bound on consecutive `pre_verify` "continue" nudges in a single
         # turn, so a user/plugin hook can never trap the loop.
         "max_verify_nudges": 3,
+        # Fire the `pre_verify` gate on turns that edited no files too (payload
+        # `changed_paths=[]`). Default False = shipped behaviour (edited-code
+        # turns only); opt in for policy hooks whose subject is not the diff.
+        "pre_verify_on_no_edit_turns": False,
         # Verification closure: after the agent edits files in a code workspace,
         # do not accept a final answer until fresh verification evidence exists
         # or the agent explains why it cannot run checks. The loop is bounded

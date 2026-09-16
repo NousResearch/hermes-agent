@@ -1,21 +1,30 @@
 """agentpod-stop-check — board reconciliation used by the supervisor stop gate.
 
-Pure-ish evaluation layer: reads the kanban board through the *installed*
-``hermes_cli.kanban_db`` interface (no raw SQL lifecycle writes, read-only) and
-decides whether a supervision turn is allowed to conclude "no material change".
+Read-only evaluation layer. Reads the kanban board through the *installed*
+``hermes_cli.kanban_db`` interface and decides whether a supervision turn is
+allowed to conclude "no material change".
 
-Design constraints (from the canonical card):
+Evidence rules (each one exists because its absence produced a false verdict):
 
-* Derive ALL current unfinished cards from the actual board, not from the one
-  card the supervisor happened to look at.
-* A blocked/idle card is *attended* only with observable structured evidence:
-  a live canonical executor (active run + fresh heartbeat + live pid + unexpired
-  claim), a future checkpoint marker that names a real wake path, or a specific
-  recorded human/external gate (typed block kind, or an explicit gate marker).
-* Comments are NOT execution proof. A repeated "still working on it" comment
-  can never make a card attended.
-* A refused/empty board read is an explicit error, never "no work".
-* Bounded: findings are capped, no loops, no dispatch, no writes.
+* **Owners are processes, not prose.** Attendance needs a verified owner: a
+  kanban run whose pid is alive with a fresh heartbeat and unexpired claim, or
+  an entry in the runtime process registry whose pid AND kernel start time
+  still match (``owners.py``). Comments are never execution proof, and a recent
+  comment is never liveness.
+* **Liveness is not progress.** Verified owners are reported as *live*, with
+  that word, and never as "making progress".
+* **A dead owner cannot be hidden by a marker.** If a recorded owner is gone,
+  the card is `owner_stopped` regardless of any future checkpoint someone wrote.
+* **A wake must name a target that exists.** ``wake=cron`` as a bare word is not
+  a wake; ``wake=cron:<job_id>`` is verified against the real job store, and a
+  dispatcher wake is verified against the card actually being dispatchable.
+* **A gate must be authorised and current.** A hold written by the card's own
+  worker does not authorise a human wait; an expired or aged-out gate needs
+  requalification, not permanent immunity — and requalification never means
+  performing the gated action.
+* **Unknown is explicit, never quiet.** No evidence either way yields
+  `owner_unknown`, whose action is a bounded qualification step.
+* **A refused or empty board read is an error**, never "no work".
 """
 from __future__ import annotations
 
@@ -26,38 +35,50 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+try:  # package load (PluginManager) / direct-file load (tests)
+    from . import owners as owners_mod
+except ImportError:  # pragma: no cover - direct-file load
+    import owners as owners_mod  # type: ignore
+
 # Statuses that still owe the project an outcome.
 UNFINISHED_STATUSES = frozenset(
     {"triage", "todo", "scheduled", "ready", "running", "blocked", "review"}
 )
-# Typed block kinds that mean a real human/external gate (kanban_db.VALID_BLOCK_KINDS).
+# Typed block kinds that describe a real human/external gate.
 DEFAULT_HUMAN_GATE_KINDS = ("needs_input", "capability")
+# Statuses the dispatcher will actually pick up (kanban_db: 'scheduled' is
+# "intentionally not dispatchable").
+DISPATCHABLE_STATUSES = frozenset({"triage", "todo", "ready"})
 
-# Structured evidence markers a worker/supervisor records as a task comment.
-#   STOP-CHECK-CHECKPOINT: 2026-09-17T09:00:00Z wake=kanban-wake owner=software-engineer
-#   STOP-CHECK-GATE: user must authorise the $X spend
+#   STOP-CHECK-CHECKPOINT: 2026-09-17T09:00:00Z wake=cron:board-sweep
+#   STOP-CHECK-GATE: user must authorise the $X spend until=2026-09-20T00:00:00Z
 CHECKPOINT_RE = re.compile(
     r"STOP-CHECK-CHECKPOINT:\s*(?P<when>\S+)(?P<rest>[^\n]*)", re.IGNORECASE
 )
 GATE_RE = re.compile(r"STOP-CHECK-GATE:\s*(?P<what>[^\n]+)", re.IGNORECASE)
-WAKE_RE = re.compile(r"wake=(?P<wake>[A-Za-z0-9_.:-]+)")
-
-# Wake mechanisms that actually exist in this deployment. A checkpoint that
-# names nothing here has no real wake path and is therefore not attended.
-DEFAULT_REAL_WAKES = ("kanban-wake", "dispatcher", "cron", "event", "webhook")
+GATE_RESOLVED_RE = re.compile(r"STOP-CHECK-GATE-RESOLVED\b", re.IGNORECASE)
+WAKE_RE = re.compile(r"wake=(?P<wake>[A-Za-z0-9_.:/-]+)")
+UNTIL_RE = re.compile(r"until=(?P<until>\S+)")
 
 KIND_STALE_CLAIM = "stale_claim"
 KIND_STALE_HOLD = "stale_hold"
 KIND_OVERDUE_CHECKPOINT = "overdue_checkpoint"
-KIND_NO_WAKE = "checkpoint_without_wake"
+KIND_NO_WAKE = "unverified_wake"
 KIND_UNOWNED = "unowned_blocker"
 KIND_IDLE = "idle_card"
 KIND_OWNER_STOPPED = "owner_stopped"
+KIND_OWNER_UNKNOWN = "owner_unknown"
+KIND_OWNER_OVERDUE = "owner_overdue"
+KIND_UNQUALIFIED_GATE = "unqualified_gate"
+
+DEFAULT_MAX_GATE_AGE = 3 * 86400        # a human gate must be re-confirmed
+DEFAULT_MAX_HOLD_AGE = 3 * 86400        # a typed hold must be re-qualified
+DEFAULT_MAX_OWNER_RUNTIME = 3600        # ceiling for an unbounded external owner
 
 
 @dataclass
 class Finding:
-    """One unattended unfinished card plus the concrete continuation."""
+    """One unattended unfinished card plus the concrete next step."""
 
     task_id: str
     title: str
@@ -74,6 +95,10 @@ class Finding:
             f"    -> next: {self.next_action}"
         )
 
+    def short(self, width: int = 110) -> str:
+        line = f"- {self.task_id} {self.kind}: {self.next_action}"
+        return line if len(line) <= width else line[: width - 1].rstrip() + "…"
+
 
 @dataclass
 class Attended:
@@ -88,10 +113,12 @@ class Verdict:
     ok: bool
     error: Optional[str] = None
     board: str = ""
+    scope: str = ""
     unfinished: int = 0
     findings: list[Finding] = field(default_factory=list)
     attended: list[Attended] = field(default_factory=list)
     truncated: int = 0
+    notes: list[str] = field(default_factory=list)
 
     @property
     def quiet_allowed(self) -> bool:
@@ -104,6 +131,8 @@ class Verdict:
         return "|".join(f"{f.task_id}:{f.kind}" for f in self.findings) or "clear"
 
 
+# --------------------------------------------------------------- helpers ---
+
 def _pid_alive(pid: Optional[int]) -> bool:
     if not pid:
         return False
@@ -113,8 +142,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
     except (ProcessLookupError, ValueError):
         return False
     except PermissionError:
-        # Exists but owned by another uid.
-        return True
+        return True  # exists, owned by another uid
     except Exception:
         return False
 
@@ -136,64 +164,230 @@ def _parse_ts(raw: str) -> Optional[int]:
 
 
 @dataclass
+class _Gate:
+    what: str
+    author: str
+    written_at: int
+    until: Optional[int]
+
+
+@dataclass
+class _Checkpoint:
+    at: int
+    wake: Optional[str]
+    author: str
+    written_at: int
+
+
+@dataclass
 class _Markers:
-    checkpoint_at: Optional[int] = None
-    checkpoint_wake: Optional[str] = None
-    gate: Optional[str] = None
+    """The LATEST marker of each type, with its author and write time.
+
+    Order matters: a gate recorded before a later checkpoint (or before an
+    explicit resolution) no longer governs the card. Nothing here is trusted on
+    content alone — the author and the timestamps are part of the evidence.
+    """
+
+    gate: Optional[_Gate] = None
+    checkpoint: Optional[_Checkpoint] = None
+    gate_resolved_at: Optional[int] = None
+
+    @property
+    def checkpoint_at(self) -> Optional[int]:  # back-compat for readers/tests
+        return self.checkpoint.at if self.checkpoint else None
 
 
 def _scan_markers(comments) -> _Markers:
-    """Latest structured markers. Free-form comment prose is ignored."""
     out = _Markers()
     for c in comments or []:
         body = getattr(c, "body", "") or ""
+        author = str(getattr(c, "author", "") or "")
+        created = int(getattr(c, "created_at", 0) or 0)
         m = CHECKPOINT_RE.search(body)
         if m:
             when = _parse_ts(m.group("when"))
             if when is not None:
-                out.checkpoint_at = when
                 w = WAKE_RE.search(m.group("rest") or "")
-                out.checkpoint_wake = w.group("wake") if w else None
+                out.checkpoint = _Checkpoint(
+                    at=when,
+                    wake=w.group("wake") if w else None,
+                    author=author,
+                    written_at=created,
+                )
+        if GATE_RESOLVED_RE.search(body):
+            out.gate_resolved_at = created
+            out.gate = None
+            continue
         g = GATE_RE.search(body)
         if g:
-            out.gate = g.group("what").strip()
+            raw = g.group("what").strip()
+            until = UNTIL_RE.search(raw)
+            out.gate = _Gate(
+                what=raw,
+                author=author,
+                written_at=created,
+                until=_parse_ts(until.group("until")) if until else None,
+            )
     return out
 
+
+def _gate_authorities(cfg: dict) -> set[str]:
+    vals = cfg.get("gate_authorities") or []
+    if isinstance(vals, str):
+        vals = [vals]
+    return {str(v).strip().lower() for v in vals if str(v).strip()}
+
+
+def verify_wake(
+    wake: Optional[str],
+    *,
+    task,
+    now: int,
+    deadline: Optional[int],
+    registry: list[dict],
+    cfg: dict,
+) -> tuple[bool, str]:
+    """Does this wake name a target that actually exists? (ok, detail).
+
+    A bare mechanism word is never a wake — the target has to be resolvable.
+    """
+    if not wake:
+        return (False, "no wake recorded")
+    kind, _, target = wake.partition(":")
+    kind = kind.lower()
+
+    if kind in ("cron", "cronjob"):
+        if not target:
+            return (False, "wake=cron names no job id (bare word is not a wake)")
+        try:
+            from cron.jobs import load_jobs
+        except Exception as exc:
+            return (False, f"cron job store unavailable: {exc}")
+        try:
+            jobs = load_jobs() or []
+        except Exception as exc:
+            return (False, f"cron job store unreadable: {exc}")
+        job = next((j for j in jobs if str(j.get("id")) == target), None)
+        if job is None:
+            return (False, f"cron job '{target}' does not exist ({len(jobs)} job(s) present)")
+        if job.get("enabled") is False or job.get("paused"):
+            return (False, f"cron job '{target}' exists but is disabled/paused")
+        nxt = _parse_ts(str(job.get("next_run_at") or ""))
+        if nxt is None:
+            return (False, f"cron job '{target}' has no next run armed")
+        if nxt <= now:
+            return (False, f"cron job '{target}' next run is overdue ({now - nxt}s)")
+        if deadline is not None and nxt > deadline:
+            return (
+                False,
+                f"cron job '{target}' next run is after the checkpoint deadline",
+            )
+        return (True, f"cron job '{target}' fires in {nxt - now}s")
+
+    if kind in ("process", "proc"):
+        entry = next(
+            (e for e in registry if str(e.get("session_id") or "") == target), None
+        )
+        if entry is None:
+            return (False, f"process handle '{target}' is not in the process registry")
+        ev = owners_mod.evidence_from_entry(
+            entry,
+            default_max_runtime=int(
+                cfg.get("max_owner_runtime_seconds", DEFAULT_MAX_OWNER_RUNTIME)
+            ),
+        )
+        if not ev.usable:
+            return (False, f"process handle '{target}' is not a live verified process")
+        return (True, f"process {target} pid {ev.pid} live")
+
+    if kind in ("dispatcher", "kanban-wake", "kanban"):
+        if task.status not in DISPATCHABLE_STATUSES:
+            return (
+                False,
+                f"dispatcher wake but status '{task.status}' is not dispatchable",
+            )
+        if not task.assignee:
+            return (False, "dispatcher wake but the card has no assignee to spawn")
+        return (True, f"dispatcher can claim a '{task.status}' card for {task.assignee}")
+
+    return (False, f"wake '{wake}' names no target this deployment can verify")
+
+
+# ------------------------------------------------------------ classifier ---
 
 def _classify(
     task,
     *,
     run,
     markers: _Markers,
+    owner_evidence: list,
+    registry: list[dict],
     now: int,
     cfg: dict,
     parents_unfinished: bool,
+    last_activity_at: int = 0,
 ) -> tuple[Optional[Finding], Optional[Attended]]:
     heartbeat_stale = int(cfg.get("heartbeat_stale_seconds", 900))
     human_kinds = tuple(cfg.get("human_gate_kinds", DEFAULT_HUMAN_GATE_KINDS))
-    real_wakes = tuple(cfg.get("real_wakes", DEFAULT_REAL_WAKES))
+    max_gate_age = int(cfg.get("max_gate_age_seconds", DEFAULT_MAX_GATE_AGE))
+    max_hold_age = int(cfg.get("max_hold_age_seconds", DEFAULT_MAX_HOLD_AGE))
     owner = task.assignee
     tid = task.id
     title = (task.title or "")[:100]
 
     def find(kind, detail, action):
-        return (
-            Finding(tid, title, task.status, owner, kind, detail, action),
-            None,
-        )
+        return (Finding(tid, title, task.status, owner, kind, detail, action), None)
 
     def ok(reason, detail):
         return (None, Attended(tid, task.status, reason, detail))
 
-    # 1. A specific recorded human/external gate stays gated — never actionable.
-    if markers.gate:
-        return ok("human_gate", f"recorded gate: {markers.gate[:120]}")
-    # ``block_kind`` survives an unblock, so only trust it in the two parked
-    # statuses it actually describes.
-    if task.status in ("blocked", "scheduled") and (task.block_kind or "") in human_kinds:
-        return ok("human_gate", f"typed block kind '{task.block_kind}'")
+    # 1. A verified LIVE external owner (process registry). Liveness only —
+    #    never claimed as progress.
+    live = [e for e in owner_evidence if e.usable]
+    for ev in live:
+        late = ev.overdue_by(now)
+        if late:
+            return find(
+                KIND_OWNER_OVERDUE,
+                f"{ev.describe(now)} is past its own deadline by {late}s",
+                f"poll {ev.handle} for {tid} and decide: extend with a recorded "
+                f"deadline, or stop it and hand the card back to {owner or 'an owner'}",
+            )
+    if live:
+        ev = live[0]
+        return ok(
+            "live_external_owner",
+            f"{ev.describe(now)} — liveness, not progress",
+        )
 
-    # 2. A verifiably progressing canonical executor.
+    # 2. A recorded owner that is provably GONE beats every marker: a dead
+    #    owner cannot be hidden behind a future checkpoint someone wrote.
+    #    An owner whose pid is alive but whose identity will not confirm is a
+    #    THIRD state — unknown — and is qualified, not declared dead.
+    gone = [e for e in owner_evidence if not e.alive]
+    if gone:
+        ev = gone[0]
+        return find(
+            KIND_OWNER_STOPPED,
+            f"recorded external owner {ev.handle} pid {ev.pid} is gone (pid not "
+            f"alive); any checkpoint on this card is unbacked",
+            f"hand {tid} back to the SAME owner ({owner or 'assign one'}) with the "
+            f"last run output; do not start a second worker",
+        )
+    unconfirmed = [e for e in owner_evidence if e.alive and not e.identity_verified]
+    if unconfirmed:
+        ev = unconfirmed[0]
+        return find(
+            KIND_OWNER_UNKNOWN,
+            f"recorded owner {ev.handle} pid {ev.pid} is alive but its identity does "
+            f"not confirm (start-time mismatch or unreadable) — it may be a recycled "
+            f"pid, so this is NOT evidence of work",
+            f"qualify {tid} in one bounded step: poll the owner handle {ev.handle} (or "
+            f"ask the owner), then record a live handle, a verified wake, or the real "
+            f"blocker",
+        )
+
+    # 3. A kanban claim that is genuinely live (liveness + claim freshness).
     active = run is not None and getattr(run, "ended_at", None) is None
     if active:
         hb = getattr(run, "last_heartbeat_at", None) or getattr(run, "started_at", 0)
@@ -204,8 +398,9 @@ def _classify(
         expired = expires is not None and int(expires) < now
         if age <= heartbeat_stale and alive and not expired:
             return ok(
-                "progressing_executor",
-                f"run {run.id} pid {pid} heartbeat {age}s ago",
+                "live_executor",
+                f"run {run.id} pid {pid} alive, heartbeat {age}s ago, claim unexpired "
+                f"— liveness, not progress",
             )
         why = []
         if age > heartbeat_stale:
@@ -221,81 +416,151 @@ def _classify(
             f"({owner or 'unassigned'}); do not spawn a second worker",
         )
 
-    # 3. Owner's run ended while the card is still unfinished -> handoff.
-    #    ``blocked``/``scheduled`` are excluded: block_task/schedule_task close
-    #    the run too, and those cards are classified by their park evidence
-    #    (rules 3b-6), not as a stopped worker.
+    # 4. An authorised, current human/external gate.
+    gate = markers.gate
+    if gate:
+        authorities = _gate_authorities(cfg)
+        problems = []
+        if str(gate.author or "").strip().lower() == str(owner or "").strip().lower():
+            problems.append(
+                f"written by the card's own worker ({gate.author or 'unknown'})"
+            )
+        elif authorities and str(gate.author or "").strip().lower() not in authorities:
+            problems.append(f"author '{gate.author or 'unknown'}' is not an authority")
+        elif not authorities:
+            problems.append("no gate authority configured to authorise it")
+        if gate.until is not None and gate.until <= now:
+            problems.append(f"expired {now - gate.until}s ago")
+        elif gate.until is None and gate.written_at and now - gate.written_at > max_gate_age:
+            problems.append(f"no expiry and {int((now - gate.written_at) / 86400)}d old")
+        if problems:
+            return find(
+                KIND_UNQUALIFIED_GATE,
+                f"hold '{gate.what[:70]}' is not a qualified human gate: "
+                + "; ".join(problems),
+                f"re-confirm {tid} with the named human and record a fresh gate "
+                f"(author + until=), or record the real blocker — do NOT perform "
+                f"the gated action and do NOT bypass the restriction",
+            )
+        return ok(
+            "human_gate",
+            f"gate by {gate.author} until "
+            f"{gate.until or 'unset'}: {gate.what[:80]}",
+        )
+
+    # 5. A typed hold, bounded by age: a forgotten park must requalify, and
+    #    requalification is never permission to do the restricted thing.
+    if task.status in ("blocked", "scheduled") and (task.block_kind or "") in human_kinds:
+        parked_at = int(
+            last_activity_at
+            or getattr(task, "started_at", 0)
+            or getattr(task, "created_at", 0)
+            or 0
+        )
+        age = now - parked_at if parked_at else None
+        if age is not None and age > max_hold_age:
+            return find(
+                KIND_STALE_HOLD,
+                f"typed hold '{task.block_kind}' untouched for {int(age / 86400)}d "
+                f"— stale, not permanently exempt",
+                f"requalify {tid}: ask the named human/owner whether the hold still "
+                f"stands and record the answer. Requalifying is NOT permission to "
+                f"perform the held action",
+            )
+        return ok("human_gate", f"typed block kind '{task.block_kind}' ({age}s old)")
+
+    # 6. Owner's run ended while the card is still unfinished -> handoff.
     if (
         task.status not in ("blocked", "scheduled")
         and run is not None
         and getattr(run, "ended_at", None) is not None
     ):
         outcome = getattr(run, "outcome", None) or getattr(run, "status", "ended")
-        if not markers.checkpoint_at:
-            return find(
-                KIND_OWNER_STOPPED,
-                f"last run {run.id} ended ({outcome}) but card is still {task.status}",
-                f"hand {tid} back to the SAME owner ({owner or 'assign one'}) "
-                f"with the run summary; no duplicate worker",
-            )
+        return find(
+            KIND_OWNER_STOPPED,
+            f"last run {run.id} ended ({outcome}) but card is still {task.status}",
+            f"hand {tid} back to the SAME owner ({owner or 'assign one'}) with the "
+            f"run summary; no duplicate worker",
+        )
 
-    # 3b. ``scheduled`` is an explicit time-park that the dispatcher will NOT
-    #     pick up (kanban_db.schedule_task: "intentionally not dispatchable").
-    #     Without a recorded checkpoint+wake or a gate it is an unattended
-    #     hold, not a wait.
-    if task.status == "scheduled" and not markers.checkpoint_at:
+    # 7. Checkpoint evidence — deadline AND a wake target that resolves.
+    cp = markers.checkpoint
+    if cp:
+        if cp.at <= now:
+            return find(
+                KIND_OVERDUE_CHECKPOINT,
+                f"checkpoint overdue by {now - cp.at}s with no newer run",
+                f"diagnose {tid} now (owner process, logs, dependency); "
+                f"do not simply extend the deadline",
+            )
+        okw, detail = verify_wake(
+            cp.wake, task=task, now=now, deadline=cp.at, registry=registry, cfg=cfg
+        )
+        if not okw:
+            return find(
+                KIND_NO_WAKE,
+                f"future checkpoint is not backed by a real wake: {detail}",
+                f"attach a verifiable wake to {tid} (cron:<job_id>, process:<handle>, "
+                f"or make it dispatcher-claimable) or act on it now",
+            )
+        return ok("future_checkpoint", f"in {cp.at - now}s via {cp.wake} ({detail})")
+
+    # 8. 'scheduled' is an explicit park the dispatcher will not pick up.
+    if task.status == "scheduled":
         return find(
             KIND_STALE_HOLD,
             "parked in 'scheduled' (not dispatchable) with no checkpoint, "
-            "no wake and no recorded gate",
-            f"give {tid} a checkpoint with a supported wake, resume it for its "
+            "no verified wake and no qualified gate",
+            f"give {tid} a checkpoint with a verifiable wake, resume it for its "
             f"owner ({owner or 'assign one'}), or record an explicit blocker",
         )
 
-    # 4. Checkpoint evidence.
-    if markers.checkpoint_at:
-        if markers.checkpoint_at <= now:
-            return find(
-                KIND_OVERDUE_CHECKPOINT,
-                f"checkpoint {markers.checkpoint_at} is overdue by "
-                f"{now - markers.checkpoint_at}s with no newer run",
-                f"diagnose {tid} now (logs/executor/dependency); "
-                f"do not simply extend the deadline",
-            )
-        if (markers.checkpoint_wake or "") not in real_wakes:
-            return find(
-                KIND_NO_WAKE,
-                f"future checkpoint has no real wake path "
-                f"(wake={markers.checkpoint_wake!r})",
-                f"attach a supported wake (one of {', '.join(real_wakes)}) to {tid} "
-                f"or act on it now",
-            )
-        return ok(
-            "future_checkpoint",
-            f"checkpoint in {markers.checkpoint_at - now}s via {markers.checkpoint_wake}",
-        )
-
-    # 5. Dependency block behind a still-unfinished parent that is itself
-    #    covered elsewhere in this same sweep.
+    # 9. Dependency block behind a still-unfinished parent covered in this sweep.
     if task.status == "blocked" and (task.block_kind or "") == "dependency" and parents_unfinished:
         return ok("dependency", "waiting on an unfinished parent card in this sweep")
 
-    # 6. Everything else is unattended work for the supervisor.
+    # 10. No evidence either way on a card whose status claims it is in flight.
+    #     Explicit, bounded qualification — never quiet, never "idle".
+    if task.status in ("running", "review"):
+        return find(
+            KIND_OWNER_UNKNOWN,
+            f"status {task.status} with an assignee ({task.assignee or 'none'}) but no "
+            f"verifiable owner: no live kanban claim and no matching process-registry "
+            f"entry (comments are not evidence)",
+            f"qualify {tid} in one bounded step: check the owner's process handle / "
+            f"ask the owner, then record either a live handle, a verified wake, or the "
+            f"real blocker",
+        )
+
     if task.status == "blocked":
         kind = KIND_STALE_HOLD if task.block_kind else KIND_UNOWNED
         return find(
             kind,
-            f"blocked (kind={task.block_kind or 'untyped'}) with no live executor, "
-            "no future checkpoint and no recorded human gate",
+            f"blocked (kind={task.block_kind or 'untyped'}) with no live owner, "
+            "no verified wake and no qualified gate",
             f"resolve or re-dispatch {tid} on its existing card "
             f"(owner {owner or 'needs one'}), or record an explicit blocker",
         )
     return find(
         KIND_IDLE,
-        f"status {task.status} with no live executor, checkpoint or gate",
-        f"route {tid} to its owner ({owner or 'assign one'}) or record "
-        f"an explicit blocker/checkpoint",
+        f"status {task.status} with no owner, wake or gate",
+        f"route {tid} to its owner ({owner or 'assign one'}) or record an "
+        f"explicit blocker/checkpoint",
     )
+
+
+# -------------------------------------------------------------- evaluate ---
+
+def _scope_tasks(tasks, cfg) -> list:
+    """Restrict the sweep to the opted-in project. No other project is read."""
+    project_id = cfg.get("project_id")
+    tenant = cfg.get("tenant")
+    out = list(tasks)
+    if project_id is not None:
+        out = [t for t in out if (getattr(t, "project_id", None) or None) == project_id]
+    if tenant is not None:
+        out = [t for t in out if (getattr(t, "tenant", None) or None) == tenant]
+    return out
 
 
 def evaluate_board(
@@ -305,6 +570,8 @@ def evaluate_board(
     now: Optional[int] = None,
     cfg: Optional[dict] = None,
     kb: Any = None,
+    registry: Optional[list[dict]] = None,
+    registry_path: Optional[str] = None,
 ) -> Verdict:
     """Read the board and decide whether a quiet conclusion is permitted.
 
@@ -313,26 +580,49 @@ def evaluate_board(
     """
     cfg = dict(cfg or {})
     now = int(now if now is not None else time.time())
-    max_findings = int(cfg.get("max_findings", 10))
+    max_findings = int(cfg.get("max_findings", 5))
+    notes: list[str] = []
+
+    if registry is None:
+        registry, reg_err = owners_mod.load_registry(
+            registry_path or cfg.get("process_registry_path") or None
+        )
+        if reg_err:
+            # Owner evidence is unreadable: say so, and never silently downgrade
+            # a live worker to "idle" — every no-owner card becomes unknown.
+            notes.append(f"owner evidence degraded: {reg_err}")
+    scope_desc = "project_id={} tenant={}".format(
+        cfg.get("project_id", "*"), cfg.get("tenant", "*")
+    )
+
     if kb is None:
         try:
-            from hermes_cli import kanban_db as kb  # type: ignore
-        except Exception as exc:  # pragma: no cover - import guard
-            return Verdict(ok=False, error=f"kanban_db import failed: {exc}")
+            kb = kanban_db_module()
+        except Exception as exc:
+            return Verdict(
+                ok=False,
+                board=str(board or db_path or ""),
+                scope=scope_desc,
+                error=f"kanban_db import failed: {exc}",
+            )
 
     conn = None
     try:
         from pathlib import Path
 
         conn = kb.connect(Path(db_path)) if db_path else kb.connect(board=board)
-        tasks = kb.list_tasks(conn, include_archived=False)
+        tasks = kb.list_tasks(
+            conn, include_archived=False, tenant=cfg.get("tenant") or None
+        )
         if not tasks:
             return Verdict(
                 ok=False,
                 board=str(board or db_path or ""),
+                scope=scope_desc,
                 error="board read returned zero cards — treat as an unreadable "
                 "board, not as an empty backlog",
             )
+        tasks = _scope_tasks(tasks, cfg)
         unfinished = [t for t in tasks if t.status in UNFINISHED_STATUSES]
         unfinished_ids = {t.id for t in unfinished}
 
@@ -340,19 +630,41 @@ def evaluate_board(
         attended: list[Attended] = []
         for task in unfinished:
             run = kb.latest_run(conn, task.id)
-            markers = _scan_markers(kb.list_comments(conn, task.id))
+            comments = kb.list_comments(conn, task.id)
+            markers = _scan_markers(comments)
+            # Latest *structured* activity timestamp. Used only to age typed
+            # holds — never as evidence that work is happening.
+            last_activity_at = max(
+                [int(getattr(c, "created_at", 0) or 0) for c in (comments or [])]
+                + [
+                    int(getattr(run, "ended_at", 0) or 0) if run else 0,
+                    int(getattr(run, "started_at", 0) or 0) if run else 0,
+                    int(getattr(task, "started_at", 0) or 0),
+                    int(getattr(task, "created_at", 0) or 0),
+                ]
+            )
             try:
                 parents = kb.parent_ids(conn, task.id)
             except Exception:
                 parents = []
-            parents_unfinished = any(p in unfinished_ids for p in parents)
+            evidence = owners_mod.owners_for_task(
+                task.id,
+                registry or [],
+                default_max_runtime=int(
+                    cfg.get("max_owner_runtime_seconds", DEFAULT_MAX_OWNER_RUNTIME)
+                ),
+                start_time_tolerance=int(cfg.get("start_time_tolerance", 200)),
+            )
             f, a = _classify(
                 task,
                 run=run,
                 markers=markers,
+                owner_evidence=evidence,
+                registry=registry or [],
                 now=now,
                 cfg=cfg,
-                parents_unfinished=parents_unfinished,
+                parents_unfinished=any(p in unfinished_ids for p in parents),
+                last_activity_at=last_activity_at,
             )
             if f is not None:
                 findings.append(f)
@@ -362,6 +674,7 @@ def evaluate_board(
         return Verdict(
             ok=False,
             board=str(board or db_path or ""),
+            scope=scope_desc,
             error=f"board read failed: {type(exc).__name__}: {exc}",
         )
     finally:
@@ -371,52 +684,110 @@ def evaluate_board(
             except Exception:
                 pass
 
+    findings.sort(key=lambda f: (f.kind != KIND_OWNER_STOPPED, f.task_id))
     truncated = max(0, len(findings) - max_findings)
     return Verdict(
         ok=True,
         board=str(board or db_path or ""),
+        scope=scope_desc,
         unfinished=len(unfinished),
         findings=findings[:max_findings],
         attended=attended,
         truncated=truncated,
+        notes=notes,
     )
 
 
-def render_report(verdict: Verdict, *, continuation: bool = False) -> str:
+def kanban_db_module():
+    """Import hook kept separate so callers can fail explicitly."""
+    from hermes_cli import kanban_db  # type: ignore
+
+    return kanban_db
+
+
+def render_report(
+    verdict: Verdict, *, continuation: bool = False, max_chars: int = 0
+) -> str:
     """Explicit, fail-loud text. Never claims an action was taken."""
     if not verdict.ok:
-        return (
-            "SUPERVISOR STOP-CHECK ERROR — the board could not be reconciled, so "
-            "this turn may NOT conclude 'no material change' or 'done'.\n"
-            f"board: {verdict.board or '(unresolved)'}\n"
+        text = (
+            "STOP-CHECK ERROR — the board could not be reconciled, so this turn may "
+            "NOT be concluded as done or quiet.\n"
+            f"board: {_short_board(verdict.board)} | scope: {verdict.scope}\n"
             f"error: {verdict.error}\n"
-            "Required: fix/repeat the board read, then re-assess. A refused read "
-            "is not evidence of no work."
+            "Required: repeat the board read, then re-assess. A refused read is not "
+            "evidence of no work."
         )
+        return _clamp(text, max_chars)
+
     head = (
-        "SUPERVISOR STOP-CHECK — whole-board reconciliation says this turn may NOT "
-        "conclude 'no material change'.\n"
-        f"board: {verdict.board} | unfinished cards: {verdict.unfinished} | "
-        f"unattended: {len(verdict.findings) + verdict.truncated} | "
-        f"attended: {len(verdict.attended)}"
+        f"STOP-CHECK — {len(verdict.findings) + verdict.truncated} unattended of "
+        f"{verdict.unfinished} unfinished card(s) on {_short_board(verdict.board)} "
+        f"({verdict.scope}); {len(verdict.attended)} attended. This turn may not be "
+        f"concluded as done or quiet."
     )
-    body = "\n".join(f.line() for f in verdict.findings)
-    tail = ""
+    lines = [f.short() if max_chars else f.line() for f in verdict.findings]
+    tail = []
     if verdict.truncated:
-        tail += f"\n(+{verdict.truncated} more unattended card(s) not shown)"
-    if verdict.attended:
-        shown = "; ".join(f"{a.task_id}={a.reason}" for a in verdict.attended[:8])
-        tail += f"\nattended (no action): {shown}"
+        tail.append(f"(+{verdict.truncated} more unattended)")
+    if verdict.notes:
+        tail.append("; ".join(verdict.notes))
+    if verdict.attended and not max_chars:
+        tail.append(
+            "attended (live/gated, not progress): "
+            + "; ".join(f"{a.task_id}={a.reason}" for a in verdict.attended[:6])
+        )
     if continuation:
-        tail += (
-            "\nAct on the first item now on its existing canonical card: no new "
-            "duplicate card, no duplicate worker, no gate bypass. If it truly "
-            "cannot be advanced, record the specific blocker or a checkpoint with "
-            "a supported wake."
+        tail.append(
+            "Act on the first item now on its existing card: no duplicate card, no "
+            "duplicate worker, no gate bypass, no spending or production change. If "
+            "it cannot be advanced, record the specific blocker or a checkpoint with "
+            "a verifiable wake. (The stop-check itself started nothing and wrote "
+            "nothing — it only blocked a quiet ending.)"
         )
     else:
-        tail += (
-            "\nThis is a runtime OUTPUT gate: it proves the quiet conclusion was "
-            "blocked, NOT that any of the above was executed."
+        tail.append(
+            "Blocked quiet ending — nothing above was executed or dispatched."
+            if max_chars
+            else (
+                "This text is a blocked quiet conclusion, not an executed action: the "
+                "stop-check dispatches nothing and writes nothing."
+            )
         )
-    return f"{head}\n{body}{tail}"
+    if not max_chars:
+        return "\n".join([head, *lines, *tail])
+
+    # Budget mode: the head and the "nothing was executed" disclosure are
+    # load-bearing, so findings yield first and the drop is reported honestly.
+    fixed = len(head) + sum(len(t) + 1 for t in tail) + 1
+    room = max_chars - fixed
+    kept: list[str] = []
+    dropped = verdict.truncated
+    for ln in lines:
+        if room - (len(ln) + 1) < 0:
+            dropped += 1
+            continue
+        room -= len(ln) + 1
+        kept.append(ln)
+    if dropped:
+        note = f"(+{dropped} more unattended not shown)"
+        if verdict.truncated:
+            tail[0] = note
+        else:
+            tail.insert(0, note)
+    return _clamp("\n".join([head, *kept, *tail]), max_chars)
+
+
+def _short_board(board: str) -> str:
+    """Board identity without burning the platform budget on a long path."""
+    raw = str(board or "").strip()
+    if not raw:
+        return "(unresolved)"
+    return raw.rsplit("/", 1)[-1] or raw
+
+
+def _clamp(text: str, max_chars: int) -> str:
+    if not max_chars or len(text) <= max_chars:
+        return text
+    keep = max(0, max_chars - 24)
+    return text[:keep].rstrip() + "\n…[stop-check truncated]"

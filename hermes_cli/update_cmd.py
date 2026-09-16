@@ -617,7 +617,7 @@ def _repair_venv_on_current_checkout(
     venv_python_missing = not venv_python_path(venv_dir, windows=_m()._is_windows()).exists()
     if venv_python_missing and repair_uv:
         print("→ Recreating virtual environment...")
-        subprocess.run([repair_uv, "venv", "venv"], cwd=_m().PROJECT_ROOT, check=False)
+        subprocess.run([repair_uv, "venv", venv_dir.name], cwd=_m().PROJECT_ROOT, check=False)
     repair_prefix, repair_env = _pip_install_prefix(repair_uv)
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)

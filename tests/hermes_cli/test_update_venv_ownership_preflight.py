@@ -89,6 +89,31 @@ def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
     assert "Nothing in the venv was modified." in out
 
 
+def test_foreign_owned_preflight_scans_dot_venv(tmp_path, monkeypatch):
+    venv = _make_fake_venv(tmp_path)
+    dot_venv = tmp_path / ".venv"
+    venv.rename(dot_venv)
+    installer = str(
+        dot_venv / "lib" / "python3.12" / "site-packages"
+        / "hermes_agent-1.0.0.dist-info" / "INSTALLER"
+    )
+    real_uid = update_cmd._path_uid
+
+    def fake_uid(path):
+        if str(path) == installer:
+            return 0
+        return real_uid(path)
+
+    monkeypatch.setattr(update_cmd, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps.os, "geteuid", lambda: 12345, raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._refuse_update_if_venv_foreign_owned(tmp_path)
+
+    assert exc.value.code == 1
+
+
 def test_limit_caps_reported_paths(tmp_path, monkeypatch):
     venv = _make_fake_venv(tmp_path)
     bin_dir = venv / "bin"

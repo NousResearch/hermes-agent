@@ -362,7 +362,7 @@ class _CaptureMixin:
                              image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE)
 
     def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {"session": self._session_id})
+        out = self._call_capture_tool("list_apps", {"session": self._session_id})
         structured, data = out.get("structuredContent"), out.get("data")
         # structuredContent is canonical; empty lists fall through so a populated compatibility envelope
         # (older drivers, CLI fallback) can still recover, then apps derived from the windows payload.

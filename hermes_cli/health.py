@@ -62,16 +62,26 @@ def _exit_code(status: str) -> int:
 
 
 def _configured_route(config: dict[str, Any] | None) -> tuple[str, str]:
-    model_cfg = config.get("model") if isinstance(config, dict) else None
-    if isinstance(model_cfg, dict):
-        provider = str(model_cfg.get("provider") or "auto")
-        model = str(model_cfg.get("default") or model_cfg.get("name") or "(not set)")
-    elif isinstance(model_cfg, str):
-        provider = "auto"
-        model = model_cfg or "(not set)"
-    else:
-        provider = "auto"
-        model = "(not set)"
+    # Mirror raw model-key normalization without importing config's mutating
+    # startup graph. Only display identity scalars, never credential containers.
+    def display_scalar(value: Any) -> str:
+        return str(value).strip() if isinstance(value, (str, int, float, bool)) and value else ""
+
+    config = config if isinstance(config, dict) else {}
+    model_cfg = config.get("model")
+    model_cfg = model_cfg if isinstance(model_cfg, dict) else {"default": model_cfg}
+    provider = display_scalar(model_cfg.get("provider"))
+    models = []
+    for key in ("default", "model", "name"):
+        value = model_cfg.get(key)
+        if isinstance(value, dict):
+            nested_provider = display_scalar(value.get("provider"))
+            if nested_provider and (not provider or provider == "auto"):
+                provider = nested_provider
+            value = value.get("model") or value.get("default")
+        models.append(display_scalar(value))
+    provider = provider or display_scalar(config.get("provider")) or "auto"
+    model = next((value for value in models if value), "(not set)")
     return provider, model
 
 

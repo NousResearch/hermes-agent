@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli import health as health_mod
 from hermes_cli.subcommands.health import build_health_parser
 
@@ -658,6 +660,117 @@ def test_health_cli_e2e_json_exit_zero_with_temp_home(tmp_path):
     assert payload["status"] == "healthy"
     assert payload["exit_code"] == 0
     assert payload["hermes_home"] == str(home)
+
+
+@pytest.mark.parametrize("route_key", ["default", "model", "name"])
+@pytest.mark.parametrize("nested_key", ["model", "default"])
+@pytest.mark.parametrize("outer_provider", [None, "auto", "explicit-provider"])
+def test_health_cli_nested_route_displays_only_identity(
+    tmp_path, route_key, nested_key, outer_provider
+):
+    sentinel = "SECRET_HEALTH_NESTED_ROUTE"
+    nested = {
+        nested_key: "nested-model",
+        "provider": "nested-provider",
+        "api_key": sentinel,
+        "base_url": f"https://user:{sentinel}@example.invalid/v1",
+        "headers": {"Authorization": sentinel},
+    }
+    model = {route_key: nested}
+    if outer_provider is not None:
+        model["provider"] = outer_provider
+    _assert_health_route_process(
+        tmp_path, {"model": model}, sentinel,
+        outer_provider if outer_provider == "explicit-provider" else "nested-provider",
+        "nested-model",
+    )
+
+
+@pytest.mark.parametrize("malformed", [{"api_key": "SECRET_HEALTH_BAD_TYPE"},
+                                       ["SECRET_HEALTH_BAD_TYPE"]])
+@pytest.mark.parametrize("location", ["model", "default", "name", "provider",
+                                      "nested_model", "nested_provider", "root_provider"])
+def test_health_cli_route_never_stringifies_containers(tmp_path, malformed, location):
+    config: dict = {"model": {"default": "safe-model"}}
+    expected_model, expected_provider = "safe-model", "auto"
+    if location == "model":
+        config["model"] = malformed
+        expected_model = "(not set)"
+    elif location in ("default", "name"):
+        config["model"] = {location: malformed}
+        expected_model = "(not set)"
+    elif location == "provider":
+        config["model"]["provider"] = malformed
+    elif location == "root_provider":
+        config["provider"] = malformed
+    else:
+        config["model"]["default"] = {
+            "model": malformed if location == "nested_model" else "safe-model",
+            "provider": malformed if location == "nested_provider" else "safe-provider",
+        }
+        if location == "nested_model":
+            expected_model, expected_provider = "(not set)", "safe-provider"
+    _assert_health_route_process(
+        tmp_path, config, "SECRET_HEALTH_BAD_TYPE", expected_provider, expected_model
+    )
+
+
+@pytest.mark.parametrize("config,provider,model", [
+    ({"model": "legacy-model", "provider": "root-provider"}, "root-provider", "legacy-model"),
+    ({"model": {"model": "alias-model", "name": "other"}}, "auto", "alias-model"),
+    ({"model": {"default": "first", "model": "second", "name": "third"}}, "auto", "first"),
+    ({"model": {"default": {"model": "first", "default": "second", "provider": "nested"}},
+      "provider": "root"}, "nested", "first"),
+])
+def test_health_cli_raw_route_precedence(tmp_path, config, provider, model):
+    _assert_health_route_process(tmp_path, config, "SECRET_HEALTH_UNUSED", provider, model)
+
+
+def _assert_health_route_process(tmp_path, config, sentinel, provider, model):
+    user_home = tmp_path / "user"
+    home = user_home / ".hermes"
+    _write_profile(home)
+    # JSON is valid YAML and preserves deliberately malformed container types.
+    (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+
+    def snapshot():
+        return {
+            path.relative_to(user_home): (
+                path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns
+            )
+            for path in user_home.rglob("*")
+        }
+
+    before = snapshot()
+    script = """
+import runpy, sys
+sys.argv = ['hermes', 'health', *sys.argv[1:]]
+try:
+    runpy.run_module('hermes_cli.main', run_name='__main__')
+finally:
+    assert 'hermes_cli.config' not in sys.modules
+    assert 'providers' not in sys.modules
+"""
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(user_home),
+           "HERMES_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
+    for args in (["--json"], []):
+        proc = subprocess.run(
+            [sys.executable, "-B", "-c", script, *args], cwd=os.getcwd(), env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+        assert sentinel not in proc.stdout + proc.stderr
+        assert proc.returncode == (1 if model == "(not set)" else 0), proc.stderr
+        assert not proc.stderr
+        assert snapshot() == before
+        expected = f"provider={provider} model={model}"
+        if args:
+            rows = {row["id"]: row for row in json.loads(proc.stdout)["checks"]}
+            assert expected in rows["profile_config"]["detail"]
+            if model != "(not set)":
+                assert f"configured route {provider}/{model};" in rows["provider_routing"]["detail"]
+        else:
+            detail = f"profile=default {expected}"
+            assert (detail[:55] + "..." if len(detail) > 58 else detail) in proc.stdout
 
 
 def test_health_cli_e2e_does_not_mutate_profile_home(tmp_path):

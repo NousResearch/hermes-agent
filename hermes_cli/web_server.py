@@ -938,21 +938,6 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
-@app.middleware("http")
-async def hsts_middleware(request: Request, call_next):
-    """Advertise the short initial HSTS policy on HTTPS responses.
-
-    ``request.url.scheme`` is the scheme resolved by the ASGI server. Do not
-    read ``X-Forwarded-Proto`` directly here: public dashboard starts enable
-    uvicorn's trusted proxy-header handling, which resolves the scheme before
-    the request reaches application middleware.
-    """
-    response = await call_next(request)
-    if request.url.scheme == "https":
-        response.headers.setdefault("Strict-Transport-Security", _HSTS_HEADER_VALUE)
-    return response
-
-
 class _HSTSASGIMiddleware:
     """Add HSTS at the ASGI send boundary, including generated 500 responses.
 

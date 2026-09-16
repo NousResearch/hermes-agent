@@ -318,6 +318,33 @@ class TestWebServerEndpoints:
         assert response.status_code == 500
         assert response.headers["strict-transport-security"] == "max-age=86400"
 
+    def test_https_preserves_existing_hsts_header(self):
+        from starlette.responses import Response
+        from starlette.routing import Route
+        from starlette.testclient import TestClient
+        from hermes_cli import web_server
+
+        existing_value = "max-age=31536000; includeSubDomains"
+
+        async def existing_hsts(_request):
+            return Response(
+                "ok",
+                headers={"Strict-Transport-Security": existing_value},
+            )
+
+        route = Route("/__hsts_existing", existing_hsts)
+        web_server.app.router.routes.insert(0, route)
+        try:
+            response = TestClient(
+                web_server._dashboard_asgi_app,
+                base_url="https://testserver",
+            ).get("/__hsts_existing")
+        finally:
+            web_server.app.router.routes.remove(route)
+
+        assert response.status_code == 200
+        assert response.headers["strict-transport-security"] == existing_value
+
     @pytest.mark.requires_wal
     def test_get_sessions_poll_preserves_pending_wal(self):
         """Repeated GET-only polls must not checkpoint another writer's WAL."""

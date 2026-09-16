@@ -68,8 +68,8 @@ def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
     goals._DB_CACHE.clear()
     command = command.format(pid=os.getpid())
     snapshots = []
-    for name in ('cli', surface):
-        mgr = goals.GoalManager(session_id=name + '-parity-' + surface)
+    for index, name in enumerate(('cli', surface)):
+        mgr = goals.GoalManager(session_id=f'{name}-{index}-parity-{surface}')
         mgr.set('original objective')
         mgr.add_gate('original gate')
         mgr.wait_on(os.getpid(), reason='existing barrier')

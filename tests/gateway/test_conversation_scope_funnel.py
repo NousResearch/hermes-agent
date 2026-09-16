@@ -10,15 +10,25 @@ the boundary security state, in one call.
 """
 
 from gateway.run import _CONVERSATION_SCOPED_STATE, GatewayRunner
+from gateway.session_state import LEGACY_FIELD_SPECS
 
 KEY = "agent:main:telegram:dm:777"
 OTHER = "agent:main:discord:dm:888"
 
 
+def _scoped_value(attr: str):
+    """A present value of the field's real shape: SessionState-backed list fields (e.g. the
+    /queue FIFO) hold lists, so the funnel may iterate them."""
+    spec = LEGACY_FIELD_SPECS.get(attr)
+    if spec is not None and isinstance(spec.default(), list):
+        return [object()]
+    return object()
+
+
 def _bare_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     for attr in _CONVERSATION_SCOPED_STATE:
-        setattr(runner, attr, {KEY: object(), OTHER: object()})
+        setattr(runner, attr, {KEY: _scoped_value(attr), OTHER: _scoped_value(attr)})
     # Turn-scoped state that the funnel must NOT touch.
     runner._running_agents = {KEY: object()}
     runner._running_agents_ts = {KEY: 1.0}

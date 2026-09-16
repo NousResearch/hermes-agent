@@ -103,7 +103,10 @@ _EXACT_HANDLERS = {
 
 def _gate(mgr, arg, authorize_gate):
     if not arg or arg.lower() == "list":
-        return GoalCommandResult(mgr.render_gates())
+        try:
+            return GoalCommandResult(mgr.render_gates())
+        except goals.GoalPersistenceError:
+            return GoalCommandResult(goals.goal_status_failure_message(), error=True)
     tokens = arg.split(None, 1)
     verb, rest = tokens[0].lower(), tokens[1].strip() if len(tokens) > 1 else ""
     handler = _GATE_HANDLERS.get(verb)
@@ -115,6 +118,8 @@ def _gate(mgr, arg, authorize_gate):
         return GoalCommandResult(denial, error=True)
     try:
         return handler(mgr, rest)
+    except goals.GoalPersistenceError as exc:
+        return GoalCommandResult(goals.goal_mutation_failure_message(exc), error=True)
     except (RuntimeError, ValueError, IndexError) as exc:
         operation = "remove" if verb == "rm" else verb
         return GoalCommandResult(f"/goal gate {operation}: {exc}", error=True)
@@ -188,6 +193,11 @@ def dispatch_goal_command(
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
                     render=render, progress=progress)
+    except goals.GoalPersistenceError as exc:
+        output = (goals.goal_status_failure_message()
+                  if arg.lower() in {"", "status", "show"}
+                  else goals.goal_mutation_failure_message(exc))
+        return GoalCommandResult(output, error=True)
     except (RuntimeError, ValueError, IndexError) as exc:
         output = (render("gateway.goal.invalid", "Invalid goal: {error}", error=str(exc))
                   if prefix == "Invalid goal" else f"{prefix}: {exc}")

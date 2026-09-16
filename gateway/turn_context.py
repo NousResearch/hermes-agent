@@ -54,6 +54,7 @@ class TurnContext:
     event_message_id: Optional[str] = None
     # Raw inbound platform id (not the event_message_id reply anchor); stamped on the user turn.
     inbound_message_id: Optional[str] = None
+    claimed_event: Any = None
     moa_config: Optional[dict] = None
     title_user_message: Optional[str] = None
     persist_user_message: Optional[Any] = None
@@ -68,6 +69,7 @@ class TurnContext:
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
+    defer_result_publication: bool = False
     needs_progress_queue: bool = False
     AIAgent: Any = None
     resolve_display_setting: Any = None

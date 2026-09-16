@@ -129,6 +129,39 @@ def test_active_turn_clear_is_compare_and_swap(tmp_path):
     assert current.active_turn_started_at is None
 
 
+def test_completed_publication_token_clears_marker_without_rearming(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    token = store.mark_turn_active(entry.session_key)
+
+    recovered = store.recover_interrupted_turns(
+        completed_turn_tokens={entry.session_key: token}
+    )
+
+    assert recovered == 0
+    current = _entry_for(store, source)
+    assert current.resume_pending is False
+    assert current.active_turn_token is None
+    assert current.active_turn_started_at is None
+
+
+def test_completed_publication_token_mismatch_still_rearms(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    token = store.mark_turn_active(entry.session_key)
+
+    recovered = store.recover_interrupted_turns(
+        completed_turn_tokens={entry.session_key: {token + "-other"}}
+    )
+
+    assert recovered == 1
+    current = _entry_for(store, source)
+    assert current.resume_pending is True
+    assert current.active_turn_token is None
+
+
 def test_failed_mark_persistence_does_not_leak_marker_into_later_save(tmp_path):
     store = _make_store(tmp_path)
     source = _make_source()
@@ -510,6 +543,26 @@ async def test_unclean_restart_delivers_a_persisted_unledgered_reply_instead_of_
     rows = sweep_recoverable(deliverable_platforms={"discord"})
     assert [(r["content"], r["needs_marker"], r["chat_id"], r["thread_id"]) for r in rows] == [
         ("the stored answer", True, "replied", "thread-1")]
+    _close_store_db(store)
+
+
+@pytest.mark.asyncio
+async def test_unclean_restart_leaves_a_claimed_goal_result_to_its_owner(tmp_path, monkeypatch):
+    """A marked turn whose claimed goal-continuation result owns publication is neither ledgered
+    as a crash-left reply (a second copy of the claimed result) nor resumed; its marker clears."""
+    from gateway import delivery_ledger as dl
+
+    runner, store = _db_runner(tmp_path)
+    source = _turn(store, "claimed", marked=True, reply="the claimed answer")
+    entry = _entry_for(store, source)
+    monkeypatch.setattr(dl, "completed_active_turn_tokens",
+                        lambda **_kwargs: {entry.session_key: {entry.active_turn_token}})
+
+    assert await runner._recover_unclean_sessions() == (0, 0)
+
+    entry = _entry_for(store, source)
+    assert (entry.resume_pending, entry.active_turn_token) == (False, None)
+    assert dl.sweep_recoverable(deliverable_platforms={"discord"}) == []
     _close_store_db(store)
 
 

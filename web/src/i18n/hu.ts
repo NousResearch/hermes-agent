@@ -608,6 +608,19 @@ export const hu: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Hang",
+    start: "Hangos csevegés",
+    end: "Befejezés",
+    mute: "Mikrofon némítása",
+    unmute: "Némítás feloldása",
+    connecting: "Csatlakozás…",
+    listening: "Hallgat",
+    speaking: "Beszél",
+    working: "Hermes dolgozik…",
+  },
+
   kanban: {
     loading: "Kanban tábla betöltése…",
     loadFailed: "Nem sikerült betölteni a Kanban táblát: ",

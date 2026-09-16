@@ -1159,6 +1159,59 @@ DEFAULT_CONFIG = {
         # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
+        # Realtime voice backend — xAI Grok S2S WebSocket. Two brains (see
+        # "brain" below): "supervisor" (default) lets grok-voice chat and
+        # delegate real work to the agent; "ears" keeps the agent as the only
+        # brain (server VAD + transcription; replies via the normal TTS
+        # pipeline). Needs xAI credentials. When enabled, /voice on listens
+        # continuously (record key pauses/resumes).
+        "realtime": {
+            "enabled": False,
+            "model": "grok-voice-latest",
+            # Realtime WebSocket endpoint. Browser surfaces mint their
+            # ephemeral token at the matching https://.../client_secrets, so
+            # a proxy/self-hosted URL keeps every surface coherent.
+            "url": "wss://api.x.ai/v1/realtime",
+            # "supervisor" (default): grok-voice chats instantly and delegates
+            #   real work to Hermes via a consult tool (chat-supervisor
+            #   pattern); grok speaks its own replies and the consult summaries.
+            # "ears": every utterance becomes a Hermes turn; replies speak via
+            #   the normal TTS pipeline (grok is muted). CLI and Discord only —
+            #   desktop/dashboard realtime is always supervisor.
+            "brain": "supervisor",
+            "voice": "eve",                 # supervisor speech voice (S2S roster)
+            "narrate_progress": False,      # opt-in: speak tool-progress lines during consults
+            "instructions": "",             # extra lines appended to the supervisor prompt
+            # Supervisor mic policy while speech plays: false (default) mutes
+            # the mic so open speakers can't feed the assistant its own voice;
+            # true keeps it hot for voice barge-in (wear headphones).
+            "full_duplex": False,
+            # Server VAD tuning; null = server default (0.85 / 333 ms).
+            "vad_threshold": None,          # 0.1-0.9; higher = needs louder speech
+            "vad_silence_ms": None,         # silence that ends the turn
+            "vad_prefix_padding_ms": None,  # audio kept before speech onset
+            "language_hint": "",            # BCP-47 transcription bias; "" = auto
+            "keyterms": [],                 # vocabulary bias (max 100 terms)
+            # Auto-pause after this many silent seconds — a hot mic streams
+            # billable audio. 0 disables.
+            "idle_pause_seconds": 120,
+            # Also use the realtime backend in Discord voice channels (the
+            # gateway must be running and the bot joined via /voice join).
+            # The supervisor brain then converses instantly in the VC and
+            # delegates work to Hermes; the ears brain swaps the classic
+            # silence-detection + Whisper pipeline for server-side VAD +
+            # streaming transcription.
+            "discord": False,
+            # Discord crowded-room gate: with the wake gate active an
+            # utterance must start or end with a wake name (the bot's name,
+            # "Hermes", or wake_names) or it is ignored. "auto" activates
+            # the gate only while 2+ humans are in the VC; true/false force.
+            "require_wake_name": "auto",
+            "wake_names": [],               # extra 1-2 word names (max 16)
+            # Also post supervisor consult replies to the bound Discord text
+            # channel. Default is voice-only; session history keeps the text.
+            "discord_text_mirror": False,
+        },
     },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.

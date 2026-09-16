@@ -65,6 +65,7 @@ def _runner(adapter: _Adapter):
         source=SimpleNamespace(chat_id="C1", platform="discord", session_key="sk1"),
     )
     runner._ctx = ctx
+    runner._runner = SimpleNamespace(_notify_voice_realtime_blocked=lambda _ctx, _text: None)
 
     class _Fut:
         def __init__(self, result): self._r = result

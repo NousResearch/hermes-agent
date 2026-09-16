@@ -541,6 +541,18 @@ export const ar = defineLocale({
     },
   },
 
+  voiceCall: {
+    title: "الصوت",
+    start: "دردشة صوتية",
+    end: "إنهاء",
+    mute: "كتم الميكروفون",
+    unmute: "إلغاء كتم الميكروفون",
+    connecting: "جارٍ الاتصال…",
+    listening: "يستمع",
+    speaking: "يتحدث",
+    working: "Hermes يعمل…",
+  },
+
   kanban: {
     loading: "جاري تحميل لوحة Kanban…",
     loadFailed: "فشل تحميل لوحة Kanban: ",

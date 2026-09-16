@@ -2924,6 +2924,18 @@ export const en: Translations = {
       'Adjust or continue'
     ],
     startVoice: 'Start voice conversation',
+    microphone: {
+      title: 'Microphone',
+      description:
+        'Which input Hermes listens on for voice chat, dictation, and the wake word. This computer only.',
+      systemDefault: 'System default',
+      chooseTitle: 'Choose a microphone',
+      chooseDescription:
+        'Your Mac has several inputs. Pick the one you talk into — virtual mixers stay silent if their app is not running.',
+      useThis: 'Use this microphone',
+      virtualHint: 'Virtual device — often silent',
+      silent: label => `No speech on “${label}”. Switch microphone if you were talking.`
+    },
     openDirective: 'Open',
     queueMessage: 'Queue message',
     steer: 'Steer the current run',

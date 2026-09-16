@@ -1606,6 +1606,35 @@ stt:
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
 
+# =============================================================================
+# Realtime Voice (xAI Grok S2S)
+# =============================================================================
+# Streaming voice conversations over xAI's Speech-to-Speech WebSocket.
+# Requires xAI credentials (XAI_API_KEY in .env, or `hermes auth add xai`).
+# With `/voice on` the mic streams continuously — the server does VAD and
+# transcription. See docs: User Guide → Features → Voice Mode.
+# voice:
+#   realtime:
+#     enabled: false
+#     brain: "supervisor"      # "supervisor": grok-voice answers instantly and
+#                              #   delegates real work to Hermes (consult tool).
+#                              # "ears": every utterance becomes a Hermes turn,
+#                              #   replies speak via tts.provider (CLI + Discord
+#                              #   only; desktop/dashboard are always supervisor).
+#     voice: "eve"             # supervisor speech voice (S2S roster / custom ID)
+#     narrate_progress: false  # true = speak short tool-progress lines during consults
+#     full_duplex: false       # true = mic stays hot while it speaks (headphones)
+#     discord: false           # also use realtime in Discord voice channels
+#     require_wake_name: auto  # auto: 2+ humans in the VC must say Hermes
+#     # wake_names: ["Hermes"] # extra 1–2 word names; bot name is included
+#     # discord_text_mirror: false  # true = also post consult replies to the bound Discord text channel
+#     idle_pause_seconds: 120  # auto-pause the hot mic after silence (0 = never)
+#     # url: "wss://api.x.ai/v1/realtime"  # proxy/self-hosted endpoint; token mint follows it
+#     # vad_threshold: 0.85    # server VAD tuning; omit for server defaults
+#     # vad_silence_ms: 800
+#     # language_hint: "en"    # BCP-47 transcription bias
+#     # keyterms: ["Hermes", "Nous Research"]
+
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,
 # elevenlabs, neutts, kittentts, piper) inherit sensible defaults from

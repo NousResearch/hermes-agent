@@ -796,6 +796,10 @@ class CLIModalMixin:
                 "response_queue": response_queue}
             self._approval_deadline = _time.monotonic() + timeout
             self._ring_bell(prompt=True, context="approval", detail=command)
+            # Voice supervisor: the user may be away from the screen — say so.
+            _rt_ctrl = getattr(self, "_voice_rt_ctrl", None)
+            if _rt_ctrl is not None and self._voice_realtime_supervisor_active():
+                _rt_ctrl.notify("Hermes needs your approval in the terminal.")
             self._paint_now()
 
             result = self._poll_modal_queue(response_queue, "_approval_deadline")

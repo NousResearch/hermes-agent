@@ -21,6 +21,7 @@ from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
+from gateway.voice_realtime_mixin import _voice_controller_key
 
 logger = logging.getLogger("gateway.run")  # log-record parity with the origin module
 
@@ -53,6 +54,9 @@ class GatewayVoiceMixin:
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = functools.partial(
                 self._handle_voice_channel_input, adapter=adapter)
+        if hasattr(adapter, "_voice_function_call_callback"):
+            adapter._voice_function_call_callback = functools.partial(
+                self._handle_voice_channel_function_call, adapter=adapter)
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
@@ -173,7 +177,23 @@ class GatewayVoiceMixin:
             adapter._voice_sources[guild_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
                                event.source.chat_id, "all")
+        # Say which voice pipeline actually engaged — the realtime start falls back to
+        # classic silently (deps/creds/config); otherwise the only evidence is a log line.
+        brain = ""
+        brain_getter = getattr(adapter, "voice_realtime_brain", None)
+        if callable(brain_getter):
+            with suppress(Exception):
+                result = brain_getter(guild_id)
+                brain = result if isinstance(result, str) else ""
+        if brain == "supervisor":
+            pipeline = ("Voice pipeline: **realtime supervisor (grok)** — instant replies, "
+                        "real work delegated to Hermes.")
+        elif brain == "ears":
+            pipeline = "Voice pipeline: **realtime transcription (grok ears)**."
+        else:
+            pipeline = "Voice pipeline: **classic transcription** (record → STT → agent → TTS)."
         return (f"Joined voice channel **{voice_channel.name}**.\n"
+                f"{pipeline}\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect.")
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
@@ -188,6 +208,7 @@ class GatewayVoiceMixin:
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
         # Always clean up state even if leave raised an exception
+        self._voice_realtime_controllers.pop(_voice_controller_key(adapter, guild_id), None)
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
                                event.source.chat_id, "off")
         if hasattr(adapter, "_voice_input_callback"):
@@ -202,6 +223,18 @@ class GatewayVoiceMixin:
         key = self._voice_key(Platform.DISCORD, chat_id,
                               profile=getattr(adapter, "_owner_profile", None))
         self._apply_voice_mode(adapter, key, chat_id, "off")
+        # Sweep supervisor controllers whose realtime session went away with the voice
+        # connection (the timeout only reports the text chat id).
+        controllers = self._voice_realtime_controllers
+        if controllers and adapter is not None:
+            session_for = getattr(adapter, "voice_realtime_session", None)
+            owner = getattr(adapter, "_owner_profile", None)
+            for ctrl_key in list(controllers):
+                profile, gid = ctrl_key
+                if profile != owner:
+                    continue  # another profile's bot; its own timeout sweeps it
+                if session_for is None or session_for(gid) is None:
+                    controllers.pop(ctrl_key, None)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for one recent utterance (voice capture can emit it twice a
@@ -222,9 +255,14 @@ class GatewayVoiceMixin:
         return False
 
     @staticmethod
-    def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
-        """Bound text channel's own source when available (voice shares the text conversation's
-        session), else a synthetic one."""
+    def _voice_channel_source(adapter, guild_id: int, user_id: int) -> Optional[SessionSource]:
+        """The SessionSource a voice-channel utterance runs under: the bound text channel's own
+        source (voice shares the text conversation's session), else a synthetic one on that
+        channel id; None when the guild has no bound text channel. Shared by the transcript path
+        and the realtime supervisor's TurnRunner so both resolve identical session keys."""
+        text_ch_id = adapter._voice_text_channels.get(guild_id) if adapter else None
+        if not text_ch_id:
+            return None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
             source.user_id = source.user_name = str(user_id)
@@ -235,16 +273,22 @@ class GatewayVoiceMixin:
             profile=getattr(adapter, "_owner_profile", None))
 
     async def _handle_voice_channel_input(
-        self, guild_id: int, user_id: int, transcript: str, *, adapter=None
+        self, guild_id: int, user_id: int, transcript: str, *, consult: bool = False, adapter=None
     ):
-        """Handle transcribed voice from a voice channel. ``adapter`` captured the audio; under
-        multiplexing each profile's bot dispatches through its own adapter, never the default's."""
+        """Handle transcribed voice (or a supervisor consult) from a voice channel. ``adapter``
+        captured the audio; under multiplexing each profile's bot dispatches through its own
+        adapter, never the default's. Both run in the bound text channel's session. Consults
+        (the voice model's restatement, not the user's words) skip STT dedup and the transcript
+        echo, and run as ``MessageType.TEXT`` so classic streaming-TTS never treats them as a
+        voice utterance."""
         if adapter is None:
             adapter = self.adapters.get(Platform.DISCORD)
         text_ch_id = adapter._voice_text_channels.get(guild_id) if adapter else None
         if not text_ch_id:
             return
-        source = self._voice_input_source(adapter, guild_id, user_id, text_ch_id)
+        source = self._voice_channel_source(adapter, guild_id, user_id)
+        if source is None:
+            return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a
@@ -252,18 +296,20 @@ class GatewayVoiceMixin:
         if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
-        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+        if not consult and self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
             logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
                         guild_id, user_id, transcript[:100])
             return
         # Echo the transcript into the text channel (after auth, with mention sanitization).
-        with suppress(Exception):
-            channel = adapter._client.get_channel(text_ch_id)
-            if channel:
-                safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
-                safe_text = safe_text.replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
-        # Bound text channel's channel_prompt: voice input gets the same per-channel context.
+        if not consult:
+            with suppress(Exception):
+                channel = adapter._client.get_channel(text_ch_id)
+                if channel:
+                    safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
+                    safe_text = safe_text.replace("@here", "@\u200bhere")
+                    await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+        # Bound text channel's channel_prompt: voice input (consults included) gets the same
+        # per-channel context as typed messages — it is operator configuration, not chat content.
         channel_prompt = None
         if callable(resolver := getattr(adapter, "_resolve_channel_prompt", None)):
             with suppress(Exception):
@@ -271,10 +317,18 @@ class GatewayVoiceMixin:
                 channel_prompt = resolved if isinstance(resolved, str) else None
         # Synthetic MessageEvent for the normal pipeline; the SimpleNamespace raw_message lets
         # _get_guild_id() extract guild_id so _send_voice_reply() plays audio in the voice channel.
+        # Stamped up front so the typing indicator and the final text send agree: a consult
+        # is voice-only unless voice.realtime.discord_text_mirror opts its reply into the channel.
+        text_mirror = False
+        if consult:
+            controller = self._voice_realtime_controller(adapter, guild_id)
+            text_mirror = self._voice_discord_text_mirror(controller)
         event = MessageEvent(
-            source=source, text=transcript, message_type=MessageType.VOICE,
+            source=source, text=transcript,
+            message_type=MessageType.TEXT if consult else MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
-            channel_prompt=channel_prompt)
+            channel_prompt=channel_prompt,
+            voice_consult=consult, voice_text_mirror=text_mirror)
         await adapter.handle_message(event)
 
     def _should_send_voice_reply(
@@ -284,6 +338,10 @@ class GatewayVoiceMixin:
         already called text_to_speech this turn, or voice input + base adapter auto-TTS handled it
         — UNLESS streaming consumed the response (already_sent): then the runner must do it."""
         if not response or response.startswith("Error:"):
+            return False
+        # A live supervisor session owns the speaker for its bound chat — every classic
+        # voice reply (typed messages included) stays silent.
+        if self._voice_supervisor_owns_chat(event.source):
             return False
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))

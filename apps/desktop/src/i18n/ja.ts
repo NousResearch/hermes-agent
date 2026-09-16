@@ -2424,6 +2424,17 @@ export const ja = defineLocale({
       '調整または続行'
     ],
     startVoice: '音声会話を開始',
+    microphone: {
+      title: 'マイク',
+      description: '音声チャット、ディクテーション、ウェイクワードで Hermes が聞く入力です。このコンピュータのみ。',
+      systemDefault: 'システムのデフォルト',
+      chooseTitle: 'マイクを選ぶ',
+      chooseDescription:
+        '入力が複数あります。話しかけるマイクを選んでください。仮想ミキサーはアプリが動いていないと無音になります。',
+      useThis: 'このマイクを使う',
+      virtualHint: '仮想デバイス — 無音になりがち',
+      silent: label => `「${label}」で音声がありません。話している場合はマイクを切り替えてください。`
+    },
     openDirective: '開く',
     queueMessage: 'メッセージをキューに入れる',
     stop: '停止',

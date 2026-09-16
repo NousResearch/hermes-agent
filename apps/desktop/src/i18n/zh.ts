@@ -3066,6 +3066,16 @@ export const zh = defineLocale({
       '调整或继续'
     ],
     startVoice: '开始语音对话',
+    microphone: {
+      title: '麦克风',
+      description: 'Hermes 用于语音对话、听写和唤醒词的输入设备。仅对本机生效。',
+      systemDefault: '系统默认',
+      chooseTitle: '选择麦克风',
+      chooseDescription: '这台电脑有多个输入。请选择你对着说话的那个——虚拟混音器在对应软件未运行时通常是静音的。',
+      useThis: '使用此麦克风',
+      virtualHint: '虚拟设备，常常没有声音',
+      silent: label => `“${label}”上没有检测到说话。如果你在讲话，请换一个麦克风。`
+    },
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',

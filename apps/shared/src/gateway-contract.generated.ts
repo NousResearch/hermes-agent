@@ -2352,6 +2352,20 @@ export interface VoiceTtsParams {
 export interface VoiceTtsResult {
   status: string
 }
+/** ``keyterms`` are surface-side transcription hints (cwd, open files) merged into the configured ``voice.realtime.keyterms``; ``expires_seconds`` is clamped to 60..3600 (default 300). ``profile`` names the profile whose ``voice.realtime`` config and xAI credentials mint the token (the dashboard serves several from one backend); omitted = the launch profile. */
+export interface VoiceRealtimeTokenParams {
+  expires_seconds?: number | null
+  keyterms?: string[] | null
+  profile?: string | null
+}
+/** ``methods_voice.py::voice.realtime_token`` — an xAI ephemeral client secret (never the API key) plus the server-built ``session.update`` the browser sends verbatim after the handshake. */
+export interface VoiceRealtimeTokenResult {
+  token: string
+  expires_at?: unknown | null
+  url: string
+  model: string
+  session_update: Record<string, unknown>
+}
 /** ``surface`` names the caller ("tui" | "gui"); ``persist`` is the explicit gesture that also flips ``wake_word.enabled`` on; ``client_capture`` asks for PCM streamed via wake.feed. */
 export interface WakeStartParams {
   surface?: string | null
@@ -4590,6 +4604,8 @@ export interface RpcMethods {
   'vault.unlock': { params: VaultUnlockParams; result: VaultUnlockResult }
   /** Best known verification evidence for a cwd/session; read-only, never runs checks. */
   'verification.status': { params: VerificationStatusParams; result: VerificationStatusResult }
+  /** Mint an ephemeral xAI realtime token for browser voice surfaces (desktop, dashboard). */
+  'voice.realtime_token': { params: VoiceRealtimeTokenParams; result: VoiceRealtimeTokenResult }
   /** VAD-bounded push-to-talk; the transcript arrives as a voice.transcript event. */
   'voice.record': { params: VoiceRecordParams; result: VoiceRecordResult }
   /** /voice parity: report, flip voice mode on/off, or toggle speech output. */
@@ -4819,6 +4835,7 @@ export const RPC_METHODS = [
   'vault.sources',
   'vault.unlock',
   'verification.status',
+  'voice.realtime_token',
   'voice.record',
   'voice.toggle',
   'voice.tts',

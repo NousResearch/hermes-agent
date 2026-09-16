@@ -603,6 +603,18 @@ export const zh: Translations = {
     },
   },
 
+  voiceCall: {
+    title: "语音",
+    start: "语音聊天",
+    end: "结束",
+    mute: "麦克风静音",
+    unmute: "取消静音",
+    connecting: "连接中…",
+    listening: "聆听中",
+    speaking: "说话中",
+    working: "Hermes 工作中…",
+  },
+
   kanban: {
     loading: "正在加载看板…",
     loadFailed: "加载看板失败：",

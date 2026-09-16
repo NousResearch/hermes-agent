@@ -1848,11 +1848,31 @@ class GatewayTurnMixin:
             response = ""
 
         adapter = self._adapter_for_source(source)
+        # Realtime supervisor consult: hand the result back to the voice model (it speaks its
+        # own summary) instead of TTS-ing the reply.
+        _rt_consumed = False
+        _rt_controller = self._voice_realtime_controller_for_event(event)
+        if _rt_controller is not None:
+            try:
+                # A steer interrupts the running consult turn; when the steered follow-up is
+                # drained in-band, ``agent_result`` is the follow-up's (not interrupted) while
+                # ``event.text`` is still the original task — the controller matches both.
+                _rt_consumed = _rt_controller.on_turn_complete(
+                    event.text, response, interrupted=bool(agent_result.get("interrupted")))
+            except Exception:
+                logger.warning("realtime consult completion failed", exc_info=True)
+        if _rt_consumed:
+            # The base adapter's own auto-TTS delivery path (voice input + auto-TTS chat) must
+            # stay silent too, or the full reply is read aloud OVER the supervisor's spoken
+            # summary — and classic playback can't be interrupted by voice.
+            event.voice_reply_consumed = True
+            if self._voice_discord_text_mirror(_rt_controller):
+                event.voice_text_mirror = True
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
-        if not _streaming_tts_done and self._should_send_voice_reply(
+        if not _rt_consumed and not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
             await self._send_voice_reply(event, response)
@@ -2935,13 +2955,17 @@ class GatewayTurnMixin:
         # guild whose voice connection is bound to this text channel (mirrors DiscordAdapter.play_tts).
         _voice_ack_guild: List[Optional[int]] = [None]
         if source.platform == Platform.DISCORD:
-            _va = self.adapters.get(Platform.DISCORD)
-            _vtc = getattr(_va, "_voice_text_channels", None)
-            if isinstance(_vtc, dict) and hasattr(_va, "voice_mixer_active"):
-                _voice_ack_guild[0] = next(
-                    (_gid for _gid, _tc in _vtc.items() if str(_tc) == str(source.chat_id) and _va.voice_mixer_active(_gid)),
-                    None,
-                )
+            # Voice turns and supervisor consults share the bound text channel's session, so one
+            # lookup covers typed and spoken turns. A live supervisor controller counts like an
+            # installed mixer: consult progress is narrated by the voice model, not TTS-acked.
+            # The binding is read off the SOURCE's own adapter (a secondary profile's bot under
+            # multiplexing), never off the default adapter.
+            _binding = self._voice_realtime_binding_for_chat(source)
+            if _binding is not None:
+                _va, _gid = _binding
+                mixer_on = hasattr(_va, "voice_mixer_active") and _va.voice_mixer_active(_gid)
+                if mixer_on or self._voice_realtime_controller(_va, _gid) is not None:
+                    _voice_ack_guild[0] = _gid
 
         # Auto-cleanup of temporary progress bubbles needs a real ``delete_message`` (getattr on the
         # type: a fake adapter without it means "can't delete", not a crash).
@@ -3104,6 +3128,7 @@ class GatewayTurnMixin:
     def _run_agent_start_streaming_tts(
         self, source: SessionSource, message_type: Optional[str],
         _status_thread_metadata: Optional[Dict[str, Any]], streaming_tts_consumer_holder: list,
+        message: Any = None,
     ) -> None:
         """Start the streaming-TTS consumer for a voice-input turn on an auto-TTS chat.
 
@@ -3119,6 +3144,10 @@ class GatewayTurnMixin:
             and str(getattr(message_type, "value", message_type)).lower() == "voice"
         )
         if _stts_adapter is None or not _is_voice_input or not _stts_adapter._should_auto_tts_for_chat(source.chat_id):
+            return
+        # A realtime-supervisor consult is spoken by the voice model; streaming the raw agent
+        # output to TTS would talk over it.
+        if self._voice_consult_owns_turn(source, message_type, message):
             return
         try:
             from gateway.streaming_tts_consumer import StreamingTTSConsumer
@@ -4102,6 +4131,7 @@ class GatewayTurnMixin:
         )
         self._run_agent_start_streaming_tts(
             source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
+            message=message,
         )
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).

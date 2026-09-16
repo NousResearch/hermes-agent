@@ -1,4 +1,6 @@
-// Spoken stop-word detection for the voice conversation loop.
+// Spoken stop-word detection for the voice conversation loop, shared by the
+// desktop composer and the dashboard voice call card so every browser surface
+// ends a call on the same phrases.
 //
 // When someone is in a hands-free "Hey Hermes" voice chat, the natural way to
 // end it is to SAY "stop" — not reach for the mouse. Without this, a spoken

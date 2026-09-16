@@ -2078,6 +2078,17 @@ export const ar = defineLocale({
     newSessionPlaceholders: ['اسأل Hermes عن شيء...', 'اطلب من Hermes تنفيذ مهمة...', 'ابدأ محادثة جديدة...'],
     followUpPlaceholders: ['اكتب متابعة...', 'أضف توجيها...', 'اسأل سؤالا آخر...'],
     startVoice: 'بدء الصوت',
+    microphone: {
+      title: 'الميكروفون',
+      description: 'مدخل Hermes للاستماع في الدردشة الصوتية والإملاء وكلمة الإيقاظ. لهذا الجهاز فقط.',
+      systemDefault: 'افتراضي النظام',
+      chooseTitle: 'اختر ميكروفونًا',
+      chooseDescription:
+        'هذا الجهاز فيه عدة مداخل. اختر الذي تتحدث فيه — الخلاطات الافتراضية تبقى صامتة إن لم يكن تطبيقها يعمل.',
+      useThis: 'استخدم هذا الميكروفون',
+      virtualHint: 'جهاز افتراضي — غالبًا صامت',
+      silent: label => `لا كلام على «${label}». بدّل الميكروفون إن كنت تتحدث.`
+    },
     openDirective: 'فتح',
     queueMessage: 'إضافة الرسالة للطابور',
     steer: 'توجيه',

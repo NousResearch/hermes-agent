@@ -64,6 +64,11 @@ class CLIVoiceMixin:
         from cli import _ACCENT, _DIM, _RST, _cprint
         if getattr(self, '_should_exit', False):
             return
+        # Realtime backend pushes transcripts itself — just (re)arm it; on
+        # failure fall through to the classic recorder below.
+        if self._voice_realtime_config_enabled() and not self._voice_rt_failed:
+            if self._voice_realtime_start():
+                return
         from tools.voice_mode import create_audio_recorder, check_voice_requirements
 
         reqs = check_voice_requirements()
@@ -370,6 +375,10 @@ class CLIVoiceMixin:
             return  # one listener owns the mic for this turn
         fd_active.set()
         try:
+            if self._voice_realtime_session_alive():
+                # Realtime session owns the mic; its server VAD drives
+                # barge-in (two input streams on one device is unreliable).
+                return
             from hermes_cli.config import load_config
             voice_cfg = load_config().get("voice") or {}
             if not (isinstance(voice_cfg, dict) and voice_cfg.get("barge_in", True)):
@@ -498,7 +507,8 @@ class CLIVoiceMixin:
             return
 
         reqs = check_voice_requirements()
-        if not reqs["available"]:
+        _rt_ready = self._voice_realtime_ready(reqs)
+        if not reqs["available"] and not _rt_ready:
             _cprint(f"\n{_ACCENT}Voice mode requirements not met:{_RST}")
             for line in reqs["details"].split("\n"):
                 _cprint(f"  {_DIM}{line}{_RST}")
@@ -525,8 +535,19 @@ class CLIVoiceMixin:
         # Startup-pinned label so the advertised shortcut always matches the live
         # prompt_toolkit binding (live config would drift after a mid-session edit).
         # See #19835.
-        _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}{self._voice_record_key_label()} to start/stop recording{_RST}")
+        _ptt_display = self._voice_record_key_label()
+        if _rt_ready:
+            with self._voice_lock:
+                self._voice_continuous = True
+            threading.Thread(
+                target=self._voice_realtime_start_or_fallback, daemon=True
+            ).start()
+            _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status} — realtime (grok){_RST}")
+            _cprint(f"  {_DIM}Listening starts automatically — just talk{_RST}")
+            _cprint(f"  {_DIM}{_ptt_display} to pause/resume listening{_RST}")
+        else:
+            _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
+            _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
         # Spoken-stop hint from voice.stop_phrases (first entry); "" when disabled.
         try:
             from tools.voice_mode_transcript import voice_stop_hint
@@ -566,6 +587,11 @@ class CLIVoiceMixin:
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
         from cli import _DIM, _RST, _cprint, logger
+        # Realtime input backend first: it owns the mic when active.
+        try:
+            self._voice_realtime_stop()
+        except Exception:
+            pass
         with self._voice_lock:
             if self._voice_recording and self._voice_recorder:
                 self._voice_recorder.cancel()
@@ -718,9 +744,13 @@ class CLIVoiceMixin:
                 logger.debug("wake word new_session failed: %s", e)
 
         # Single-utterance capture; VAD auto-stop transcribes and queues for process_loop.
+        # The realtime backend only listens while continuous, so a wake there
+        # opens a live voice chat instead.
         with self._voice_lock:
             self._voice_mode = True
-        self._voice_continuous = False
+        self._voice_continuous = (
+            self._voice_realtime_config_enabled() and not self._voice_rt_failed
+        )
         try:
             self._voice_start_recording()
         except Exception as e:
@@ -745,6 +775,8 @@ class CLIVoiceMixin:
                         self._agent_running
                         or self._voice_recording
                         or getattr(self, "_voice_processing", False)
+                        # A realtime session (even paused) holds the mic.
+                        or self._voice_realtime_session_alive()
                         or not self._pending_input.empty())
                     if busy:
                         idle_polls = 0
@@ -840,6 +872,9 @@ class CLIVoiceMixin:
         _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
         _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
         _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
+        _rt_line = self._voice_realtime_status_line()
+        if _rt_line:
+            _cprint(_rt_line)
         # Startup-pinned label so /voice status always matches the live prompt_toolkit
         # binding (live config would drift after a mid-session config edit).
         # See #19835.

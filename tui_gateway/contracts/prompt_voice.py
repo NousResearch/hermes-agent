@@ -397,6 +397,32 @@ method("voice.tts", params=VoiceTtsParams, result=VoiceTtsResult,
        doc="Speak text through the backend TTS engine (barge-in aware).")
 
 
+class VoiceRealtimeTokenParams(Params):
+    """``keyterms`` are surface-side transcription hints (cwd, open files) merged into the configured
+    ``voice.realtime.keyterms``; ``expires_seconds`` is clamped to 60..3600 (default 300). ``profile``
+    names the profile whose ``voice.realtime`` config and xAI credentials mint the token (the dashboard
+    serves several from one backend); omitted = the launch profile."""
+
+    expires_seconds: int | None = None
+    keyterms: list[str] | None = None
+    profile: str | None = None
+
+
+class VoiceRealtimeTokenResult(Result):
+    """``methods_voice.py::voice.realtime_token`` — an xAI ephemeral client secret (never the API
+    key) plus the server-built ``session.update`` the browser sends verbatim after the handshake."""
+
+    token: str
+    expires_at: JsonValue | None = None  # as returned by xAI (epoch seconds today)
+    url: str  # full wss URL including ``?model=``
+    model: str
+    session_update: dict[str, JsonValue]
+
+
+method("voice.realtime_token", params=VoiceRealtimeTokenParams, result=VoiceRealtimeTokenResult,
+       doc="Mint an ephemeral xAI realtime token for browser voice surfaces (desktop, dashboard).")
+
+
 # ── wake word ─────────────────────────────────────────────────────────────────────────────────
 
 

@@ -616,6 +616,19 @@ export const ga: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Guth",
+    start: "Comhrá gutha",
+    end: "Críochnaigh",
+    mute: "Balbhaigh an micreafón",
+    unmute: "Díbhalbhaigh an micreafón",
+    connecting: "Ag nascadh…",
+    listening: "Ag éisteacht",
+    speaking: "Ag labhairt",
+    working: "Hermes ag obair…",
+  },
+
   kanban: {
     loading: "Clár Kanban á luchtú…",
     loadFailed: "Theip ar luchtú an chláir Kanban: ",

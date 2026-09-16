@@ -263,7 +263,9 @@ class CLITuiMixin:
 
     def _audio_level_bar(self) -> str:
         """One-char audio level indicator from the recorder's current RMS."""
-        rec = getattr(self, "_voice_recorder", None)
+        rec = getattr(self, "_voice_rt_session", None)
+        if rec is None or not rec.alive:
+            rec = getattr(self, "_voice_recorder", None)
         if rec is None:
             return ""
         # RMS 0-32767 → index 0-7; typical speech is 500-5000, display caps at ~8000.
@@ -833,6 +835,9 @@ class CLITuiMixin:
         from cli import _DIM, _RST, _cprint, logger
         if not self._voice_mode:
             return
+        # Realtime: the key toggles pause/resume of the always-on listener.
+        if self._voice_realtime_handle_record_key(event.app):
+            return
         if self._voice_recording:
             # Always allow STOPPING (even while the agent runs); manual stop ends continuous
             # mode. Flag clearing happens atomically inside _voice_stop_and_transcribe.
@@ -945,6 +950,11 @@ class CLITuiMixin:
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
+            return
+        # Realtime voice session: Ctrl+C ends the voice chat, not Hermes. Skipped when
+        # this press already cleared an overlay (that press falls through to the
+        # agent interrupt, #14026).
+        if not overlay_cleared and self._voice_realtime_handle_ctrl_c(event.app):
             return
         if self._agent_running and self.agent:
             if now - self._last_ctrl_c_time < 2.0:
@@ -1862,6 +1872,7 @@ class CLITuiMixin:
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
         self._voice_last_tts_text = ""  # most recently spoken TTS text (echo guard, #75780)
         self._voice_barge_phase = None  # "generation" or "playback" phase of the last barge trip
+        self._init_voice_realtime_state()
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()

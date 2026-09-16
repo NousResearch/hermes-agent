@@ -608,6 +608,19 @@ export const af: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Stem",
+    start: "Stemgesprek",
+    end: "Beëindig",
+    mute: "Demp mikrofoon",
+    unmute: "Ontdemp mikrofoon",
+    connecting: "Verbind…",
+    listening: "Luister",
+    speaking: "Praat",
+    working: "Hermes werk…",
+  },
+
   kanban: {
     loading: "Kanban-bord word gelaai…",
     loadFailed: "Kon nie Kanban-bord laai nie: ",

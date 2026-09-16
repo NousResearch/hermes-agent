@@ -607,6 +607,19 @@ export const ko: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "음성",
+    start: "음성 채팅",
+    end: "종료",
+    mute: "마이크 음소거",
+    unmute: "음소거 해제",
+    connecting: "연결 중…",
+    listening: "듣는 중",
+    speaking: "말하는 중",
+    working: "Hermes 작업 중…",
+  },
+
   kanban: {
     loading: "Kanban 보드를 불러오는 중입니다…",
     loadFailed: "Kanban 보드를 불러오지 못했습니다: ",

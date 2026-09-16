@@ -83,6 +83,12 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
+    # Realtime-voice supervisor consult flags (stamped by gateway/run_voice.py and run_turn.py,
+    # read by the adapter delivery path). Real fields, not ad-hoc attributes: a plugin
+    # ``pre_gateway_dispatch`` rewrite goes through ``dataclasses.replace`` and must carry them.
+    voice_consult: bool = False        # the turn is the voice model's restated task, not user words
+    voice_text_mirror: bool = False    # consult reply also posts to the bound text channel
+    voice_reply_consumed: bool = False  # the voice model spoke the reply; adapters stay silent
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

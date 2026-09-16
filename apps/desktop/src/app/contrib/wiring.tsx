@@ -15,6 +15,7 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { AudioInputPickerHost } from '@/components/audio-input-picker-host'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
@@ -91,6 +92,7 @@ import {
 } from '@/store/session'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
+import { routeVoiceSupervisorGatewayEvent, routeVoiceSupervisorServerRequest } from '@/store/voice-supervisor-events'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -894,6 +896,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const handleGatewayEventWithPlugins = useCallback(
     (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
       emitGatewayEvent(event)
+      routeVoiceSupervisorGatewayEvent(event)
 
       if (event.type === 'wake.detected') {
         const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
@@ -945,7 +948,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       closeAllTerminals()
     },
     handleGatewayEvent: handleGatewayEventWithPlugins,
-    handleServerRequest,
+    handleServerRequest: request => {
+      routeVoiceSupervisorServerRequest(request)
+
+      return handleServerRequest(request)
+    },
     onConnectionReady: c => {
       connectionRef.current = c
     },
@@ -1446,6 +1453,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
       <ConfirmHost />
+      <AudioInputPickerHost />
 
       {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
           (error card action); renders nothing until requested. */}

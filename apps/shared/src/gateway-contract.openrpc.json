@@ -3751,6 +3751,24 @@
       }
     },
     {
+      "name": "voice.realtime_token",
+      "summary": "Mint an ephemeral xAI realtime token for browser voice surfaces (desktop, dashboard).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/VoiceRealtimeTokenParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/VoiceRealtimeTokenResult"
+        }
+      }
+    },
+    {
       "name": "voice.record",
       "summary": "VAD-bounded push-to-talk; the transcript arrives as a voice.transcript event.",
       "params": [
@@ -32424,6 +32442,94 @@
           "verification"
         ],
         "title": "VerificationStatusResult",
+        "type": "object"
+      },
+      "VoiceRealtimeTokenParams": {
+        "additionalProperties": false,
+        "description": "``keyterms`` are surface-side transcription hints (cwd, open files) merged into the configured\n``voice.realtime.keyterms``; ``expires_seconds`` is clamped to 60..3600 (default 300). ``profile``\nnames the profile whose ``voice.realtime`` config and xAI credentials mint the token (the dashboard\nserves several from one backend); omitted = the launch profile.",
+        "properties": {
+          "expires_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expires Seconds"
+          },
+          "keyterms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Keyterms"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "VoiceRealtimeTokenParams",
+        "type": "object"
+      },
+      "VoiceRealtimeTokenResult": {
+        "additionalProperties": false,
+        "description": "``methods_voice.py::voice.realtime_token`` \u2014 an xAI ephemeral client secret (never the API\nkey) plus the server-built ``session.update`` the browser sends verbatim after the handshake.",
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expires At"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "session_update": {
+            "additionalProperties": true,
+            "title": "Session Update",
+            "type": "object"
+          }
+        },
+        "required": [
+          "token",
+          "url",
+          "model",
+          "session_update"
+        ],
+        "title": "VoiceRealtimeTokenResult",
         "type": "object"
       },
       "VoiceRecordAction": {

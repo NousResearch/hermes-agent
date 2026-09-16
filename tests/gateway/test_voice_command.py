@@ -79,6 +79,7 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_realtime_controllers = {}
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
@@ -573,6 +574,29 @@ class TestVoiceChannelCommands:
         assert mock_adapter._voice_sources[111]["chat_id"] == "123"
         assert mock_adapter._voice_sources[111]["chat_type"] == "group"
 
+    @pytest.mark.asyncio
+    async def test_join_announces_active_voice_pipeline(self, runner):
+        """The join reply says which pipeline engaged — the realtime start
+        falls back to classic silently, so users need this to tell."""
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        event = self._make_discord_event()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        mock_adapter.voice_realtime_brain = MagicMock(return_value="supervisor")
+        result = await runner._handle_voice_channel_join(event)
+        assert "realtime supervisor" in result
+
+        mock_adapter.voice_realtime_brain = MagicMock(return_value="")
+        result = await runner._handle_voice_channel_join(event)
+        assert "classic transcription" in result
+
 
     @pytest.mark.asyncio
     async def test_join_missing_voice_dependencies(self, runner):
@@ -681,6 +705,56 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "group"
         assert event.source.chat_name == "Hermes Server / #general"
         assert event.source.user_id == "42"
+
+    @pytest.mark.asyncio
+    async def test_consult_shares_bound_session_and_channel_prompt(self, runner):
+        """A supervisor consult is a normal TEXT turn in the bound text channel's session (same
+        key as typed messages) and still gets the channel's operator prompt."""
+        from gateway.config import Platform
+        from gateway.session import build_session_key
+
+        bound_source = SessionSource(
+            chat_id="123", chat_name="Hermes Server / #general", chat_type="group",
+            user_id="user1", user_name="user1", platform=Platform.DISCORD,
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {111: bound_source.to_dict()}
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=AsyncMock())
+        mock_adapter.handle_message = AsyncMock()
+        mock_adapter._resolve_channel_prompt = MagicMock(return_value="Be terse in #dev.")
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "check disk usage", consult=True)
+
+        event = mock_adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.voice_consult is True
+        assert event.channel_prompt == "Be terse in #dev."
+        typed = SessionSource.from_dict(bound_source.to_dict())
+        typed.user_id = typed.user_name = "42"
+        assert build_session_key(event.source) == build_session_key(typed)
+
+    @pytest.mark.asyncio
+    async def test_consult_skips_transcript_echo_and_dedup(self, runner):
+        """Consults are the voice model's restatement, not the user's words: no [Voice] caption,
+        and repeating the same task is not an STT duplicate."""
+        from gateway.config import Platform
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "check disk usage", consult=True)
+        await runner._handle_voice_channel_input(111, 42, "check disk usage", consult=True)
+
+        mock_channel.send.assert_not_called()
+        assert mock_adapter.handle_message.call_count == 2
 
 
     # -- _get_guild_id --
@@ -1701,6 +1775,43 @@ class TestVoiceReception:
 
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
+
+    def test_on_packet_dave_failure_falls_through_to_opus(self):
+        """A DAVE error on a plain (non-protocol) frame must not drop it:
+        passthrough mode / not-yet-negotiated senders deliver plain Opus."""
+        dave = MagicMock()
+        dave.decrypt.side_effect = ValueError("Failed to decrypt: NoDecryptorForUser")
+        receiver = self._make_receiver_with_nacl(
+            dave_session=dave, mapped_ssrcs={100: 42}
+        )
+        decoder = self._inject_mock_decoder(receiver, 100)
+
+        with patch("nacl.secret.Aead") as mock_aead:
+            mock_aead.return_value.decrypt.return_value = b"\xf8\xff\xfe"
+            receiver._on_packet(self._build_rtp_packet(ssrc=100))
+
+        dave.decrypt.assert_called_once()
+        decoder.decode.assert_called_once_with(b"\xf8\xff\xfe")
+        assert 100 in receiver._buffers
+        assert len(receiver._buffers[100]) > 0
+
+    def test_on_packet_dave_failure_drops_protocol_frame(self):
+        """A DAVE protocol frame (0xFAFA magic marker) that failed to decrypt
+        is still ciphertext — it must never reach the Opus decoder."""
+        dave = MagicMock()
+        dave.decrypt.side_effect = Exception("KeyRotationFailed")
+        receiver = self._make_receiver_with_nacl(
+            dave_session=dave, mapped_ssrcs={100: 42}
+        )
+        decoder = self._inject_mock_decoder(receiver, 100)
+
+        with patch("nacl.secret.Aead") as mock_aead:
+            mock_aead.return_value.decrypt.return_value = bytes(range(1, 40)) + b"\xfa\xfa"
+            receiver._on_packet(self._build_rtp_packet(ssrc=100))
+
+        dave.decrypt.assert_called_once()
+        decoder.decode.assert_not_called()
+        assert len(receiver._buffers.get(100, b"")) == 0
 
 
 class TestVoiceTTSPlayback:

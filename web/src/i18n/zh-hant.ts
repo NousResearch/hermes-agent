@@ -607,6 +607,19 @@ export const zhHant: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "語音",
+    start: "語音聊天",
+    end: "結束",
+    mute: "靜音麥克風",
+    unmute: "取消靜音",
+    connecting: "連線中…",
+    listening: "聆聽中",
+    speaking: "說話中",
+    working: "Hermes 工作中…",
+  },
+
   kanban: {
     loading: "正在載入看板…",
     loadFailed: "載入看板失敗：",

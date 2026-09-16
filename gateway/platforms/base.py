@@ -1734,13 +1734,29 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             for attr in ("_gateway_pending_stt_text", "_gateway_pending_stt_transcripts"):
                 if hasattr(existing, attr):
                     delattr(existing, attr)
+            _merge_voice_consult_flags(existing, event)
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            _merge_voice_consult_flags(existing, event)
             return
     pending_messages[session_key] = event
+
+
+def _merge_voice_consult_flags(existing: MessageEvent, event: MessageEvent) -> None:
+    """A realtime supervisor consult coalescing with a typed message from the same sender.
+
+    The single pending slot cannot hold both, and dropping either loses input, so the merged turn
+    keeps BOTH contracts: it still completes the consult (``voice_consult`` — the voice model
+    speaks the summary) and it still posts its text reply (``voice_text_mirror``) so the typed
+    half's answer never vanishes into voice-only delivery."""
+    if existing.voice_consult == event.voice_consult:
+        existing.voice_text_mirror = existing.voice_text_mirror or event.voice_text_mirror
+        return
+    existing.voice_consult = True
+    existing.voice_text_mirror = True
 
 
 # Transient *connection* failures worth retrying. Plain/read/write "timeout" excluded on purpose:
@@ -3846,6 +3862,10 @@ class BasePlatformAdapter(ABC):
         return bool(
             self._should_auto_tts_for_chat(event.source.chat_id)
             and event.message_type == MessageType.VOICE and text_content and not media_files
+            # A realtime supervisor consult owns this turn's speech (the voice
+            # model summarizes it); reading the full reply here would talk over
+            # that summary. Stamped by the runner when the consult consumed it.
+            and not event.voice_reply_consumed
             and not self._streaming_tts_turn_completed(session_key, generation, event=event))
 
     async def _play_tts_file(
@@ -4069,6 +4089,11 @@ class BasePlatformAdapter(ABC):
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
         if not getattr(self.config, "typing_indicator", True):
             return None
+        # A realtime supervisor consult is a spoken task answered by the voice model; unless its
+        # reply is mirrored into the channel, a typing indicator there would advertise a reply
+        # that never posts.
+        if event.voice_consult and not event.voice_text_mirror:
+            return None
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
             kwargs["stop_event"] = interrupt_event
@@ -4210,14 +4235,24 @@ class BasePlatformAdapter(ABC):
                 if not _tts_paths and _tts_requested_path is not None:
                     with contextlib.suppress(OSError):
                         os.remove(_tts_requested_path)
-                if text_content and not _tts_caption_delivered:
+                # A realtime supervisor consult already spoke its summary in the VC:
+                # skip the bound-channel transcript unless the operator opted in with
+                # voice.realtime.discord_text_mirror (stamped as voice_text_mirror).
+                _skip_voice_text = event.voice_reply_consumed and not event.voice_text_mirror
+                if text_content and not _tts_caption_delivered and _skip_voice_text:
+                    logger.info("[%s] skip text send for voice-consumed consult (%d chars)",
+                                self.name, len(text_content))
+                elif text_content and not _tts_caption_delivered:
                     await self._send_final_text(
                         event, session_key, text_content, _final_thread_metadata,
                         is_ephemeral_response, _ephemeral_ttl, _record_delivery)
                 await self._deliver_attachments(
                     event, extracted, _final_thread_metadata,
-                    anything_sent=delivery_attempted or _tts_caption_delivered,
+                    anything_sent=delivery_attempted or _tts_caption_delivered or _skip_voice_text,
                     record_delivery=_record_delivery)
+                if _skip_voice_text and not delivery_attempted:
+                    # The voice model delivered this turn; nothing was dropped.
+                    delivery_attempted = delivery_succeeded = True
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(

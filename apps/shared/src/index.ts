@@ -98,6 +98,21 @@ export {
 } from './json-rpc-gateway'
 export { modelSearchText } from './model-search-text'
 export {
+  ACK_PHRASES,
+  CONSULT_TOOL_NAME,
+  minimalSessionUpdate,
+  REALTIME_INPUT_SAMPLE_RATE,
+  REALTIME_OUTPUT_SAMPLE_RATE,
+  type RealtimeFunctionCall,
+  type RealtimeTokenGrant,
+  type RealtimeVoiceCallbacks,
+  RealtimeVoiceClient,
+  type RealtimeVoiceClientOptions,
+  type RealtimeVoiceStatus,
+  resampleFloat32,
+  STEER_TOOL_NAME
+} from './realtime-voice'
+export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,
   REASONING_EFFORT_VALUES,
@@ -167,6 +182,24 @@ export {
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
+export { realtimeVoiceContextKeyterms } from './voice-keyterms'
+export { interceptsTypedVoiceStop, isVoiceStopCommand } from './voice-stop-word'
+export {
+  MAX_CONSULT_OUTPUT_CHARS,
+  NARRATE_INTERVAL_MS,
+  ownsTurnText,
+  STALE_CONSULT_MIN_AGE_MS,
+  type TurnRunner,
+  type VoiceSession,
+  VoiceSupervisorController
+} from './voice-supervisor'
+export {
+  VOICE_SUPERVISOR_GATEWAY_EVENTS,
+  VOICE_SUPERVISOR_SERVER_REQUESTS,
+  type VoiceSupervisorSurfaceEvent,
+  voiceSupervisorSurfaceEvent,
+  voiceSupervisorSurfaceRequest
+} from './voice-supervisor-events'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

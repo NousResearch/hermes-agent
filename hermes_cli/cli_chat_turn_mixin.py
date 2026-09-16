@@ -77,7 +77,7 @@ class CLIChatTurnMixin:
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
 
-        turn = _ChatTurn()
+        turn = _ChatTurn(message=message)
         try:
             self._reset_stream_state()
             # Not part of _reset_stream_state: must persist across intermediate turn
@@ -230,7 +230,9 @@ class CLIChatTurnMixin:
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
         # Streaming TTS: any working provider speaks sentence-by-sentence as tokens arrive.
-        if self._voice_tts:
+        # Supervisor brain owns the speaker: grok-voice speaks its own replies and the
+        # consult summaries, so classic TTS stays silent.
+        if self._voice_tts and not self._voice_realtime_supervisor_active():
             try:
                 from tools.tts_tool import _import_sounddevice, check_tts_requirements
                 from tools.tts_tool_speaker import stream_tts_to_speaker
@@ -482,7 +484,7 @@ class CLIChatTurnMixin:
 
         Returns the response text.
         """
-        from cli import _DIM, _RST, _cprint, _suspend_output_history
+        from cli import _DIM, _RST, _cprint, _suspend_output_history, logger
         response = turn.result.get("final_response", "") if turn.result else ""
         # "failed"/"partial" with an empty final_response: no usable answer.
         if turn.result and (turn.result.get("failed") or turn.result.get("partial")) and not response:
@@ -524,8 +526,26 @@ class CLIChatTurnMixin:
                     f"response may be incomplete{_RST}"
                 )
 
-        # Batch TTS unless streaming TTS already spoke the response.
-        if self._voice_tts and response and not turn.use_streaming_tts:
+        # Supervisor consult: hand the result to the voice session (grok speaks the
+        # summary); consumed turns never hit local TTS.
+        _consult_handled = False
+        try:
+            _consult_handled = self._voice_realtime_consult_complete(
+                turn.message, response,
+                interrupted=bool(turn.result and turn.result.get("interrupted")))
+        except Exception as e:
+            logger.debug("consult completion hook failed: %s", e)
+
+        # Batch TTS unless streaming TTS already spoke the response — and never while
+        # the supervisor brain is live: grok owns the speaker for EVERY turn (typed
+        # input included), or its speech and classic TTS read the same reply twice.
+        if (
+            self._voice_tts
+            and response
+            and not turn.use_streaming_tts
+            and not _consult_handled
+            and not self._voice_realtime_supervisor_active()
+        ):
             self._voice_speak_response_async(response)
 
         # Re-queue the interrupt message (plus any that arrived meanwhile) as the next

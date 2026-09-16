@@ -7,7 +7,9 @@ const reactUi: TestProjectConfiguration = {
     name: 'ui',
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
-    include: ['src/**/*.test.{ts,tsx}'],
+    // ../shared ships raw TS with colocated tests but no runner of its own —
+    // without this include its tests never execute anywhere.
+    include: ['src/**/*.test.{ts,tsx}', '../shared/src/**/*.test.ts'],
     globals: true,
     // The first test in each file pays jsdom env init + full module transform,
     // which can exceed vitest's 5000ms default under CI/load. 15s gives the

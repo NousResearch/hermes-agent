@@ -1714,6 +1714,15 @@ def _projected_workspace(
     the task body, or use the board's ``projection`` object.  This makes a
     respawn re-derive the tree from the same pinned inputs and never trust a
     prior ``workspace_path`` (which is replaced with the projection path).
+
+    When no explicit ``projection.repo`` is configured, the task's current
+    ``workspace_path`` is used once as the implicit source and immediately
+    cached in a per-task sidecar file next to the projection destination,
+    because dispatch overwrites ``workspace_path`` with the projection
+    destination right after this call returns; without the sidecar, a later
+    respawn would try (and fail) to resolve the source repo from that now
+    ``.git``-free directory. The sidecar — not the task body — is used so a
+    prose task body is never overwritten/destroyed by this bookkeeping.
     """
     from hermes_cli.kanban_ceiling import ScopeError, resolve_scope
     from hermes_cli.kanban_projection import build_projection
@@ -1731,11 +1740,29 @@ def _projected_workspace(
         except (TypeError, ValueError):
             pass
     config = {**board_projection, **task_projection}
+    if destination_root is None:
+        destination_root = _kb.board_dir(board) / "workspaces"
+    destination = Path(destination_root) / task.id
+    # Sidecars live next to (never inside) the projection destination: the
+    # destination is the worker's own workspace, and a worker that can edit a
+    # file could just as easily edit a same-directory manifest recording that
+    # file's expected hash, silently defeating the isolation diff.
+    repo_sidecar = Path(destination_root) / f".{task.id}.projection-source.json"
+    manifest_sidecar = Path(destination_root) / f".{task.id}.projection-manifest.json"
     repo_value = config.get("repo") or config.get("source_repo")
+    implicit_repo = False
     if not repo_value:
-        # The initial workspace path is the source-repository contract.  Once
-        # persisted as a projection it must not be used as an implicit source.
-        repo_value = task.workspace_path
+        implicit_repo = True
+        try:
+            repo_value = json.loads(repo_sidecar.read_text(encoding="utf-8")).get("repo")
+        except (OSError, ValueError):
+            repo_value = None
+        if not repo_value:
+            # The initial workspace path is the source-repository contract.
+            # Once persisted as a projection it must not be used as an
+            # implicit source, so it is cached in the sidecar below before
+            # it is overwritten.
+            repo_value = task.workspace_path
     base_sha = config.get("base_sha") or metadata.get("projection_base_sha")
     ceiling = config.get("ceiling") or metadata.get("projection_ceiling")
     if not repo_value or not base_sha or not ceiling:
@@ -1746,9 +1773,6 @@ def _projected_workspace(
     if not (repo / ".git").exists() and not (repo / "HEAD").exists():
         raise ScopeError(f"projection repo is not a git repository: {repo}")
     scope = resolve_scope(task, ceiling, repo=repo, base_sha=str(base_sha))
-    if destination_root is None:
-        destination_root = _kb.board_dir(board) / "workspaces"
-    destination = Path(destination_root) / task.id
     # Re-claim is a new materialization, not reuse of potentially stale bytes.
     if destination.exists():
         if not destination.is_dir():
@@ -1756,6 +1780,9 @@ def _projected_workspace(
         shutil.rmtree(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     handle = build_projection(str(base_sha), scope, destination, repo=repo)
+    manifest_sidecar.write_text(json.dumps(handle.manifest, sort_keys=True), encoding="utf-8")
+    if implicit_repo:
+        repo_sidecar.write_text(json.dumps({"repo": str(repo)}), encoding="utf-8")
     return handle.path
 
 

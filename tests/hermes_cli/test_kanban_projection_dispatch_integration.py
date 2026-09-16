@@ -65,3 +65,42 @@ def test_dispatch_materializes_bounded_projection_and_rederives(kanban_home, mon
         task = kb.get_task(conn, task_id)
         fresh = kbd._projected_workspace(task, board=None)
         assert Path(fresh).joinpath("allowed.txt").read_text() == "v2"
+
+
+def test_implicit_repo_survives_workspace_path_overwrite_on_respawn(kanban_home, monkeypatch, tmp_path):
+    """A projected task with no explicit projection.repo relies on the initial
+    workspace_path as its source repo. Dispatch overwrites workspace_path with
+    the (.git-free) projection destination right after materializing it, so a
+    later respawn must not re-derive the source from that stale value.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "allowed.txt").write_text("v1")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=x", "-c", "user.email=x@y", "commit", "-qm", "v1"], check=True)
+    base_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    # No "repo" key: the implicit-source fallback must kick in and persist it.
+    projection = {"base_sha": base_sha, "ceiling": {"read": ["allowed.txt"], "write": ["allowed.txt"]}}
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
+    spawns = []
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="project", assignee="alice", workspace_kind="projected",
+            workspace_path=str(repo), scope_paths=["allowed.txt"],
+            body=json.dumps({"projection": projection}),
+        )
+        result = kbd.dispatch_once(conn, spawn_fn=lambda task, workspace, board=None: spawns.append(workspace) or 1)
+        assert result.spawned and spawns
+        projected = Path(spawns[0])
+        assert (projected / "allowed.txt").read_text() == "v1"
+
+        # Dispatch persisted workspace_path to the projection dir (no .git) and
+        # released the claim back to ready; simulate a respawn from there.
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        task = kb.get_task(conn, task_id)
+        assert task.workspace_path == str(projected)
+        assert not (projected / ".git").exists()
+
+        respawned = kbd._projected_workspace(task, board=None)
+        assert Path(respawned).joinpath("allowed.txt").read_text() == "v1"

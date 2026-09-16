@@ -128,9 +128,16 @@ def resolve_scope(task: Any, ceiling: RoleCeiling | dict[str, Any], *, repo: Any
         out = set()
         for req in requested:
             for cap in patterns:
-                if _matches(cap, req) or _matches(req, cap):
-                    if not any(_matches(h, req) for h in blocked):
-                        out.add(req)
+                if _matches(cap, req):
+                    # req is within cap: the request is the narrower pattern.
+                    narrower = req
+                elif _matches(req, cap):
+                    # cap is within req: never widen past the role ceiling.
+                    narrower = cap
+                else:
+                    continue
+                if not any(_matches(h, narrower) for h in blocked):
+                    out.add(narrower)
         return out
     read = clipped(ceiling.read)
     write = clipped(ceiling.write) & read

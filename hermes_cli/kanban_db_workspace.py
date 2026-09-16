@@ -65,8 +65,10 @@ def resolve_exec_tuple(task: "Task", conn: sqlite3.Connection) -> ExecTuple:
     del conn  # reserved for policy/project resolvers; no live session state
     workspace = Path(getattr(task, "workspace_path", "") or "").expanduser()
     base_sha = ""
-    if workspace.is_dir() and (_git(workspace, "rev-parse", "HEAD", timeout=10).returncode == 0):
-        base_sha = _git(workspace, "rev-parse", "HEAD", timeout=10).stdout.strip()
+    if workspace.is_dir():
+        head = _git(workspace, "rev-parse", "HEAD", timeout=10)
+        if head.returncode == 0:
+            base_sha = head.stdout.strip()
     manifest = getattr(task, "scope_manifest", None)
     if manifest is None:
         manifest = getattr(task, "scope_paths", None)

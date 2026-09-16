@@ -1,6 +1,7 @@
 """Build a .git-free projection from a pinned git tree."""
 from __future__ import annotations
 
+import hashlib
 import io
 import shutil
 import subprocess
@@ -17,6 +18,12 @@ class ProjectionHandle:
     path: Path
     base_sha: str
     paths: frozenset[str]
+    # sha256 per repo-relative path, as materialized. Callers needing a later
+    # .git-free ingest diff (see kanban_ingest._diff) must store this baseline
+    # somewhere the worker cannot write to — never inside ``path`` itself,
+    # since a worker that can edit a file can just as easily edit a manifest
+    # sitting in the same worker-controlled directory.
+    manifest: dict[str, str]
 
 
 def _validate_paths(paths: set[str] | frozenset[str]) -> list[str]:
@@ -79,6 +86,7 @@ def build_projection(base_sha: str, scope: Scope, dest: Path, *, repo: Any = "."
     )
     if archive.returncode:
         raise ScopeError(f"git archive failed: {archive.stderr.decode(errors='replace').strip()}")
+    manifest: dict[str, str] = {}
     try:
         with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as tar:
             members = tar.getmembers()
@@ -98,12 +106,16 @@ def build_projection(base_sha: str, scope: Scope, dest: Path, *, repo: Any = "."
                     source = tar.extractfile(member)
                     if source is None:
                         raise ScopeError("git archive contained an unreadable file")
+                    digest = hashlib.sha256()
                     with target.open("wb") as output:
-                        shutil.copyfileobj(source, output)
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                            output.write(chunk)
                     target.chmod(member.mode & 0o777)
+                    manifest[member_path.as_posix()] = digest.hexdigest()
                 else:
                     raise ScopeError("git archive contained an unsupported entry")
     except (tarfile.TarError, OSError) as exc:
         shutil.rmtree(destination, ignore_errors=True)
         raise ScopeError(f"could not extract projection: {exc}") from exc
-    return ProjectionHandle(destination, base_sha, frozenset(paths))
+    return ProjectionHandle(destination, base_sha, frozenset(paths), manifest)

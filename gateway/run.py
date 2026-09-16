@@ -2251,10 +2251,20 @@ def _resolve_runtime_agent_kwargs() -> dict:
     return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities}
 
 
+# Set by _try_resolve_fallback_provider so its model still replaces a non-empty configured model.
+# A custom_providers entry's bundled model must not: it fills in, matching the CLI
+# (hermes_cli/cli_agent_setup_mixin.py).
+_RUNTIME_MODEL_OVERRIDE_KEY = "_runtime_model_override"
+# Carries the resolved custom-provider entry name for the provider-slug check below.
+_RUNTIME_MODEL_SOURCE_KEY = "_runtime_model_source"
+
+
 def _runtime_agent_kwargs(runtime: dict) -> dict:
     """AIAgent constructor kwargs shared by every runtime-provider resolution.
-    ``request_overrides`` passes through as resolved so the provider's request body reaches each turn."""
-    return {
+    ``request_overrides`` passes through as resolved so the provider's request body reaches each turn.
+    ``model`` is present only when the resolved runtime bundles one (a ``custom_providers`` entry's
+    ``model`` / ``default_model``); every caller pops it through ``_adopt_runtime_model``."""
+    kwargs = {
         "api_key": runtime.get("api_key"),
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
@@ -2264,6 +2274,43 @@ def _runtime_agent_kwargs(runtime: dict) -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "request_overrides": runtime.get("request_overrides")}
+    runtime_model = runtime.get("model")
+    if isinstance(runtime_model, str) and runtime_model.strip():
+        kwargs["model"] = runtime_model.strip()
+        # The provider entry's own name, so _adopt_runtime_model can recognize a model string that
+        # is really the provider slug. Popped alongside "model"; never reaches AIAgent.
+        entry_name = runtime.get("name")
+        if isinstance(entry_name, str) and entry_name.strip():
+            kwargs[_RUNTIME_MODEL_SOURCE_KEY] = entry_name.strip()
+    return kwargs
+
+
+def _adopt_runtime_model(current_model, runtime_kwargs: dict) -> tuple:
+    """Pop a runtime-supplied model from ``runtime_kwargs`` and decide whether it applies.
+
+    A fallback entry names its model explicitly, so it replaces ``current_model`` outright. A
+    ``custom_providers`` entry's bundled model only fills in: it applies when no model is configured,
+    or when the configured model is really the provider slug (``hermes chat --model <provider>``
+    would otherwise send the provider name as the model and get a 400). This mirrors
+    ``CLIAgentSetupMixin._refresh_runtime_provider``.
+
+    Returns the model to use and ``runtime_kwargs`` with both private keys removed, so the result
+    stays safe to splat into ``AIAgent(model=..., **runtime_kwargs)``.
+    """
+    runtime_model = runtime_kwargs.pop("model", None)
+    is_override = bool(runtime_kwargs.pop(_RUNTIME_MODEL_OVERRIDE_KEY, False))
+    entry_name = runtime_kwargs.pop(_RUNTIME_MODEL_SOURCE_KEY, None)
+    current = current_model.strip() if isinstance(current_model, str) else ""
+    if not isinstance(runtime_model, str) or not runtime_model.strip():
+        return current, runtime_kwargs
+    runtime_model = runtime_model.strip()
+    if is_override or not current:
+        return runtime_model, runtime_kwargs
+    slugs = {str(runtime_kwargs.get(key) or "").strip().lower()
+             for key in ("provider", "requested_provider")}
+    slugs.add(str(entry_name or "").strip().lower())
+    slugs.discard("")
+    return (runtime_model if current.lower() in slugs else current), runtime_kwargs
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2316,7 +2363,7 @@ def _resolve_gateway_model_context(
             custom_providers = data.get("custom_providers")
 
     def _read_runtime() -> None:
-        nonlocal provider, base_url, api_key
+        nonlocal provider, base_url, api_key, resolved_model
         if route and route.get("base_url"):
             # A session route with its own endpoint (a /model switch) replaces the default runtime
             # read; a route without one (persisted / SessionDB / plain config) still resolves the
@@ -2326,6 +2373,9 @@ def _resolve_gateway_model_context(
             api_key = route.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()
+        # A bundled custom-provider model is the model this endpoint will actually serve, so the
+        # context window must be looked up against it, not against an empty model.default.
+        resolved_model, runtime = _adopt_runtime_model(resolved_model, runtime)
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")
@@ -2421,7 +2471,8 @@ def _try_resolve_fallback_provider() -> dict | None:
                     # logged as "openrouter", contradicting the operator's config (#32790).
                     "Fallback provider resolved: %s model=%s",
                     entry.get("provider") or runtime.get("provider"), entry.get("model"))
-                return {**_runtime_agent_kwargs(runtime), "model": entry.get("model")}
+                return {**_runtime_agent_kwargs(runtime), "model": entry.get("model"),
+                        _RUNTIME_MODEL_OVERRIDE_KEY: True}
             except Exception as fb_exc:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
                 continue

@@ -122,8 +122,9 @@ class GatewayTurnMixin:
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
-            _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _adopt_runtime_model, _credential_pool_for_provider, _get_channel_override,
+            _resolve_gateway_model, _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
         )
         skey = self._resolve_session_key_or_none(source, session_key)
 
@@ -165,10 +166,10 @@ class GatewayTurnMixin:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        runtime_model = runtime_kwargs.pop("model", None)
-        if runtime_model:
-            logger.info("Runtime provider supplied explicit model override: %s -> %s", model, runtime_model)
-            model = runtime_model
+        config_model = model
+        model, runtime_kwargs = _adopt_runtime_model(model, runtime_kwargs)
+        if model != config_model:
+            logger.info("Runtime provider supplied model: %s -> %s", config_model, model)
 
         cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
         if cfg and source is not None:
@@ -178,14 +179,15 @@ class GatewayTurnMixin:
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
             )
             if ch:
-                if ch.model:
-                    model = ch.model
                 if ch.provider:
                     runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+                    # Resolve against the channel's own model, not the already-resolved global one:
+                    # a provider-only override must fill in from this provider rather than keep the
+                    # previous provider's model. An empty result leaves the global model in place.
+                    ch_model, runtime_kwargs = _adopt_runtime_model(ch.model, runtime_kwargs)
+                    model = ch_model or model
+                elif ch.model:
+                    model = ch.model
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

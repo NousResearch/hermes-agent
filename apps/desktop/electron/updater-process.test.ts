@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import type { SpawnOptions } from 'node:child_process'
+import { type SpawnOptions, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
@@ -7,55 +9,26 @@ import { test } from 'vitest'
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
-  MARKER_SELF_ADOPT_EPOCH_MS,
+  launchWindowsUpdateTransport,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  resolveWindowsDevRelaunchAppPath,
+  resolveWindowsUpdateTransport,
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
-  stagedUpdaterSupportsPrewrittenMarker,
+  WINDOWS_HANDOFF_ENV,
+  type WindowsUpdateTransport,
   wrapHandoffForDetachedConsole
 } from './updater-process'
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
-test('stagedUpdaterSupportsPrewrittenMarker rejects installers predating the self-adopt fix', () => {
-  // The real-world trap: an installer staged at first install months ago, never
-  // refreshed because copy_self_to_hermes_home no-ops during --update.
-  assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
-      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS - 60 * DAY_MS
-    }),
-    false
-  )
+test('dev relaunch uses Electron resolved app path independently of launch switches', () => {
+  const appPath = 'C:\\Hermes proof\\apps\\desktop'
+  assert.equal(resolveWindowsDevRelaunchAppPath(true, appPath), appPath)
+  assert.equal(resolveWindowsDevRelaunchAppPath(false, appPath), undefined)
 })
 
-test('stagedUpdaterSupportsPrewrittenMarker accepts installers from the fix onward', () => {
-  assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
-      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS
-    }),
-    true
-  )
-  assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
-      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS + 30 * DAY_MS
-    }),
-    true
-  )
-})
-
-test('stagedUpdaterSupportsPrewrittenMarker treats an unreadable mtime as unsupported', () => {
-  // Bias toward the path that can always make progress: a skipped pre-write
-  // loses anti-respawn hardening, a wedged updater can never update again.
-  assert.equal(
-    stagedUpdaterSupportsPrewrittenMarker('C:\\Hermes\\hermes-setup.exe', {
-      stagedMtimeMs: () => null
-    }),
-    false
-  )
-})
 
 test('resolveStagedUpdaterBinary still returns a stale staged updater on Windows', () => {
   // Staleness gates only the marker PRE-WRITE, never the hand-off itself:
@@ -64,12 +37,113 @@ test('resolveStagedUpdaterBinary still returns a stale staged updater on Windows
   assert.equal(
     resolveStagedUpdaterBinary('C:\\Hermes', {
       fileExists: () => true,
-      isWindows: true,
-      stagedMtimeMs: () => MARKER_SELF_ADOPT_EPOCH_MS - 60 * DAY_MS
+      isWindows: true
     }),
     path.join('C:\\Hermes', 'hermes-setup.exe')
   )
 })
+
+function scriptTransport(root: string): WindowsUpdateTransport & { kind: 'script' } {
+  const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
+  const handoff = resolveUpdateScriptHandoff(root, { isWindows: true, fileExists: candidate => candidate === expected })
+
+  assert.ok(handoff)
+
+  return { kind: 'script', handoff }
+}
+
+const HANDOFF_VALUES = {
+  branch: 'main',
+  desktopPid: 42,
+  installRoot: String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`,
+  nonce: 'a'.repeat(48),
+  relaunchExe: String.raw`C:\Hermes\Hermes.exe`
+}
+
+test('the Windows script hand-off spawns its cmd wrapper non-detached even when the caller asks for detached', () => {
+  // #116161: a DETACHED_PROCESS cmd.exe owns no console, so `start /b` would
+  // leave powershell to allocate a new visible one (or die in console init).
+  const calls: SpawnOptions[] = []
+
+  const launch = launchWindowsUpdateTransport(
+    scriptTransport(HANDOFF_VALUES.installRoot),
+    HANDOFF_VALUES,
+    { cwd: String.raw`C:\Hermes`, detached: true, stdio: 'ignore', env: { KEEP: '1' } },
+    {
+      isWindows: true,
+      spawnProcess: (_command, _args, options) => {
+        calls.push(options)
+
+        return { pid: 7, unref: () => {} }
+      }
+    }
+  )
+
+  assert.equal(launch.kind, 'spawned')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].detached, false)
+  assert.equal(calls[0].windowsHide, true)
+  assert.equal(calls[0].env?.KEEP, '1', 'caller env survives')
+  assert.equal(calls[0].env?.[WINDOWS_HANDOFF_ENV.nonce], HANDOFF_VALUES.nonce)
+})
+
+test('a remote-served hand-off tells the script not to restart a local gateway; a local one does not', () => {
+  // #117529: a remote-served Desktop must not (re)start a local messaging
+  // gateway that competes with the remote host's channel polling.
+  const { handoff } = scriptTransport(HANDOFF_VALUES.installRoot)
+  const remote = wrapHandoffForDetachedConsole(handoff, { ...HANDOFF_VALUES, noGateway: true })
+  const local = wrapHandoffForDetachedConsole(handoff, HANDOFF_VALUES)
+
+  assert.equal(remote.env[WINDOWS_HANDOFF_ENV.noGateway], '1')
+  assert.equal(WINDOWS_HANDOFF_ENV.noGateway in local.env, false)
+})
+
+test.skipIf(process.platform !== 'win32')(
+  'the encoded launcher binds the no-gateway flag onto the script -NoGateway switch',
+  () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-handoff-launcher-'))
+
+    try {
+      const out = path.join(dir, 'bound.txt')
+      const script = path.join(dir, 'windows.ps1')
+
+      fs.writeFileSync(
+        script,
+        [
+          'param([string]$InstallRoot, [string]$Branch, [int]$DesktopPid, [string]$RelaunchExe,',
+          '      [string]$HandoffNonce, [string]$RelaunchAppPath, [switch]$NoGateway)',
+          `Set-Content -LiteralPath '${out.replace(/'/g, "''")}' -Value ([string][bool]$NoGateway)`,
+          'exit 0'
+        ].join('\r\n')
+      )
+
+      const run = (noGateway: boolean) => {
+        const wrapped = wrapHandoffForDetachedConsole(
+          { command: 'powershell.exe', args: [], scriptPath: script },
+          { ...HANDOFF_VALUES, installRoot: dir, noGateway }
+        )
+
+        // args[6..] is `<powershell> -NoProfile ... -EncodedCommand <launcher>`;
+        // run it directly (no cmd `start`) so the exit is synchronous.
+        const result = spawnSync(wrapped.args[6], wrapped.args.slice(7), {
+          env: { ...process.env, ...wrapped.env },
+          encoding: 'utf8',
+          windowsHide: true
+        })
+
+        assert.equal(result.status, 0, String(result.stderr || result.stdout))
+
+        return fs.readFileSync(out, 'utf8').trim()
+      }
+
+      assert.equal(run(true), 'True')
+      assert.equal(run(false), 'False')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  },
+  60_000
+)
 
 test('spawnUpdaterProcess hides the updater console and detaches the child on Windows', () => {
   const calls: Array<{ args: string[]; command: string; options: SpawnOptions }> = []
@@ -219,10 +293,33 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
+test('resolveWindowsUpdateTransport selects the live checkout script', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const scriptPath = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
+
+  const transport = resolveWindowsUpdateTransport(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === scriptPath
+  })
+
+  assert.equal(transport.kind, 'script')
+  assert.equal(transport.kind === 'script' ? transport.handoff.scriptPath : null, scriptPath)
+})
+
+test('resolveWindowsUpdateTransport requires a manual update without a live script', () => {
+  const transport = resolveWindowsUpdateTransport(String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`, {
+    isWindows: true,
+    fileExists: () => false
+  })
+
+  assert.deepEqual(transport, { kind: 'manual' })
+})
+
 test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden wrapper console', () => {
   // #116161: `start /min` allocated a NEW (minimized, visible) console for
   // powershell on every hand-off; `detached: true` (DETACHED_PROCESS) would
   // leave the wrapper console-less, forcing the same allocation under `/b`.
+
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -254,6 +351,38 @@ test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden
     '-Branch',
     'main'
   ])
+})
+
+test('authenticated Windows handoff uses the absolute inbox PowerShell path', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
+
+  const handoff = resolveUpdateScriptHandoff(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === expected
+  })
+
+  assert.ok(handoff)
+
+  const wrapped = wrapHandoffForDetachedConsole(handoff, {
+    branch: 'main',
+    desktopPid: 42,
+    installRoot: root,
+    nonce: 'a'.repeat(48),
+    relaunchExe: String.raw`C:\Hermes\Hermes.exe`
+  })
+
+  const powershell = path.join(
+    process.env.SystemRoot || 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe'
+  )
+
+  assert.equal(wrapped.command, 'cmd.exe')
+  assert.equal(wrapped.args[6], powershell)
+  assert.equal(wrapped.env?.HERMES_UPDATE_HANDOFF_SCRIPT, expected)
 })
 
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {

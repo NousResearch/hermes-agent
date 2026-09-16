@@ -3509,6 +3509,8 @@ export interface Translations {
     bundleSwapPending: string
     bundleSwapPendingDesc: string
     bundleSwapPendingAction: string
+    rebuildTitle: string
+    rebuildBody: string
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string
@@ -3582,6 +3584,8 @@ export interface Translations {
     changeLogOther: string
     changeLogFallbackLabel: string
     changeLogFallbackItem: string
+    cancellingWait: string
+    cancelWaitFailed: string
     applyStatus: {
       preparing: string
       pulling: string

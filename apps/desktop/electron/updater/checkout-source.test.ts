@@ -9,6 +9,8 @@ import { promisify } from 'node:util'
 import { expect, it, vi } from 'vitest'
 
 import * as updaterProcess from '../updater-process'
+import * as handoffAck from '../windows-update-apply'
+import { releaseUpdateMarkerIfOwnedBy } from '../update-marker'
 
 import { type CheckoutStrategyDeps, createCheckoutStrategy } from './checkout'
 import { readSourceUpdate, type SourceUpdate } from './checkout-source'
@@ -392,6 +394,10 @@ urllib.request.build_opener = local_build
 
     const strategy: ReturnType<typeof createCheckoutStrategy> = createCheckoutStrategy(deps)
     const spawned: { command: string; args: string[]; options: SpawnOptions }[] = []
+    vi.spyOn(handoffAck, 'waitForAcknowledgedUpdaterClaim').mockImplementation(async ({ hermesHome }) => {
+      releaseUpdateMarkerIfOwnedBy(hermesHome, process.pid)
+      return true
+    })
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
       (command: string, args: string[], options: SpawnOptions): updaterProcess.UpdaterChild => {
         spawned.push({ command, args, options })
@@ -426,9 +432,14 @@ urllib.request.build_opener = local_build
       fs.writeFileSync(script, '')
       expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
       const handoff: (typeof spawned)[number] | undefined = spawned.pop()
-      expect(handoff?.args).toContain(script)
-      expect(handoff?.args).toContain(channel)
-      expect(handoff?.args).toContain(process.platform === 'win32' ? '-Channel' : '--channel')
+      if (process.platform === 'win32') {
+        expect(handoff?.options.env?.HERMES_UPDATE_HANDOFF_SCRIPT).toBe(script)
+        expect(handoff?.options.env?.HERMES_UPDATE_HANDOFF_CHANNEL).toBe(channel)
+      } else {
+        expect(handoff?.args).toContain(script)
+        expect(handoff?.args).toContain(channel)
+        expect(handoff?.args).toContain('--channel')
+      }
       expect(handoff?.args).not.toContain('--branch')
       expect(handoff?.args).not.toContain('-Branch')
       expect(handoff?.command).not.toBe(deps.resolveUpdaterBinary())
@@ -465,9 +476,12 @@ urllib.request.build_opener = local_build
       updateAvailable: false
     })
     expect(await strategy.apply()).toMatchObject({ ok: true, handedOff: true })
-    expect(spawned.pop()?.args).toEqual(
-      expect.arrayContaining([process.platform === 'win32' ? '-Branch' : '--branch', 'feature/gui'])
-    )
+    const branchHandoff = spawned.pop()
+    if (process.platform === 'win32') {
+      expect(branchHandoff?.options.env?.HERMES_UPDATE_HANDOFF_BRANCH).toBe('feature/gui')
+    } else {
+      expect(branchHandoff?.args).toEqual(expect.arrayContaining(['--branch', 'feature/gui']))
+    }
     fs.rmSync(scriptDirectory, { recursive: true, force: true })
     expect(await strategy.apply()).toMatchObject({ manual: true, command: 'hermes update --branch feature/gui' })
     // apply() forces a fresh check; under the R2 protocol that re-resolution
@@ -482,4 +496,4 @@ urllib.request.build_opener = local_build
     })
     fs.rmSync(temporary, { recursive: true, force: true })
   }
-}, 30000)
+}, process.platform === 'win32' ? 120000 : 30000)

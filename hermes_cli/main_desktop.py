@@ -1771,6 +1771,18 @@ def cmd_gui(args: argparse.Namespace):
             )
         sys.exit(1)
 
+    if getattr(args, "build_needed", False):
+        source_mode = bool(getattr(args, "source", False))
+        try:
+            needed = _desktop_build_needed(
+                desktop_dir, PROJECT_ROOT, source_mode=source_mode
+            )
+        except Exception as exc:
+            print(json.dumps({"build_needed": None, "error": str(exc)}))
+            return
+        print(json.dumps({"build_needed": bool(needed), "source_mode": source_mode}))
+        return
+
     with contextlib.suppress(Exception):
         from hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
@@ -2042,5 +2054,3 @@ def _launch_bundled_desktop(
     pid = launch_detached(launch_command, env=env, cwd=layout.app_root)
     print(f"→ Launched Hermes Desktop: {' '.join(launch_command)} (pid {pid})")
     sys.exit(0)
-
-

@@ -162,7 +162,12 @@ export function clearsEnabledToolsets(prev: HermesConfigRecord, next: HermesConf
 // Voice renders only fields for the selected TTS/STT provider. Search and the
 // page share this rule so every indexed field can actually mount when opened.
 export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
-  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
+  // Command-declared providers key their fields one level deeper (``stt.providers.<name>.model``)
+  // than built-ins (``stt.openai.model``). Without this the capture below reads provider
+  // "providers", which never equals the selection, so every command provider's fields stayed
+  // hidden even while it was the active provider.
+  const nested = /^(tts|stt)\.providers\.([^.]+)\./.exec(key)
+  const match = nested ?? /^(tts|stt)\.([^.]+)\./.exec(key)
 
   if (!match) {
     return true
@@ -276,6 +281,7 @@ const BUILTIN_STT_PROVIDERS = new Set([
   'local_command',
   'groq',
   'openai',
+  'openrouter',
   'mistral',
   'xai',
   'elevenlabs',

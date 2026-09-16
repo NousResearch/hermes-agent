@@ -62,6 +62,18 @@ def _direct(wire: str, provider: str, base_url: Any, api_key: str, model: Any, *
             "api_key": api_key, "model": model, **extra}
 
 
+# OpenAI-compatible STT endpoints disagree on ``response_format``: OpenAI and Groq honor "text"
+# (bare-string body), while OpenRouter accepts ONLY "json"/"verbose_json" and rejects "text" with
+# HTTP 400 ("Unsupported response_format") — a live voice-note failure. The renderer sends whatever
+# this resolver says, so the provider knowledge stays here instead of a name branch in the client.
+_STT_JSON_RESPONSE_FORMAT_PROVIDERS = frozenset({"openrouter"})
+
+
+def _stt_response_format(provider: str) -> str:
+    """``response_format`` the provider's transcription endpoint accepts."""
+    return "json" if provider in _STT_JSON_RESPONSE_FORMAT_PROVIDERS else "text"
+
+
 def _deepinfra_model(section: Dict[str, Any], kind: str) -> Optional[str]:
     """Configured model, else the first catalog model of ``kind`` (stt/tts)."""
     from hermes_cli.models import deepinfra_model_ids
@@ -97,7 +109,15 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
     section = _section(stt_config, provider)
 
     def direct(wire: str, base_url: Any, api_key: str, model: Any) -> Dict[str, Any]:
-        return _direct(wire, provider, base_url, api_key, model, language=language)
+        extra: Dict[str, Any] = {
+            "language": language,
+            "response_format": _stt_response_format(provider),
+        }
+        if tc.stt_requires_wav(model):
+            # The recorder produces WebM/Opus; this model wants mono 16 kHz WAV, so the client
+            # converts before upload instead of the server (no ffmpeg dependency in the relay).
+            extra["audio_format"] = "wav"
+        return _direct(wire, provider, base_url, api_key, model, **extra)
 
     def env_base_url(env_var: str, default: str) -> str:
         from hermes_cli.config import get_env_value
@@ -110,6 +130,14 @@ def _resolve_stt_client_config() -> Dict[str, Any]:
             return _relay("no credentials")
         return direct(STT_WIRE_OPENAI, getattr(tc, base, base), api_key,
                       section.get("model") or getattr(tc, default_model))
+    if provider == "openrouter":
+        # OpenRouter speaks the OpenAI multipart wire with a vendor-prefixed model slug; the base URL
+        # resolver is shared with the relay handler so a configured endpoint applies to both paths.
+        api_key = tt._resolve_provider_key("OPENROUTER_API_KEY", "openrouter")
+        if not api_key:
+            return _relay("no credentials")
+        return direct(STT_WIRE_OPENAI, tc.openrouter_stt_base_url(section), api_key,
+                      section.get("model") or tc.DEFAULT_OPENROUTER_STT_MODEL)
     if provider == "openai":
         # Covers the Nous-managed selection too: the resolver returns the user's
         # own gateway token + managed base URL — exactly what the client should use.

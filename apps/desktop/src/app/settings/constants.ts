@@ -251,7 +251,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
-  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
+  // '' = no explicit selection → the auto-detect ladder (local → groq → openai → …); it renders as
+  // "None (default)", which is exactly what the stored value means.
+  'stt.provider': ['', 'local', 'groq', 'openai', 'openrouter', 'mistral', 'xai', 'elevenlabs'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
@@ -360,6 +362,34 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
     'piper'
   ],
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
+  // OpenRouter STT suggestions (free-input field). MUST stay a superset of
+  // tools/transcription_common.OPENROUTER_STT_MODELS — the CLI picker imports that tuple, and
+  // test_openrouter_voice_provider_contract.py fails if this list loses an entry. Trust the live
+  // `output_modalities=transcription` catalog for anything newer.
+  'stt.openrouter.model': [
+    'openai/whisper-large-v3',
+    'openai/whisper-large-v3-turbo',
+    'openai/whisper-1',
+    'openai/gpt-4o-transcribe',
+    'openai/gpt-4o-mini-transcribe',
+    'openai/gpt-transcribe',
+    'mistralai/voxtral-mini-transcribe',
+    'google/chirp-3',
+    'deepgram/nova-3',
+    'x-ai/grok-stt-1.0',
+    'qwen/qwen3-asr-flash-2026-02-10',
+    'microsoft/mai-transcribe-2',
+    'nvidia/parakeet-tdt-0.6b-v3',
+    'fish-audio/transcribe-1',
+    // WAV-only: the client re-encodes the recording to 16 kHz mono PCM before upload
+    // (tools/transcription_common.STT_WAV_ONLY_MODELS owns the list).
+    'meta/muse-voice-transcribe-1.0',
+    'mistralai/voxtral-small-24b-2507-stt',
+    'qwen/qwen3-asr-1.7b',
+    'qwen/qwen3-asr-0.6b',
+    'microsoft/mai-transcribe-1.5',
+    'nvidia/nemotron-3.5-asr-streaming-multilingual-0.6b'
+  ],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
   'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
@@ -391,12 +421,16 @@ export const FREE_INPUT_KEYS = new Set([
   'tts.kittentts.voice',
   'tts.piper.voice',
   'tts.deepinfra.model',
-  'tts.deepinfra.voice'
+  'tts.deepinfra.voice',
+  'stt.openrouter.model'
 ])
 
 export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   model: 'Default Model',
   modelContextLength: 'Context Window',
+  // Provider-scoped voice rows: the fallback label is prettyName(lastSegment), which would render
+  // this one as a bare "Model" next to every other provider's model row.
+  'stt.openrouter.model': 'OpenRouter Model',
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
@@ -572,6 +606,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
 export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
+  'stt.openrouter.model': 'Vendor-prefixed OpenRouter slug, e.g. openai/whisper-large-v3. Audited live: meta/muse-voice-transcribe-1.0 needs 16 or 24 kHz WAV.',
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
     personality: 'Default assistant style for new sessions.',
@@ -776,6 +811,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.local.model',
       'stt.local.language',
       'stt.openai.model',
+      'stt.openrouter.model',
       'stt.groq.model',
       'stt.mistral.model',
       'stt.elevenlabs.model_id',

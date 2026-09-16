@@ -118,6 +118,113 @@ describe('transcribeAudioClientDirect', () => {
     expect(form.get('response_format')).toBe('text')
   })
 
+  it('honors a server-resolved json response_format (OpenRouter 400s on "text")', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'openai/whisper-large-v3',
+        response_format: 'json'
+      },
+      tts: relay
+    })
+
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ text: 'hello from json' }), { status: 200 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const transcript = await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' }))
+
+    expect(transcript).toBe('hello from json')
+    // Same access pattern as the existing cases: the vi.fn() signature carries no params, so the
+    // call tuple is typed [] and has to be widened before indexing.
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const form = init.body as FormData
+    expect(form.get('response_format')).toBe('json')
+  })
+
+  it('re-encodes to mono WAV when the model requires that container (Meta)', async () => {
+    mockDesktopApi({
+      ok: true,
+      stt: {
+        ...directStt,
+        provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        model: 'meta/muse-voice-transcribe-1.0',
+        response_format: 'json',
+        audio_format: 'wav'
+      },
+      tts: relay
+    })
+
+    class FakeAudioContext {
+      async decodeAudioData() {
+        return {
+          duration: 0.5,
+          length: 8000,
+          numberOfChannels: 1,
+          sampleRate: 16000,
+          getChannelData: () => new Float32Array(8000)
+        }
+      }
+      async close() {}
+    }
+
+    class FakeOfflineAudioContext {
+      destination = {}
+      constructor(
+        public channels: number,
+        public frames: number,
+        public rate: number
+      ) {}
+      createBufferSource() {
+        return { buffer: null, connect: () => {}, start: () => {} }
+      }
+      async startRendering() {
+        return { getChannelData: () => new Float32Array(this.frames) }
+      }
+    }
+
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineAudioContext)
+
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ text: 'wav transcript' }), { status: 200 })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const transcript = await transcribeAudioClientDirect(
+      new Blob(['x'], { type: 'audio/webm;codecs=opus' })
+    )
+
+    expect(transcript).toBe('wav transcript')
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const form = init.body as FormData
+    const file = form.get('file') as File
+    expect(file.name).toBe('recording.wav')
+
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    expect(String.fromCharCode(...bytes.slice(0, 4))).toBe('RIFF')
+    expect(String.fromCharCode(...bytes.slice(8, 12))).toBe('WAVE')
+  })
+
+  it('keeps sending text when the server omits response_format (older backend)', async () => {
+    mockDesktopApi({ ok: true, stt: directStt, tts: relay })
+    const fetchMock = vi.fn(async () => new Response('bare string', { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await transcribeAudioClientDirect(new Blob(['x'], { type: 'audio/webm' })))
+      .toBe('bare string')
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    const form = init.body as FormData
+    expect(form.get('response_format')).toBe('text')
+  })
+
   it('unwraps Mistral Voxtral JSON instead of dumping it into the composer', async () => {
     mockDesktopApi({
       ok: true,

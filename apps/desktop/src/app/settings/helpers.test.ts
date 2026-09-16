@@ -195,9 +195,19 @@ describe('settings helpers', () => {
       expect(opts).toContain('elevenlabs')
     })
 
-    it('renders a dropdown for the STT provider including xAI (Grok)', () => {
+    it('renders a dropdown for the STT provider including xAI (Grok) and OpenRouter', () => {
       const opts = enumOptionsFor('stt.provider', 'local', config)
-      expect(opts).toEqual(['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'])
+      // Leading '' = "None (default)": with no explicit provider the runtime auto-detects, and the
+      // empty row is what makes the control show its state instead of rendering blank.
+      expect(opts).toEqual(['', 'local', 'groq', 'openai', 'openrouter', 'mistral', 'xai', 'elevenlabs'])
+    })
+
+    it('suggests OpenRouter catalog slugs for stt.openrouter.model', () => {
+      const opts = enumOptionsFor('stt.openrouter.model', 'openai/whisper-large-v3', config)
+      expect(opts).toContain('openai/whisper-large-v3')
+      expect(opts).toContain('google/chirp-3')
+      // Native (unprefixed) names never resolve on OpenRouter.
+      expect(opts).not.toContain('whisper-1')
     })
 
     it('renders dropdowns for per-backend model/device sub-fields', () => {

@@ -19,6 +19,9 @@ import { getApiRequestConnection, getApiRequestProfile, hermesApi } from '@/herm
  * `{mode:'relay'}` and callers fall back to the existing relay endpoints.
  */
 
+/** Mono 16-bit PCM at this rate: what WAV-only endpoints (Meta) accept, and the smaller of the two. */
+const STT_WAV_SAMPLE_RATE = 16000
+
 export interface DirectSttConfig {
   mode: 'direct'
   wire: 'elevenlabs-stt' | 'openai-multipart' | 'xai-stt'
@@ -27,6 +30,17 @@ export interface DirectSttConfig {
   api_key: string
   model: null | string
   language: null | string
+  /**
+   * Transcription body format the provider accepts, resolved server-side (`json` for OpenRouter,
+   * which 400s on `text`; `text` for OpenAI/Groq). Optional: absent means the pre-existing `text`.
+   */
+  response_format?: null | string
+  /**
+   * Container the model requires for the upload. `wav` = the recorder's WebM/Opus is refused
+   * (Meta's transcription endpoint: "requires WAV audio", mono at 16/24 kHz), so the blob is
+   * re-encoded here. Absent = post the recording as-is.
+   */
+  audio_format?: 'wav' | null
 }
 
 export interface DirectTtsConfig {
@@ -117,6 +131,75 @@ export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig
 // STT — audio blob → transcript, provider-direct.
 // ---------------------------------------------------------------------------
 
+/** Mono 16-bit PCM WAV from float samples: RIFF header + PCM data chunk. */
+export function encodeWavPcm16(samples: Float32Array, sampleRate: number): Blob {
+  const dataBytes = samples.length * 2
+  const buffer = new ArrayBuffer(44 + dataBytes)
+  const view = new DataView(buffer)
+
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i += 1) {
+      view.setUint8(offset + i, text.charCodeAt(i))
+    }
+  }
+
+  ascii(0, 'RIFF')
+  view.setUint32(4, 36 + dataBytes, true)
+  ascii(8, 'WAVE')
+  ascii(12, 'fmt ')
+  view.setUint32(16, 16, true) // PCM fmt chunk size
+  view.setUint16(20, 1, true) // format = PCM
+  view.setUint16(22, 1, true) // channels = mono
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true) // byte rate
+  view.setUint16(32, 2, true) // block align
+  view.setUint16(34, 16, true) // bits per sample
+  ascii(36, 'data')
+  view.setUint32(40, dataBytes, true)
+
+  for (let i = 0; i < samples.length; i += 1) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]))
+    view.setInt16(44 + i * 2, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true)
+  }
+
+  return new Blob([view], { type: 'audio/wav' })
+}
+
+/**
+ * Re-encode a recording as mono WAV at `sampleRate`, for models that refuse WebM/Opus.
+ *
+ * Decoding happens with WebAudio (the browser always decodes what it just recorded), and the
+ * resample happens in an OfflineAudioContext at the required rate — no ffmpeg, no server hop.
+ */
+export async function toWavMono(audio: Blob, sampleRate: number): Promise<Blob> {
+  const AudioCtor = (globalThis as { AudioContext?: typeof AudioContext }).AudioContext
+  const OfflineCtor = (globalThis as { OfflineAudioContext?: typeof OfflineAudioContext })
+    .OfflineAudioContext
+
+  if (!AudioCtor || !OfflineCtor) {
+    throw new Error('This build cannot re-encode audio to WAV (no WebAudio available)')
+  }
+
+  const decodeContext = new AudioCtor()
+
+  try {
+    const decoded = await decodeContext.decodeAudioData(await audio.arrayBuffer())
+    const frames = Math.max(1, Math.ceil(decoded.duration * sampleRate))
+    const renderer = new OfflineCtor(1, frames, sampleRate)
+    const source = renderer.createBufferSource()
+
+    source.buffer = decoded
+    source.connect(renderer.destination)
+    source.start()
+
+    const rendered = await renderer.startRendering()
+
+    return encodeWavPcm16(rendered.getChannelData(0), sampleRate)
+  } finally {
+    void decodeContext.close?.()
+  }
+}
+
 function sttFileName(audio: Blob): string {
   const subtype = (audio.type.split(';')[0].split('/')[1] || 'webm').toLowerCase()
 
@@ -186,14 +269,20 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
   }
 
   if (stt.wire === 'openai-multipart') {
+    // A model that only accepts WAV rejects the recorder's WebM/Opus outright (HTTP 400), so
+    // convert first — the required rate comes from the same server-resolved capability.
+    const wantsWav = stt.audio_format === 'wav' && !audio.type.includes('wav')
+    const payload = wantsWav ? await toWavMono(audio, STT_WAV_SAMPLE_RATE) : audio
     const form = new FormData()
-    form.set('file', audio, sttFileName(audio))
+    form.set('file', payload, (stt.audio_format === 'wav' ? 'recording.wav' : sttFileName(audio)))
 
     if (stt.model) {
       form.set('model', stt.model)
     }
 
-    form.set('response_format', 'text')
+    // Server-resolved: OpenRouter accepts only json/verbose_json, OpenAI and Groq return a bare
+    // string for `text`. Never hardcode — a wrong value here is an HTTP 400 on every dictation.
+    form.set('response_format', stt.response_format ?? 'text')
 
     if (stt.language) {
       form.set('language', stt.language)

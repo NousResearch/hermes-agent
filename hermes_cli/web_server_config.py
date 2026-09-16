@@ -107,7 +107,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     ),
     # "mistral" temporarily removed — mistralai PyPI package quarantined
     # (malicious 2.4.6 release on 2026-05-12). Restore once available.
-    "stt.provider": _select("Speech-to-text provider", "local", "groq", "openai", "xai", "elevenlabs"),
+    # Surfaced as a virtual field (see _config_schema_with_virtual_fields): every entry that
+    # reaches CONFIG_SCHEMA needs a category, and "stt" matches the walked stt.* fields.
+    "stt.provider": _select(
+        "Speech-to-text provider", "local", "groq", "openai", "openrouter", "xai", "elevenlabs",
+        category="stt",
+    ),
     "stt.local.model": _select("Local faster-whisper model size", "tiny", "base", "small", "medium", "large-v3"),
     "stt.groq.model": _select(
         "Groq Whisper model", "whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"
@@ -116,6 +121,15 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "OpenAI transcription model", "whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"
     ),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
+    # OpenRouter multiplexes every vendor, so the model is a vendor-prefixed catalog slug
+    # (``openai/whisper-large-v3``). Kept free-form on purpose: the live catalog
+    # (GET https://openrouter.ai/api/v1/models?output_modalities=transcription) moves faster
+    # than any list shipped here. Desktop suggestions mirror
+    # tools/transcription_common.OPENROUTER_STT_MODELS via ENUM_OPTIONS.
+    "stt.openrouter.model": {
+        "type": "string",
+        "description": "OpenRouter transcription model (vendor-prefixed slug, e.g. openai/whisper-large-v3)",
+    },
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"
@@ -231,13 +245,25 @@ def _build_schema_from_config(config: Dict[str, Any], prefix: str = "") -> Dict[
 
 
 def _config_schema_with_virtual_fields() -> Dict[str, Dict[str, Any]]:
-    """DEFAULT_CONFIG schema plus the virtual ``model_context_length`` field, inserted right
-    after ``model`` so it renders adjacent in the frontend."""
+    """DEFAULT_CONFIG schema plus fields that are ADVERTISED but not seeded in DEFAULT_CONFIG,
+    each inserted right after its anchor key so it renders adjacent in the frontend.
+
+    - ``model_context_length`` after ``model``.
+    - ``stt.provider`` after ``stt.enabled``: DEFAULT_CONFIG deliberately carries no
+      ``stt.provider`` (a stored value counts as an explicit user pick and disables the
+      auto-detect ladder), so a plain DEFAULT_CONFIG key would seed a selection. The field
+      must still exist in the schema or it never renders in the desktop's Voice page or the
+      dashboard, and ``_schema_with_dynamic_provider_options`` has nothing to merge
+      command/plugin provider names into. The override (not DEFAULT_CONFIG) supplies it.
+    """
+    virtual_fields = {
+        "model": {"model_context_length": _SCHEMA_OVERRIDES["model_context_length"]},
+        "stt.enabled": {"stt.provider": _SCHEMA_OVERRIDES["stt.provider"]},
+    }
     ordered: Dict[str, Dict[str, Any]] = {}
     for key, entry in _build_schema_from_config(DEFAULT_CONFIG).items():
         ordered[key] = entry
-        if key == "model":
-            ordered["model_context_length"] = _SCHEMA_OVERRIDES["model_context_length"]
+        ordered.update(virtual_fields.get(key, {}))
     return ordered
 
 

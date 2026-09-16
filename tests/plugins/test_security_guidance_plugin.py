@@ -207,6 +207,37 @@ class TestTransformToolResultHook:
         assert isinstance(result, str)
         assert "eval_injection" in result
 
+    def test_skill_manage_nested_write_file_scanned(self):
+        mod = _load_plugin_init()
+        args = {"operations": [{
+            "name": "probe",
+            "write_file": {
+                "file_path": "scripts/probe.py",
+                "content": "result = eval(user_input)\n",
+            },
+        }]}
+        result = mod._on_transform_tool_result(
+            tool_name="skill_manage", args=args, result='{"success": true}'
+        )
+        assert isinstance(result, str)
+        assert "eval_injection" in result
+
+    def test_skill_manage_nested_patch_scanned(self):
+        mod = _load_plugin_init()
+        args = {"operations": [{
+            "name": "probe",
+            "patch": {
+                "file_path": "scripts/probe.py",
+                "old_string": "safe()",
+                "new_string": "eval(user_input)",
+            },
+        }]}
+        result = mod._on_transform_tool_result(
+            tool_name="skill_manage", args=args, result='{"success": true}'
+        )
+        assert isinstance(result, str)
+        assert "eval_injection" in result
+
     def test_untargeted_tool_skipped(self):
         mod = _load_plugin_init()
         # The plugin only scans write_file/patch/skill_manage. terminal output

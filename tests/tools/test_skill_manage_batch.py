@@ -204,6 +204,8 @@ class TestSkillManageBatch(unittest.TestCase):
         ]))
         self.assertFalse(r["success"])
         self.assertEqual(r["failed_index"], 2)
+        from tools.skill_usage import load_usage
+        self.assertNotIn("beta", load_usage())
         # alpha's patch undone; beta (batch-created) removed entirely.
         content = open(os.path.join(self.home, "skills", "alpha", "SKILL.md")).read()
         self.assertIn("Step 1.", content)

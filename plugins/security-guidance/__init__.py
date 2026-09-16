@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _TARGET_TOOLS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
     "write_file": ("path", ("content",)),
     "patch": ("path", ("new_string", "patch")),
-    "skill_manage": ("file_path", ("file_content", "new_string")),
+    "skill_manage": ("file_path", ("content", "file_content", "new_string")),
 }
 
 # Above this we skip: matching a multi-MB blob has poor signal and slows the agent loop.
@@ -83,8 +83,20 @@ def _scan_args(tool_name: str, args: Any) -> List[Tuple[str, str]]:
     if _env_flag("SECURITY_GUIDANCE_DISABLE") or spec is None or not isinstance(args, dict):
         return []
     path_key, content_keys = spec
-    path = raw_path if isinstance(raw_path := args.get(path_key), str) else ""
-    return [finding for val in (args.get(ck) for ck in content_keys) if isinstance(val, str) and val for finding in _scan_content(path, val)]
+    payloads = [args]
+    if tool_name == "skill_manage":
+        from tools.skill_manager_batch import iter_recorded_skill_operations
+        payloads = list(iter_recorded_skill_operations(args))
+    findings = []
+    for payload in payloads:
+        path = raw_path if isinstance(raw_path := payload.get(path_key), str) else ""
+        findings.extend(
+            finding
+            for val in (payload.get(ck) for ck in content_keys)
+            if isinstance(val, str) and val
+            for finding in _scan_content(path, val)
+        )
+    return findings
 
 
 def _format_warning_block(findings: List[Tuple[str, str]]) -> str:

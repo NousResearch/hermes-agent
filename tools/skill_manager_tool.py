@@ -606,6 +606,11 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 # Set while replaying an approved staged skill write so skill_manage() does not re-gate it.
 _skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
     "skill_gate_bypass", default=False)
+# Atomic batches defer every externally visible post-success effect until all
+# filesystem mutations have committed.  The list is context-local so nested
+# agent/profile activity cannot absorb another call's records.
+_deferred_skill_successes = _ctxvars.ContextVar(
+    "deferred_skill_successes", default=None)
 
 
 def _run_write_gate(build_staging):
@@ -733,6 +738,15 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
                     session_id, ledger_before) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry, debounced sync push."""
+    deferred = _deferred_skill_successes.get()
+    if deferred is not None:
+        deferred.append({
+            "action": action, "name": name, "result": dict(result),
+            "file_path": file_path, "absorbed_into": absorbed_into,
+            "task_id": task_id, "session_id": session_id,
+            "ledger_before": ledger_before,
+        })
+        return
     with suppress(Exception):
         from tools import skill_ledger as _ledger
         _post = _find_skill(name)

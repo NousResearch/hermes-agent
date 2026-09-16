@@ -251,8 +251,10 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
             return tool_error(snap_err, success=False)
         # Single-op path with the gate bypassed (the batch already cleared/staged it).
         results = []
+        success_records = []
         rollback_failed = False
         token = _smt._skill_gate_bypass.set(True)
+        success_token = _smt._deferred_skill_successes.set(success_records)
         try:
             for i, op in enumerate(operations):
                 raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
@@ -277,12 +279,18 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 results.append({"name": names[i], "action": op.get("source_action", op["action"]),
                                 "file_path": op.get("file_path"), "success": True})
         finally:
+            _smt._deferred_skill_successes.reset(success_token)
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:
                 # Keep the snapshots so the operator can still recover by hand.
                 logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
             else:
                 shutil.rmtree(snap_root, ignore_errors=True)
+        # The filesystem batch has committed. Publish ledger, usage/cache and
+        # sync effects now; a failed batch returns from the loop above and
+        # discards this context-local queue instead.
+        for record in success_records:
+            _smt._record_success(**record)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per

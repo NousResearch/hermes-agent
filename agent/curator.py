@@ -777,7 +777,7 @@ _REPORT_SECTIONS = (
      "_These skills were archived without being merged into an umbrella (e.g. stale, unused, or judged irrelevant). "
      "Directories live under `~/.hermes/skills/.archive/`. Restore any via `hermes curator restore <name>`._\n",
      _pruned_lines, 50, "see `run.json`"),
-    ("added", "New skills this run", "_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n",
+    ("added", "New skills this run", "_Usually these are new class-level umbrellas created via `skill_manage operations=[{name, create: {content}}]`._\n",
      lambda n: [f"- `{n}`"], None, ""),
     ("state_transitions", "State transitions", None, lambda t: [f"- `{t.get('name')}`: {t.get('from')} → {t.get('to')}"], None, ""),
     ("cron_rewrites", "Cron job skill references rewritten",

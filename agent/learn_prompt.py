@@ -75,8 +75,8 @@ Quality bar:
 - Don't write a router/index/hub skill that only points at other skills.
   (A knowledge-base SKILL.md indexing its OWN `references/` files is not a
   hub — that layout is required for large sources.)
-- Larger scripts/parsers belong in a `scripts/` file (add via
-  `skill_manage` write_file), referenced from SKILL.md by relative path — not
+- Larger scripts/parsers belong in a `scripts/` file (add via `skill_manage`
+  `operations=[{name, write_file: {file_path, content}}]`), referenced from SKILL.md by relative path — not
   inlined for the agent to re-type every run. References go in `references/`,
   templates in `templates/`."""
 
@@ -96,8 +96,8 @@ expansive skill:
   description. Keep SKILL.md itself within the normal size bar; the bulk
   lives in `references/`.
 - One file per chapter or major topic under `references/` (e.g.
-  `references/ch04-replication.md`), each added with `skill_manage`
-  write_file. Distill STRUCTURE, not summary: frameworks, definitions,
+  `references/ch04-replication.md`), each added with a `write_file` action
+  object. Distill STRUCTURE, not summary: frameworks, definitions,
   decision rules, anti-patterns, key numbers and tables, with
   chapter/section refs back to the source. Bullet-dense, roughly 100-150
   lines per file.
@@ -116,7 +116,7 @@ expansive skill:
   source, not a copy of it. No verbatim passages beyond a short quoted
   phrase. This is both the quality bar and the copyright line.
 - Fold-in, don't duplicate: if a skill for this source or topic already
-  exists, extend it (`skill_manage` patch / write_file) with the new
+  exists, extend it with `patch` / `write_file` action objects with the new
   material instead of creating a near-duplicate skill."""
 
 

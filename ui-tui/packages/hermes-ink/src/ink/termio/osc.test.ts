@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import { env, supportsOsc52Clipboard } from '../../utils/env.js'
 
-import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
+import { shouldEmitClipboardSequence, shouldUseNativeClipboard, TMUX_LOAD_BUFFER_ARGS } from './osc.js'
+
+describe('tmuxLoadBuffer', () => {
+  it('loads only the tmux paste buffer before the explicit OSC 52 write', () => {
+    expect(TMUX_LOAD_BUFFER_ARGS).toEqual(['load-buffer', '-'])
+    expect(TMUX_LOAD_BUFFER_ARGS).not.toContain('-w')
+  })
+})
 
 describe('shouldEmitClipboardSequence', () => {
   it('suppresses local multiplexer clipboard OSC by default', () => {
@@ -128,10 +135,8 @@ describe('shouldUseNativeClipboard', () => {
 
   it('returns true inside tmux even on allowlisted outer terminal', () => {
     // detectTerminal() prefers TERM_PROGRAM over TMUX, so a tmux session
-    // inside Ghostty reports terminal='ghostty'. But setClipboard() goes
-    // through tmux load-buffer there, not raw OSC 52 — the wl-copy race
-    // doesn't apply. Native is still useful since tmux's outer-terminal
-    // forwarding depends on `set -g set-clipboard` + `allow-passthrough`.
+    // inside Ghostty reports terminal='ghostty'. Local tmux suppresses OSC 52
+    // by default, so native remains the safety net alongside its paste buffer.
     expect(shouldUseNativeClipboard({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'ghostty')).toBe(true)
     expect(shouldUseNativeClipboard({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'kitty')).toBe(true)
     expect(shouldUseNativeClipboard({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'WezTerm')).toBe(true)
@@ -161,8 +166,7 @@ describe('shouldUseNativeClipboard', () => {
     // race-avoidance still applies.
     expect(
       shouldUseNativeClipboard({ HERMES_TUI_FORCE_OSC52: '1', TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'ghostty')
-      // TMUX guard wins — native still fires because we're going through
-      // tmux load-buffer, not raw OSC 52 to the terminal.
+      // TMUX guard wins — native still fires as a local safety net.
     ).toBe(true)
   })
 

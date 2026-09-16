@@ -308,6 +308,45 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
 
+    def test_moa_fallback_uses_aggregator_provider_for_runtime_and_rebuild(self):
+        """A resolved MoA fallback is a native aggregator client, not the virtual facade."""
+        agent = _make_agent(fallback_model={"provider": "moa", "model": "default"})
+        fallback_client = _mock_client(base_url="https://api.x.ai/v1/")
+        rebuilt_client = _mock_client(base_url="https://api.x.ai/v1/")
+
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_moa_aggregator",
+                return_value=("xai-oauth", "grok-4.6"),
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fallback_client, "grok-4.6"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "xai-oauth"
+        assert agent.requested_provider == "xai-oauth"
+        assert agent.client is fallback_client
+
+        with (
+            patch.object(agent, "_create_openai_client", return_value=rebuilt_client) as create,
+            patch("agent.moa_loop.build_moa_facade", side_effect=AssertionError("must stay native")),
+        ):
+            assert agent._replace_primary_openai_client(reason="test") is True
+
+        create.assert_called_once()
+        assert agent.client is rebuilt_client
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

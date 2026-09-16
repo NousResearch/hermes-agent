@@ -132,10 +132,12 @@ connect to `/ws` as if it were your bridge, while the local helper endpoints
 stay locked to loopback — leaving a `0.0.0.0` deployment unauthenticated for
 the very protocol it was bound for.
 
-Known limitation: the bundled qq_* model tools do not send credentials yet,
-so once `access_token` is set their calls to `/api/*` return 401 until
-tool-side auth support is added. Loopback deployments without a token are
-unaffected.
+The bundled qq_* model tools authenticate automatically: once `access_token`
+is set, their `/api/*` requests carry `Authorization: Bearer <token>` — the
+token is read from the same config source as the adapter (or the
+`ONEBOT_ACCESS_TOKEN` environment override), so no extra setup is needed.
+Without a token they send no Authorization header and token-less loopback
+deployments keep working unchanged.
 
 ### NapCat-side setup (required)
 

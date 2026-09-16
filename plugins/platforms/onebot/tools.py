@@ -10,6 +10,9 @@ with ONEBOT_TOOL_BASE), so these work from any process — CLI/TUI sessions
 included, where the gateway adapter may not be running. Target chat resolves
 from an explicit chat_id argument, falling back to the calling session's
 HERMES_SESSION_CHAT_ID when this is a QQ-channel session.
+When an access token is configured, requests to ``/api/*`` carry
+``Authorization: Bearer <token>`` — same config source as the adapter,
+no extra setup.
 """
 
 from __future__ import annotations
@@ -63,10 +66,39 @@ def _resolve_chat(chat_id: Optional[str]) -> str:
     )
 
 
+def _access_token() -> str:
+    """Resolve the access token shared with the adapter's ``/api`` gate.
+
+    Same source as the adapter — no new config key: ``ONEBOT_ACCESS_TOKEN``
+    env (the override the standalone cron sender already honours) wins, then
+    the onebot platform's ``access_token`` from the gateway config. Empty
+    when unset; ``_http`` sends no Authorization header in that case, which
+    keeps token-less loopback deployments byte-for-byte unchanged.
+    """
+    env = os.getenv("ONEBOT_ACCESS_TOKEN", "").strip()
+    if env:
+        return env
+    try:
+        # Lazy import: tools.py must stay importable in stripped-down
+        # processes; same config load the adapter's standalone sender uses.
+        from gateway.config import Platform, load_gateway_config
+
+        pcfg = load_gateway_config().platforms.get(Platform("onebot"))
+        if pcfg is not None:
+            extra = getattr(pcfg, "extra", {}) or {}
+            return str(extra.get("access_token", "") or "").strip()
+    except Exception as e:  # noqa: BLE001 - tools must degrade to no-auth
+        logger.debug("[onebot-tools] access_token lookup skipped: %s", e)
+    return ""
+
+
 def _http(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     url = _BASE + path
     data = None
     headers = {"Accept": "application/json"}
+    token = _access_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -74,7 +106,12 @@ def _http(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> D
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             body = resp.read().decode("utf-8", "replace")
-            return json.loads(body or "{}")
+            body = json.loads(body or "{}")
+            # The adapter's /api handlers answer {"status": "ok", ...};
+            # normalize to the {"ok": True} shape the tool handlers test.
+            if isinstance(body, dict) and body.get("status") == "ok":
+                body["ok"] = True
+            return body
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:500]
         return {"ok": False, "error": f"HTTP {e.code}: {detail}"}

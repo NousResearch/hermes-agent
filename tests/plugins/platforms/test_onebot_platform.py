@@ -1417,7 +1417,7 @@ def test_tools_napcat_api_whitelist_guard(monkeypatch) -> None:
     assert '"count": 1' in out
 
 
-def test_tools_group_history_url() -> None:
+def test_tools_group_history_url(monkeypatch) -> None:
     from plugins.platforms.onebot import tools
 
     import urllib.parse
@@ -1430,11 +1430,182 @@ def test_tools_group_history_url() -> None:
 
     import plugins.platforms.onebot.tools as tools_mod
 
-    tools_mod._http = fake_http
+    monkeypatch.setattr(tools_mod, "_http", fake_http)
     tools.qq_group_history({"group_id": "88888", "count": 30})
     qs = urllib.parse.parse_qs(calls[0].split("?", 1)[1])
     assert qs["group_id"] == ["88888"]
     assert qs["count"] == ["30"]
+
+
+class _ToolHeaderServer:
+    """假 /api server：记录每次请求的方法/路径/Authorization 头，回 {"ok": true}。"""
+
+    def __init__(self) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        seen: list = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def _reply(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                seen.append(
+                    {
+                        "method": self.command,
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                    }
+                )
+                body = json.dumps({"ok": True, "data": []}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = _reply
+            do_POST = _reply
+
+            def log_message(self, *args) -> None:  # 静默测试输出
+                pass
+
+        self.seen = seen
+        self._httpd = HTTPServer(("127.0.0.1", 0), _Handler)
+        self.port = self._httpd.server_address[1]
+        self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._httpd.shutdown()
+        self._httpd.server_close()
+
+
+def test_tools_carry_bearer_token_when_configured(monkeypatch) -> None:
+    """配 token：qq_send_* 与 qq_napcat_api 自动携带 Bearer，假 server 200。"""
+    from plugins.platforms.onebot import tools
+
+    monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "s3cret-token")
+    srv = _ToolHeaderServer()
+    try:
+        monkeypatch.setattr(tools, "_BASE", f"http://127.0.0.1:{srv.port}")
+        out_img = tools.qq_send_image(
+            {"sources": ["http://example.com/a.png"], "chat_id": "group:88888"}
+        )
+        out_nap = tools.qq_napcat_api(
+            {"action": "get_group_member_list", "params": {"group_id": 88888}}
+        )
+    finally:
+        srv.stop()
+    assert "已发送" in out_img
+    assert "调用失败" not in out_nap
+    assert len(srv.seen) == 2
+    by_path = {s["path"].split("?", 1)[0]: s for s in srv.seen}
+    assert by_path["/api/send_media"]["method"] == "POST"
+    assert by_path["/api/napcat"]["method"] == "GET"
+    for s in srv.seen:
+        assert s["authorization"] == "Bearer s3cret-token"
+
+
+def test_tools_send_no_authorization_without_token(monkeypatch) -> None:
+    """未配 token：请求不携带 Authorization 头（与 T1 之前行为一致）。"""
+    from types import SimpleNamespace
+
+    from plugins.platforms.onebot import tools
+
+    monkeypatch.delenv("ONEBOT_ACCESS_TOKEN", raising=False)
+
+    import gateway.config as gw_config
+
+    # 隔离测试机真实 ~/.hermes 配置：配置兜底也解析不到 token
+    monkeypatch.setattr(
+        gw_config, "load_gateway_config", lambda: SimpleNamespace(platforms={})
+    )
+    srv = _ToolHeaderServer()
+    try:
+        monkeypatch.setattr(tools, "_BASE", f"http://127.0.0.1:{srv.port}")
+        out = tools.qq_send_image(
+            {"sources": ["http://example.com/a.png"], "chat_id": "group:88888"}
+        )
+    finally:
+        srv.stop()
+    assert "已发送" in out
+    assert len(srv.seen) == 1
+    assert srv.seen[0]["authorization"] is None
+
+
+def test_tools_token_prefers_env_over_config(monkeypatch) -> None:
+    """token 解析优先级：ONEBOT_ACCESS_TOKEN env 覆盖 config.yaml 同源配置。"""
+    from types import SimpleNamespace
+
+    from plugins.platforms.onebot import tools
+
+    import gateway.config as gw_config
+
+    monkeypatch.setattr(
+        gw_config,
+        "load_gateway_config",
+        lambda: SimpleNamespace(
+            platforms={
+                Platform("onebot"): SimpleNamespace(
+                    extra={"access_token": "config-token"}
+                )
+            }
+        ),
+    )
+    monkeypatch.delenv("ONEBOT_ACCESS_TOKEN", raising=False)
+    assert tools._access_token() == "config-token"
+    monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "env-token")
+    assert tools._access_token() == "env-token"
+
+
+def test_tools_e2e_token_against_api_gate(monkeypatch) -> None:
+    """端到端：tools._http + 真实 adapter API 闸门，配 token 后两条路径 200。"""
+    import concurrent.futures
+
+    from plugins.platforms.onebot import tools
+
+    adapter = _make_adapter(access_token="s3cret-token")
+    calls: list = []
+
+    async def fake_call(action, params, timeout=15.0):
+        calls.append(action)
+        return {"messages": []}
+
+    adapter._call_action = fake_call
+
+    async def fake_send_images(*args, **kwargs):
+        return None
+
+    adapter.send_multiple_images = fake_send_images
+
+    async def run():
+        runner, port = await _start_api_server(adapter)
+        try:
+            monkeypatch.setenv("ONEBOT_ACCESS_TOKEN", "s3cret-token")
+            monkeypatch.setattr(tools, "_BASE", f"http://127.0.0.1:{port}")
+            # tools._http 是同步 urllib，放线程池跑，避免阻塞服务响应的 loop
+            loop = asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                out_hist = await loop.run_in_executor(
+                    pool,
+                    lambda: tools.qq_group_history({"group_id": "88888"}),
+                )
+                out_img = await loop.run_in_executor(
+                    pool,
+                    lambda: tools.qq_send_image(
+                        {"sources": ["http://example.com/a.png"], "chat_id": "group:88888"}
+                    ),
+                )
+        finally:
+            await runner.cleanup()
+        return out_hist, out_img
+
+    out_hist, out_img = asyncio.run(run())
+    assert "拉取失败" not in out_hist and out_hist, f"group_history 应成功：{out_hist}"
+    assert "已发送" in out_img
+    assert set(calls) == {"get_group_msg_history"}
 
 
 async def _start_api_server(adapter):

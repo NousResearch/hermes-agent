@@ -123,8 +123,10 @@ forward 模式单独成 server——共用同一道鉴权闸门：
 不配 token 时，能连上端口的任意主机都能以“桥”的身份接入 `/ws`，而本地辅助端点
 又只对 loopback 放行——等于绑定 `0.0.0.0` 却让桥协议处于无鉴权状态。
 
-已知限制：内置 qq_* 模型工具暂未携带凭证，设置 `access_token` 后它们调用
-`/api/*` 会收到 401，待工具侧补齐鉴权支持；未配 token 的 loopback 部署不受影响。
+内置 qq_* 模型工具会自动携带凭证：设置 `access_token` 后，它们的 `/api/*` 请求
+自动附上 `Authorization: Bearer <token>`——凭证与 adapter 同源（gateway 配置中的
+`access_token`，或 `ONEBOT_ACCESS_TOKEN` 环境变量覆盖），无需额外配置。未配
+token 时不携带该头，loopback 部署行为不变。
 
 ### NapCat 侧配置（必做）
 

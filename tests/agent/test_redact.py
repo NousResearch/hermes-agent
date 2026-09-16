@@ -140,7 +140,48 @@ class TestEnvAssignments:
     ):
         assert cleartext not in redact_sensitive_text(text, force=True)
 
+    @pytest.mark.parametrize(
+        "text, cleartext",
+        [
+            # AWS secret access keys are 40 chars of base64: ~1 in 64 begin with '/'.
+            ("AWS_SECRET_ACCESS_KEY=/wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+            # argon2/bcrypt digests always begin with '$'.
+            ("API_SECRET=$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaHZhbHVl",
+             "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaHZhbHVl"),
+            ("SESSION_SECRET=/8f3kd9sKd0alsKDJ2mfkeisl3kdMc9dksla",
+             "8f3kd9sKd0alsKDJ2mfkeisl3kdMc9dksla"),
+            # A second '/' (~1 in 3 of the '/'-led AWS secrets) must not turn it into a "path".
+            ("AWS_SECRET_ACCESS_KEY=/wJalrXUtnFEMIK7MDENG/bPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENG/bPxRfiCYEXAMPLEKEY"),
+            ("API_SECRET=~wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+        ],
+    )
+    def test_secret_that_only_starts_like_a_path_or_var_still_redacts(
+        self, text, cleartext
+    ):
+        # The rc-readability exemption must fire only on a value that IS a complete
+        # $VAR / ~/path / /abs/path reference — not on a secret that merely begins with
+        # one of those characters. Before the exemption was anchored it returned ahead
+        # of the strong-key and opaque-credential checks, leaking these verbatim.
+        assert cleartext not in redact_sensitive_text(text, force=True)
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "SSH_AUTH_SOCK=$HOME/.ssh/agent.sock",
+            "SSH_AUTH_SOCK=$XDG_RUNTIME_DIR/ssh-agent.$USER.sock",
+            "SSH_AUTH_SOCK=/run/user/$UID/keyring/ssh",
+            "export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)",
+            "DOCKER_AUTH_CONFIG=/home/u/.docker",
+            "DOCKER_AUTH_CONFIG=/home/u/.docker/MyProject2024Build.d/config.json",
+            "MY_KEY_PATH=~/.ssh/id_rsa",
+            "SECRET_DIR=/etc",
+        ],
+    )
+    def test_real_path_and_var_references_stay_readable(self, text):
+        assert redact_sensitive_text(text, force=True) == text
 
 
 

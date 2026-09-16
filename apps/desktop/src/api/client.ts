@@ -155,6 +155,15 @@ export function capabilityScoped(scope?: ProfileScope): { connectionId?: string;
   return { ...profileScoped(scope), ...connectionScoped() }
 }
 
+/** Spawn priority for a REST call that may cold-start a pooled backend. An
+ *  explicit scope is a user pointing a scope selector (Settings "Applies to",
+ *  Capabilities) at another profile — a visible action that may take the
+ *  pool's reserved foreground slot (#111651). The ambient path stays untagged,
+ *  main's background default, so hydration cannot consume that slot. */
+export function scopedDialPriority(scope?: ProfileScope): { priority?: 'foreground' } {
+  return scope == null ? {} : { priority: 'foreground' }
+}
+
 /** Stable cache-key for a capability scope: `profile` for the ambient/legacy
  *  path, `connectionId::profile` for ANY explicit pin — `local` included. An
  *  explicit "This device" pick and the ambient path are no longer guaranteed

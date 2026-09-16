@@ -1355,10 +1355,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         session.mark_exited(exit_code)
         self._move_to_finished(session)
 
-    def _move_to_finished(self, session: ProcessSession):
+    def _move_to_finished(self, session: ProcessSession) -> bool:
         """Move a session from running to finished.
         Idempotent: kill_process() and the reader thread can both call this; only
-        the FIRST move enqueues the completion notification, so no duplicates."""
+        the FIRST move enqueues the completion notification, so no duplicates.
+        Returns True when this call is the one that persisted the session."""
         with self._lock:
             was_running = session.id in self._running
             if was_running:
@@ -1396,6 +1397,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             _redact_process_result(notification)
             self.completion_queue.put(notification)
         session._completion_event.set()
+        return was_running
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -1887,7 +1889,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
                 session.termination_source = source
-            self._move_to_finished(session)
+            # The reader thread can finalise the session while the signal path
+            # blocks in the SIGKILL grace window: its ``save_completed_result``
+            # then persists this kill as a plain ``exited``. Re-write the receipt
+            # so the durable record matches what the caller was told.
+            if not self._move_to_finished(session):
+                save_completed_result(session)
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,

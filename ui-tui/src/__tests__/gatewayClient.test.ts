@@ -657,6 +657,60 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('keeps delivering events to the mounted subscriber across reconnects, with growing backoff (#111594)', async () => {
+    vi.useFakeTimers()
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+    const ready: number[] = []
+    const delays: number[] = []
+
+    const readyFrame = JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { payload: {}, type: 'gateway.ready' }
+    })
+
+    gw.on('event', ev => {
+      if (ev.type === 'gateway.ready') {
+        ready.push(FakeWebSocket.instances.length)
+      }
+
+      if (ev.type === 'gateway.reconnecting') {
+        delays.push(ev.payload.delay_ms)
+      }
+    })
+
+    try {
+      gw.start()
+      gw.drain()
+      await Promise.resolve()
+      FakeWebSocket.instances[0]!.open()
+      FakeWebSocket.instances[0]!.message(readyFrame)
+      expect(ready).toEqual([1])
+
+      // Two failed reconnects: the renderer drain()ed once on mount, so each
+      // transport generation must keep emitting live (not re-buffer), and the
+      // attempt counter must survive start() so the delay keeps growing.
+      FakeWebSocket.instances[0]!.close(1006)
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS)
+      FakeWebSocket.instances.at(-1)!.close(1006)
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS)
+      FakeWebSocket.instances.at(-1)!.close(1006)
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS)
+      expect(delays).toHaveLength(3)
+      expect(delays[2]!).toBeGreaterThan(delays[0]!)
+
+      const last = FakeWebSocket.instances.at(-1)!
+
+      last.open()
+      last.message(readyFrame)
+      expect(ready).toEqual([1, FakeWebSocket.instances.length])
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
   it('does not auto-reconnect after an intentional kill() (issue #32997)', async () => {
     vi.useFakeTimers()
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'

@@ -36,9 +36,9 @@ def test_list_literal_is_parsed_to_list(user_home):
 def test_mapping_literal_is_parsed_to_dict(user_home):
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("display.tool_progress_overrides", '{"terminal": "off"}')
+    set_config_value("mcp_servers.demo.env", '{"terminal": "off"}')
     raw = read_raw_config()
-    assert raw["display"]["tool_progress_overrides"] == {"terminal": "off"}
+    assert raw["mcp_servers"]["demo"]["env"] == {"terminal": "off"}
 
 
 def test_yaml_flow_list_is_parsed(user_home):
@@ -97,11 +97,11 @@ def test_multiline_yaml_mapping_is_parsed(user_home):
     from hermes_cli.config import set_config_value, read_raw_config
 
     set_config_value(
-        "display.tool_progress_overrides",
+        "mcp_servers.demo.env",
         "terminal: off\nbrowser: on",
     )
     raw = read_raw_config()
-    assert raw["display"]["tool_progress_overrides"] == {
+    assert raw["mcp_servers"]["demo"]["env"] == {
         "terminal": False,
         "browser": True,
     }

@@ -7,6 +7,7 @@ import {
   claimDecision,
   createBackendOutputTail,
   DEFAULT_OUTPUT_TAIL_LIMIT,
+  formatBackendExitLine,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
@@ -132,4 +133,36 @@ test('attach tolerates a child with missing stdio streams', () => {
 
   tail.attach({ stderr: null, stdout: null })
   assert.equal(tail.text(), '')
+})
+
+// --- formatBackendExitLine ---------------------------------------------------
+
+test('exit line carries the buffered tail next to the exit code', () => {
+  const tail = createBackendOutputTail(64)
+  tail.append('Traceback (most recent call last):\n')
+
+  const line = formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail)
+
+  assert.equal(line, 'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):')
+})
+
+test('exit line prefers the signal over the code, matching the old shape', () => {
+  const tail = createBackendOutputTail(64)
+  tail.append('bye\n')
+
+  const line = formatBackendExitLine('Hermes backend exited', 1, 'SIGTERM', tail)
+
+  assert.equal(line, 'Hermes backend exited (SIGTERM)\nRecent backend output:\nbye')
+})
+
+test('exit line stays byte-identical to the legacy shape when the tail is empty', () => {
+  const line = formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64))
+
+  assert.equal(line, 'Hermes backend exited (0)')
+})
+
+test('exit line tolerates a missing tail', () => {
+  const line = formatBackendExitLine('Hermes backend exited', 1, null, null)
+
+  assert.equal(line, 'Hermes backend exited (1)')
 })

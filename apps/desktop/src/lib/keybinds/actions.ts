@@ -91,6 +91,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
+  // Walk the Pinned section in its visible sidebar order, wrapping around.
+  // Ships unbound like `session.togglePin`: a chord is only claimed by users
+  // who opt in through the panel.
+  { id: 'session.pinned.next', category: 'session', defaults: [] },
+  { id: 'session.pinned.previous', category: 'session', defaults: [] },
   // Archive the active session. Ships unbound (like `session.togglePin`) so an
   // irreversible-feeling, mouse-only action doesn't silently claim a chord for
   // every user — surfaced in the panel for opt-in binding (the issue suggests

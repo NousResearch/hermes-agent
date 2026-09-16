@@ -124,7 +124,10 @@ dropped silently. The mechanics, in the order the due scan applies them
 
 1. **Pre-dispatch advance is provisional.** `tick()` advances `next_run_at` past
    the due occurrence *before* dispatch so a crash mid-run cannot re-fire it on
-   every restart. Because that leaves a window — advanced, but no fire claim yet
+   every restart. `mark_job_run` keeps that value for an **interval** job (the schedule is
+   fixed-rate, so the slot is *start + interval*, not *finish + interval*) and re-anchors
+   from the finish instant only when the run overran the slot; a cron-expression job still
+   recomputes at completion. Because that leaves a window — advanced, but no fire claim yet
    (interpreter finalizing, executor refusing work, `SIGKILL`) — the due scan
    stamps `pending_slot = {scheduled_at, at, by}` on the record in the same
    save. `claim_job_for_fire` (the point after which side effects may exist)

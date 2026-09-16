@@ -3815,8 +3815,11 @@ def tick(
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
-        # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
-        # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
+        # (at-most-once). Re-advancing running jobs keeps the grace window alive. For interval
+        # jobs this value is also the ANCHOR: the schedule is fixed-rate, so mark_job_run keeps
+        # a slot that is still ahead of it (start + interval) and re-anchors from the finish
+        # instant only when the run overran that slot. Composes with the claim-time advance in
+        # claim_job_for_fire.
         advance_next_runs([job["id"] for job in due_jobs])
 
         _max_workers = _resolve_max_parallel_workers()

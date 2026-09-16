@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import auxiliary_client as aux
+from agent import title_generator, turn_context
 from agent.chat_completion_helpers import build_api_kwargs
 from run_agent import AIAgent
 
@@ -64,7 +65,7 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
 
 
-def test_auxiliary_call_uses_explicit_main_runtime_session(monkeypatch):
+def test_auto_title_uses_explicit_main_runtime_session(monkeypatch):
     captured = {}
 
     class Completions:
@@ -87,13 +88,31 @@ def test_auxiliary_call_uses_explicit_main_runtime_session(monkeypatch):
         ),
     )
     monkeypatch.setattr(aux, "_get_cached_client", lambda *_args, **_kwargs: (client, "glm-5"))
+    monkeypatch.setattr(title_generator, "_auto_title_enabled", lambda: True)
+    monkeypatch.setattr(title_generator, "_kanban_task_title", lambda: None)
+    monkeypatch.setattr(title_generator, "apply_instant_title", lambda *_args, **_kwargs: None)
 
-    aux.call_llm(
-        task="title_generation",
-        messages=_MSGS,
-        main_runtime=_agent(
-            "opencode-zen", "glm-5", "https://opencode.ai/zen/v1"
-        )._current_main_runtime(),
+    def spawn_immediately(target, *, name, args, kwargs):
+        def start():
+            token = aux._RUNTIME_MAIN_CONTEXT.set(None)
+            try:
+                target(*args, **kwargs)
+            finally:
+                aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+        return SimpleNamespace(start=start)
+
+    monkeypatch.setattr("agent.memory_provider.spawn_context_thread", spawn_immediately)
+
+    session_db = SimpleNamespace(
+        get_session_title_source=lambda _session_id: None,
+        get_conversation_root=lambda session_id: session_id,
+        set_auto_title=lambda *_args, **_kwargs: True,
     )
+    agent = _agent("opencode-zen", "glm-5", "https://opencode.ai/zen/v1")
+    agent._session_db = session_db
+    agent._session_db_created = True
+
+    turn_context._maybe_title_session_at_turn_start(agent, _MSGS)
 
     assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"

@@ -238,6 +238,56 @@ class TestNormalizeModelForProvider:
         assert cli.model == "claude-sonnet-4-6"
         assert cli.api_mode == "anthropic_messages"
 
+    # -- #105947: OpenCode base_url must follow the adopted wire ---------------
+    #
+    # OpenCode's endpoint shape is a function of api_mode: `/v1` is stripped for
+    # anthropic_messages (the Anthropic SDK prepends its own `/v1/messages`) and carried for
+    # chat/codex models. `_adopt_with_mode` moved api_mode but left base_url behind, so a
+    # session that passed through a Claude/Qwen model kept the stripped URL and every later
+    # chat_completions model POSTed to https://opencode.ai/zen/chat/completions — the
+    # marketing site, answering 404 with an HTML body instead of a JSON API error.
+
+    def test_opencode_chat_model_heals_stripped_base_url(self):
+        """Adopting a chat_completions model re-appends the `/v1` the anthropic wire stripped."""
+        cli = _make_cli(model="opencode-zen/mimo-v2.5-free")
+        cli.api_mode = "anthropic_messages"
+        cli.base_url = "https://opencode.ai/zen"
+        changed = cli._normalize_model_for_provider("opencode-zen")
+        assert changed is True
+        assert cli.model == "mimo-v2.5-free"
+        assert cli.api_mode == "chat_completions"
+        assert cli.base_url == "https://opencode.ai/zen/v1"
+
+    def test_opencode_claude_strips_v1_from_base_url(self):
+        """The other direction: the Anthropic SDK prepends its own `/v1`, so ours must go."""
+        cli = _make_cli(model="opencode-zen/claude-sonnet-4-6")
+        cli.api_mode = "chat_completions"
+        cli.base_url = "https://opencode.ai/zen/v1"
+        changed = cli._normalize_model_for_provider("opencode-zen")
+        assert changed is True
+        assert cli.api_mode == "anthropic_messages"
+        assert cli.base_url == "https://opencode.ai/zen"
+
+    def test_opencode_heals_base_url_when_mode_already_matches(self):
+        """Healing is unconditional: the URL can be desynced from an EARLIER adopt, so a
+        no-op mode (and a model needing no prefix strip) must still repair it."""
+        cli = _make_cli(model="mimo-v2.5-free")
+        cli.api_mode = "chat_completions"
+        cli.base_url = "https://opencode.ai/zen"
+        changed = cli._normalize_model_for_provider("opencode-zen")
+        assert changed is True
+        assert cli.api_mode == "chat_completions"
+        assert cli.base_url == "https://opencode.ai/zen/v1"
+
+    def test_opencode_custom_proxy_base_url_untouched(self):
+        """A custom OPENCODE_*_BASE_URL proxy is not an opencode.ai host — never re-shape it."""
+        cli = _make_cli(model="opencode-zen/mimo-v2.5-free")
+        cli.api_mode = "anthropic_messages"
+        cli.base_url = "https://proxy.internal/zen"
+        cli._normalize_model_for_provider("opencode-zen")
+        assert cli.api_mode == "chat_completions"
+        assert cli.base_url == "https://proxy.internal/zen"
+
     def test_default_model_replaced(self):
         """No model configured (empty default) gets swapped for codex."""
         import cli as _cli_mod

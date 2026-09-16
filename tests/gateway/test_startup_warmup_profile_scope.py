@@ -88,3 +88,13 @@ def test_single_profile_warmup_keeps_environ_semantics(tmp_path, monkeypatch):
     assert seen["scope_installed"] is False
     assert seen["portal_override"] == PORTAL
 
+
+def test_multiplex_free_tier_bootstrap_runs_inside_the_launch_profile_scope(multiplex_home, monkeypatch):
+    """The free-tier bootstrap mints the Portal identity at boot through the same override; it is the
+    sibling unscoped executor hop and gets the same binding."""
+    seen: dict = {}
+    runner = _Runner(multiplex=True)
+    runner._start_free_tier_bootstrap = _probe(seen)
+    asyncio.run(runner._run_free_tier_bootstrap())
+    assert seen["scope_installed"] is True
+    assert seen["portal_override"] == PORTAL

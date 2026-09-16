@@ -29,7 +29,9 @@ export const KANBAN_QUIESCE_TIMEOUT_MS = 60_000
 function parseQuiesceResult(raw: unknown): KanbanQuiesceResult | undefined {
   try {
     const parsed = JSON.parse(String(raw))
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') return undefined
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') {
+      return undefined
+    }
 
     return {
       ok: parsed.ok,
@@ -75,7 +77,9 @@ export function quiesceKanbanWorkersForUpdate(
     return parsed
   } catch (error: any) {
     const parsed = parseQuiesceResult(error?.stdout)
-    if (parsed) return parsed
+    if (parsed) {
+      return parsed
+    }
 
     return {
       ok: false,

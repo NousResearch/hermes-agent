@@ -37,11 +37,13 @@ def _quiesce_task_for_update(conn, task_id: str) -> bool:
     prev_lock = row["claim_lock"]
     if not str(prev_lock or "").startswith(kb._host_prefix()):
         return False
+    if row["worker_pid"] is None:
+        return False
 
     termination = dispatch._terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, started_at=row["worker_started_at"]
     )
-    if row["worker_pid"] is not None and not (
+    if not (
         termination.get("host_local")
         and termination.get("terminated")
         and termination.get("tree_terminated")

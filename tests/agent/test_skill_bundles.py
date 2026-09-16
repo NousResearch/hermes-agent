@@ -100,6 +100,22 @@ class TestScanBundles:
         assert "/good" in result
         assert "/broken" not in result
 
+    def test_skips_invalid_utf8_without_breaking_discovery(self, bundles_env):
+        """Um byte não-UTF-8 num bundle não pode derrubar a descoberta dos outros.
+
+        Regressão: ``read_text(encoding="utf-8")`` levanta ``UnicodeDecodeError``, que é
+        ``ValueError`` — não é capturado por ``except OSError`` — então um único arquivo
+        corrompido propagava e quebrava ``scan_bundles`` inteiro, contrariando o contrato
+        do loader ("None (logged) on any error so a broken bundle can't break discovery").
+        """
+        bundles_dir, _ = bundles_env
+        bundles_dir.mkdir(parents=True)
+        (bundles_dir / "latin1.yaml").write_bytes(b"name: latin1\nskills: [skill-a]\n\xff\xfe\n")
+        _make_bundle_yaml(bundles_dir, "good", ["skill-a"])
+        result = scan_bundles()
+        assert "/good" in result
+        assert "/latin1" not in result
+
 
 
 

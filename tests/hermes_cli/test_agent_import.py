@@ -119,7 +119,7 @@ def claude_tree(profile_env):
     (skill / "SKILL.md").write_text(
         "---\nname: deploy-helper\n---\n\nDeploy things.\n", encoding="utf-8")
     (root / "skills" / "not-a-skill").mkdir()  # no SKILL.md → ignored
-    # Slash commands (reported as skipped)
+    # Portable slash commands become skills.
     commands = root / "commands"
     commands.mkdir()
     (commands / "review.md").write_text("Review this PR", encoding="utf-8")
@@ -271,9 +271,10 @@ class TestClaudeCodeImport:
 
 
 
-    def test_slash_commands_reported_skipped(self, report):
-        items = {i["kind"]: i for i in report["items"]}
-        assert items["slash-commands"]["status"] == "skipped"
+    def test_slash_commands_become_skills(self, report):
+        item = next(i for i in report["items"] if i["kind"] == "slash-command")
+        assert item["status"] == "imported"
+        assert Path(item["destination"]).read_text().endswith("Review this PR")
 
 
 # ---------------------------------------------------------------------------

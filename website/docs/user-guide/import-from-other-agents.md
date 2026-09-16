@@ -28,9 +28,28 @@ hermes import-agent claude-code --overwrite --yes  # replace conflicts, skip pro
 | `settings.json` → `permissions.deny` (`Bash(...)` rules) | `approvals.deny` in `config.yaml` |
 | `mcpServers` (from `~/.claude.json` and `settings.json`) | `mcp_servers` in `config.yaml` |
 | `skills/<name>/` (dirs with `SKILL.md`) | `~/.hermes/skills/claude-code-imports/<name>/` |
-| `commands/*.md` (slash commands) | Skipped with a note — convert them into skills |
+| `commands/*.md` (portable slash commands) | `skills/claude-code-commands/<name>/SKILL.md` in the selected Hermes home |
 
 Claude's `Bash(npm run test:*)` prefix rules become `npm run test*` globs. Non-`Bash` permission rules (`Read(...)`, `WebFetch`, ...) gate Claude-specific tools and are reported as unmapped rather than imported.
+
+### Portable Claude commands
+
+A static `commands/review.md` becomes the skill `/claude-command-review` in a
+new Hermes session. The instruction body is preserved; an optional `description`
+frontmatter field is carried over. No command is executed during import.
+
+Only top-level Markdown files with alphanumeric, hyphen or underscore names are
+converted. Commands that use Claude argument substitution (`$ARGUMENTS`, `$1`),
+file expansion (`@file`), inline shell execution, or frontmatter beyond
+`description` are reported as skipped for manual conversion. Hooks, nested command
+directories, plugin-cache discovery and supporting-file copying are not included.
+Review relative paths and Claude-specific tool names before using an imported skill.
+Source symlinks and symlinks below the destination home are not followed.
+
+Existing command skills are conflicts unless `--overwrite` is passed. Unlike
+ordinary imported skill directories, converted commands are not automatically
+refreshed by `--sync`; rerun the explicit import to preview changes. Review source
+files before importing: command text is copied, not scrubbed for embedded secrets.
 
 ### Codex CLI (`~/.codex`)
 

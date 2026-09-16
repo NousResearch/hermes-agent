@@ -318,7 +318,12 @@ describe('secondary reconnect runtime scope', () => {
 
     await openGatewayForAgent('homelab', 'writer')
     const firstSocket = gatewayMocks.instances[0]
+
+    // Age the socket past the min-lifetime grace so this prune exercises the
+    // stale-binding invalidation path, not the freshly-opened spare (#94769).
+    vi.useFakeTimers({ now: Date.now() + 31_000 })
     pruneSecondaryGateways(new Set())
+    vi.useRealTimers()
     expect(firstSocket.close).toHaveBeenCalledOnce()
 
     let finishReconnect!: () => void
@@ -435,6 +440,34 @@ describe('reconnectSecondaryGateways', () => {
     expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
     expect(getConnectionFor).toHaveBeenCalledTimes(2)
     expect(gatewayMocks.instances[0].connectionState).toBe('open')
+  })
+
+  it('spares a foreground-pinned secondary from the forced wake redial (#94769)', async () => {
+    // A forced wake (power resume / network online) closing a socket a mounted
+    // surface is bound to detaches its runtime → backend orphan-reap →
+    // `session.reclaimed` → re-resume on a fresh socket the same signal may
+    // close again: the reconnect/remount flicker loop. The registry's
+    // foregroundScopes hook is the same pin the live-work pruner honors.
+    configureGatewayRegistry({
+      onEvent: vi.fn(),
+      foregroundScopes: () => new Set(['conn:homelab::default'])
+    } as never)
+
+    const getConnectionFor = vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+      descriptorFor(connectionId, profile)
+    )
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'default')
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+
+    reconnectSecondaryGateways({ forceOpenSockets: true })
+    await Promise.resolve()
+
+    expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+    expect(getConnectionFor).toHaveBeenCalledTimes(1)
   })
 })
 

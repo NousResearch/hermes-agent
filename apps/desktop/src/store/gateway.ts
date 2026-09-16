@@ -105,6 +105,14 @@ interface Secondary {
   gateway: HermesGateway
   /** True after this entry completed at least one socket connection. */
   openedOnce: boolean
+  /**
+   * Date.now() of the most recent socket 'open'. The live-work pruner's
+   * min-lifetime grace reads this: an idle prune can race an on-demand dial
+   * (prune → redial → prune) and close freshly opened sockets before their
+   * consumer registers in the keep-set, re-triggering the orphan-reap /
+   * remount loop (#94769). 0 = never opened.
+   */
+  lastOpenedAt: number
   activeRequests: number
   connectPromise: Promise<void> | null
   offEvent: () => void
@@ -726,6 +734,7 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     }
 
     entry.openedOnce = true
+    entry.lastOpenedAt = Date.now()
     openedScopes.add(entry.scope)
 
     try {
@@ -908,6 +917,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     connection: null,
     gateway,
     openedOnce: false,
+    lastOpenedAt: 0,
     activeRequests: 0,
     connectPromise: null,
     offEvent: () => {},
@@ -1891,6 +1901,11 @@ export async function ensureActiveGatewayOpen({ explicit = false }: { explicit?:
 // activation before reporting the gateway as unavailable.
 const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 
+// Grace period before the live-work pruner may dispose a freshly opened
+// secondary socket; see the min-lifetime guard in pruneSecondaryGateways
+// (#94769 prune ↔ redial race).
+const SECONDARY_MIN_LIFETIME_MS = 30_000
+
 // Recovery signal: nudge every live secondary back open. Power-resume/network
 // signals can force sockets that still report open to retire before redialing.
 export function reconnectSecondaryGateways({ forceOpenSockets = false }: { forceOpenSockets?: boolean } = {}): void {
@@ -1909,6 +1924,17 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
 
     if (isOpen(entry.gateway)) {
       if (!forceOpenSockets) {
+        continue
+      }
+
+      // A forced wake (power resume / network online) used to close EVERY open
+      // secondary socket before redialing. Closing one that is mid-use detaches
+      // its runtime → the backend orphan-reaps it → `session.reclaimed` → the
+      // surface re-resumes on a fresh socket the same signal may close again:
+      // the #94769 flicker loop. Only force-redial quiescent sockets; live
+      // ones ride through and ordinary close/reconnect still heals them if
+      // the wake genuinely dropped them.
+      if (entry.activeRequests > 0 || foregroundPinned(entry)) {
         continue
       }
 
@@ -2074,6 +2100,18 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // an orphaned lease expires on its own.
       (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
     ) {
+      continue
+    }
+
+    // Min-lifetime grace: an idle prune can race an on-demand dial (prune →
+    // redial → prune) and dispose a socket that opened moments ago, before
+    // its consumer registered in the keep-set — closing it detaches the
+    // runtime, the backend orphan-reaps it, and the reclaimed surface
+    // re-resumes on a fresh socket the next recompute closes again: the
+    // #94769 flicker loop. A young socket rides one prune tick; the idle
+    // reap still catches it on a later recompute. Number guard: legacy/HMR
+    // entries may predate the field.
+    if (entry.lastOpenedAt > 0 && now - entry.lastOpenedAt < SECONDARY_MIN_LIFETIME_MS) {
       continue
     }
 

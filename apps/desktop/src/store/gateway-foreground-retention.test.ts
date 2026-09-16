@@ -97,6 +97,15 @@ afterEach(() => {
 })
 
 describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
+  // The min-lifetime grace (#94769) spares a freshly opened idle socket for
+  // one prune tick, so reclamation assertions age the socket past the grace
+  // window first; spare assertions are unaffected by aging.
+  const pruneAged = () => {
+    vi.useFakeTimers({ now: Date.now() + 31_000 })
+    pruneSecondaryGateways(idleKeepSet())
+    vi.useRealTimers()
+  }
+
   it('keeps an idle Bot Chat tile’s owner socket across prune recomputes', async () => {
     // The BOTS workspace dials the bot's own backend without activating it
     // (keepAllProfilesScope) and opens the canonical chat as a tile on that
@@ -107,8 +116,8 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     // Idle: no working / needs-input session anywhere. Before the fix this
     // recompute closed the socket → backend reaped the runtime → reclaim →
     // unbind → resume → … forever.
-    pruneSecondaryGateways(idleKeepSet())
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual([])
   })
@@ -117,7 +126,7 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     await openGatewayForAgent('local', 'bot')
     $sessionTiles.set([{ ...BOT_TILE, runtimeId: undefined }])
 
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual([])
   })
@@ -125,11 +134,11 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
   it('releases the socket once the tile is closed — the pin never latches', async () => {
     await openGatewayForAgent('local', 'bot')
     $sessionTiles.set([BOT_TILE])
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
     expect(gatewayMocks.closed).toEqual([])
 
     $sessionTiles.set([])
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=bot'])
   })
@@ -161,7 +170,7 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     // the same `retained` flag; with no tile bound to it, it is idle garbage.
     await openGatewayForAgent('local', 'bot')
 
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=bot'])
   })
@@ -170,7 +179,7 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     await openGatewayForAgent('homelab', 'bot')
     $sessionTiles.set([BOT_TILE])
 
-    pruneSecondaryGateways(idleKeepSet())
+    pruneAged()
 
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=bot'])
   })

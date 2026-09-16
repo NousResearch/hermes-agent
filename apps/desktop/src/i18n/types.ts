@@ -59,36 +59,6 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
-  catalog: {
-    browse: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
-  }
   connectors: {
     title: string
     connect: string

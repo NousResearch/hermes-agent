@@ -24,37 +24,6 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ru = defineLocale({
-  catalog: {
-    browse: 'Обзор',
-    installed: 'Установленные',
-    searchSkills: 'Поиск навыков',
-    searchPlugins: 'Поиск плагинов',
-    allSources: 'Все источники',
-    allCategories: 'Все категории',
-    about: 'Описание',
-    author: 'Автор',
-    source: 'Источник',
-    category: 'Категория',
-    version: 'Версия',
-    platforms: 'Платформы',
-    requires: 'Требования',
-    tools: 'Инструменты',
-    hooks: 'Хуки',
-    repository: 'Репозиторий',
-    documentation: 'Документация',
-    noResults: 'Совпадений нет',
-    tryAnother: 'Попробуйте другой запрос или сбросьте фильтры.',
-    clearFilters: 'Сбросить фильтры',
-    loadFailed: 'Не удалось загрузить каталог',
-    retry: 'Попробовать снова',
-    more: 'Показать ещё',
-    pinned: 'Проверенный коммит',
-    snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
-    installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
-    results: (count: number) =>
-      `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
-    back: 'Назад к результатам'
-  },
   sessionImport: {
     title: 'Продолжить из другого приложения',
     subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',

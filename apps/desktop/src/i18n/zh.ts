@@ -3,36 +3,6 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
-  catalog: {
-    browse: '浏览',
-    installed: '已安装',
-    searchSkills: '搜索技能',
-    searchPlugins: '搜索插件',
-    allSources: '所有来源',
-    allCategories: '所有分类',
-    about: '简介',
-    author: '作者',
-    source: '来源',
-    category: '分类',
-    version: '版本',
-    platforms: '支持的平台',
-    requires: '依赖项',
-    tools: '工具',
-    hooks: '钩子',
-    repository: '代码仓库',
-    documentation: '文档',
-    noResults: '没有匹配项',
-    tryAnother: '请尝试其他搜索或清除筛选条件。',
-    clearFilters: '清除筛选条件',
-    loadFailed: '无法加载目录',
-    retry: '重试',
-    more: '显示更多',
-    pinned: '已审核的提交',
-    snapshotHint: '内容来自 Hermes 目录。浏览时不会连接来源代码仓库。',
-    installHint: '安装前请检查源代码。更改将在新会话中生效。',
-    results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
-    back: '返回结果'
-  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',

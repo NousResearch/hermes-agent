@@ -7,6 +7,12 @@
   transform-origin: var(--radix-tooltip-content-transform-origin);
 }
 
+/* Radix's positioning wrapper otherwise intercepts adjacent controls even
+   when the visible content has pointer-events: none. Leave other poppers alone. */
+[data-radix-popper-content-wrapper]:has(> .tooltip-bubble) {
+  pointer-events: none;
+}
+
 .tooltip-bubble[data-state='closed'] {
   animation: tooltip-exit 100ms ease-in both;
 }

@@ -116,6 +116,8 @@ export function fanOffsets(direction: FanDirection, count: number, step: number)
 const sameRect = (a: DOMRect | null, b: DOMRect) =>
   a !== null && a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height
 
+const OPEN_HUB_TIP_SIDE = { vertical: 'left', horizontal: 'top', arc: 'bottom' } as const
+
 function fanTipSide(direction: FanDirection, offset: Point): NonNullable<FanMenuProps['tipAnchor']> {
   if (direction === 'vertical') {
     return 'left'
@@ -250,7 +252,7 @@ export function FanMenu({ direction = 'vertical', gap = 4, hint = true, hub, ite
         onPointerLeave={hideSoon}
         ref={anchorRef}
       >
-        <Tip label={hub.label} side={tipAnchor ?? (open && direction === 'vertical' ? 'left' : 'top')}>
+        <Tip label={hub.label} side={tipAnchor ?? (open ? OPEN_HUB_TIP_SIDE[direction] : 'top')}>
           <Button
             aria-expanded={open}
             aria-haspopup="true"

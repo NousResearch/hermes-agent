@@ -2105,6 +2105,7 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                prompt_builtin=(getattr(event, "metadata", None) or {}).get("prompt_builtin"),
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -2604,6 +2605,7 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        prompt_builtin: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2659,6 +2661,12 @@ class GatewayTurnMixin:
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
+        expected_prompt_builtin = None
+        if prompt_builtin is not None:
+            from agent.prompt_builtin_runtime import normalize_prompt_builtin_origin
+            expected_prompt_builtin = normalize_prompt_builtin_origin(prompt_builtin)
+            if expected_prompt_builtin is not None:
+                body["hermes"] = {"prompt_builtin": expected_prompt_builtin}
 
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
@@ -2670,6 +2678,7 @@ class GatewayTurnMixin:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
 
         full_response = ""
+        prompt_builtin_completion = None
         _start = time.time()
         saw_done = False
 
@@ -2678,7 +2687,7 @@ class GatewayTurnMixin:
 
             Malformed frames (bad JSON, ``choices: [null]``, non-dict deltas) are skipped —
             one bad chunk must not abort the whole stream."""
-            nonlocal full_response
+            nonlocal full_response, prompt_builtin_completion
             line = line.strip()
             if not line.startswith("data: "):
                 return False
@@ -2686,7 +2695,17 @@ class GatewayTurnMixin:
             if data.strip() == "[DONE]":
                 return True
             try:
-                choices = json.loads(data).get("choices") or []
+                payload = json.loads(data)
+                completion = payload.get("prompt_builtin_completion") if isinstance(payload, dict) else None
+                if (
+                    isinstance(completion, dict)
+                    and expected_prompt_builtin is not None
+                    and completion.get("command") == expected_prompt_builtin["name"]
+                    and completion.get("run_id") == expected_prompt_builtin["run_id"]
+                ):
+                    prompt_builtin_completion = dict(completion)
+                    return False
+                choices = payload.get("choices") or []
                 content = choices[0].get("delta", {}).get("content", "") if choices else ""
             except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
                 return False
@@ -2761,7 +2780,7 @@ class GatewayTurnMixin:
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
             proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
         )
-        return {
+        result = {
             "final_response": full_response or "(No response from remote agent)",
             "messages": [
                 {"role": "user", "content": message},
@@ -2773,6 +2792,9 @@ class GatewayTurnMixin:
             "session_id": session_id,
             "response_previewed": _stream_consumer is not None and bool(full_response),
         }
+        if prompt_builtin_completion is not None:
+            result["prompt_builtin_completion"] = prompt_builtin_completion
+        return result
 
     async def _run_agent(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
@@ -4051,6 +4073,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        prompt_builtin: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4059,7 +4082,7 @@ class GatewayTurnMixin:
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id,
+                event_message_id=event_message_id, prompt_builtin=prompt_builtin,
             )
 
         from run_agent import AIAgent
@@ -4075,6 +4098,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            prompt_builtin=prompt_builtin,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

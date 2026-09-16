@@ -40,6 +40,8 @@ class CLIChatTurnMixin:
         the concise voice-response prefix, #65827)
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
+        from agent.prompt_builtin_runtime import take_prompt_builtin
+        prompt_builtin = take_prompt_builtin(self, message)
         from tools.process_registry_notifications import TimelineNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
@@ -78,6 +80,7 @@ class CLIChatTurnMixin:
         print(flush=True)
 
         turn = _ChatTurn()
+        turn.prompt_builtin = prompt_builtin
         try:
             self._reset_stream_state()
             # Not part of _reset_stream_state: must persist across intermediate turn
@@ -324,6 +327,7 @@ class CLIChatTurnMixin:
                 conversation_history=self.conversation_history[:-1],  # exclude the message just staged
                 stream_callback=turn.stream_callback, task_id=self.session_id,
                 persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                prompt_builtin=getattr(turn, "prompt_builtin", None),
             )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}

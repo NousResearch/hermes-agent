@@ -1,6 +1,6 @@
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -127,3 +127,28 @@ async def test_idle_queue_sends_payload_as_next_turn(command_text):
     assert captured["key"] == build_session_key(_make_source())
     assert captured["generation"] == 1
     assert runner._running_agents == {}
+
+
+@pytest.mark.asyncio
+async def test_init_forwards_prompt_builtin_origin_to_agent_turn():
+    runner, _adapter = _make_runner()
+    captured = {}
+
+    async def fake_handle_message_with_agent(event, source, key, generation):
+        captured["text"] = event.text
+        captured["origin"] = event.metadata["prompt_builtin"]
+        return {"final_response": "", "messages": []}
+
+    runner._handle_message_with_agent = fake_handle_message_with_agent
+
+    with patch(
+        "hermes_cli.init_command.build_init_prompt_for_cwd",
+        return_value="generated init prompt",
+    ):
+        result = await runner._handle_message(_make_event("/init focus on gateway commands"))
+
+    assert result == {"final_response": "", "messages": []}
+    assert captured["text"] == "generated init prompt"
+    assert captured["origin"]["name"] == "init"
+    assert captured["origin"]["raw_args"] == "focus on gateway commands"
+    assert captured["origin"]["run_id"]

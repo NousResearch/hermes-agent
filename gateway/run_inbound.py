@@ -850,12 +850,23 @@ class GatewayInboundMixin:
         from hermes_cli.proxy_cli import format_status_text
         return True, format_status_text()
 
+    def _hm_set_prompt_builtin_origin(self, event, name: str, raw_args: str) -> None:
+        from agent.prompt_builtin_runtime import make_prompt_builtin_origin
+
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            event.metadata = metadata
+        metadata["prompt_builtin"] = make_prompt_builtin_origin(name, raw_args)
+
     async def _hm_rewrite_turn_to_prompt(self, event, source, name: str, ack: str, build) -> Tuple[bool, Optional[str]]:
         """Ack, then rewrite the turn to ``build()`` and fall through to the agent (keeps role
         alternation; works on any backend). A failing builder replies with a retry hint."""
         await self._send_command_ack(source, ack, name)
         try:
+            raw_args = event.get_command_args().strip()
             event.text = build()
+            self._hm_set_prompt_builtin_origin(event, name, raw_args)
         except Exception:
             return True, f"Could not start /{name} — please try again."
         return False, None
@@ -880,7 +891,9 @@ class GatewayInboundMixin:
         from hermes_cli.init_command import build_init_prompt_for_cwd
 
         try:
-            _init_prompt = build_init_prompt_for_cwd(extra=event.get_command_args().strip())
+            raw_args = event.get_command_args().strip()
+            _init_prompt = build_init_prompt_for_cwd(extra=raw_args)
+            self._hm_set_prompt_builtin_origin(event, "init", raw_args)
         except Exception:
             return True, "Could not start /init — please try again."
         _ack = (

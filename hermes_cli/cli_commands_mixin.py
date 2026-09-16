@@ -1870,10 +1870,12 @@ class CLICommandsMixin:
         _save(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
-    def _queue_prompt_turn(self, msg: str, command: str) -> None:
+    def _queue_prompt_turn(self, msg: str, command: str, raw_args: str = "") -> None:
         """Inject ``msg`` onto the agent's input queue as the next normal user turn (the
         /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe)."""
         if hasattr(self, "_pending_input"):
+            from agent.prompt_builtin_runtime import make_prompt_builtin_origin, stage_prompt_builtin
+            stage_prompt_builtin(self, msg, make_prompt_builtin_origin(command, raw_args))
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)
             print(f"  {command} needs an active chat session to run.")
@@ -1886,7 +1888,7 @@ class CLICommandsMixin:
         user_request = _command_arg(cmd)
         print("\n⚡ Learning a skill from what you described..." if user_request
               else "\n⚡ Learning a skill from this conversation...")
-        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn")
+        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn", user_request)
 
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent
@@ -1895,7 +1897,7 @@ class CLICommandsMixin:
         task = _command_arg(cmd)  # optional — empty infers the task from conversation context
         print(f"\n📋 Planning: {_ellipsize(task, 80)}" if task
               else "\n📋 Planning from this conversation's context...")
-        self._queue_prompt_turn(build_plan_prompt(task), "/plan")
+        self._queue_prompt_turn(build_plan_prompt(task), "/plan", task)
 
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan performed by the
@@ -1904,7 +1906,7 @@ class CLICommandsMixin:
         msg = build_init_prompt_for_cwd(extra=_command_arg(cmd))  # optional user emphasis
         verb = "Updating" if "UPDATE the existing AGENTS.md" in msg else "Generating"
         print(f"\n⚡ {verb} AGENTS.md from a project scan...")
-        self._queue_prompt_turn(msg, "/init")
+        self._queue_prompt_turn(msg, "/init", _command_arg(cmd))
 
     # ---- side-session handlers: /bg, /btw -------------------------------------------------
     def _handle_background_command(self, cmd: str):

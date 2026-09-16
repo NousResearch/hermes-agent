@@ -605,7 +605,12 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
 
     def cmd(rid, params, session, name, arg):
         build = getattr(_tools_mod(module), fn)
-        return _ok(rid, {"type": "send", "message": build(**{kw: arg}) if kw else build(arg)})
+        message = build(**{kw: arg}) if kw else build(arg)
+        if session is not None:
+            from agent.prompt_builtin_runtime import make_prompt_builtin_origin, stage_prompt_builtin
+            with session["history_lock"]:
+                stage_prompt_builtin(session, message, make_prompt_builtin_origin(name, arg))
+        return _ok(rid, {"type": "send", "message": message})
     return cmd
 
 

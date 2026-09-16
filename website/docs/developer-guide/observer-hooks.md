@@ -127,6 +127,36 @@ Common `post_llm_call` fields include `session_id`, `turn_id`,
 Use request-scoped API hooks for LLM span telemetry. Use `pre_llm_call` and
 `post_llm_call` for turn-level context, compatibility, and final turn summary.
 
+### Prompt-Builtin Completion
+
+`post_prompt_builtin_run` fires once after a prompt-backed slash command turn
+settles. Unlike `post_tool_call`, it preserves the command origin across CLI,
+TUI/Desktop, and messaging gateway execution and groups all artifacts produced
+during the turn:
+
+```python
+def register(ctx):
+    ctx.register_hook("post_prompt_builtin_run", on_prompt_builtin_complete)
+
+def on_prompt_builtin_complete(command, run_id, session_id, status, artifacts, **kwargs):
+    if command == "learn" and status == "completed":
+        consume_learned_skills(artifacts)
+```
+
+The payload contains `command`, the unmodified command `request`, opaque
+`run_id`, `session_id`, `task_id`, `platform`, `status` (`completed`, `failed`,
+or `interrupted`), and `artifacts`. Skill artifacts carry `kind="skill"`,
+`name`, the requested `action`, `status` (`saved`, `staged`, or `failed`), an
+authoritative `path` when a write landed, and `file_path` for supporting-file
+operations. A staged write has no saved path. Ordinary `skill_manage` calls
+outside a prompt-backed command do not emit this completion hook.
+
+The same payload is available to host surfaces as
+`result["prompt_builtin_completion"]`. The hook is additive and observer-only;
+its return value is ignored. Gateway proxy mode carries the payload in the
+terminal `hermes.prompt_builtin.completion` SSE event before `[DONE]`; only the
+authenticated Hermes-to-Hermes extension field can establish command origin.
+
 ### Request-Scoped API Hooks
 
 API hooks describe provider attempts inside the agent loop:

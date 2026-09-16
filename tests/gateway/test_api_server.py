@@ -1134,6 +1134,51 @@ class TestChatCompletionsEndpoint:
 
 
     @pytest.mark.asyncio
+    async def test_authenticated_proxy_provenance_emits_terminal_completion_extension(self):
+        api_key = "proxy-test-key-long-enough"
+        adapter = _make_adapter(api_key)
+        app = _create_app(adapter)
+        origin = {"name": "learn", "raw_args": "topic", "run_id": "run-proxy"}
+        completion = {
+            "command": "learn", "request": "topic", "run_id": "run-proxy",
+            "session_id": "session-1", "task_id": "session-1", "platform": "api_server",
+            "status": "completed", "artifacts": [],
+        }
+
+        async def _mock_run_agent(**kwargs):
+            assert kwargs["prompt_builtin"] == origin
+            callback = kwargs.get("stream_delta_callback")
+            if callback:
+                callback("done")
+            return (
+                {
+                    "final_response": "done", "messages": [], "api_calls": 1,
+                    "prompt_builtin_completion": completion,
+                },
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        payload = {
+            "model": "test", "messages": [{"role": "user", "content": "learn"}],
+            "stream": True, "hermes": {"prompt_builtin": origin},
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                unauthorized = await cli.post("/v1/chat/completions", json=payload)
+                assert unauthorized.status == 401
+                assert mock_run.call_count == 0
+                response = await cli.post(
+                    "/v1/chat/completions", json=payload,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                assert response.status == 200
+                body = await response.text()
+
+        assert "event: hermes.prompt_builtin.completion" in body
+        assert f'"run_id": "{completion["run_id"]}"' in body
+
+
+    @pytest.mark.asyncio
     async def test_session_chat_stream_passes_request_model_provider_options(self, adapter):
         app = _create_app(adapter)
         model_options = {"reasoning_effort": "medium", "service_tier": "priority"}

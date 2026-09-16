@@ -278,15 +278,20 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
-    # A profile the live multiplexer serves runs no gateway of its own, so its own
-    # gateway_state.json — a leftover from a pre-multiplex or standalone run — is always history,
-    # never current state; it must not shadow the multiplexer's authoritative record. Unscoped,
-    # the profile is the process's own home (a pooled ``hermes --profile X serve``); the default
-    # home resolves to None here.
+    # A profile served by the multiplexer writes no live record of its own; its adapters live in the
+    # multiplexer's record under ``<profile>:<platform>``. A leftover ``gateway_state.json`` from the
+    # profile's standalone days outranks nothing: only a record proving a live own gateway does —
+    # the same rung order ``resolve_gateway_liveness`` uses (own runtime PID before the multiplexer),
+    # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
+    # ``hermes --profile X serve``); the default home resolves to a name the multiplexer never serves.
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
-    served = multiplexer_liveness_for_profile(own_home)
-    if served is not None:
-        runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
+    if (
+        runtime is None
+        or get_runtime_status_running_pid(runtime, expected_home=own_home) is None
+    ):
+        served = multiplexer_liveness_for_profile(own_home)
+        if served is not None:
+            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 

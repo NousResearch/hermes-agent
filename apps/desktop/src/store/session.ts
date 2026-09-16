@@ -605,8 +605,13 @@ export function mergeSessionPage(
   // another profile is a DIFFERENT session and must survive the dedupe.
   const incomingLineageKeys = new Set(merged.map(lineageIdentity))
 
+  // A hidden row (canonical Bot Chat) is never a legitimate survivor even
+  // when its id is in the keep set: bots hold a live turn almost constantly,
+  // so the keep-list would otherwise re-insert the row into the sidebar on
+  // every refresh — the row is reachable only through its bot row by design.
   const survivors = previous.filter(
     session =>
+      !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
@@ -666,6 +671,9 @@ function sessionListIdentity(session: Pick<SessionInfo, 'id' | 'profile'>): stri
  * otherwise vanish until a later successful scan (#73847, #88528).
  *
  * Successful profiles are left alone: their incoming page is still authoritative.
+ * A hidden row is never carried forward either — a failed scan must not become
+ * the window that re-lists a canonical Bot Chat the sidebar contract keeps
+ * behind its bot row.
  */
 export function carryForwardFailedProfileSessions(
   previous: SessionInfo[],
@@ -681,7 +689,11 @@ export function carryForwardFailedProfileSessions(
   const carried: SessionInfo[] = []
 
   for (const session of previous) {
-    if (!failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+    if (
+      session.hidden ||
+      !failed.has(sidebarProfileKey(session)) ||
+      incomingIds.has(sessionListIdentity(session))
+    ) {
       continue
     }
 

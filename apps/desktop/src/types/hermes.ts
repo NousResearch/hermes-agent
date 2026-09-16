@@ -531,6 +531,12 @@ export interface SessionInfo {
    *  explicitly marked unread or a response arrived after it was last read.
    *  Undefined against a backend predating the flag; treat as read. */
   unread?: boolean
+  /** Backend `sessions.hidden` flag. Hidden rows (canonical Bot Chats) are
+  *  reachable only through the bot that owns them — the Sessions sidebar
+  *  contract — so the flag exists to keep refresh-side survivor logic from
+  *  re-inserting them, not to gate row reads (owner resolution still
+  *  fetches hidden rows by id). */
+  hidden?: boolean
   preview: null | string
   source: null | string
   started_at: number

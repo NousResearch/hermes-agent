@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
 import { stubResizeObserver } from '@/test/jsdom'
@@ -62,6 +63,15 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('reveals below the titlebar so window controls and the sidebar toggle stay clear', () => {
+    render(<NarrowOverlays />)
+
+    revealPane('sessions')
+
+    const overlay = document.querySelector<HTMLElement>('[data-glass-opaque]')
+    expect(overlay?.style.top).toBe(`${TITLEBAR_HEIGHT}px`)
+  })
+
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
 

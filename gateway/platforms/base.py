@@ -4336,6 +4336,7 @@ class BasePlatformAdapter(ABC):
         self, chat_id: str, chat_name: Optional[str] = None, chat_type: str = "dm",
         user_id: Optional[str] = None, user_name: Optional[str] = None,
         thread_id: Optional[str] = None, chat_topic: Optional[str] = None,
+        chat_header: Optional[str] = None,
         user_id_alt: Optional[str] = None, chat_id_alt: Optional[str] = None, is_bot: bool = False,
         scope_id: Optional[str] = None, guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None, message_id: Optional[str] = None,
@@ -4349,6 +4350,7 @@ class BasePlatformAdapter(ABC):
             platform=self.platform, chat_id=str(chat_id), chat_name=chat_name, chat_type=chat_type,
             user_id=_opt(user_id), user_name=user_name, thread_id=_opt(thread_id),
             chat_topic=(chat_topic or "").strip() or None, user_id_alt=user_id_alt,
+            chat_header=(chat_header or "").strip() or None,
             chat_id_alt=chat_id_alt, is_bot=is_bot, scope_id=_opt(scope_id),
             guild_id=_opt(guild_id), parent_chat_id=_opt(parent_chat_id),
             message_id=_opt(message_id))

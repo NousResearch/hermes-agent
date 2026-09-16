@@ -80,9 +80,8 @@ apps/
 # Test suite — not shipped in production images
 tests/
 
-# Documentation site (Docusaurus) and supplementary docs
+# Documentation site (Docusaurus)
 website/
-docs/
 
 # Assets only used by the GitHub README
 assets/
@@ -107,9 +106,9 @@ plans/
 .hadolint.yaml
 .mailmap
 
-# Repo-root debug/export artifacts — must never reach image layers (COPY . .)
+# Debug/export artifacts — must never reach image layers (COPY . .)
 /log.txt
 /sqlite_leak_fix.png
 /*.png.bak
-/default.tar.gz
-/*.tar.gz
+*.tar.gz
+*.tgz

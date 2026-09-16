@@ -24,6 +24,8 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
+import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
@@ -36,8 +38,12 @@ import {
   warnDroppedChoices
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
+import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
+import { requestForOwnedSession } from '@/store/session-states'
 
+import { handleClarifySubmitShortcut } from './clarify-submit-shortcut'
 import { selectMessageRunning } from './tool/fallback-model'
 import { parseMaybeObject } from './tool/fallback-model/format'
 
@@ -443,6 +449,9 @@ function ClarifyToolSinglePending({
   const [activeIndex, setActiveIndex] = useState(0)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  // Identity for the visible-card check below — this is the element carrying
+  // `data-clarify-choices`, i.e. the one `visibleClarifyCard()` resolves.
+  const formRef = useRef<HTMLFormElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. If the question text is
@@ -461,7 +470,7 @@ function ClarifyToolSinglePending({
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
 
         return
       }
@@ -469,10 +478,9 @@ function ClarifyToolSinglePending({
       setSubmitting(true)
 
       try {
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          request_id: matchingRequest.requestId,
-          answer
-        })
+        // The response frame goes back over the socket the request arrived on —
+        // the owner backend by construction (#91684's class cannot recur).
+        respondToServerRequest(matchingRequest.requestId, { answer })
         triggerHaptic('submit')
         onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
@@ -574,11 +582,7 @@ function ClarifyToolSinglePending({
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.nativeEvent.isComposing) {
-        return
-      }
-
-      if (event.key === 'Enter' && !event.shiftKey) {
+      if (isSubmitEnter(event) && !event.shiftKey) {
         event.preventDefault()
         submitAnswer()
       }
@@ -598,7 +602,8 @@ function ClarifyToolSinglePending({
   // confirms the current answer (or acts on the highlighted row). Stands down
   // whenever a focusable control (a field, a choice button, the action bar) is
   // focused, so it never eats keystrokes meant for the composer, the Other box,
-  // or a button the user tabbed to.
+  // or a button the user tabbed to — and whenever this card is not the visible
+  // one, since the binding is window-wide but the answer is session-specific.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -606,6 +611,17 @@ function ClarifyToolSinglePending({
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
+        return
+      }
+
+      // Not the visible card ⇒ not our keystroke. Inactive tabs stay MOUNTED,
+      // so every parked clarify keeps a live `window` listener; without this the
+      // card that acts is whichever mounted first, and answering the question in
+      // front of you silently answers a background session's question instead —
+      // resuming an agent turn the user never saw. Same resolver the composer's
+      // `clarifyCardOwnsKey` yields to, so the two cannot disagree about which
+      // card is live.
+      if (visibleClarifyCard() !== formRef.current) {
         return
       }
 
@@ -703,7 +719,9 @@ function ClarifyToolSinglePending({
     <form
       className="my-1.5 grid gap-4"
       data-clarify-choices={hasChoices ? choices.length : undefined}
+      onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
+      ref={formRef}
     >
       <ClarifyShell className="grid gap-2">
         <div className="flex items-start gap-2">
@@ -999,7 +1017,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
+      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
 
       return
     }
@@ -1007,19 +1025,27 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     setSubmitting(true)
 
     try {
-      // Sequential, not Promise.all: the LAST lock resolves the blocked tool
-      // server-side, so every earlier lock must already be accepted when it
-      // lands — a reordered burst could complete the batch with a missing
-      // answer.
+      // Sequential, not Promise.all: the LAST lock resolves the blocked
+      // server request, so every earlier lock must already be accepted when
+      // it lands — a reordered burst could complete the batch with a missing
+      // answer. `clarify.lock` is a normal RPC; it rides the session's OWNER
+      // socket (a profile / Bot Chat switch re-points ambient elsewhere).
       for (const question of questions) {
         const answer = stagedAnswer(question)
 
-        await gateway.request<{ ok?: boolean }>('clarify.respond', {
-          answer: answer ?? '',
-          question_id: question.qid,
-          request_id: request.requestId
-        })
+        await requestForOwnedSession<{ remaining?: string[]; status?: string }>(
+          request.sessionId,
+          gateway.request.bind(gateway) as typeof gateway.request,
+          'clarify.lock',
+          {
+            answer: answer ?? '',
+            question_id: question.qid,
+            request_id: request.requestId
+          }
+        )
       }
+
+      forgetServerRequest(request.requestId)
 
       triggerHaptic('submit')
       onAnswered()
@@ -1057,11 +1083,8 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     onAnswered()
     clearClarifyRequest(request.requestId, request.sessionId)
 
-    try {
-      await gateway?.request('clarify.respond', { answer: '', request_id: request.requestId })
-    } catch {
-      // The tool times out on its own; a failed skip must never block the UI.
-    }
+    // A response with no `answers` is the cancel-all (the plain Esc path).
+    respondToServerRequest(request.requestId, {})
   }, [gateway, onAnswered, request])
 
   const handleSubmit = useCallback(
@@ -1084,7 +1107,12 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   }
 
   return (
-    <form className="my-1.5 grid gap-4" data-clarify-batch={questions.length} onSubmit={handleSubmit}>
+    <form
+      className="my-1.5 grid gap-4"
+      data-clarify-batch={questions.length}
+      onKeyDownCapture={handleClarifySubmitShortcut}
+      onSubmit={handleSubmit}
+    >
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">

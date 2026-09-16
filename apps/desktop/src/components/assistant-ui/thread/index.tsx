@@ -1,5 +1,6 @@
 import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
+import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
@@ -44,6 +45,7 @@ interface ThreadProps {
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
+  scrollProfile?: string
 }
 
 // memo'd on purpose, and load-bearing for session-switch cost. ChatView
@@ -64,6 +66,7 @@ export const Thread = memo(function Thread({
   onDismissError,
   onRestoreToMessage,
   sessionId = null,
+  scrollProfile,
   sessionKey
 }: ThreadProps) {
   const { t } = useI18n()
@@ -147,9 +150,15 @@ export const Thread = memo(function Thread({
     [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm]
   )
 
-  const emptyPlaceholder = intro ? (
+  // Core's splash belongs to a fresh draft; a session that exists but has
+  // nothing in it yet gets whichever plugin owns it. The slot often renders
+  // nothing, which costs an empty container — harmless, since there is no
+  // content to lay out until the first message swaps this branch out.
+  const emptyBody = intro ? <Intro {...intro} /> : sessionId ? <ChatEmptySlot sessionId={sessionId} /> : null
+
+  const emptyPlaceholder = emptyBody ? (
     <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">
-      <Intro {...intro} />
+      {emptyBody}
     </div>
   ) : undefined
 
@@ -168,6 +177,8 @@ export const Thread = memo(function Thread({
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loadingIndicator}
+          scrollProfile={scrollProfile}
+          sessionId={sessionId}
           sessionKey={sessionKey}
         />
         {loading === 'session' && <CenteredThreadSpinner />}

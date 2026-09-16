@@ -65,7 +65,7 @@ def sample_silk(tmp_path):
 @pytest.fixture
 def oversized_wav(tmp_path):
     """Create a sparse WAV-shaped file just above the remote upload cap."""
-    from tools.transcription_tools import MAX_FILE_SIZE
+    from tools.transcription_common import MAX_FILE_SIZE
 
     wav_path = tmp_path / "oversized.wav"
     with wav_path.open("wb") as audio_file:
@@ -246,9 +246,9 @@ class TestTranscribeLocalCommand:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.transcription_tools.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
 
-        from tools.transcription_tools import _run_command_stt
+        from tools.transcription_command import _run_command_stt
 
         result = _run_command_stt("echo hi", timeout=1)
 
@@ -292,10 +292,10 @@ class TestTranscribeLocalCommand:
                 returncode = 0
             return R()
 
-        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
-        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
         monkeypatch.setattr(
-            "tools.transcription_tools._prepare_local_audio",
+            "tools.transcription_local._prepare_local_audio",
             lambda *a, **k: (str(sample_wav), None),
         )
 
@@ -334,9 +334,9 @@ class TestTranscribeLocalCommand:
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
-        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
-        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
 
         from tools.transcription_tools import _transcribe_local_command
 
@@ -350,6 +350,64 @@ class TestTranscribeLocalCommand:
 # ============================================================================
 # _transcribe_local — additional tests
 # ============================================================================
+
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
+class TestLocalModelLoading:
+    def test_cached_model_load_never_uses_online_resolution(self):
+        cached_model = object()
+
+        with patch("faster_whisper.WhisperModel", return_value=cached_model) as model_cls:
+            from tools.transcription_local import _create_whisper_model
+
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is cached_model
+
+        model_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="int8"
+        )
+
+    @pytest.mark.parametrize("download_error", [None, "Got: ConnectTimeout: [Errno 110] Connection timed out"])
+    def test_cache_miss_falls_back_with_actionable_download_failure(self, download_error):
+        from tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
+
+        LocalEntryNotFoundError = _hub_cache_miss_error()
+        if download_error:
+            download_error = LocalEntryNotFoundError(download_error)
+
+        downloaded_model = object()
+        online_result = download_error or downloaded_model
+        side_effect = [LocalEntryNotFoundError("not cached"), online_result]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            if download_error:
+                with pytest.raises(RuntimeError) as exc_info:
+                    _create_whisper_model("base", device="auto", compute_type="auto")
+                assert "HF_ENDPOINT" in str(exc_info.value)
+                assert "HF_HUB_DISABLE_XET=1" in str(exc_info.value)
+            else:
+                assert _create_whisper_model(
+                    "base", device="auto", compute_type="auto"
+                ) is downloaded_model
+
+        assert model_cls.call_args_list == [
+            call("base", local_files_only=True, device="auto", compute_type="auto"),
+            call("base", local_files_only=False, device="auto", compute_type="auto"),
+        ]
+
+    def test_partial_cache_is_treated_as_a_cache_miss(self):
+        # An interrupted first download leaves refs/main + a snapshot without model.bin;
+        # snapshot_download(local_files_only=True) returns that folder and ctranslate2
+        # raises RuntimeError, so the online path must still run.
+        from tools.transcription_local import _create_whisper_model
+
+        downloaded_model = object()
+        side_effect = [RuntimeError("Unable to open file 'model.bin' in model '/cache/snap'"), downloaded_model]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is downloaded_model
+
+        assert [c.kwargs["local_files_only"] for c in model_cls.call_args_list] == [True, False]
+
 
 @pytest.mark.skipif(
     not __import__("importlib").util.find_spec("faster_whisper"),
@@ -416,7 +474,9 @@ class TestTranscribeLocalExtended:
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
-        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+        mock_whisper_cls.assert_called_once_with(
+            "base", local_files_only=True, device="cpu", compute_type="float32"
+        )
 
 
     def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
@@ -437,6 +497,63 @@ class TestTranscribeLocalExtended:
         assert mock_whisper_cls.call_count == 1
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
+
+    @staticmethod
+    def _lazy_failure(message):
+        """faster-whisper's transcribe() returns a lazy generator: the decode — and the CUDA
+        dlopen-on-first-use — only fires while segments are iterated (#103793, #105295, #111929)."""
+        def segments():
+            raise RuntimeError(message)
+            yield  # pragma: no cover
+        return segments()
+
+    def test_iteration_time_cuda_dlopen_retries_on_cpu(self, tmp_path):
+        """A missing CUDA library raised while ITERATING segments must evict the cached model and
+        retry on CPU/int8, not surface as a hard failure (Windows: cublas64_12.dll)."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        info = MagicMock(language="en", duration=1.0)
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (
+            self._lazy_failure("Library cublas64_12.dll is not found or cannot be loaded"), info)
+        cpu_segment = MagicMock(text="hi", no_speech_prob=0.0, avg_logprob=0.0)
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], info)
+        mock_whisper_cls = MagicMock(side_effect=[cuda_model, cpu_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True, result.get("error")
+        assert result["transcript"] == "hi"
+        assert mock_whisper_cls.call_count == 2
+        retry_kwargs = mock_whisper_cls.call_args_list[1].kwargs
+        assert (retry_kwargs["device"], retry_kwargs["compute_type"]) == ("cpu", "int8")
+
+    def test_iteration_time_non_lib_error_surfaces_without_cpu_retry(self, tmp_path):
+        """A real runtime failure during iteration must NOT trigger the CPU retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (self._lazy_failure("CUDA out of memory"), MagicMock())
+        mock_whisper_cls = MagicMock(return_value=cuda_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "CUDA out of memory" in result["error"]
+        assert mock_whisper_cls.call_count == 1
 
 
 # ============================================================================
@@ -509,7 +626,8 @@ class TestValidateAudioFileEdgeCases:
 
 
     def test_all_supported_formats_accepted(self, tmp_path):
-        from tools.transcription_tools import _validate_audio_file, SUPPORTED_FORMATS
+        from tools.transcription_tools import _validate_audio_file
+        from tools.transcription_common import SUPPORTED_FORMATS
         for fmt in SUPPORTED_FORMATS:
             f = tmp_path / f"test{fmt}"
             f.write_bytes(b"data")
@@ -925,7 +1043,7 @@ class TestTranscribeAudioElevenLabsDispatch:
 
 class TestExtractTranscriptText:
     def test_strips_qwen3_asr_language_envelope(self):
-        from tools.transcription_tools import _extract_transcript_text
+        from tools.transcription_cloud import _extract_transcript_text
 
         result = _extract_transcript_text(
             "language zh\n<audio_language>zh</audio_language>\n<asr_text>你好，世界",
@@ -934,7 +1052,7 @@ class TestExtractTranscriptText:
         assert result == "你好，世界"
 
     def test_keeps_non_envelope_marker_literal(self):
-        from tools.transcription_tools import _extract_transcript_text
+        from tools.transcription_cloud import _extract_transcript_text
 
         result = _extract_transcript_text(
             "The user literally said <asr_text> while reading markup.",
@@ -951,10 +1069,10 @@ class TestShellSafety:
         import shlex
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr(
-            "tools.transcription_tools._find_whisper_binary",
+            "tools.transcription_local._find_whisper_binary",
             lambda: "/usr/bin/whisper",
         )
-        from tools.transcription_tools import _get_local_command_template
+        from tools.transcription_local import _get_local_command_template
         template = _get_local_command_template()
         assert template is not None
         cmd = template.format(
@@ -970,10 +1088,10 @@ class TestShellSafety:
     def test_env_var_template_metacharacters_are_literal_argv(
         self, monkeypatch, sample_wav, tmp_path
     ):
+        from hermes_cli._subprocess_compat import windows_hide_flags
         from tools.transcription_tools import (
             LOCAL_STT_COMMAND_ENV,
             _transcribe_local_command,
-            windows_hide_flags,
         )
 
         output_dir = tmp_path / "transcript-output"
@@ -1005,9 +1123,9 @@ class TestShellSafety:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         monkeypatch.setattr(
-            "tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir
+            "tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir
         )
-        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
 
         result = _transcribe_local_command(sample_wav, "base")
 
@@ -1102,7 +1220,7 @@ class TestLocalBaseUrlNoApiKey:
 
 
     def test_is_local_or_private_url(self):
-        from tools.transcription_tools import _is_local_or_private_url
+        from tools.transcription_cloud import _is_local_or_private_url
         assert _is_local_or_private_url("http://localhost:8504/v1")
         assert _is_local_or_private_url("http://127.0.0.1:9000")
         assert _is_local_or_private_url("http://10.0.0.5/v1")
@@ -1131,7 +1249,7 @@ class TestCafConversion:
             return MagicMock(returncode=0)
 
         monkeypatch.setattr(
-            "tools.transcription_tools._find_ffmpeg_binary",
+            "tools.transcription_audio._find_ffmpeg_binary",
             lambda: "/usr/bin/ffmpeg",
         )
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1199,15 +1317,23 @@ class TestRunCommandSttIdleTimeout:
     def test_stderr_progress_extends_beyond_timeout(self, tmp_path):
         """A slow-but-alive command that keeps emitting output survives an
         idle timeout shorter than its total runtime."""
-        from tools.transcription_tools import _run_command_stt
+        from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_exit.py"
+        # The de-flake is budget, not ordering: the first tick was always
+        # printed before the first sleep. What changed is the idle window
+        # (0.1s -> 0.25s, 5x the 50ms tick period) so process spawn latency
+        # under loaded CI or on Windows can no longer eat the whole window
+        # before the first stderr chunk is read, plus a longer heartbeat
+        # sequence whose ~400ms runtime still exceeds the idle window, so a
+        # pass still proves the progress extension.
         script.write_text(
             "\n".join([
                 "import sys, time",
-                "for idx in range(4):",
+                "print('tick 0', file=sys.stderr, flush=True)",
+                "for idx in range(1, 9):",
+                "    time.sleep(0.05)",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.04)",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
@@ -1215,17 +1341,17 @@ class TestRunCommandSttIdleTimeout:
 
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.1,
+            timeout=0.25,
         )
 
         assert result.returncode == 0
-        assert "tick 3" in result.stderr
+        assert "tick 8" in result.stderr
         assert "done" in result.stdout
 
     def test_silent_stall_still_times_out(self, tmp_path):
         """A silently stalled command is killed once the idle window elapses,
         and pre-stall output is preserved on the TimeoutExpired."""
-        from tools.transcription_tools import _run_command_stt
+        from tools.transcription_command import _run_command_stt
 
         script = tmp_path / "progress_then_hang.py"
         script.write_text(
@@ -1237,10 +1363,15 @@ class TestRunCommandSttIdleTimeout:
             encoding="utf-8",
         )
 
+        # Same budget rule as the progress test above: the idle window must
+        # comfortably exceed process spawn latency on a loaded runner, or the
+        # child is killed before its first stderr line is ever read and the
+        # pre-stall-output assertion fails spuriously. 30s of silence still
+        # trips a 0.25s window by a wide margin.
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_stt(
                 self._shell_command(sys.executable, "-u", str(script)),
-                timeout=0.1,
+                timeout=0.25,
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
@@ -1265,11 +1396,11 @@ class TestExplicitOpenaiSelectionError:
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(
-            "tools.transcription_tools.resolve_openai_audio_api_key",
+            "tools.tool_backend_helpers.resolve_openai_audio_api_key",
             lambda: None,
         )
         monkeypatch.setattr(
-            "tools.transcription_tools.resolve_managed_tool_gateway",
+            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
             lambda vendor: None,
         )
 
@@ -1278,7 +1409,7 @@ class TestExplicitOpenaiSelectionError:
     ):
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.transcription_tools.managed_nous_tools_enabled", lambda: True
+            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
         )
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config", lambda: {}
@@ -1303,7 +1434,7 @@ class TestExplicitOpenaiSelectionError:
         hint."""
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.transcription_tools.managed_nous_tools_enabled", lambda: True
+            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
         )
         monkeypatch.setattr(
             "tools.transcription_tools._load_stt_config", lambda: {}
@@ -1311,7 +1442,7 @@ class TestExplicitOpenaiSelectionError:
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch(
-                 "tools.transcription_tools.nous_tool_gateway_unavailable_message",
+                 "tools.tool_backend_helpers.nous_tool_gateway_unavailable_message",
                  lambda what: f"managed route down for {what}; run `hermes tools`",
              ):
             from tools.transcription_tools import _dispatch_stt_provider

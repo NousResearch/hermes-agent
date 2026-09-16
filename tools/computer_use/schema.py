@@ -32,6 +32,7 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "launch",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
@@ -56,7 +57,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Optional. Limit capture/action to one app (name e.g. 'Safari', or bundle ID). Omitted "
             "= frontmost window. app='screen' = composited full-screen grab (image only, no "
             "clickable elements); app='desktop' = the OS desktop/shell surface (wallpaper, icons, "
-            "taskbar) with its elements."
+            "taskbar) with its elements. For action='launch', specifies the application name, bundle ID, AUMID, or launch path."
         ),
     },
     "pid": {

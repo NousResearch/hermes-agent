@@ -283,6 +283,7 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     type_text, key, set_value = _noop_stub("type", "text"), _noop_stub("key", "keys"), _noop_stub("set_value", "value", "element")
     list_apps, list_windows = _noop_stub("list_apps", result=[]), _noop_stub("list_windows", result=[])
     focus_app = _noop_stub("focus_app", "app", "raise_window")
+    launch_app = _noop_stub("launch_app", "app")
 
 # ── Dispatch ────────────────────────────────────────────────────────────────
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
@@ -414,6 +415,14 @@ _ACTIONS: Dict[str, _ActionSpec] = {
         json.dumps({"error": "focus_app requires `app`"}) if not args.get("app")
         else backend.focus_app(args["app"], raise_window=bool(args.get("raise_window")))), destructive=True,
         summarize=lambda a, args, fg: f"focus {args.get('app', '')!r}" + (" (raise)" if args.get("raise_window") else "")),
+    "launch": _ActionSpec(
+        lambda backend, action, args, **_: (
+            json.dumps({"error": "launch requires `app`"}) if not args.get("app")
+            else backend.launch_app(args["app"])
+        ),
+        destructive=True,
+        summarize=lambda a, args, fg: f"launch {args.get('app', '')!r}{fg}",
+    ),
     "capture": _ActionSpec(_do_capture),
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
@@ -426,6 +435,7 @@ _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)
 _ACTION_SUGGESTIONS = {
     "hotkey": "key", "press_key": "key", "keypress": "key", "key_combo": "key", "shortcut": "key", "type_text": "type",
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
+    "open_app": "launch", "start_app": "launch", "run_app": "launch",
 }
 
 def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], session_id: Optional[str] = None) -> Any:

@@ -152,9 +152,11 @@ class _InputMixin:
                                                                           delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
-        refusal, args = self._target_args("key", need_window=True)
+        refusal, args = self._target_args("key", need_window=False)
         if refusal is not None:
-            return refusal
+            args = {"scope": "desktop"}
+        elif self._active_window_id is not None and "window_id" not in args:
+            args["window_id"] = self._active_window_id
         key_name, modifiers = _parse_key_combo(keys)
         if not key_name:
             return _refuse("key", f"Could not parse key from '{keys}'.")

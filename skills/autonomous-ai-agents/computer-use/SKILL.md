@@ -122,7 +122,10 @@ wait              seconds=0.5
 list_apps
 list_windows
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
+launch            app="<app name / bundle ID / AUMID / path>"
 ```
+
+To open an app that is not running, call `computer_use(action='launch', app='...')` (e.g. 'Calculator', 'calc', or bundle ID), then `computer_use(action='capture', app='...')` to interact.
 
 All actions accept optional `capture_after=True` to get a follow-up
 screenshot in the same tool call. All actions that target an element

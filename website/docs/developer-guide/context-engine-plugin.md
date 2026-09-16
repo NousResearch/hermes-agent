@@ -59,7 +59,7 @@ class LCMEngine(ContextEngine):
         """Return True if compaction should fire this turn."""
 
     def compress(self, messages: list, current_tokens: int = None,
-                 focus_topic: str = None) -> list:
+                 focus_topic: str = None, operation_claim=None):
         """Compact the message list and return a new (possibly shorter) list.
 
         The returned list must be a valid OpenAI-format message sequence.
@@ -67,6 +67,10 @@ class LCMEngine(ContextEngine):
         ``focus_topic`` is an optional topic string from manual
         ``/compress <focus>``; engines that support guided compression should
         prioritise preserving information related to it, others may ignore it.
+
+        ``operation_claim`` is supplied only after
+        ``prepare_compression_operation()`` returns an opaque claim. A proven
+        sanitation call returns ``(messages, operation_claim)`` instead.
         """
 ```
 
@@ -96,9 +100,70 @@ These have sensible defaults in the ABC. Override as needed:
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
+| `prepare_compression_operation(messages, *, session_id=None, attempt_generation=None)` | Returns `None` | Your preflight can atomically claim that the next automatic call is pure sanitation |
+| `load_externalized_payload_sidecar(ref)` | Returns `None` | You externalize payload markers and need host-side verification before a destructive sanitation commit |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
+
+`prepare_compression_operation()` is the narrow optional handshake for
+sanitation-only preflight work:
+
+```python
+def prepare_compression_operation(
+    self, messages, *, session_id=None, attempt_generation=None
+):
+    if not self.preflight_handoff_matches(messages, session_id):
+        return None
+    claim = object()
+    self.pending_claim = (
+        claim, message_identity(messages), session_id, attempt_generation
+    )
+    return "sanitize", claim
+
+def compress(self, messages, operation_claim=None, **kwargs):
+    pending = self.pending_claim
+    self.pending_claim = None  # Consume before any fallible work.
+    if (
+        pending is None
+        or operation_claim is not pending[0]
+        or message_identity(messages) != pending[1]
+    ):
+        return generic_compress(messages, **kwargs)
+    sanitized = sanitize(messages)
+    return sanitized, operation_claim
+```
+
+Return `("sanitize", claim)` only when `claim` is a fresh, opaque, non-`None`
+identity token atomically bound to the exact message snapshot, session, and
+attempt generation. The engine must invalidate pending state on another
+preflight, a session change, mismatched messages, or an exception. On the
+immediately following call, consume the claim exactly once only if Hermes passes
+the same object as `operation_claim`; after pure sanitation, return
+`(messages, operation_claim)`. Hermes accepts sanitation only when the current
+result carries that exact object. A replayed or substituted claim is refused.
+
+A missing method, `None`, malformed return, exception, or `compress()` signature
+without `operation_claim` keeps generic compression behavior, including pre-call
+memory context. Manual/forced and overflow-recovery calls are always generic.
+Mutable `last_compression_status` is never sanitation proof.
+
+`load_externalized_payload_sidecar(ref)` is the narrow verification contract for
+externalization markers. If your sanitizer emits strings like
+`[Externalized tool output: ... ref=<file>.json]` or
+`[Externalized payload: ... ref=<file>.json]`, implement this hook to return the
+referenced payload dict (or `None` when missing). Hermes validates marker
+identity and sizes against this payload before deleting original transcript
+content; unreadable/malformed sidecars fail closed.
+
+For the coordinated LCM release, `LCMEngine` must implement the hook by resolving
+`ref` inside its configured externalization directory with the plugin's safe
+reader. A tool-output sidecar must return `kind: "tool_result"`, `content`,
+`content_chars`, `content_bytes`, and the matching `tool_call_id`; a structured
+message sidecar must return `kind: "raw_payload"`, `content`, `content_chars`,
+`content_bytes`, and the matching `role`. `content` is the stored JSON text for
+structured payloads. The implementation must reject paths outside the storage
+directory and return `None` for missing or malformed files.
 
 ## Per-turn context selection and observation
 

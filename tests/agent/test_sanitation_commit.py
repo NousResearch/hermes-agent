@@ -1,0 +1,2416 @@
+"""Host commit contracts for pure external-engine sanitation."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import logging
+import os
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import patch
+
+import pytest
+
+from agent.conversation_sanitation import (
+    sanitation_rough_tokens,
+    validate_sanitation_candidate,
+)
+
+_SANITATION_GROWTH_BOUND = 1024
+_DEFAULT_OPERATION = object()
+
+
+def _placeholder(pattern: str, secret: str) -> str:
+    parts = [
+        f"[LCM sensitive redaction: name={pattern}; "
+        f"chars={len(secret)}; bytes={len(secret.encode())}"
+    ]
+    if pattern != "password_assignment":
+        parts.append(f"sha256={hashlib.sha256(secret.encode()).hexdigest()[:16]}")
+    return "; ".join(parts) + "]"
+
+
+def _placeholder_growth_fixture(rounds: int) -> tuple[list[dict], list[dict]]:
+    """Exercise every host-visible container with shortest accepted secrets."""
+    original: list[dict] = []
+    sanitized: list[dict] = []
+    for index in range(rounds):
+        password = f"a{index:05d}"
+        token = f"k{index:011d}"
+        call_id = f"call-{index}"
+        original.extend([
+            {"role": "user", "content": f'password="{password}"'},
+            {
+                "role": "assistant",
+                "content": "checking",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": (
+                                f'{{"password":"{password}","api_key":"{token}"}}'
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": [
+                    f"Bearer {token}",
+                    {"client_secret": token, f"password={password}": password},
+                ],
+            },
+            {"role": "assistant", "content": f"checked api_key={token}"},
+        ])
+        sanitized.extend([
+            {
+                "role": "user",
+                "content": (
+                    f'password="{_placeholder("password_assignment", password)}"'
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "checking",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": (
+                                '{"password":"'
+                                + _placeholder("password_assignment", password)
+                                + '","api_key":"'
+                                + _placeholder("api_key", token)
+                                + '"}'
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": [
+                    f"Bearer {_placeholder('bearer_token', token)}",
+                    {
+                        "client_secret": _placeholder("api_key", token),
+                        (
+                            "password=" + _placeholder("password_assignment", password)
+                        ): _placeholder("password_assignment", password),
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": f"checked api_key={_placeholder('api_key', token)}",
+            },
+        ])
+    return original, sanitized
+
+
+class _MemoryManager:
+    def __init__(self) -> None:
+        self.pre_compress_calls = 0
+        self.pre_compress_kwargs: list[dict[str, Any]] = []
+
+    def on_pre_compress(self, _messages, **kwargs):
+        self.pre_compress_calls += 1
+        self.pre_compress_kwargs.append(kwargs)
+        return "memory context"
+
+    def on_session_switch(self, *_args, **_kwargs):
+        raise AssertionError("sanitation must not switch memory sessions")
+
+
+class _ExternalEngine:
+    name = "fixture-external-engine"
+    _last_compress_aborted = False
+    _last_summary_error = None
+    _last_compression_made_progress = True
+    _last_summary_fallback_used = False
+    _last_feasibility_skip = False
+    compression_count = 1
+    last_compression_rough_tokens = 0
+    last_prompt_tokens = 0
+    last_completion_tokens = 0
+    awaiting_real_usage_after_compression = False
+
+    def __init__(
+        self,
+        candidate: list[dict],
+        status: str | None,
+        *,
+        initial_status: str | None = "idle",
+        current_operation: str | None = "sanitize",
+        updates_status: bool = True,
+    ) -> None:
+        self.candidate = candidate
+        if status is not None:
+            self.last_compression_status = initial_status
+        self.current_operation = current_operation
+        self.updates_status = updates_status
+        self.calls = 0
+        self.compress_inputs: list[list[dict]] = []
+        self.call_options: list[dict[str, bool]] = []
+        self.prepare_calls: list[dict[str, Any]] = []
+        self.operation_claims: list[Any] = []
+        self.result_claim: Any = _DEFAULT_OPERATION
+        self.prepare_exception: BaseException | None = None
+        self.expected_session_id: str | None = None
+        self.expected_messages: list[dict] | None = None
+        self.after_compress = None
+        self.failure_cooldown_calls = 0
+
+    def prepare_compression_operation(
+        self,
+        messages,
+        *,
+        session_id=None,
+        attempt_generation=None,
+    ):
+        if self.prepare_exception is not None:
+            raise self.prepare_exception
+        self.prepare_calls.append(
+            {
+                "messages": copy.deepcopy(messages),
+                "session_id": session_id,
+                "attempt_generation": attempt_generation,
+            }
+        )
+        if (
+            self.current_operation != "sanitize"
+            or (
+                self.expected_session_id is not None
+                and session_id != self.expected_session_id
+            )
+            or (
+                self.expected_messages is not None
+                and messages != self.expected_messages
+            )
+        ):
+            return None
+        claim = object()
+        return "sanitize", claim
+
+    def compress(
+        self,
+        _messages,
+        current_tokens=None,
+        focus_topic=None,
+        force=False,
+        bypass_cooldown=False,
+        operation_claim=None,
+    ):
+        self.calls += 1
+        self.compress_inputs.append(copy.deepcopy(_messages))
+        self.operation_claims.append(operation_claim)
+        self.call_options.append(
+            {"force": force, "bypass_cooldown": bypass_cooldown}
+        )
+        if self.updates_status and hasattr(self, "last_compression_status"):
+            self.last_compression_status = self._result_status
+        if self.after_compress is not None:
+            self.after_compress()
+        candidate = copy.deepcopy(self.candidate)
+        if operation_claim is None:
+            return candidate
+        result_claim = (
+            operation_claim
+            if self.result_claim is _DEFAULT_OPERATION
+            else self.result_claim
+        )
+        return candidate, result_claim
+
+    def _record_compression_failure_cooldown(self, *_args, **_kwargs):
+        self.failure_cooldown_calls += 1
+
+    _result_status = "sanitized"
+
+
+@dataclass
+class _Harness:
+    agent: Any
+    db: Any
+    messages: list[dict]
+    candidate: list[dict]
+    memory: _MemoryManager
+    session_end_calls: list[list[dict]]
+
+
+def _make_harness(
+    tmp_path,
+    *,
+    rounds: int,
+    status: str | None = "sanitized",
+    initial_status: str | None = "idle",
+    current_operation: str | None | object = _DEFAULT_OPERATION,
+    updates_status: bool = True,
+) -> _Harness:
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(tmp_path / "state.db")
+    session_id = f"sanitize-{rounds}-{status or 'legacy'}"
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = cast(
+            Any,
+            AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=db,
+                session_id=session_id,
+                skip_context_files=True,
+                skip_memory=True,
+            ),
+        )
+    agent.compression_in_place = True
+    agent._compression_feasibility_checked = True
+    agent._ensure_db_session()
+    messages, candidate = _placeholder_growth_fixture(rounds)
+    agent._flush_messages_to_session_db(messages, [])
+    for original_message, candidate_message in zip(messages, candidate):
+        for key in ("_row_id", "timestamp"):
+            if key in original_message:
+                candidate_message[key] = original_message[key]
+    resolved_operation = (
+        "sanitize"
+        if current_operation is _DEFAULT_OPERATION and status == "sanitized"
+        else cast(str | None, current_operation)
+    )
+    engine = _ExternalEngine(
+        candidate,
+        status,
+        initial_status=initial_status,
+        current_operation=resolved_operation,
+        updates_status=updates_status,
+    )
+    engine._result_status = status
+    agent.context_compressor = engine
+    memory = _MemoryManager()
+    agent._memory_manager = memory
+    session_end_calls: list[list[dict]] = []
+    agent.commit_memory_session = lambda value: session_end_calls.append(value)
+    return _Harness(agent, db, messages, candidate, memory, session_end_calls)
+
+
+def _without_persistence_markers(messages: list[dict]) -> list[dict]:
+    return [
+        {
+            key: value
+            for key, value in message.items()
+            if key not in {"_db_persisted", "_row_id", "timestamp"}
+        }
+        for message in messages
+    ]
+
+
+def test_required_checkpoint_fails_closed_before_pure_sanitation(tmp_path):
+    """A result-only sanitation bridge cannot bypass a mandatory checkpoint."""
+    from agent.conversation_compression import (
+        CompressionCheckpointUnavailable,
+        compress_context,
+    )
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        initial_status="stale",
+    )
+    harness.agent.compression_checkpoint_required = True
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+
+    with pytest.raises(
+        CompressionCheckpointUnavailable,
+        match="BLOCKED_MISSING_PREREQUISITE",
+    ):
+        compress_context(
+            harness.agent,
+            harness.messages,
+            "system",
+            approx_tokens=100_000,
+        )
+
+    assert harness.agent.context_compressor.calls == 0
+    assert harness.memory.pre_compress_calls == 0
+    assert harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    ) == durable_before
+
+
+def test_required_checkpoint_runs_before_pure_sanitation_when_supported(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status="stale")
+    harness.agent.compression_checkpoint_required = True
+    harness.memory.supports_pre_compress_checkpoint = lambda _version: True
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 1
+    assert harness.memory.pre_compress_kwargs[0]["require_checkpoint"] is True
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
+@pytest.mark.parametrize("result_status", ["reassembled", "stale", "exception"])
+def test_statusless_external_engine_preserves_generic_memory_for_non_sanitation(
+    tmp_path,
+    result_status,
+):
+    """Memory timing follows the result, not a missing or stale pre-call status."""
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        status=result_status,
+        initial_status=None,
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_statusless_external_engine_can_report_pure_sanitation_without_memory_hook(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        initial_status=None,
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.memory.pre_compress_calls == 0
+
+
+def test_sanitation_claim_is_passed_and_current_result_proves_exact_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert len(harness.agent.context_compressor.prepare_calls) == 1
+    prepare_call = harness.agent.context_compressor.prepare_calls[0]
+    assert prepare_call["messages"] == harness.messages
+    assert prepare_call["session_id"] == harness.agent.session_id
+    assert isinstance(prepare_call["attempt_generation"], int)
+    assert harness.agent.context_compressor.operation_claims[0] is not None
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert harness.memory.pre_compress_calls == 0
+
+
+def test_claimed_sanitation_skips_aux_feasibility_probe(tmp_path, monkeypatch):
+    import agent.conversation_compression as compression
+    import agent.model_metadata as model_metadata
+    import yaml
+
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "auxiliary": {
+                    "compression": {
+                        "provider": "openrouter",
+                        "model": "auxiliary/small",
+                        "context_length": model_metadata.MINIMUM_CONTEXT_LENGTH - 1,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    harness.agent._compression_feasibility_checked = False
+    assert (
+        harness.agent._aux_compression_context_length_config
+        < model_metadata.MINIMUM_CONTEXT_LENGTH
+    )
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert harness.agent.context_compressor.operation_claims[0] is not None
+
+
+def test_retained_sanitation_retry_skips_aux_feasibility_probe(
+    tmp_path, monkeypatch
+):
+    import agent.auxiliary_client as aux_client
+    import agent.conversation_compression as compression
+    import agent.model_metadata as model_metadata
+
+    harness = _make_harness(tmp_path, rounds=1)
+    real_commit = harness.db.sanitize_and_compact
+
+    def _fail_commit(*args, **kwargs):
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", _fail_commit)
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", real_commit)
+    harness.agent.context_compressor.current_operation = None
+    harness.agent._compression_feasibility_checked = False
+    minimum_context = model_metadata.MINIMUM_CONTEXT_LENGTH
+    fake_client = SimpleNamespace(
+        base_url="https://auxiliary.invalid/v1",
+        api_key="test-key",
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "_resolve_task_provider_model",
+        lambda _task: ("openrouter", "", "", "", ""),
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "get_text_auxiliary_client",
+        lambda *_args, **_kwargs: (fake_client, "auxiliary/small"),
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *_args, **_kwargs: minimum_context - 1,
+    )
+
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
+def test_generic_compression_still_enforces_aux_feasibility_probe(
+    tmp_path, monkeypatch
+):
+    import agent.auxiliary_client as aux_client
+    import agent.conversation_compression as compression
+    import agent.model_metadata as model_metadata
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        status="reassembled",
+        current_operation=None,
+    )
+    harness.agent.context_compressor.candidate = [
+        {"role": "user", "content": "generic compressed context"}
+    ]
+    harness.agent._compression_feasibility_checked = False
+    minimum_context = model_metadata.MINIMUM_CONTEXT_LENGTH
+    fake_client = SimpleNamespace(
+        base_url="https://auxiliary.invalid/v1",
+        api_key="test-key",
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "_resolve_task_provider_model",
+        lambda _task: ("openrouter", "", "", "", ""),
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "get_text_auxiliary_client",
+        lambda *_args, **_kwargs: (fake_client, "auxiliary/small"),
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *_args, **_kwargs: minimum_context - 1,
+    )
+
+    with pytest.raises(ValueError, match="Auxiliary compression model"):
+        compression.compress_context(
+            harness.agent,
+            harness.messages,
+            "system",
+            approx_tokens=100_000,
+        )
+
+
+def test_prepare_hook_mutation_is_validated_against_pre_hook_snapshot(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    real_prepare = engine.prepare_compression_operation
+
+    def _mutating_prepare(messages, **kwargs):
+        prepared = real_prepare(messages, **kwargs)
+        messages[0]["role"] = "assistant"
+        messages[0]["tool_call_id"] = "mutated-by-prepare"
+        return prepared
+
+    engine.prepare_compression_operation = _mutating_prepare
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_prepare_hook_type_drift_is_restored_before_sanitation(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    harness.messages[0]["count"] = 1
+    harness.candidate[0]["count"] = 1
+    engine = harness.agent.context_compressor
+    real_prepare = engine.prepare_compression_operation
+
+    def _mutating_prepare(messages, **kwargs):
+        prepared = real_prepare(messages, **kwargs)
+        messages[0]["count"] = True
+        return prepared
+
+    engine.prepare_compression_operation = _mutating_prepare
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.messages[0]["count"] is 1
+    assert returned[0]["count"] is 1
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
+def test_replayed_result_claim_cannot_classify_later_invocation_as_sanitation(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    first, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    stale_claim = harness.agent.context_compressor.operation_claims[0]
+    harness.agent.context_compressor.candidate = copy.deepcopy(first)
+    harness.agent.context_compressor.result_claim = stale_claim
+
+    replay_input = copy.deepcopy(first)
+    replayed, _ = compression.compress_context(
+        harness.agent,
+        replay_input,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.operation_claims[1] is not stale_claim
+    assert replayed is replay_input
+
+
+def test_intervening_preflight_invalidates_stale_sanitation_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.should_compress_preflight = lambda _messages: setattr(
+        engine, "current_operation", None
+    )
+    engine.should_compress_preflight(harness.messages)
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.prepare_calls
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_session_change_invalidates_stale_sanitation_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.expected_session_id = harness.agent.session_id
+    harness.agent.session_id = f"{harness.agent.session_id}-next"
+    harness.agent._ensure_db_session()
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_message_mismatch_invalidates_stale_sanitation_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.expected_messages = copy.deepcopy(harness.messages)
+    mismatched = copy.deepcopy(harness.messages)
+    mismatched[0]["content"] += " changed"
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        mismatched,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_prepare_claim_exception_invalidates_sanitation_and_falls_back_generic(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    expected_input = copy.deepcopy(harness.messages)
+
+    def _mutate_then_raise(messages, **_kwargs):
+        messages[0]["role"] = "assistant"
+        messages[0]["tool_call_id"] = "mutated-by-prepare"
+        raise RuntimeError("claim failed")
+
+    engine.prepare_compression_operation = _mutate_then_raise
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.operation_claims == [None]
+    assert engine.compress_inputs == [expected_input]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_stale_sanitized_status_cannot_classify_current_placeholder_result(
+    tmp_path,
+    monkeypatch,
+):
+    """A previous status cannot turn a generic current result into sanitation."""
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        initial_status="sanitized",
+        current_operation=None,
+        updates_status=False,
+    )
+    generic_boundary_calls = 0
+
+    def _fold(*_args):
+        nonlocal generic_boundary_calls
+        generic_boundary_calls += 1
+
+    monkeypatch.setattr(compression, "_fold_todo_snapshot", _fold)
+    harness.agent.context_compressor.after_compress = lambda: (
+        harness.memory.pre_compress_calls == 1
+        or (_ for _ in ()).throw(
+            AssertionError("generic memory context must be gathered before compress")
+        )
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert generic_boundary_calls == 1
+    assert harness.memory.pre_compress_calls == 1
+    assert len(harness.session_end_calls) == 1
+
+
+def test_known_generic_engine_without_memory_context_keeps_pre_call_memory_semantics(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        status="reassembled",
+        current_operation=None,
+    )
+    harness.agent.context_compressor.candidate = [
+        {"role": "user", "content": "generic compressed context"}
+    ]
+    harness.agent.context_compressor.after_compress = lambda: (
+        harness.memory.pre_compress_calls == 1
+        or (_ for _ in ()).throw(
+            AssertionError("generic memory context must be gathered before compress")
+        )
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effects(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    """Seven full shape rounds establish the smallest binary growth envelope."""
+    import agent.context_compressor as context_compressor
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=7)
+    growth = sanitation_rough_tokens(
+        harness.candidate
+    ) - sanitation_rough_tokens(harness.messages)
+    assert 0 < growth <= _SANITATION_GROWTH_BOUND
+
+    calls = {"todo": 0, "user": 0, "salvage": 0}
+    monkeypatch.setattr(
+        compression,
+        "_fold_todo_snapshot",
+        lambda *_args: calls.__setitem__("todo", calls["todo"] + 1),
+    )
+
+    def _user(*_args):
+        calls["user"] += 1
+        return "already_present"
+
+    monkeypatch.setattr(compression, "_ensure_compressed_has_user_turn", _user)
+
+    def _salvage(*_args, **_kwargs):
+        calls["salvage"] += 1
+        return None
+
+    monkeypatch.setattr(context_compressor, "salvage_grown_transcript", _salvage)
+
+    captured_commit = {}
+    real_sanitize = harness.db.sanitize_and_compact
+
+    def _sanitize(*args, **kwargs):
+        captured_commit.update(kwargs)
+        return real_sanitize(*args, **kwargs)
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", _sanitize)
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert calls == {"todo": 0, "user": 0, "salvage": 0}
+    assert harness.memory.pre_compress_calls == 0
+    assert harness.session_end_calls == []
+    assert captured_commit["watermark"] is not None
+    assert captured_commit["lock_holder"]
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+    assert "operation=sanitize" in caplog.text
+    assert "measurement=rough_message_tokens" in caplog.text
+    assert f"growth_delta={growth}" in caplog.text
+    assert "salvage=false" in caplog.text
+    assert "terminal_result=committed" in caplog.text
+
+
+def test_sanitation_preserves_append_that_precedes_watermark_read(
+    tmp_path, monkeypatch
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    real_watermark = harness.db.get_active_message_watermark
+
+    def _append_then_read(session_id):
+        harness.db.append_message(
+            session_id, role="user", content="concurrent-before-watermark"
+        )
+        return real_watermark(session_id)
+
+    monkeypatch.setattr(
+        harness.db, "get_active_message_watermark", _append_then_read
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.db.get_messages_as_conversation(harness.agent.session_id)[-1][
+        "content"
+    ] == "concurrent-before-watermark"
+
+
+def test_sanitation_commit_after_durable_parent_adoption_keeps_row_ids(tmp_path):
+    """A cold durable-parent adoption must still provide row ids for sanitation."""
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    harness.agent.compression_in_place = False
+    durable_with_ids = harness.db.get_messages_as_conversation(
+        harness.agent.session_id, include_row_ids=True
+    )
+    expected_candidate = copy.deepcopy(durable_with_ids)
+    expected_candidate[0]["content"] = (
+        'password="'
+        + _placeholder("password_assignment", "a00000")
+        + '"'
+    )
+    harness.agent.context_compressor.candidate = copy.deepcopy(expected_candidate)
+    harness.agent.context_compressor.expected_messages = copy.deepcopy(durable_with_ids)
+    stale_snapshot = harness.db.get_messages_as_conversation(harness.agent.session_id)[
+        :-1
+    ]
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        stale_snapshot,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert len(harness.agent.context_compressor.operation_claims) == 1
+    assert harness.agent.context_compressor.operation_claims[0] is not None
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        expected_candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(expected_candidate)
+
+
+def test_pure_sanitation_preserves_prompt_and_skips_generic_boundary_hooks(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    prompt = "".join(["stable-system-", "prompt"])
+    harness.agent._cached_system_prompt = prompt
+    harness.agent.context_compressor.compression_count = 2
+    harness.agent.context_compressor._last_summary_error = "generic warning"
+    harness.agent.event_callback = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("sanitation must not emit session:compress")
+    )
+    harness.agent._emit_warning = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("sanitation must not emit generic compression warnings")
+    )
+    statuses: list[str] = []
+    harness.agent._emit_status = statuses.append
+    monkeypatch.setattr(
+        harness.db,
+        "update_system_prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("sanitation must not rewrite the system prompt")
+        ),
+    )
+    for name in (
+        "_rebuild_system_prompt_at_boundary",
+        "_notify_context_engine_compression_complete",
+        "_queue_context_engine_compression_notification",
+        "_reset_read_dedup_caches",
+    ):
+        monkeypatch.setattr(
+            compression,
+            name,
+            lambda *_args, _name=name, **_kwargs: (_ for _ in ()).throw(
+                AssertionError(f"sanitation called {_name}")
+            ),
+        )
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, returned_prompt = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "different builder input",
+        approx_tokens=100_000,
+    )
+
+    assert returned is not harness.messages
+    assert returned_prompt is prompt
+    assert harness.agent._cached_system_prompt is prompt
+    assert harness.agent._last_compaction_in_place is True
+    assert not any("accuracy may degrade" in status for status in statuses)
+    assert "context compression done:" not in caplog.text
+    assert not hasattr(
+        harness.agent.context_compressor,
+        "_verify_compaction_cleared_threshold",
+    )
+
+
+def test_pure_sanitation_is_forced_in_place_when_rotation_is_configured(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    original_session_id = harness.agent.session_id
+    harness.agent.compression_in_place = False
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.session_id == original_session_id
+    assert harness.agent._last_compaction_in_place is True
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
+def test_structural_growth_scales_with_declared_redactions(tmp_path, caplog):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=20)
+    aggregate_growth = sanitation_rough_tokens(
+        harness.candidate
+    ) - sanitation_rough_tokens(harness.messages)
+    assert aggregate_growth > _SANITATION_GROWTH_BOUND
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert "changed_fields=" in caplog.text
+    assert "declared_placeholders=" in caplog.text
+    assert "terminal_result=committed" in caplog.text
+
+
+def test_sanitation_drops_api_sidecar_when_content_is_rewritten(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    sidecar = "wire-only context containing the original credential"
+    harness.messages[0]["api_content"] = sidecar
+    harness.candidate[0]["api_content"] = sidecar
+    harness.agent._session_db.set_message_api_content(
+        harness.agent.session_id,
+        harness.messages[0]["_row_id"],
+        harness.messages[0]["content"],
+        sidecar,
+    )
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert "api_content" not in returned[0]
+    assert "api_content" not in harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )[0]
+
+
+def test_sanitation_rejects_equality_compatible_cross_type_mutation():
+    original = [
+        {
+            "role": "assistant",
+            "content": "api_key=abcdefghijkl",
+            "tool_calls": [
+                {
+                    "id": "call-real",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"admin":1,"api_key":"abcdefghijkl"}',
+                    },
+                }
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    )
+    candidate[0]["tool_calls"][0]["function"]["arguments"] = (
+        '{"admin":true,"api_key":"'
+        + _placeholder("api_key", "abcdefghijkl")
+        + '"}'
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("role",), _placeholder("api_key", "assistant")),
+        (("tool_call_id",), _placeholder("api_key", "call-real")),
+        (
+            ("tool_calls", 0, "function", "name"),
+            _placeholder("api_key", "lookup"),
+        ),
+        (("content", 0, "type"), _placeholder("api_key", "text")),
+    ],
+)
+def test_sanitation_rejects_structural_field_redactions(path, replacement):
+    original = [
+        {
+            "role": "assistant",
+            "tool_call_id": "call-real",
+            "content": [{"type": "text", "text": "api_key=abcdefghijkl"}],
+            "tool_calls": [
+                {
+                    "id": "call-real",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"api_key":"abcdefghijkl"}',
+                    },
+                }
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    target: Any = candidate[0]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = replacement
+    candidate[0]["content"][0]["text"] = (
+        "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("reasoning_details", "anthropic_content_blocks", "bedrock_content_blocks"),
+)
+def test_sanitation_rejects_replay_envelope_structural_redactions(field):
+    original = [
+        {
+            "role": "assistant",
+            "content": "api_key=abcdefghijkl",
+            field: [
+                {
+                    "type": "thinking",
+                    "signature": "abcdefghijkl",
+                    "thinking": "api_key=abcdefghijkl",
+                }
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    candidate[0][field][0]["signature"] = _placeholder("api_key", "abcdefghijkl")
+    candidate[0][field][0]["thinking"] = (
+        "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
+def test_externalization_marker_byte_count_normalizes_lone_surrogates():
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "a\ud800b",
+        }
+    ]
+    normalized = "a\ufffdb"
+    digest = hashlib.sha256(normalized.encode()).hexdigest()[:12]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(normalized)}; bytes={len(normalized.encode())}; "
+        f"ref=20260915_call-real_{digest}_abc123.json]"
+    )
+
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: {
+                "kind": "tool_result",
+                "tool_call_id": "call-real",
+                "content": normalized,
+                "content_chars": len(normalized),
+                "content_bytes": len(normalized.encode()),
+            },
+        )
+        is not None
+    )
+
+
+def test_redacted_externalization_requires_matching_sidecar_payload():
+    original = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Bearer abcdefghijkl"},
+                {"type": "metadata", "value": {"api_key": "abcdefghijkl"}},
+            ],
+        }
+    ]
+    externalized_redacted_payload = json.dumps(
+        [
+            {
+                "type": "text",
+                "text": "Bearer " + _placeholder("bearer_token", "abcdefghijkl"),
+            },
+            {
+                "type": "metadata",
+                "value": {"api_key": _placeholder("api_key", "abcdefghijkl")},
+            },
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(externalized_redacted_payload.encode()).hexdigest()[:12]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "[Externalized payload: kind=raw_payload; role=assistant; "
+        f"chars={len(externalized_redacted_payload)}; "
+        f"bytes={len(externalized_redacted_payload.encode())}; "
+        f"ref=20260915_raw_payload_assistant_{digest}_abc123.json]"
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+    payload = {
+        "kind": "raw_payload",
+        "role": "assistant",
+        "content": externalized_redacted_payload,
+        "content_chars": len(externalized_redacted_payload),
+        "content_bytes": len(externalized_redacted_payload.encode()),
+    }
+    loader = lambda ref: payload if ref.endswith(".json") else None
+    assert validate_sanitation_candidate(
+        original,
+        candidate,
+        externalized_payload_loader=loader,
+    ) is not None
+
+    candidate[0]["content"] = candidate[0]["content"].replace(
+        "role=assistant", "role=user"
+    )
+    assert validate_sanitation_candidate(
+        original,
+        candidate,
+        externalized_payload_loader=loader,
+    ) is None
+
+
+def test_verified_unredacted_structured_externalization_counts_as_change():
+    original_content = [{"type": "text", "text": "ordinary output"}]
+    externalized_content = json.dumps(
+        original_content,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(externalized_content.encode()).hexdigest()[:12]
+    original = [{"role": "assistant", "content": original_content}]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = (
+        "[Externalized payload: kind=raw_payload; role=assistant; "
+        f"chars={len(externalized_content)}; "
+        f"bytes={len(externalized_content.encode())}; "
+        f"ref=20260915_raw_payload_assistant_{digest}_abc123.json]"
+    )
+    payload = {
+        "kind": "raw_payload",
+        "role": "assistant",
+        "content": externalized_content,
+        "content_chars": len(externalized_content),
+        "content_bytes": len(externalized_content.encode()),
+    }
+
+    changes = validate_sanitation_candidate(
+        original,
+        candidate,
+        externalized_payload_loader=lambda _ref: payload,
+    )
+
+    assert changes is not None
+    assert changes.changed_fields == 1
+    assert changes.placeholders == 1
+
+
+def test_externalization_marker_must_match_original_identity_and_size():
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "sëcret payload",
+        }
+    ]
+    valid = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(original[0]['content'])}; "
+        f"bytes={len(original[0]['content'].encode())}; "
+        f"ref=20260915_call-real_"
+        f"{hashlib.sha256(original[0]['content'].encode()).hexdigest()[:12]}"
+        "_abc123.json]"
+    )
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = valid
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: {
+                "kind": "tool_result",
+                "tool_call_id": "call-real",
+                "content": original[0]["content"],
+                "content_chars": len(original[0]["content"]),
+                "content_bytes": len(original[0]["content"].encode()),
+            },
+        )
+        is not None
+    )
+
+    for malformed in (
+        valid.replace("call-real", "call-other"),
+        valid.replace(f"chars={len(original[0]['content'])}", "chars=1"),
+        valid.replace(
+            f"bytes={len(original[0]['content'].encode())}", "bytes=1"
+        ),
+        valid.replace(
+            hashlib.sha256(original[0]["content"].encode()).hexdigest()[:12],
+            "000000000000",
+        ),
+    ):
+        candidate[0]["content"] = malformed
+        assert validate_sanitation_candidate(original, candidate) is None
+
+
+def test_externalized_marker_requires_readable_sidecar_when_loader_available():
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "sensitive output",
+        }
+    ]
+    marker = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(original[0]['content'])}; "
+        f"bytes={len(original[0]['content'].encode())}; "
+        f"ref=20260915_call-real_"
+        f"{hashlib.sha256(original[0]['content'].encode()).hexdigest()[:12]}"
+        "_abc123.json]"
+    )
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = marker
+
+    assert validate_sanitation_candidate(original, candidate) is None
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: None,
+        )
+        is None
+    )
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: {"kind": "tool_result"},
+        )
+        is None
+    )
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=lambda _ref: (_ for _ in ()).throw(
+                RuntimeError("cannot read sidecar")
+            ),
+        )
+        is None
+    )
+
+
+def test_externalized_marker_fails_closed_when_engine_has_no_sidecar_contract():
+    import agent.conversation_sanitation as sanitation
+
+    original = [
+        {
+            "role": "tool",
+            "tool_call_id": "call-real",
+            "content": "sensitive output",
+        }
+    ]
+    marker = (
+        "[Externalized tool output: tool_call_id=call-real; "
+        f"chars={len(original[0]['content'])}; "
+        f"bytes={len(original[0]['content'].encode())}; "
+        f"ref=20260915_call-real_"
+        f"{hashlib.sha256(original[0]['content'].encode()).hexdigest()[:12]}"
+        "_abc123.json]"
+    )
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = marker
+    agent = SimpleNamespace(context_compressor=object())
+
+    loader = sanitation.externalized_payload_loader(agent)
+
+    assert loader is None
+    assert (
+        validate_sanitation_candidate(
+            original,
+            candidate,
+            externalized_payload_loader=loader,
+        )
+        is None
+    )
+
+
+def test_externalized_payload_loader_uses_context_engine_contract():
+    import agent.conversation_sanitation as sanitation
+
+    class _ContractEngine:
+        def __init__(self):
+            self.refs = []
+
+        def load_externalized_payload_sidecar(self, ref):
+            self.refs.append(ref)
+            return {"content": "verified"}
+
+    engine = _ContractEngine()
+    loader = sanitation.externalized_payload_loader(
+        SimpleNamespace(context_compressor=engine)
+    )
+
+    assert callable(loader)
+    assert loader("externalized.json") == {"content": "verified"}
+    assert engine.refs == ["externalized.json"]
+    assert (
+        sanitation.externalized_payload_loader(
+            SimpleNamespace(context_compressor=object())
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda candidate: candidate[0].__setitem__("unexpected", "addition"),
+        lambda candidate: candidate[0].__setitem__(
+            "content",
+            candidate[0]["content"] + " arbitrary suffix",
+        ),
+        lambda candidate: candidate[0].__setitem__(
+            "content",
+            candidate[0]["content"].replace("chars=6", "chars=999"),
+        ),
+    ],
+)
+def test_structural_growth_rejects_undeclared_changes(tmp_path, mutate, caplog):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+    mutate(harness.agent.context_compressor.candidate)
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is harness.messages
+    assert harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    ) == durable_before
+    assert "terminal_result=refused_invalid_structure" in caplog.text
+
+
+def test_engine_preflight_threshold_path_commits_sanitation(tmp_path):
+    from agent.turn_context_compaction import (
+        CompactionOutcome,
+        _engine_preflight_maintenance,
+    )
+
+    harness = _make_harness(tmp_path, rounds=1)
+    harness.agent.context_compressor.should_compress_preflight = (
+        lambda _messages: True
+    )
+    outcome = CompactionOutcome(
+        messages=harness.messages,
+        active_system_prompt="system",
+        conversation_history=[],
+        current_turn_user_idx=0,
+    )
+
+    _engine_preflight_maintenance(
+        harness.agent,
+        outcome,
+        harness.agent.context_compressor,
+        100_000,
+        "system",
+        "default",
+    )
+
+    assert outcome.compressed is True
+    assert outcome.messages is not harness.messages
+    assert _without_persistence_markers(
+        outcome.messages
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_threshold_preflight_does_not_spend_pass_budget_on_sanitation(tmp_path):
+    from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
+
+    harness = _make_harness(tmp_path, rounds=1)
+    engine = harness.agent.context_compressor
+    engine.threshold_tokens = 1
+    engine.context_length = 100_000
+    engine.should_compress = lambda tokens: tokens >= engine.threshold_tokens
+    harness.agent.max_compression_attempts = 1
+    real_compress = engine.compress
+
+    def _sanitize_then_enable_generic(*args, **kwargs):
+        kwargs.pop("memory_context", None)
+        result = real_compress(*args, **kwargs)
+        engine.current_operation = None
+        engine.candidate = [{"role": "user", "content": "generic compacted context"}]
+        return result
+
+    engine.compress = _sanitize_then_enable_generic
+    outcome = CompactionOutcome(
+        messages=harness.messages,
+        active_system_prompt="system",
+        conversation_history=[],
+        current_turn_user_idx=0,
+    )
+
+    _run_preflight_passes(
+        harness.agent,
+        outcome,
+        engine,
+        sanitation_rough_tokens(harness.messages),
+        "system",
+        "default",
+    )
+
+    assert engine.calls == 2
+    assert _without_persistence_markers(outcome.messages) == [
+        {"role": "user", "content": "generic compacted context"}
+    ]
+
+
+def test_preflight_sanitation_budget_ignores_shared_flag_clobber(tmp_path):
+    from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
+
+    harness = _make_harness(tmp_path, rounds=1)
+    engine = harness.agent.context_compressor
+    engine.threshold_tokens = 1
+    engine.context_length = 100_000
+    engine.should_compress = lambda tokens: tokens >= engine.threshold_tokens
+    harness.agent.max_compression_attempts = 1
+    real_compress = engine.compress
+
+    def _sanitize_then_enable_generic(*args, **kwargs):
+        kwargs.pop("memory_context", None)
+        result = real_compress(*args, **kwargs)
+        engine.current_operation = None
+        engine.candidate = [{"role": "user", "content": "generic compacted context"}]
+        return result
+
+    engine.compress = _sanitize_then_enable_generic
+    real_compress_context = harness.agent._compress_context
+
+    def _compress_context_with_stale_attr(*args, **kwargs):
+        result = real_compress_context(*args, **kwargs)
+        harness.agent._last_compression_was_sanitation = False
+        return result
+
+    harness.agent._compress_context = _compress_context_with_stale_attr
+    outcome = CompactionOutcome(
+        messages=harness.messages,
+        active_system_prompt="system",
+        conversation_history=[],
+        current_turn_user_idx=0,
+    )
+
+    _run_preflight_passes(
+        harness.agent,
+        outcome,
+        engine,
+        sanitation_rough_tokens(harness.messages),
+        "system",
+        "default",
+    )
+
+    assert engine.calls == 2
+    assert _without_persistence_markers(outcome.messages) == [
+        {"role": "user", "content": "generic compacted context"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("force", "bypass_cooldown"),
+    [(True, False), (False, True)],
+)
+def test_manual_and_overflow_modes_keep_generic_boundary_behavior(
+    tmp_path,
+    force,
+    bypass_cooldown,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    harness.agent.context_compressor.candidate = [
+        {"role": "user", "content": "generic compressed context"}
+    ]
+    events: list[tuple[str, dict]] = []
+    harness.agent.event_callback = lambda name, payload: events.append((name, payload))
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+        force=force,
+        bypass_cooldown=bypass_cooldown,
+    )
+
+    assert harness.agent.context_compressor.call_options == [
+        {"force": force, "bypass_cooldown": bypass_cooldown}
+    ]
+    assert harness.memory.pre_compress_calls == 1
+    assert len(harness.session_end_calls) == 1
+    assert [event[0] for event in events] == ["session:compress"]
+    assert _without_persistence_markers(returned) == [
+        {"role": "user", "content": "generic compressed context"}
+    ]
+
+
+def test_sanitation_fence_cancellation_preserves_original(tmp_path, caplog):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+    fence = compression.CompressionCommitFence()
+    harness.agent.context_compressor.after_compress = fence.cancel_before_commit
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+        commit_fence=fence,
+    )
+
+    assert returned is harness.messages
+    assert harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    ) == durable_before
+    assert "cancelled before session mutation" in caplog.text
+
+
+def test_sanitation_fence_cancellation_retains_retry(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    fence = compression.CompressionCommitFence()
+    harness.agent.context_compressor.after_compress = fence.cancel_before_commit
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+        commit_fence=fence,
+    )
+    assert returned is harness.messages
+
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_sanitation_supersession_preserves_original(tmp_path, caplog):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+
+    def supersede():
+        harness.agent.context_compressor._compression_attempt_generation += 1
+
+    harness.agent.context_compressor.after_compress = supersede
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is harness.messages
+    assert harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    ) == durable_before
+    assert "superseded by a newer attempt" in caplog.text
+
+
+def test_sanitation_supersession_retains_retry(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+
+    def supersede():
+        harness.agent.context_compressor._compression_attempt_generation += 1
+
+    harness.agent.context_compressor.after_compress = supersede
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+
+    harness.agent.context_compressor.after_compress = None
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
+def test_sanitation_commit_failure_rolls_back_without_boundary_hooks(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+    real_commit = harness.db.sanitize_and_compact
+    commit_calls = 0
+
+    def _fail_once(*args, **kwargs):
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 1:
+            raise RuntimeError("commit failed")
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", _fail_once)
+    harness.agent.event_callback = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("failed sanitation must not emit session:compress")
+    )
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is harness.messages
+    assert harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    ) == durable_before
+    assert harness.agent._last_compaction_in_place is False
+    assert harness.agent.context_compressor.failure_cooldown_calls == 0
+    assert "terminal_result=commit_failed" in caplog.text
+
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_sanitation_retry_survives_failure_after_candidate_rows_are_inserted(
+    tmp_path,
+    monkeypatch,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    real_insert = harness.db._insert_message_rows
+    insert_calls = 0
+
+    def _insert_then_fail(conn, session_id, messages):
+        nonlocal insert_calls
+        insert_calls += 1
+        result = real_insert(conn, session_id, messages)
+        if insert_calls == 1:
+            raise RuntimeError("late transaction failure")
+        return result
+
+    monkeypatch.setattr(harness.db, "_insert_message_rows", _insert_then_fail)
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_in_place_sanitation_mutation_validates_and_rolls_back_from_snapshot(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    original = copy.deepcopy(harness.messages)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+
+    def _mutate(messages, **kwargs):
+        messages[:] = copy.deepcopy(harness.candidate)
+        return messages, kwargs["operation_claim"]
+
+    harness.agent.context_compressor.compress = _mutate
+    harness.candidate[0]["content"] += " undeclared"
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is harness.messages
+    assert harness.messages == original
+    assert (
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+        == durable_before
+    )
+
+
+def test_valid_in_place_sanitation_mutation_commits_snapshot(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+
+    def _mutate(messages, **kwargs):
+        messages[:] = copy.deepcopy(harness.candidate)
+        return messages, kwargs["operation_claim"]
+
+    harness.agent.context_compressor.compress = _mutate
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(returned)
+
+
+def test_facade_snapshot_worker_returns_distinct_in_place_sanitation_snapshot(
+    tmp_path,
+):
+    harness = _make_harness(tmp_path, rounds=1)
+    original = copy.deepcopy(harness.messages)
+
+    def _mutate(messages, **kwargs):
+        messages[:] = copy.deepcopy(harness.candidate)
+        return messages, kwargs["operation_claim"]
+
+    harness.agent.context_compressor.compress = _mutate
+    returned, _ = harness.agent._compress_context(
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert returned is not harness.messages
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(harness.messages) == _without_persistence_markers(
+        original
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+@pytest.mark.parametrize(
+    ("status", "watermark_failure", "terminal_result"),
+    [
+        ("sanitized", True, "refused_missing_watermark"),
+        ("reassembled", False, None),
+        (None, False, None),
+    ],
+)
+def test_sanitation_bridge_is_status_narrow(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    status,
+    watermark_failure,
+    terminal_result,
+):
+    """Ambiguous and legacy results stay generic; sanitation requires a watermark."""
+    import agent.context_compressor as context_compressor
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, status=status)
+    if watermark_failure:
+        monkeypatch.setattr(
+            harness.db,
+            "get_active_message_watermark",
+            lambda _session_id: (_ for _ in ()).throw(
+                RuntimeError("watermark unavailable")
+            ),
+        )
+    calls = {"todo": 0, "user": 0, "salvage": 0}
+    monkeypatch.setattr(
+        compression,
+        "_fold_todo_snapshot",
+        lambda *_args: calls.__setitem__("todo", calls["todo"] + 1),
+    )
+
+    def _user(*_args):
+        calls["user"] += 1
+        return "already_present"
+
+    monkeypatch.setattr(compression, "_ensure_compressed_has_user_turn", _user)
+
+    def _salvage(_messages, _candidate, *, budget):
+        calls["salvage"] += 1
+        return [{"role": "user", "content": "generic salvage"}]
+
+    monkeypatch.setattr(context_compressor, "salvage_grown_transcript", _salvage)
+    caplog.set_level(logging.INFO, logger="agent.conversation_compression")
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    if terminal_result is not None:
+        assert returned is harness.messages
+        assert calls == {"todo": 0, "user": 0, "salvage": 0}
+        assert harness.memory.pre_compress_calls == 0
+        assert harness.session_end_calls == []
+        assert harness.db.get_messages_as_conversation(harness.agent.session_id)
+        assert f"terminal_result={terminal_result}" in caplog.text
+        assert harness.agent.context_compressor.calls == 1
+    else:
+        assert calls == {"todo": 1, "user": 1, "salvage": 1}
+        assert harness.memory.pre_compress_calls == 1
+        assert len(harness.session_end_calls) == 1
+        assert _without_persistence_markers(returned) == [
+            {"role": "user", "content": "generic salvage"}
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Round-6 review findings
+# ---------------------------------------------------------------------------
+
+
+def test_sanitation_missing_watermark_retains_retry(tmp_path, monkeypatch, caplog):
+    """A transient watermark-read failure must retain the validated candidate.
+
+    The engine's one-shot sanitation claim is consumed by the compress() invocation that
+    produced the candidate; if the missing-watermark refusal threw the candidate away, the
+    next attempt re-claims an invocation that can never happen again and the secret stays
+    in SQLite/FTS indefinitely.
+    """
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    durable_before = harness.db.get_messages_as_conversation(
+        harness.agent.session_id
+    )
+
+    def _watermark_raises(session_id):
+        raise RuntimeError("transient watermark read failure")
+
+    monkeypatch.setattr(
+        harness.db, "get_active_message_watermark", _watermark_raises
+    )
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+    assert (
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+        == durable_before
+    )
+    assert "terminal_result=refused_missing_watermark" in caplog.text
+
+    # The failure was TRANSIENT: the read recovers before the retry.
+    monkeypatch.undo()
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    # The retained candidate is applied WITHOUT a second engine invocation: the
+    # one-shot claim was already spent on the first attempt.
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
+
+
+def test_sanitation_redacts_secret_in_image_url_url_payload():
+    """A secret inside a content part's payload-bearing URL must be redactable (round-7 finding).
+
+    Round-6 classified the WHOLE ``image_url`` envelope as provider control, so a signed
+    image URL carrying an API token could never be sanitized: the whole candidate was
+    rejected and the secret stayed durable. ``url`` is payload-bearing — redaction inside
+    it must validate while the request-shape shell (``detail``, ``type``, ``cache_control``)
+    stays verbatim. Same contract for a ``file`` part's ``file_data`` payload field.
+    """
+    secret = "sk-siv3cret12345"
+    placeholder = _placeholder("api_key", secret)
+
+    original = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"token={secret}"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"https://img.example.com/i.png?token={secret}",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"][0]["text"] = f"token={placeholder}"
+    candidate[0]["content"][1]["image_url"]["url"] = (
+        f"https://img.example.com/i.png?token={placeholder}"
+    )
+    changes = validate_sanitation_candidate(original, candidate)
+    assert changes is not None
+    assert changes.placeholders == 2
+    assert candidate[0]["content"][1]["image_url"]["detail"] == "high"
+
+    # A file part's data payload field is content-bearing the same way.
+    original_file = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"token={secret}"},
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "report.pdf",
+                        "file_data": f"data:application/pdf;base64,{secret}",
+                    },
+                },
+            ],
+        }
+    ]
+    candidate_file = copy.deepcopy(original_file)
+    candidate_file[0]["content"][0]["text"] = f"token={placeholder}"
+    candidate_file[0]["content"][1]["file"]["file_data"] = (
+        f"data:application/pdf;base64,{placeholder}"
+    )
+    changes_file = validate_sanitation_candidate(original_file, candidate_file)
+    assert changes_file is not None
+    assert changes_file.placeholders == 2
+    assert candidate_file[0]["content"][1]["file"]["filename"] == "report.pdf"
+
+
+def test_sanitation_rejects_multimodal_control_redactions():
+    """Control fields inside content blocks are request shape, not content (round-6 finding).
+
+    ``detail`` / ``cache_control`` / media types ride along INSIDE content blocks, so the old
+    generic payload branch accepted their redaction: the placeholder text passes declared-growth
+    validation, commits durably, and the provider then rejects every replayed request. Only
+    content-bearing fields may carry placeholders. (The tool-call ``id`` leg is pinned too: the
+    new control routing must keep the structural classification it already had.)
+    """
+    secret = "abcdefghijkl"
+    placeholder = _placeholder("api_key", secret)
+
+    def _multimodal_original():
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"api_key={secret}"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://example.com/x.png",
+                            "detail": "high",
+                        },
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ],
+            }
+        ]
+
+    def _apply(mutate):
+        original = _multimodal_original()
+        candidate = copy.deepcopy(original)
+        candidate[0]["content"][0]["text"] = f"api_key={placeholder}"
+        mutate(candidate[0]["content"][1])
+        assert validate_sanitation_candidate(original, candidate) is None
+
+    def _mutate_detail(part):
+        part["image_url"]["detail"] = _placeholder("api_key", "high")
+
+    def _mutate_cache_control(part):
+        part["cache_control"] = {
+            "type": "ephemeral",
+            "id": _placeholder("api_key", "ephemeral"),
+        }
+
+    def _mutate_key(part):
+        # Renaming a control KEY to a placeholder string is indistinguishable from
+        # ADDING a control field — also refused inside content parts.
+        del part["image_url"]["detail"]
+        part["image_url"][_placeholder("api_key", "high")] = "high"
+
+    for mutate in (_mutate_detail, _mutate_cache_control, _mutate_key):
+        _apply(mutate)
+
+    # Media type inside an Anthropic-style source envelope.
+    original = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"api_key={secret}"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "AAAA",
+                    },
+                },
+            ],
+        }
+    ]
+    media_type_redacted = copy.deepcopy(original)
+    media_type_redacted[0]["content"][0]["text"] = f"api_key={placeholder}"
+    media_type_redacted[0]["content"][1]["source"]["media_type"] = _placeholder(
+        "api_key", "image/png"
+    )
+    assert validate_sanitation_candidate(original, media_type_redacted) is None
+
+    # Tool identity stays verbatim.
+    original_tool = [
+        {
+            "role": "assistant",
+            "tool_call_id": "call-real",
+            "content": [{"type": "text", "text": f"api_key={secret}"}],
+            "tool_calls": [
+                {
+                    "id": "call-real",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+    ]
+    tool_id_redacted = copy.deepcopy(original_tool)
+    tool_id_redacted[0]["content"][0]["text"] = f"api_key={placeholder}"
+    tool_id_redacted[0]["tool_calls"][0]["id"] = _placeholder("api_key", "call-real")
+    assert validate_sanitation_candidate(original_tool, tool_id_redacted) is None
+
+
+def test_sanitation_accepts_multimodal_content_redaction_with_control_intact():
+    """The legitimate case still commits: content redacted, every control field verbatim."""
+    secret = "abcdefghijkl"
+    placeholder = _placeholder("api_key", secret)
+    original = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"api_key={secret}"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.com/x.png", "detail": "high"},
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"][0]["text"] = f"api_key={placeholder}"
+    changes = validate_sanitation_candidate(original, candidate)
+    assert changes is not None
+    assert changes.placeholders == 1
+    assert candidate[0]["content"][1]["image_url"]["detail"] == "high"
+    assert candidate[0]["content"][1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_sanitation_e2e_purges_secret_in_row_absorbed_by_alternation_repair(
+    tmp_path,
+):
+    """E2E (round-6 finding): a resume-repaired transcript must carry merged row membership.
+
+    The durable transcript holds a user;user wedge; the repair-alternation resume merges the
+    pair into one live message. Sanitation redacts that merged message. If commit membership
+    came only from surviving ``_row_id``s, the absorbed source row would be unrepresented and
+    re-cloned byte-exact — the secret stays in SQLite and stays FTS-indexed.
+    """
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("sess1", source="test")
+    db.append_message("sess1", role="user", content="first ask")
+    db.append_message("sess1", role="assistant", content="first reply")
+    db.append_message("sess1", role="user", content="unanswered turn")
+    secret_row = db.append_message(
+        "sess1", role="user", content="password=hostpw7"
+    )
+    db.append_message("sess1", role="assistant", content="next reply")
+
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = cast(
+            Any,
+            AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=db,
+                session_id="sess1",
+                skip_context_files=True,
+                skip_memory=True,
+            ),
+        )
+    agent.compression_in_place = True
+    agent._compression_feasibility_checked = True
+    agent._ensure_db_session()
+
+    # The resume boundary load (turn_facade_lease shape): repaired, row ids on.
+    messages = db.get_messages_as_conversation(
+        "sess1", repair_alternation=True, include_row_ids=True
+    )
+    assert len(messages) == 4  # the user;user wedge was merged
+    placeholder = _placeholder("password_assignment", "hostpw7")
+    candidate = copy.deepcopy(messages)
+    candidate[2]["content"] = candidate[2]["content"].replace(
+        "hostpw7", placeholder
+    )
+    engine = _ExternalEngine(
+        candidate,
+        "sanitized",
+        current_operation="sanitize",
+        updates_status=False,
+    )
+    engine._result_status = "sanitized"
+    engine.expected_messages = copy.deepcopy(messages)
+    engine.expected_session_id = "sess1"
+    agent.context_compressor = engine
+
+    import agent.conversation_compression as compression
+
+    returned, _ = compression.compress_context(
+        agent,
+        messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.calls == 1
+    durable_rows = db.get_messages("sess1")
+    contents = [row["content"] for row in durable_rows]
+    assert len(contents) == 4
+    assert "hostpw7" not in "".join(contents)
+    assert placeholder in contents[2]
+    assert db.search_messages("hostpw7", include_inactive=True) == []
+    assert db.search_messages("hostpw7", include_inactive=False) == []
+    assert secret_row not in [row["id"] for row in durable_rows]

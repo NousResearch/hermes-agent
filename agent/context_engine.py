@@ -156,6 +156,33 @@ class ContextEngine(ABC):
         """Cheap rough check before the API call (no real token count yet); default skips."""
         return False
 
+    def prepare_compression_operation(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        session_id: str | None = None,
+        attempt_generation: int | None = None,
+    ) -> tuple[str, Any] | None:
+        """Atomically claim a preflight-bound next ``compress(messages)`` operation.
+
+        Return ``("sanitize", claim)`` only for the exact message snapshot,
+        session and attempt supplied. ``claim`` is an opaque, non-``None`` identity
+        token. The engine must consume it exactly once when the host passes that
+        same object to ``compress(..., operation_claim=claim)`` and return
+        ``(messages, claim)`` only when that invocation performed pure sanitation.
+        The default keeps existing engines on generic compression semantics.
+        """
+        return None
+
+    def load_externalized_payload_sidecar(self, ref: str) -> Dict[str, Any] | None:
+        """Optional sanitation sidecar loader used to verify externalization markers.
+
+        Return a dict describing the referenced payload or ``None`` when unavailable.
+        The host treats missing/invalid/exception results as an unverifiable marker and
+        fails the sanitation commit closed.
+        """
+        return None
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """True when preflight should trust recent real usage over the noisy rough
         estimate (avoids re-compacting after a compressed request already fit)."""

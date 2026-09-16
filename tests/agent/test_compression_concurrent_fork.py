@@ -1278,6 +1278,45 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert not refreshers[0]._thread.is_alive()
 
 
+def test_compression_lease_refresher_start_is_idempotent(monkeypatch) -> None:
+    from agent.conversation_compression import _CompressionLease
+
+    starts = []
+
+    class _Refresher:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            starts.append(self)
+            return self
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr(
+        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        _Refresher,
+    )
+    lifecycle = MagicMock()
+    lease = _CompressionLease(
+        MagicMock(),
+        db=MagicMock(),
+        sid="session",
+        ttl=30.0,
+        refresh_interval=5.0,
+        lifecycle=lifecycle,
+        commit_fence=None,
+    )
+    lease.holder = "holder"
+
+    lease.start_refresher()
+    lease.start_refresher()
+    lease.release_holder_only()
+
+    assert len(starts) == 1
+
+
 
 
 

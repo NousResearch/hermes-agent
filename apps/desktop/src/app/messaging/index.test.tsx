@@ -17,6 +17,7 @@ import { MessagingView } from './index'
 
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
+const testTeamsPlayground = vi.fn()
 const getPairing = vi.fn()
 const approvePairing = vi.fn()
 const revokePairing = vi.fn()
@@ -44,7 +45,8 @@ vi.mock('@/hermes', () => ({
     getTelegramOnboardingStatus(pairingId, profile),
   startTelegramOnboarding: (botName?: string, profile?: null | string) => startTelegramOnboarding(botName, profile),
   updateMessagingPlatform: (id: string, body: unknown, profile?: null | string) =>
-    updateMessagingPlatform(id, body, profile)
+    updateMessagingPlatform(id, body, profile),
+  testTeamsPlayground: (profile?: null | string) => testTeamsPlayground(profile)
 }))
 
 vi.mock('qrcode', () => ({ toDataURL: vi.fn(async () => 'data:image/png;base64,QR') }))
@@ -89,6 +91,7 @@ function platform(patch: Partial<MessagingPlatformInfo> = {}): MessagingPlatform
     gateway_running: true,
     id: 'teams',
     name: 'Microsoft Teams',
+    playground: { enabled: false, test_url: null, callback_url: null },
     state: 'disabled',
     ...patch
   }
@@ -125,6 +128,34 @@ async function renderMessaging() {
 
   return result!
 }
+
+describe('MessagingView Teams Playground', () => {
+  it('keeps the local emulator hidden by default and shows URLs only after opt-in', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform()] })
+    await renderMessaging()
+    expect(screen.queryByText('Local Teams Playground')).toBeNull()
+
+    cleanup()
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          playground: {
+            enabled: true,
+            test_url: 'http://localhost:3979/hermes/teams-playground',
+            callback_url: 'http://localhost:3979/api/messages'
+          }
+        })
+      ]
+    })
+    testTeamsPlayground.mockResolvedValue({ ok: true, message: 'Playground health check passed.' })
+    await renderMessaging()
+    expect(await screen.findByText(/Test URL: http:\/\/localhost:3979/)).toBeTruthy()
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test local Playground' })))
+    await waitFor(() => expect(testTeamsPlayground).toHaveBeenCalled())
+    expect(screen.getByText('Playground health check passed.')).toBeTruthy()
+  })
+})
+
 
 describe('MessagingView profile scope', () => {
   it('names the active profile explicitly instead of sending an unscoped request', async () => {

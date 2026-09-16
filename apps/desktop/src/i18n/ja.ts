@@ -4,6 +4,8 @@ import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
   catalog: {
+    listView: 'リスト表示',
+    cardView: 'カード表示',
     installTitle: (name: string) => `「${name}」をインストールしますか？`,
     installDescription: 'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
     installTo: 'インストール先',

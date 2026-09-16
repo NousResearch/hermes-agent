@@ -384,7 +384,10 @@ registry and the selected profile's actual agent-plugin state, combining both
 halves in one row where appropriate. It is not a list of catalog entries
 assumed to be installed. **Browse** is a native catalog view, not an embedded
 website; it uses the same **Installed / Browse** tabs as Skills, with search
-at the top and the tab switch and actions on one row.
+at the top and the tab switch and actions on one row. Browse defaults to cards,
+with list and card icons at the right of the filters. The layout choice is shared
+with Skills and remembered. Click a card to read its details; Install opens the
+existing review-then-install dialog.
 
 Desktop and the public [Plugin Catalog](/plugins) consume the same CDN
 snapshot, [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).

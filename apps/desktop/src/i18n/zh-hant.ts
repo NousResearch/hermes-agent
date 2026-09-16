@@ -4,6 +4,8 @@ import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
   catalog: {
+    listView: '清單檢視',
+    cardView: '卡片檢視',
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
     installTo: '安裝至',

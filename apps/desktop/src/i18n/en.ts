@@ -4,6 +4,8 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   catalog: {
+    listView: 'List view',
+    cardView: 'Card view',
     installTitle: (name: string) => `Install “${name}”?`,
     installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
     installTo: 'Install to',

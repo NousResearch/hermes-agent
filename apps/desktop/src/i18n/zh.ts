@@ -4,6 +4,8 @@ import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
   catalog: {
+    listView: '列表视图',
+    cardView: '卡片视图',
     installTitle: (name: string) => `安装“${name}”？`,
     installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
     installTo: '安装到',

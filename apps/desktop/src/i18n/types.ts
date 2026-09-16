@@ -60,6 +60,8 @@ interface AuxTaskCopy {
 
 export interface Translations {
   catalog: {
+    listView: string
+    cardView: string
     installTitle: (name: string) => string
     installDescription: string
     installTo: string

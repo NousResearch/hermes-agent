@@ -24,6 +24,9 @@ view. It is not an embedded website. **Installed** is a separate tab backed
 by the app's desktop-plugin registry and the selected profile's agent-plugin
 state, rather than catalog metadata. Skills uses the same **Installed / Browse**
 layout; search stays at the top and the tab switch and actions share one row.
+Browse defaults to cards. The list and card icons beside the filters switch
+layouts, preserving search and filters and remembering the choice across both
+catalogs.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a

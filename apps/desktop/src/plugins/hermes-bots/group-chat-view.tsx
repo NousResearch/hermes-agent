@@ -1167,7 +1167,10 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       />
       {activityPanel}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="grid gap-1.5 px-2.5 pb-2">
+        {/* minmax(0,1fr): an implicit grid track is min-content sized, so one */}
+        {/* unbreakable code line widened every entry to its own width and the */}
+        {/* log scrolled sideways as a whole instead of the code block (#91878). */}
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5 px-2.5 pb-2">
           {room.log.length
             ? logChildren
             : [

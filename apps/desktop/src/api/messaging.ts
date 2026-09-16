@@ -13,11 +13,11 @@ import type {
   WebhooksResponse
 } from '@/types/hermes'
 
-import { hermesApi, profileScoped } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
-export function getMessagingPlatforms(profile?: null | string): Promise<MessagingPlatformsResponse> {
+export function getMessagingPlatforms(profile?: ProfileScope): Promise<MessagingPlatformsResponse> {
   return hermesApi<MessagingPlatformsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/messaging/platforms'
   })
 }
@@ -33,10 +33,10 @@ export interface MessagingPlatformUpdateResponse {
 export function updateMessagingPlatform(
   platformId: string,
   body: MessagingPlatformUpdate,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MessagingPlatformUpdateResponse> {
   return hermesApi<MessagingPlatformUpdateResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
     body
@@ -45,10 +45,10 @@ export function updateMessagingPlatform(
 
 export function testMessagingPlatform(
   platformId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MessagingPlatformTestResponse> {
   return hermesApi<MessagingPlatformTestResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
   })
@@ -61,10 +61,10 @@ export function testMessagingPlatform(
 
 export function startTelegramOnboarding(
   botName?: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<TelegramOnboardingStartResponse> {
   return hermesApi<TelegramOnboardingStartResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/messaging/telegram/onboarding/start',
     method: 'POST',
     body: botName ? { bot_name: botName } : {}
@@ -73,10 +73,10 @@ export function startTelegramOnboarding(
 
 export function getTelegramOnboardingStatus(
   pairingId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<TelegramOnboardingStatusResponse> {
   return hermesApi<TelegramOnboardingStatusResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`
   })
 }
@@ -84,19 +84,19 @@ export function getTelegramOnboardingStatus(
 export function applyTelegramOnboarding(
   pairingId: string,
   allowedUserIds: string[],
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<TelegramOnboardingApplyResponse> {
   return hermesApi<TelegramOnboardingApplyResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply`,
     method: 'POST',
-    body: { allowed_user_ids: allowedUserIds, ...profileScoped(profile) }
+    body: { allowed_user_ids: allowedUserIds, ...profileScoped(capabilityScoped(profile).profile ?? null) }
   })
 }
 
-export function cancelTelegramOnboarding(pairingId: string, profile?: null | string): Promise<{ ok: boolean }> {
+export function cancelTelegramOnboarding(pairingId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
     method: 'DELETE'
   })
@@ -109,9 +109,9 @@ export function cancelTelegramOnboarding(pairingId: string, profile?: null | str
 // returned by the API, while an authenticated admin is only ever identifying
 // a row they can already see.
 
-export function getPairing(profile?: null | string): Promise<PairingResponse> {
+export function getPairing(profile?: ProfileScope): Promise<PairingResponse> {
   return hermesApi<PairingResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/pairing'
   })
 }
@@ -119,24 +119,24 @@ export function getPairing(profile?: null | string): Promise<PairingResponse> {
 export function approvePairing(
   platform: string,
   requestId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; user: PairingUser }> {
   return hermesApi<{ ok: boolean; user: PairingUser }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/pairing/approve',
     method: 'POST',
     // These endpoints read the profile off the body, not the query string —
     // `profileScoped()` alone would approve into the wrong profile's store.
-    body: { platform, request_id: requestId, ...profileScoped(profile) }
+    body: { platform, request_id: requestId, ...profileScoped(capabilityScoped(profile).profile ?? null) }
   })
 }
 
-export function revokePairing(platform: string, userId: string, profile?: null | string): Promise<{ ok: boolean }> {
+export function revokePairing(platform: string, userId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/pairing/revoke',
     method: 'POST',
-    body: { platform, user_id: userId, ...profileScoped(profile) }
+    body: { platform, user_id: userId, ...profileScoped(capabilityScoped(profile).profile ?? null) }
   })
 }
 

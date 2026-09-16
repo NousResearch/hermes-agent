@@ -32,8 +32,9 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 vi.mock('@/store/settings-scope', () => ({
   $settingsRequestProfile: atom<string | undefined>(undefined),
   $settingsScopeEditsNonDefault: atom(false),
-  $settingsScopeOverride: atom<null | string>(null),
-  $settingsScopeProfile: atom<string>('default')
+  $settingsScopeKey: atom('fixture-active'),
+  $settingsScopeProfile: atom('default'),
+  $settingsScopeOverride: atom<null | string>(null)
 }))
 
 vi.mock('@/store/projects', () => ({

@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -46,19 +48,20 @@ function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderFiel
 
 export function ProviderConfigModal({
   config,
-  profile = null,
+  profile,
   provider,
   open,
   onOpenChange,
   onSaved
 }: {
   config: MemoryProviderConfig
-  profile?: null | string
+  profile?: ProfileScope
   provider: string
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void> | void
 }) {
+  const owner = useSettingsOwner(profile)
   const activeProfile = useStore($activeGatewayProfile)
   const [values, setValues] = useState<Record<string, string>>({})
   const [seeded, setSeeded] = useState<Record<string, string>>({})
@@ -74,20 +77,36 @@ export function ProviderConfigModal({
   }, [open, config])
 
   const save = async () => {
+    if (!owner.isCurrent()) {
+      return
+    }
+
     // Untouched keys stay unsubmitted; runtime defaults still own their values.
     const edited = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== seeded[key]))
 
     setSaving(true)
 
     try {
-      await saveMemoryProviderConfig(provider, edited, profile)
+      await saveMemoryProviderConfig(provider, edited, owner.profile)
+
+      if (!owner.isCurrent()) {
+        return
+      }
+
       notify({ kind: 'success', title: `${config.label} saved`, message: 'Memory provider configuration updated.' })
       await onSaved()
-      onOpenChange(false)
+
+      if (owner.isCurrent()) {
+        onOpenChange(false)
+      }
     } catch (err) {
-      notifyError(err, `Failed to save ${config.label} settings`)
+      if (owner.isCurrent()) {
+        notifyError(err, `Failed to save ${config.label} settings`)
+      }
     } finally {
-      setSaving(false)
+      if (owner.isCurrent()) {
+        setSaving(false)
+      }
     }
   }
 
@@ -97,8 +116,11 @@ export function ProviderConfigModal({
         <DialogHeader>
           <DialogTitle icon={SlidersHorizontal}>{config.label} — full configuration</DialogTitle>
           <DialogDescription>
-            Every {config.label} option for the <span className="font-medium">{profile ?? activeProfile}</span> profile.
-            Blank fields fall back to the resolved host or built-in default.
+            Every {config.label} option for the{' '}
+            <span className="font-medium">
+              {profile && typeof profile === 'object' ? profile.profile : (profile ?? activeProfile)}
+            </span>{' '}
+            profile. Blank fields fall back to the resolved host or built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a

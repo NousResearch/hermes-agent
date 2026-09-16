@@ -31,11 +31,10 @@ import { typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, openCommandPalettePage } from '@/store/command-palette'
 import { confirm } from '@/store/confirm'
-import { $activeConnectionId } from '@/store/connections'
 import { bindingsFor } from '@/store/keybinds'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { notifyError } from '@/store/notifications'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeKey } from '@/store/settings-scope'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayIconButton } from '../overlays/overlay-chrome'
@@ -55,7 +54,7 @@ import { NotificationsSettings } from './notifications-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
-import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { VaultSettings } from './vault-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
@@ -74,8 +73,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
 ]
 
 export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
-  const scopeProfile = useStore($settingsScopeProfile)
-  const activeConnectionId = useStore($activeConnectionId)
+  const scopeKey = useStore($settingsScopeKey)
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -136,7 +134,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const exportConfig = async () => {
     try {
-      const cfg = await getHermesConfigRecord()
+      const owner = $settingsRequestProfile.get()
+      const cfg = await getHermesConfigRecord(owner)
       const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -151,18 +150,32 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   }
 
   const resetConfig = async () => {
+    const owner = $settingsRequestProfile.get()
+    const key = $settingsScopeKey.get()
+
     const ok = await confirm({
       confirmLabel: t.settings.resetToDefaults,
       destructive: true,
       title: t.settings.resetConfirm
     })
 
-    if (!ok) {
+    if (!ok || key !== $settingsScopeKey.get()) {
       return
     }
 
     try {
-      await saveHermesConfig(await getHermesConfigDefaults())
+      const defaults = await getHermesConfigDefaults(owner)
+
+      if (key !== $settingsScopeKey.get()) {
+        return
+      }
+
+      await saveHermesConfig(defaults, owner)
+
+      if (key !== $settingsScopeKey.get()) {
+        return
+      }
+
       triggerHaptic('success')
       onConfigSaved?.()
     } catch (err) {
@@ -371,12 +384,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const navFooter = (
     <>
       <Tip label={t.settings.exportConfig}>
-        <OverlayIconButton onClick={() => void exportConfig()}>
+        <OverlayIconButton aria-label={t.settings.exportConfig} onClick={() => void exportConfig()}>
           <Download />
         </OverlayIconButton>
       </Tip>
       <Tip label={t.settings.importConfig}>
         <OverlayIconButton
+          aria-label={t.settings.importConfig}
           onClick={() => {
             triggerHaptic('open')
             importInputRef.current?.click()
@@ -387,6 +401,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       </Tip>
       <Tip label={t.settings.resetToDefaults}>
         <OverlayIconButton
+          aria-label={t.settings.resetToDefaults}
           className="hover:text-destructive"
           onClick={() => {
             triggerHaptic('warning')
@@ -419,7 +434,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       />
     ) : activeView === 'providers' ? (
       <ProvidersSettings
-        key={scopeProfile}
+        key={scopeKey}
         onClose={onClose}
         onConfigSaved={onConfigSaved}
         onMainModelChanged={onMainModelChanged}
@@ -427,13 +442,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         view={providerView}
       />
     ) : activeView === 'keys' ? (
-      <KeysSettings view={keysView} />
+      <KeysSettings key={scopeKey} view={keysView} />
     ) : activeView === 'notifications' ? (
       <NotificationsSettings />
     ) : activeView === 'billing' ? (
       <BillingSettings />
     ) : activeView === 'vault' ? (
-      <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} />
+      <VaultSettings key={scopeKey} />
     ) : (
       <SessionsSettings />
     )

@@ -2,6 +2,13 @@ export type ReleaseLocalBackendSlot = () => void
 
 export type LocalBackendSpawnPriority = 'foreground' | 'background'
 
+/** Single normalization point for wire priority values: anything but an
+ *  explicit 'foreground' dials background, so hydration can never consume the
+ *  pool's reserved foreground slot by accident. */
+export function spawnPriorityFrom(value: unknown): LocalBackendSpawnPriority {
+  return value === 'foreground' ? 'foreground' : 'background'
+}
+
 export type LocalBackendSpawnRequest = {
   acquired: Promise<ReleaseLocalBackendSlot>
   cancel: () => boolean

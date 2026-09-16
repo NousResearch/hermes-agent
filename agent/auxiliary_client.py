@@ -3285,14 +3285,20 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
 
 
 def _evict_cached_clients(provider: str) -> None:
-    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
+
+    Scoped to the calling profile (``hermes_home_key()`` is the first key slot): a rotation in
+    one profile must not drop another profile's client for the same provider in a multiplexing
+    gateway, since that profile's credentials did not change. Entries are popped, not closed:
+    a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
+    "client has been closed" for them); the dropped client is retired by GC like the FIFO
+    overflow path in ``_get_cached_client``.
+    """
     normalized = _normalize_aux_provider(provider)
+    home = hermes_home_key()
     with _client_cache_lock:
-        # Cache keys begin with the profile home; the provider is the second component.
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[1])) == normalized]:
-            client = _client_cache.get(key, (None, None, None))[0]
-            if client is not None:
-                _close_cached_client(client)
+        for key in [key for key in _client_cache
+                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
             _client_cache.pop(key, None)
 
 

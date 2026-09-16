@@ -165,7 +165,7 @@ export function VaultSettings() {
 
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params),
+      requestGatewayForProfile<T>(scopeProfile, method, params, undefined, undefined, { spawnPriority: 'foreground' }),
     [scopeProfile]
   )
 
@@ -188,6 +188,10 @@ export function VaultSettings() {
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
+    // Manager detection can change while this settings page is closed. Mark this
+    // metadata query immediately stale so remount and closed-to-open recovery
+    // refetch instead of honouring the shared 60s cache.
+    staleTime: 0,
     queryFn: async () => {
       const result = await requestGateway<{ sources: VaultSource[] }>('vault.sources', {})
 

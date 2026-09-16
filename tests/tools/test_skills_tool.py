@@ -8,10 +8,6 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
-from agent.skill_utils import (
-    extract_skill_editorial_metadata,
-    load_skill_editorial_metadata,
-)
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
@@ -90,62 +86,6 @@ class TestParseFrontmatter:
         assert not body.startswith(bom)
 
 
-class TestEditorialMetadata:
-    def test_uses_explicit_human_facing_copy(self):
-        assert extract_skill_editorial_metadata(
-            {
-                "metadata": {
-                    "hermes": {
-                        "editorial_name": "Incident Response",
-                        "editorial_description": "Handle incidents calmly and consistently.",
-                    }
-                }
-            },
-            fallback_name="incident-response",
-            fallback_description="Use when responding to incidents.",
-        ) == {
-            "editorial_name": "Incident Response",
-            "editorial_description": "Handle incidents calmly and consistently.",
-        }
-
-    def test_legacy_and_invalid_values_fall_back(self):
-        assert extract_skill_editorial_metadata(
-            {
-                "metadata": {
-                    "hermes": {
-                        "editorial_name": "   ",
-                        "editorial_description": 42,
-                    }
-                }
-            },
-            fallback_name="incident-response",
-            fallback_description="Use when responding to incidents.",
-        ) == {
-            "editorial_name": "incident-response",
-            "editorial_description": "Use when responding to incidents.",
-        }
-
-    def test_loads_editorial_copy_from_a_skill_directory(self, tmp_path):
-        skill = tmp_path / "incident-response"
-        skill.mkdir()
-        (skill / "SKILL.md").write_text(
-            "---\n"
-            "name: incident-response\n"
-            "description: Use when responding to incidents.\n"
-            "metadata:\n"
-            "  hermes:\n"
-            "    editorial_name: Incident Response\n"
-            "    editorial_description: Coordinate a calm incident response.\n"
-            "---\n",
-            encoding="utf-8",
-        )
-
-        assert load_skill_editorial_metadata(skill) == {
-            "editorial_name": "Incident Response",
-            "editorial_description": "Coordinate a calm incident response.",
-        }
-
-
 # ---------------------------------------------------------------------------
 # _parse_tags
 # ---------------------------------------------------------------------------
@@ -209,6 +149,31 @@ class TestRequiredEnvironmentVariablesNormalization:
         )
         assert _is_env_var_persisted("EMPTY_HOST_KEY", {}) is False
         assert _is_env_var_persisted("FILLED_KEY", {}) is True
+
+    def test_active_profile_secret_scope_satisfies_requirement(self):
+        """Cron workers must accept a value hydrated from this profile's vault."""
+        from agent import secret_scope
+        from tools.skills_tool import _is_env_var_persisted
+
+        secret_scope.set_multiplex_active(True)
+        token = secret_scope.set_secret_scope({"VAULT_SKILL_API_KEY": "vault-value"})
+        try:
+            assert _is_env_var_persisted("VAULT_SKILL_API_KEY", {}) is True
+        finally:
+            secret_scope.reset_secret_scope(token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_unscoped_multiplex_requirement_does_not_read_process_environment(self, monkeypatch):
+        """A worker without a profile scope must keep the fail-closed boundary."""
+        from agent import secret_scope
+        from tools.skills_tool import _is_env_var_persisted
+
+        monkeypatch.setenv("OTHER_PROFILE_SKILL_API_KEY", "other-profile-value")
+        secret_scope.set_multiplex_active(True)
+        try:
+            assert _is_env_var_persisted("OTHER_PROFILE_SKILL_API_KEY", {}) is False
+        finally:
+            secret_scope.set_multiplex_active(False)
 
 
 # ---------------------------------------------------------------------------
@@ -277,35 +242,6 @@ class TestFindAllSkills:
         assert {s["name"] for s in skills} == {"skill-a", "skill-b", "axolotl"}
         assert [s["category"] for s in skills if s["name"] == "axolotl"] == ["mlops"]
 
-    def test_resolves_editorial_copy_with_legacy_fallbacks(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "polished-skill",
-                frontmatter_extra=(
-                    "metadata:\n"
-                    "  hermes:\n"
-                    "    editorial_name: Polished Skill\n"
-                    "    editorial_description: A friendly explanation for people.\n"
-                ),
-            )
-            _make_skill(tmp_path, "legacy-skill")
-            skills = {
-                skill["name"]: skill
-                for skill in _find_all_skills(include_editorial=True)
-            }
-
-        assert skills["polished-skill"]["editorial_name"] == "Polished Skill"
-        assert (
-            skills["polished-skill"]["editorial_description"]
-            == "A friendly explanation for people."
-        )
-        assert skills["legacy-skill"]["editorial_name"] == "legacy-skill"
-        assert (
-            skills["legacy-skill"]["editorial_description"]
-            == skills["legacy-skill"]["description"]
-        )
-
 
     def test_description_falls_back_to_body_and_is_truncated(self, tmp_path):
         no_desc = tmp_path / "no-desc"
@@ -366,26 +302,6 @@ class TestSkillsList:
         assert all_result["count"] == 2
         assert filtered["count"] == 1
         assert filtered["skills"][0]["name"] == "skill-a"
-
-    def test_does_not_expose_editorial_copy_to_the_agent(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(
-                tmp_path,
-                "polished-skill",
-                frontmatter_extra=(
-                    "metadata:\n"
-                    "  hermes:\n"
-                    "    editorial_name: Polished Skill\n"
-                    "    editorial_description: Human-facing copy.\n"
-                ),
-            )
-            skill = json.loads(skills_list())["skills"][0]
-
-        assert skill == {
-            "name": "polished-skill",
-            "description": "Description for polished-skill.",
-            "category": None,
-        }
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"
@@ -744,11 +660,6 @@ class TestFindAllSkillsSecureSetup:
 
 
 class TestSkillViewPrerequisites:
-    @pytest.fixture(autouse=True)
-    def isolate_secret_capture(self, monkeypatch):
-        # Other suites register a live UI responder; these tests own their callbacks.
-        monkeypatch.setattr(skills_tool_module, "_secret_capture_callback", None)
-
     def test_legacy_prerequisites_expose_required_env_setup_metadata(
         self, tmp_path, monkeypatch
     ):
@@ -1060,6 +971,42 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert result["path"] == "creative/sketch/SKILL.md"
         assert "REAL SKETCH SKILL" in result["content"]
+
+
+    def test_package_owned_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "research", body="REAL RESEARCH SKILL")
+        _make_skill(local_dir, "example", category="character")
+        prompt = local_dir / "character" / "example" / "prompts" / "research.md"
+        prompt.parent.mkdir()
+        prompt.write_text("# Internal research prompt\n", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("research")
+            internal_raw = skill_view("character/example/prompts/research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("research", "SKILL.md")
+        assert "REAL RESEARCH SKILL" in result["content"]
+        assert json.loads(internal_raw)["success"] is False
+
+    def test_categorized_legacy_flat_markdown_remains_loadable(self, tmp_path):
+        category = tmp_path / "legacy"
+        category.mkdir()
+        (category / "research.md").write_text(
+            "---\nname: research\ndescription: Legacy research skill.\n---\n",
+            encoding="utf-8",
+        )
+
+        p1, p2 = self._patch_dirs(tmp_path, [])
+        with p1, p2:
+            result = json.loads(skill_view("legacy/research"))
+
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("legacy", "research.md")
 
 
     def test_two_externals_same_name_also_refuse(self, tmp_path):

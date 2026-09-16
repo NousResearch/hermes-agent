@@ -1,9 +1,8 @@
 /**
- * Where the main window lands when the guided chat assembles the app around it.
+ * Geometry for the main window as the guided chat grows it.
  *
- * Pure geometry, extracted from the `chat-onboarding:grow` handler so the one
- * thing that has actually gone wrong here — ending up too small — can be
- * asserted rather than eyeballed on a first run.
+ * Extracted from the `chat-onboarding:grow` handler so the resulting size can be asserted in a unit test
+ * instead of checked by eye on a first run.
  */
 
 import type { Rectangle } from 'electron'
@@ -11,8 +10,7 @@ import type { Rectangle } from 'electron'
 export interface GrowRequest {
   bottom?: number
   left?: number
-  /** Floor for the resulting CSS-pixel viewport width, for a layout with a
-   *  responsive breakpoint to clear. Optional: most growth is just deltas. */
+  /** Floor for the resulting viewport width in CSS pixels, used to clear a responsive breakpoint. */
   minWidth?: number
   right?: number
   top?: number
@@ -21,21 +19,21 @@ export interface GrowRequest {
 export interface GrowInputs {
   /** Current window bounds, frame included. */
   bounds: { height: number; width: number }
-  /** Non-zero on framed platforms: `bounds.width` minus the content width. The
-   *  floor is about the viewport, so the frame has to be added back on top. */
+  /** `bounds.width` minus the content width, non-zero on platforms that draw a window frame. `minWidth` is a
+   *  viewport floor, so the frame width is added to it. */
   frameWidth?: number
   /** Display work area the result is centred in and clamped to. */
   workArea: { height: number; width: number; x: number; y: number }
-  /** Renderer zoom. Requests arrive in CSS pixels; windows live in DIP. */
+  /** Renderer zoom factor. Requests arrive in CSS pixels; window bounds are in DIP. */
   zoom?: number
 }
 
-/** Growth is bounded so a malformed request can't ask for a wall-sized window;
- *  the display clamp below is the real limit. */
+/** Cap on each value converted from the request, so a malformed request cannot ask for an oversized window.
+ *  The work area clamp below is usually the stricter limit. */
 const MAX_DELTA_PX = 4000
 
-/** Never fill the whole display — a window pinned to every edge reads as broken
- *  rather than as an app that grew. */
+/** Fraction of the display work area a grown window may fill. Below 1 so the result keeps a margin instead
+ *  of looking maximized. */
 const MAX_WORK_AREA = 0.92
 
 export function growWindowBounds(
@@ -47,16 +45,14 @@ export function growWindowBounds(
 
   const toDip = (value?: number) => dip(value, Math.round)
 
-  // The floor CEILS where the deltas round. Rounding a breakpoint down lands
-  // fractionally under it — at 118% zoom a 768px floor becomes 906 DIP, a
-  // 767.8px viewport, and the media query the floor exists to satisfy is still
-  // false. Half a pixel, whole floating sidebar.
+  // The floor uses Math.ceil where the deltas round to nearest. At 118% zoom a 768px floor is 906.24 DIP:
+  // rounding to nearest would give 906 DIP, a 767.8px viewport, and the media query the floor exists to
+  // satisfy would stay false.
   const requestedMin = dip(request?.minWidth, Math.ceil)
   const grown = bounds.width + toDip(request?.left) + toDip(request?.right)
 
-  // Order matters: the floor lifts, then the display clamps. A floor wider than
-  // the screen loses — growing off-screen to satisfy a breakpoint would trade a
-  // floating sidebar for an unusable window.
+  // The floor applies before the work area clamp, so a floor wider than the display is dropped rather than
+  // growing the window off-screen to satisfy the breakpoint.
   const width = Math.min(
     Math.max(grown, requestedMin ? requestedMin + frameWidth : 0),
     Math.round(workArea.width * MAX_WORK_AREA)

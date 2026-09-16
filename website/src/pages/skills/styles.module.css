@@ -1030,11 +1030,20 @@
   color: var(--ifm-color-primary);
   font-size: 0.85rem;
   font-weight: 600;
+  text-align: center;
+  text-decoration: none;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
 .pickBtn:hover {
   background: var(--ifm-color-primary);
-  color: var(--ifm-background-color, #0b0b0e);
+  /* --ifm-background-color is transparent in light mode (#91491). */
+  color: var(--ifm-color-emphasis-0, #f7f8fa);
+  text-decoration: none;
+}
+
+.pickBtn:focus-visible {
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: 2px;
 }

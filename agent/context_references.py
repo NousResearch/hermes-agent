@@ -340,6 +340,9 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+    from agent.file_safety import is_nt_namespace_path
+    if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
+        raise ValueError("path uses a Windows NT/device namespace prefix and cannot be attached")
     resolved = (cwd / Path(os.path.expanduser(target))).resolve()  # `/` keeps an absolute target as-is
     if allowed_root is not None and not _is_under(resolved, allowed_root):
         raise ValueError("path is outside the allowed workspace")

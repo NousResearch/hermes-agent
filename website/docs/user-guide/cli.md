@@ -68,11 +68,20 @@ explicitly:
 
 ```bash
 hermes worktree list              # audit: age, size, verdict, reason per tree
+hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
 hermes worktree prune             # remove safe trees + delete merged branches
 hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
 ```
+
+Worktrees registered **outside** `.worktrees/` (created by hand or by another
+tool) are reported read-only in `list` output and are never removed. The one
+exception is metadata: registrations whose directory no longer exists are
+dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
+only ever narrows what gets reaped — a tree carrying real work is kept at any
+age regardless of the flag.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).
@@ -84,6 +93,11 @@ Safety guarantees (all modes, any age):
   rebase/squash-merged upstream are detected via `git cherry`
   patch-equivalence and count as merged, which is what lets the dominant
   "merged PR, tree preserved forever" leak finally reclaim.
+- **Repositories without a remote** are judged against the local trunk
+  (`main`/`master`, else the branch checked out in the main worktree): only
+  trees and branches whose commits are reachable from — or patch-equivalent
+  to — that trunk are reclaimed. With no trunk to compare against, every tree
+  and branch is preserved.
 - **Pushed open-PR lanes free their disk without losing anything**: when a
   clean tree's branch head exactly matches what `origin` holds (checked with
   one `git ls-remote` per sweep), the checkout is redundant — the tree is
@@ -137,7 +151,7 @@ The welcome banner shows your model, terminal backend, working directory, availa
 A persistent status bar sits above the input area, updating in real time:
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ☤ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
 ```
 
 | Element | Description |
@@ -202,7 +216,7 @@ Start a line with `!` to run it as a shell command instead of sending it to the 
 ```
 > !git status
 > !ls -la
-> !pytest -x tests/cli
+> !pytest -x tests/hermes_cli
 ```
 
 - **Zero cost.** The model is never invoked — no API call, no tokens, no latency.
@@ -277,6 +291,21 @@ hermes chat -s github-pr-workflow -s github-auth
 ```
 
 Hermes loads each named skill into the session prompt before the first turn. The same flag works in interactive mode and single-query mode.
+
+### Persistent auto-load via config
+
+To have the same skills active at the start of **every** new session — CLI, TUI, gateway, cron and API sessions alike — set `skills.auto_load` in `config.yaml`:
+
+```yaml
+skills:
+  auto_load:
+    - hermes-agent-dev
+    - github-pr-workflow
+```
+
+Each entry is a skill name. The list is resolved once when a session's system prompt is first built and the rendered bytes are reused for the life of the conversation (model switches, compression), so prompt caching stays intact; config edits take effect in the next session. Missing or disabled skills log a warning and are skipped. `-s` names that overlap the list are loaded once.
+
+`--ignore-rules` (equivalently `HERMES_IGNORE_RULES=1`) skips auto-load together with AGENTS.md, SOUL.md, `.cursorrules` and memory injection; explicit `-s` skills still load. The setting is profile-scoped: each profile's `config.yaml` controls its own list.
 
 ## Skill Slash Commands
 
@@ -529,7 +558,7 @@ Each `/bg` prompt spawns a **completely separate agent session** in a daemon thr
 When a background task finishes, the result appears as a panel in your terminal:
 
 ```
-╭─ ⚕ Hermes (background #1) ──────────────────────────────────╮
+╭─ ☤ Hermes (background #1) ──────────────────────────────────╮
 │ Found 3 errors in syslog from today:                         │
 │ 1. OOM killer invoked at 03:22 — killed process nginx        │
 │ 2. Disk I/O error on /dev/sda1 at 07:15                      │

@@ -76,8 +76,8 @@ def test_curator_defaults(curator_env):
     c = curator_env["curator"]
     assert c.get_interval_hours() == 24 * 7  # 7 days
     assert c.get_min_idle_hours() == 2
-    assert c.get_stale_after_days() == 30
-    assert c.get_archive_after_days() == 90
+    assert c.get_stale_after_days() == 14
+    assert c.get_archive_after_days() == 30
 
 
 
@@ -950,3 +950,67 @@ def test_review_prompt_does_not_steer_terminal_writes():
             "write_file/remove_file instead"
         )
         assert "&& mv" not in text
+
+
+def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
+    """The curator LLM fork must install a shared read-before-write marks store
+    in its own context before ``run_conversation``.
+
+    Regression for the dead-end refusal the consolidation pass hit in practice:
+    ``mark_background_review_skill_read`` auto-creates a store when the
+    ContextVar is unset, but tool workers run on COPIED contexts, so each
+    worker's marks stayed private — a ``skill_view`` in one worker never
+    satisfied the write guard in another, and every ``skill_manage`` patch was
+    refused with "current SKILL.md content has not been loaded in this review
+    turn". The background-review fork seeds a shared store up front
+    (``agent/background_review.py``); the curator fork must do the same so
+    every copied worker context shares ONE store.
+    """
+    curator = curator_env["curator"]
+    importlib.reload(curator)
+    from tools.skill_manager_guards import _background_review_read_paths
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "m",
+            "api_key": "k",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    observed = {}
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            observed["marks"] = _background_review_read_paths.get()
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert observed["marks"] is not None, (
+        "curator LLM fork must seed a shared read-marks store before "
+        "run_conversation, or every copied tool-worker context keeps private "
+        "marks and the read-before-write guard refuses all patches"
+    )

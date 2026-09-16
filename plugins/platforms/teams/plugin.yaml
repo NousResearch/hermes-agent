@@ -41,6 +41,9 @@ optional_env:
   - name: TEAMS_ALLOW_ALL_USERS
     description: "Allow any Teams user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
+  - name: TEAMS_REQUIRE_MENTION
+    description: "Require @mention in group chats/channels (default: true); 1:1 chats always respond"
+    prompt: "Require @mention in group chats? (true/false)"
     password: false
   - name: TEAMS_HOME_CHANNEL
     description: "Default chat/channel ID for cron / notification delivery"

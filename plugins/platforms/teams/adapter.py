@@ -60,7 +60,8 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
-    coerce_port, get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+    coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -464,6 +465,14 @@ class TeamsAdapter(BasePlatformAdapter):
                 # Never buffer .content — a lying Content-Length must not OOM the gateway.
                 return await _read_httpx_body_with_limit(response, media_type="attachment")
 
+    def _teams_require_mention(self) -> bool:
+        """Group chats and channels require an @mention (default true); 1:1 chats always respond."""
+        configured = _extra_or_secret(
+            self.config.extra, "require_mention", "TEAMS_REQUIRE_MENTION", "true", blank_is_unset=False)
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() not in {"false", "0", "no", "off"}
+
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         activity = ctx.activity
         bot_id = self._app.id if self._app else None
@@ -477,8 +486,14 @@ class TeamsAdapter(BasePlatformAdapter):
         if conv_id:  # cache the conversation reference for proactive sends (approval cards, etc.)
             self._conv_refs[conv_id] = ctx.conversation_ref
         text = activity.text if hasattr(activity, "text") and activity.text else ""
-        if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
+        has_mention = "<at>" in text  # Teams prepends <at>BotName</at> for @mentions
+        if has_mention:
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        # require_mention gates channel/groupChat posts only; 1:1 chats bypass the check.
+        if (_CHAT_TYPES.get(getattr(conv, "conversation_type", None) or "", "dm") != "dm"
+                and self._teams_require_mention() and not has_mention):
+            logger.debug("[teams] ignoring non-DM message without @mention (conv=%s)", conv_id)
+            return
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(

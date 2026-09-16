@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import secrets
+import struct
 import time
 from typing import Any, Optional
 
@@ -123,6 +126,169 @@ def public_key_hex(private_key: str) -> str:
     return point[0].to_bytes(32, "big").hex()
 
 
+def _lift_x(public_key: str) -> tuple[int, int]:
+    try:
+        x = int(public_key, 16)
+    except ValueError as exc:
+        raise ValueError("public key must be 64 hex characters") from exc
+    if len(public_key) != 64 or x >= FIELD_ORDER:
+        raise ValueError("public key must be a valid 32-byte x-only key")
+    y_squared = (pow(x, 3, FIELD_ORDER) + 7) % FIELD_ORDER
+    y = pow(y_squared, (FIELD_ORDER + 1) // 4, FIELD_ORDER)
+    if pow(y, 2, FIELD_ORDER) != y_squared:
+        raise ValueError("public key is not on secp256k1")
+    return x, y if y % 2 == 0 else FIELD_ORDER - y
+
+
+def validate_x_only_public_key(public_key: str) -> str:
+    """Return a normalized x-only key or raise when it is not on secp256k1."""
+
+    normalized = str(public_key or "").strip().lower()
+    _lift_x(normalized)
+    return normalized
+
+
+def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
+    output = bytearray()
+    previous = b""
+    counter = 1
+    while len(output) < length:
+        previous = hmac.new(prk, previous + info + bytes([counter]), hashlib.sha256).digest()
+        output.extend(previous)
+        counter += 1
+    return bytes(output[:length])
+
+
+def _rotate_left(value: int, shift: int) -> int:
+    return ((value << shift) & 0xFFFFFFFF) | (value >> (32 - shift))
+
+
+def _chacha20_xor(key: bytes, nonce: bytes, payload: bytes) -> bytes:
+    if len(key) != 32 or len(nonce) != 12:
+        raise ValueError("ChaCha20 requires a 32-byte key and 12-byte nonce")
+
+    def quarter_round(state: list[int], a: int, b: int, c: int, d: int) -> None:
+        state[a] = (state[a] + state[b]) & 0xFFFFFFFF
+        state[d] = _rotate_left(state[d] ^ state[a], 16)
+        state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+        state[b] = _rotate_left(state[b] ^ state[c], 12)
+        state[a] = (state[a] + state[b]) & 0xFFFFFFFF
+        state[d] = _rotate_left(state[d] ^ state[a], 8)
+        state[c] = (state[c] + state[d]) & 0xFFFFFFFF
+        state[b] = _rotate_left(state[b] ^ state[c], 7)
+
+    constants = list(struct.unpack("<4I", b"expand 32-byte k"))
+    key_words = list(struct.unpack("<8I", key))
+    nonce_words = list(struct.unpack("<3I", nonce))
+    encrypted = bytearray()
+    for block_index in range((len(payload) + 63) // 64):
+        initial = constants + key_words + [block_index] + nonce_words
+        state = initial.copy()
+        for _ in range(10):
+            quarter_round(state, 0, 4, 8, 12)
+            quarter_round(state, 1, 5, 9, 13)
+            quarter_round(state, 2, 6, 10, 14)
+            quarter_round(state, 3, 7, 11, 15)
+            quarter_round(state, 0, 5, 10, 15)
+            quarter_round(state, 1, 6, 11, 12)
+            quarter_round(state, 2, 7, 8, 13)
+            quarter_round(state, 3, 4, 9, 14)
+        key_stream = struct.pack(
+            "<16I",
+            *((word + original) & 0xFFFFFFFF for word, original in zip(state, initial)),
+        )
+        chunk = payload[block_index * 64 : (block_index + 1) * 64]
+        encrypted.extend(left ^ right for left, right in zip(chunk, key_stream))
+    return bytes(encrypted)
+
+
+def _nip44_padded_length(length: int) -> int:
+    if length <= 32:
+        return 32
+    next_power = 1 << (length - 1).bit_length()
+    chunk = 32 if next_power <= 256 else next_power // 8
+    return chunk * ((length - 1) // chunk + 1)
+
+
+def nip44_encrypt(
+    plaintext: str,
+    *,
+    private_key: str,
+    recipient_pubkey: str,
+    nonce: Optional[bytes] = None,
+) -> str:
+    """Encrypt UTF-8 text with NIP-44 v2 for an x-only secp256k1 recipient."""
+    encoded = plaintext.encode("utf-8")
+    if not 1 <= len(encoded) <= 65_535:
+        raise ValueError("NIP-44 plaintext must contain 1 to 65535 bytes")
+    nonce = secrets.token_bytes(32) if nonce is None else nonce
+    if len(nonce) != 32:
+        raise ValueError("NIP-44 nonce must be 32 bytes")
+
+    shared_point = _point_multiply(decode_private_key(private_key), _lift_x(recipient_pubkey))
+    if shared_point is None:  # pragma: no cover - validated nonzero keys make this unreachable
+        raise ValueError("invalid NIP-44 shared point")
+    shared_x = shared_point[0].to_bytes(32, "big")
+    conversation_key = hmac.new(b"nip44-v2", shared_x, hashlib.sha256).digest()
+    message_keys = _hkdf_expand(conversation_key, nonce, 76)
+    chacha_key = message_keys[:32]
+    chacha_nonce = message_keys[32:44]
+    hmac_key = message_keys[44:]
+
+    prefix = len(encoded).to_bytes(2, "big")
+    padded = prefix + encoded + bytes(_nip44_padded_length(len(encoded)) - len(encoded))
+    ciphertext = _chacha20_xor(chacha_key, chacha_nonce, padded)
+    mac = hmac.new(hmac_key, nonce + ciphertext, hashlib.sha256).digest()
+    return base64.b64encode(b"\x02" + nonce + ciphertext + mac).decode("ascii")
+
+
+def build_observer_event(
+    *,
+    private_key: str,
+    owner_pubkey: str,
+    payload: dict[str, Any],
+    created_at: Optional[int] = None,
+    nonce: Optional[bytes] = None,
+    auxiliary_randomness: Optional[bytes] = None,
+) -> dict[str, Any]:
+    """Build a signed, owner-encrypted NIP-AO telemetry event (kind 24200)."""
+    plaintext = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    if len(plaintext.encode("utf-8")) > 65_535:
+        raise ValueError("observer plaintext exceeds 65535 bytes")
+    content = nip44_encrypt(
+        plaintext,
+        private_key=private_key,
+        recipient_pubkey=owner_pubkey,
+        nonce=nonce,
+    )
+    pubkey = public_key_hex(private_key)
+    timestamp = int(time.time()) if created_at is None else int(created_at)
+    tags = [
+        ["p", owner_pubkey.lower()],
+        ["agent", pubkey],
+        ["frame", "telemetry"],
+    ]
+    serialized = json.dumps(
+        [0, pubkey, timestamp, 24200, tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    event_id = hashlib.sha256(serialized).digest()
+    return {
+        "id": event_id.hex(),
+        "pubkey": pubkey,
+        "created_at": timestamp,
+        "kind": 24200,
+        "tags": tags,
+        "content": content,
+        "sig": schnorr_sign(
+            event_id,
+            private_key,
+            auxiliary_randomness=auxiliary_randomness,
+        ).hex(),
+    }
+
+
 def schnorr_sign(message: bytes, private_key: str, *, auxiliary_randomness: Optional[bytes] = None) -> bytes:
     if len(message) != 32:
         raise ValueError("BIP-340 signs a 32-byte message")
@@ -146,6 +312,150 @@ def schnorr_sign(message: bytes, private_key: str, *, auxiliary_randomness: Opti
     adjusted_nonce = nonce if nonce_point[1] % 2 == 0 else CURVE_ORDER - nonce
     challenge = int.from_bytes(_tagged_hash("BIP0340/challenge", nonce_x + public_x + message), "big") % CURVE_ORDER
     return nonce_x + ((adjusted_nonce + challenge * adjusted_secret) % CURVE_ORDER).to_bytes(32, "big")
+
+
+def _strict_lower_hex(value: object, length: int) -> bool:
+    return isinstance(value, str) and len(value) == length and all(
+        char in "0123456789abcdef" for char in value
+    )
+
+
+def schnorr_verify(message: bytes, public_key_hex: str, signature_hex: str) -> bool:
+    """Verify a strict lowercase-hex BIP-340 signature."""
+    if (
+        len(message) != 32
+        or not _strict_lower_hex(public_key_hex, 64)
+        or not _strict_lower_hex(signature_hex, 128)
+    ):
+        return False
+    public_x = int(public_key_hex, 16)
+    if public_x >= FIELD_ORDER:
+        return False
+    y_squared = (pow(public_x, 3, FIELD_ORDER) + 7) % FIELD_ORDER
+    public_y = pow(y_squared, (FIELD_ORDER + 1) // 4, FIELD_ORDER)
+    if pow(public_y, 2, FIELD_ORDER) != y_squared:
+        return False
+    if public_y & 1:
+        public_y = FIELD_ORDER - public_y
+    signature = bytes.fromhex(signature_hex)
+    nonce_x = int.from_bytes(signature[:32], "big")
+    scalar = int.from_bytes(signature[32:], "big")
+    if nonce_x >= FIELD_ORDER or scalar >= CURVE_ORDER:
+        return False
+    challenge = (
+        int.from_bytes(
+            _tagged_hash(
+                "BIP0340/challenge",
+                signature[:32] + bytes.fromhex(public_key_hex) + message,
+            ),
+            "big",
+        )
+        % CURVE_ORDER
+    )
+    point = _point_add(
+        _point_multiply(scalar),
+        _point_multiply(CURVE_ORDER - challenge, (public_x, public_y)),
+    )
+    return point is not None and point[1] % 2 == 0 and point[0] == nonce_x
+
+
+def build_signed_event(
+    *,
+    private_key: str,
+    kind: int,
+    tags: list[list[str]],
+    content: str,
+    created_at: Optional[int] = None,
+    auxiliary_randomness: Optional[bytes] = None,
+) -> dict[str, Any]:
+    """Build a canonical signed Nostr event without third-party dependencies."""
+    pubkey = public_key_hex(private_key)
+    timestamp = int(time.time()) if created_at is None else int(created_at)
+    serialized = json.dumps(
+        [0, pubkey, timestamp, int(kind), tags, content],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    event_id = hashlib.sha256(serialized).digest()
+    return {
+        "id": event_id.hex(),
+        "pubkey": pubkey,
+        "created_at": timestamp,
+        "kind": int(kind),
+        "tags": tags,
+        "content": content,
+        "sig": schnorr_sign(
+            event_id,
+            private_key,
+            auxiliary_randomness=auxiliary_randomness,
+        ).hex(),
+    }
+
+
+def _validate_conditions(conditions: str) -> list[tuple[str, int]]:
+    parsed: list[tuple[str, int]] = []
+    if not conditions:
+        return parsed
+    if any(char.isspace() for char in conditions):
+        raise ValueError("NIP-OA conditions must not contain whitespace")
+    for clause in conditions.split("&"):
+        if clause.startswith("kind="):
+            value, maximum = clause[5:], 65_535
+        elif clause.startswith("created_at<") or clause.startswith("created_at>"):
+            value, maximum = clause[11:], 4_294_967_295
+        else:
+            raise ValueError("unsupported NIP-OA condition")
+        if (
+            not value.isascii()
+            or not value.isdecimal()
+            or (len(value) > 1 and value[0] == "0")
+        ):
+            raise ValueError("NIP-OA condition must use canonical decimal")
+        if int(value) > maximum:
+            raise ValueError("NIP-OA condition is out of range")
+        parsed.append((clause[: len(clause) - len(value)], int(value)))
+    return parsed
+
+
+def verify_auth_tag(auth_tag: list[str], agent_pubkey: str) -> str:
+    """Validate NIP-OA grammar/signature and return its owner pubkey."""
+    if (
+        not isinstance(auth_tag, list)
+        or len(auth_tag) != 4
+        or not all(isinstance(value, str) for value in auth_tag)
+    ):
+        raise ValueError("BUZZ_AUTH_TAG must be a four-string auth tag")
+    label, owner, conditions, signature = auth_tag
+    if (
+        label != "auth"
+        or not _strict_lower_hex(owner, 64)
+        or not _strict_lower_hex(agent_pubkey, 64)
+    ):
+        raise ValueError("BUZZ_AUTH_TAG contains an invalid label or pubkey")
+    if owner == agent_pubkey:
+        raise ValueError("NIP-OA self-attestation is invalid")
+    _validate_conditions(conditions)
+    message = hashlib.sha256(
+        f"nostr:agent-auth:{agent_pubkey}:{conditions}".encode()
+    ).digest()
+    if not schnorr_verify(message, owner, signature):
+        raise ValueError("BUZZ_AUTH_TAG signature verification failed")
+    return owner
+
+
+def verify_auth_tag_for_event(
+    auth_tag: list[str], agent_pubkey: str, *, kind: int, created_at: int
+) -> str:
+    """Validate a NIP-OA tag and every condition against one exact event."""
+    owner = verify_auth_tag(auth_tag, agent_pubkey)
+    for operator, value in _validate_conditions(auth_tag[2]):
+        if operator == "kind=" and int(kind) != value:
+            raise ValueError("NIP-OA kind condition is not satisfied")
+        if operator == "created_at<" and int(created_at) >= value:
+            raise ValueError("NIP-OA created_at condition is not satisfied")
+        if operator == "created_at>" and int(created_at) <= value:
+            raise ValueError("NIP-OA created_at condition is not satisfied")
+    return owner
 
 
 def parse_auth_tag(raw: Any, label: str) -> list[str]:

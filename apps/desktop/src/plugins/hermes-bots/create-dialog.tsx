@@ -39,6 +39,7 @@ import {
 import { useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
+import { draftAgentFromIntent } from './agent-wizard'
 import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
@@ -130,6 +131,49 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const flightRef = useRef<Promise<null | string> | null>(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  // Conversational wizard: one sentence in, all fields drafted. The draft
+  // PREFILLS the form — every field stays editable and nothing is created
+  // until the user hits Create. Failure degrades to the plain form.
+  const [intent, setIntent] = useState('')
+  const [drafting, setDrafting] = useState(false)
+
+  const runDraft = async () => {
+    if (!intent.trim() || drafting) {
+      return
+    }
+
+    setDrafting(true)
+
+    try {
+      const draft = await draftAgentFromIntent(
+        (method, params) => host.request(method, params) as never,
+        intent,
+        roster.map(bot => bot.name)
+      )
+
+      if (draft.name) {
+        setName(draft.name)
+      }
+
+      if (draft.title) {
+        setTitle(draft.title)
+      }
+
+      if (draft.description) {
+        setDescription(draft.description)
+      }
+
+      if (draft.soul) {
+        setSoul(draft.soul)
+      }
+
+      if (draft.color) {
+        setColor(draft.color)
+      }
+    } finally {
+      setDrafting(false)
+    }
+  }
   // Default shapes mode: deterministic blob face drawn from the agent's name
   // (falls back to the legacy shape vocabulary on older SDKs).
   const [shape, setShape] = useState(blobatarSvg ? 'blobatar' : 'circle')
@@ -602,6 +646,30 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3.5">
+          {/* Conversational wizard — describe it, the agent is drafted for
+              you. The fields below stay fully editable: the draft PREFILLS,
+              it never creates. Non-fatal on failure: the plain form remains. */}
+          <div className="grid gap-1.5 rounded-md border border-(--ui-stroke-tertiary) bg-(--chrome-action-hover)/40 p-2.5">
+            <Textarea
+              className="min-h-16 resize-none border-0 bg-transparent px-1 text-sm focus-visible:ring-0"
+              disabled={drafting}
+              onChange={event => setIntent(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  event.preventDefault()
+                  void runDraft()
+                }
+              }}
+              placeholder='Describe your agent — "um bot que resume tickets do Linear toda manhã e me alerta o que é urgente"'
+              value={intent}
+            />
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[0.6875rem] text-(--ui-text-quaternary)">⌘⏎ to draft</span>
+              <Button disabled={drafting || !intent.trim()} onClick={() => void runDraft()} size="xs" type="button">
+                {drafting ? 'Drafting…' : 'Draft it for me'}
+              </Button>
+            </div>
+          </div>
           <div className="flex justify-center py-1">
             <BotFace
               color={avatarColor(color, slug || 'agent')}

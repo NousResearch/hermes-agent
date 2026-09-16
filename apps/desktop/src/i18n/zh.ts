@@ -3051,6 +3051,7 @@ export const zh = defineLocale({
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
     wakeWordListening: phrase => `唤醒词:"${phrase}" — 正在监听`,
+    wakeWord: phrase => `唤醒词"${phrase}"`,
     wakeWordOff: phrase => `唤醒词:"${phrase}" — 已关闭`,
     wakeWordPausedVoice: phrase => `唤醒词:"${phrase}" — 语音对话期间暂停`,
     lookupLoading: '查找中…',

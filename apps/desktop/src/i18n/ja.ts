@@ -2401,6 +2401,7 @@ export const ja = defineLocale({
     speakReplies: '返信を読み上げる',
     stopSpeakingReplies: '返信の読み上げを停止',
     wakeWordListening: phrase => `ウェイクワード:「${phrase}」— 待機中`,
+    wakeWord: phrase => `ウェイクワード「${phrase}」`,
     wakeWordOff: phrase => `ウェイクワード:「${phrase}」— オフ`,
     wakeWordPausedVoice: phrase => `ウェイクワード:「${phrase}」— 音声チャット中は一時停止`,
     lookupLoading: '検索中…',

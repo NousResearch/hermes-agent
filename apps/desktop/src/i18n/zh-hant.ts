@@ -2383,6 +2383,7 @@ export const zhHant = defineLocale({
     speakReplies: '朗讀回覆',
     stopSpeakingReplies: '停止朗讀回覆',
     wakeWordListening: phrase => `喚醒詞:「${phrase}」— 正在聆聽`,
+    wakeWord: phrase => `喚醒詞「${phrase}」`,
     wakeWordOff: phrase => `喚醒詞:「${phrase}」— 已關閉`,
     wakeWordPausedVoice: phrase => `喚醒詞:「${phrase}」— 語音對話期間暫停`,
     lookupLoading: '查詢中…',

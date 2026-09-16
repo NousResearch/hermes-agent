@@ -88,8 +88,10 @@ class MigrationPlan:
     profiles: list[ProfileGateway]
     multiplex_flag_on: bool
     live_served: Optional[list[str]]  # served_profiles the live default gateway recorded, if any
-    # A manifest with the flag on and no live default gateway: an earlier apply died between flipping
-    # the flag and bringing the multiplexer up (#110850). Not "already multiplexed" — resumable.
+    # A manifest with the flag on and no LIVE default gateway: an earlier apply died between flipping
+    # the flag and the multiplexer confirming it is up (#110850). An installed unit is not proof of
+    # anything — `systemd_install` writes the unit before the start that can still fail or be killed.
+    # Not "already multiplexed" — resumable.
     interrupted: bool = False
     blockers: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
@@ -449,7 +451,7 @@ def build_migration_plan() -> MigrationPlan:
         multiplex_flag_on=_read_multiplex_flag(default_home),
         live_served=recorded_served_profiles(default_home),
     )
-    plan.interrupted = plan.multiplex_flag_on and not plan.default.has_gateway and _read_manifest(default_home) is not None
+    plan.interrupted = plan.multiplex_flag_on and _manifest_not_yet_served(_read_manifest(default_home), plan.live_served)
     if len(plan.profiles) < 2:
         plan.notices.append("Only one profile exists: nothing to multiplex.")
         return plan
@@ -487,7 +489,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
         return lines
     if plan.interrupted:
         lines.append(f"  ↻ An earlier migration was interrupted before the default gateway came up "
-                     f"(flag on, no gateway; manifest {plan.default_home / MANIFEST_NAME}); this run resumes it.")
+                     f"(flag on, no live multiplexer; manifest {plan.default_home / MANIFEST_NAME}); this run resumes it.")
     steps = []
     for p in plan.standalone_secondaries:
         what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.services else "") if x)
@@ -615,6 +617,19 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _manifest_not_yet_served(manifest: Optional[dict], live_served: Optional[list[str]]) -> bool:
+    """The postcondition ``apply_migration`` waits for, re-derived from live state: a LIVE default that
+    recorded serving every profile the manifest migrated. Anything less — no live gateway, an
+    installed-but-dead unit (``systemd_install`` writes the unit before the start that can still fail),
+    a standalone default never restarted — is a half-applied migration, not "already multiplexed".
+    Profiles created after the migration are not in the manifest, so they cannot flag it as interrupted."""
+    if manifest is None:
+        return False
+    recs = [r for r in (manifest.get("default"), *(_manifest_secondaries(manifest) or [])) if isinstance(r, dict)]
+    migrated = {str(r.get("profile") or "default") for r in recs} | {"default"}
+    return not migrated <= set(live_served or [])
+
+
 def _write_manifest(default_home: Path, data: dict) -> None:
     from utils import atomic_json_write
 
@@ -691,14 +706,48 @@ def _remove_secondary_gateways(plan: MigrationPlan) -> None:
             print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
 
 
+def _preflight_apply(plan: MigrationPlan, target: Optional[tuple[str, bool]], run_as_user: Optional[str]) -> Optional[str]:
+    """A failure of the destructive phase that is knowable from the plan alone, refused BEFORE any
+    working per-profile gateway is stopped: rollback is the fallback for surprises, not the plan.
+    Mirrors the checks ``systemd_install``/``_service_call`` make on a system unit (root, resolvable
+    ``User=``) and the config write's read-guard."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.config import require_readable_config_before_write
+    try:
+        require_readable_config_before_write(plan.default_home / "config.yaml")
+    except Exception as exc:
+        return f"default: config.yaml cannot be updated ({exc})"
+    touches_system_unit = target == ("systemd", True) or any(p.has_system_unit for p in plan.standalone_secondaries)
+    if touches_system_unit:
+        try:
+            gw._require_root_for_system_service("migration")
+        except Exception as exc:
+            return str(exc)
+    if plan.default.service is None and target == ("systemd", True):
+        if run_as_user is None:
+            try:
+                gw._system_service_identity()  # the #110850 refusal (implicit root), before anything is removed
+            except ValueError as exc:
+                return f"default: {exc}"
+        else:
+            import pwd
+            try:
+                pwd.getpwnam(run_as_user)
+            except KeyError:
+                return f"default: the recorded service user '{run_as_user}' does not exist on this host"
+    return None
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
-    """Stop/uninstall every secondary gateway, flip the flag, bring up the multiplexer, verify.
+    """Flip the flag, stop/uninstall every secondary gateway, bring up the multiplexer, verify.
     Returns True when the multiplexer verifiably serves every profile.
 
-    Bringing the default up is the one step that can fail after the destructive ones (a system unit
-    that needs ``--run-as-user``, an unreachable user bus). It runs inside a rollback: on failure the
-    manifest written before the first destructive step restores the flag and every recorded per-profile
-    gateway (#110850), so the fleet never ends with the flag on and no gateway at all."""
+    Every step after the manifest write is fallible (a config write, a secondary's stop or its
+    unit's daemon-reload, a system unit that needs ``--run-as-user``, an unreachable user bus) and
+    runs inside ONE compensating boundary: on failure the manifest written before the first
+    destructive step restores the flag and every recorded per-profile gateway (#110850), so the
+    fleet never ends half-migrated. The flag goes on first so an apply killed anywhere after it is
+    resumable from the manifest (flag on + manifest + no live multiplexer = interrupted)."""
     if plan.blocked:
         _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
         return False
@@ -707,18 +756,22 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         return True
     target, run_as_user = plan.target_service_kind(), plan.target_run_as_user()
     if plan.interrupted:
-        # An earlier apply removed the secondaries and flipped the flag but never brought the default
-        # up; the manifest is the only record of the units that existed. Finish from it, don't rewrite it.
+        # An earlier apply flipped the flag (and removed some or all secondaries) but the default never
+        # came up; the manifest is the only record of the units that existed. Finish from it, don't rewrite it.
         manifest = _read_manifest(plan.default_home) or {}
         target, run_as_user = _target_from_manifest(manifest)
         print(f"  ↻ resuming an interrupted migration recorded in {_manifest_path(plan.default_home)}")
     elif _read_manifest(plan.default_home) is not None:
-        # Flag off + manifest present = a rollback that did not finish. Overwriting the manifest would
-        # discard the only record of the units that rollback still has to restore.
+        # Flag off + manifest present = a rollback (or an apply killed before its flag write) that did
+        # not finish. Overwriting the manifest would discard the only record of the units to restore.
         _print([f"✗ A previous migration's manifest is still at {_manifest_path(plan.default_home)} (its rollback did not finish).",
                 "  Finish it with: hermes gateway migrate --standalone   (or delete the manifest to start over)"])
         return False
     else:
+        blocker = _preflight_apply(plan, target, run_as_user)
+        if blocker is not None:
+            _print(["✗ Migration refused before changing anything:", f"  • {blocker}"])
+            return False
         manifest = {
             "version": 1, "migrated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "flag_was": plan.multiplex_flag_on,
@@ -728,13 +781,13 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         # Recovery metadata must exist before the first destructive operation; the manifest never
         # changes afterwards, so this is the only write it needs.
         _write_manifest(plan.default_home, manifest)
-    _remove_secondary_gateways(plan)
-    _write_multiplex_flag(plan.default_home, True)
-    print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
     try:
+        _write_multiplex_flag(plan.default_home, True)
+        print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
+        _remove_secondary_gateways(plan)  # on resume: whatever an apply killed mid-removal left installed
         print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
     except Exception as exc:
-        _print([f"  ✗ default: could not bring up the multiplexed gateway ({exc})",
+        _print([f"  ✗ migration failed ({exc})",
                 "  ↩ Rolling back to per-profile gateways so no profile is left without one..."])
         rolled_back = rollback_migration(plan.default_home)
         if not rolled_back:

@@ -2594,13 +2594,18 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     #77490, #88441.
     """
     try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from agent.secret_scope import current_secret_scope, serves_routed_profile
 
-        scope = current_secret_scope() if is_multiplex_active() else None
+        scope, routed = current_secret_scope(), serves_routed_profile()
     except Exception:
-        scope = None
-    target = scope if isinstance(scope, dict) else (None if scope is not None else os.environ)
-    if target is not None:
+        scope, routed = None, False
+    # The launch profile's own body runs under a scope snapshot even single-profile (the TUI /
+    # dashboard launch scope), so a same-request read after the write must see it there too; a
+    # routed profile's value never reaches the shared process env.
+    targets = [scope] if isinstance(scope, dict) else []
+    if not routed and (scope is None or isinstance(scope, dict)):
+        targets.append(os.environ)
+    for target in targets:
         if value is None:
             target.pop(key, None)
         else:

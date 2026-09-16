@@ -1161,6 +1161,18 @@ class TestLaunchctlGatewayLifecycle:
         assert dangerous is True, cmd
         assert "launchd" in desc.lower()
 
+    def test_launchctl_lookahead_is_linear_on_long_commands(self):
+        from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED
+
+        pattern = next(
+            compiled for compiled, desc in DANGEROUS_PATTERNS_COMPILED
+            if "launchd" in desc.lower()
+        )
+        body = "python3 <<'PY'\n" + "print('hermes gateway notes')\n" * 2000 + "PY\n"
+        started = time.monotonic()
+        assert pattern.search(body.lower()) is None
+        assert time.monotonic() - started < 2.0
+
 
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy

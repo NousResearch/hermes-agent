@@ -20,14 +20,24 @@ class ToolEffect(str, Enum):
 # Single compatibility table for built-ins predating registry effect metadata.
 _BUILTINS = {
     **dict.fromkeys(("read_file", "search_files", "browser_snapshot", "browser_get_images",
-                     "session_search"), ToolEffect.PURE_READ),
+                     "session_search", "skill_view", "skills_list", "read_terminal"), ToolEffect.PURE_READ),
     **dict.fromkeys(("tool_search", "tool_describe", "web_search", "web_extract",
                      "browser_extract_items"), ToolEffect.DISCOVERY),
     "clarify": ToolEffect.INTERACTIVE,
     "delegate_task": ToolEffect.COGNITIVE,
+    "vision_analyze": ToolEffect.COGNITIVE,
 }
 READ_EFFECTS = frozenset({ToolEffect.PURE_READ, ToolEffect.DISCOVERY})
 WRITE_EFFECTS = frozenset({ToolEffect.MUTATION, ToolEffect.IDEMPOTENT_WRITE})
+
+
+def builtin_effect(name):
+    """Explicit conservative default for authenticated first-party registrations.
+
+    A new builtin is write-capable until its owner supplies safer metadata. This
+    never classifies tools by get/list prefixes or grants trust to plugins.
+    """
+    return _BUILTINS.get(name, ToolEffect.MUTATION)
 
 
 def tool_contract(name, *, scope=None, schema=None):

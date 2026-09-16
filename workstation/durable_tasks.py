@@ -710,6 +710,15 @@ class DurableTaskStore:
             conn.execute("UPDATE work_plans SET status=?, updated_at=?, completed_at=? WHERE id=?",
                          (status, _utc_now(), _utc_now() if status == "completed" else None, plan_id))
 
+    def update_plan_metadata(self, plan_id: str, values: dict) -> None:
+        with self._lock, self.get_connection() as conn:
+            row = conn.execute("SELECT metadata FROM work_plans WHERE id=? OR task_id=?", (plan_id, plan_id)).fetchone()
+            if row is None:
+                raise ValueError("Plan not found")
+            metadata = {**json.loads(row[0] or "{}"), **values}
+            conn.execute("UPDATE work_plans SET metadata=? WHERE id=? OR task_id=?", (json.dumps(metadata), plan_id, plan_id))
+            conn.commit()
+
     def record_evidence(self, item_id: str, ref: str) -> None:
         with self._lock, self.get_connection() as conn:
             conn.execute("UPDATE work_items SET evidence_refs=? WHERE id=?",
@@ -734,12 +743,26 @@ class DurableTaskStore:
             "completed": completed,
             "pending": sum(not i.is_terminal and i not in exceptions for i in items),
             "failed": sum(i.status == WorkItemStatus.FAILED for i in items),
-            "blockers": [{"item_id": i.id, "status": i.status.value} for i in exceptions[:10]],
+            "blockers": [{"item_id": i.id, "status": i.status.value,
+                          "code": str(i.validation_result.get("reason", i.last_error or "review_required"))[:120],
+                          "evidence_ref": i.normalized_output_ref} for i in exceptions[:10]],
             "blocker_count": len(exceptions),
             "next_action": "review_exceptions" if exceptions else (
                 "finish" if completed == len(items) else "continue_plan"),
         }
         graph = plan.metadata.get("graph")
+        ledger["recipe"] = plan.metadata.get("recipe", {})
+        if plan.metadata.get("canary_required"):
+            first = next((i for i in items if i.input_payload.get("_work_phase", "fan_out") == "fan_out"), None)
+            verified = bool(first and first.checkpoints.get("canary_verified") == "ok")
+            uncertain = bool(first and first.validation_result.get("reason") == "uncertain_mutation_requires_review")
+            ledger["canary"] = {"item_id": first.id if first else None, "verified": verified,
+                "status": "verified" if verified else "uncertain" if uncertain else "failed" if first in exceptions else "pending"}
+        elif plan.metadata.get("recipe", {}).get("status") == "VERIFIED":
+            first = next((i for i in items if i.input_payload.get("_work_phase", "fan_out") == "fan_out"), None)
+            ready = bool(first and first.status == WorkItemStatus.COMPLETED)
+            ledger["canary"] = {"required": False, "verified": ready,
+                                "status": "recipe_preflight_verified" if ready else "pending_preflight"}
         if graph:
             from tools.effects import READ_EFFECTS, tool_effect
             refs = sorted({i.normalized_output_ref for i in items if i.normalized_output_ref} | {

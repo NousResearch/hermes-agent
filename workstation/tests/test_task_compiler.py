@@ -86,7 +86,7 @@ def test_browser_batch_one_task_and_prompt_queue(compiler):
     req = request(12)
     req["kind"] = "prompt_queue"
     req["steps"] = [{"tool": "browser_type", "args": {"text": "$item.id"}, "expect": {"ok": True}},
-                    {"tool": "browser_snapshot", "args": {}, "expect": {"done": True},
+                    {"tool": "browser_snapshot", "verifies": ["fan_out_0"], "args": {}, "expect": {"done": True},
                      "wait": {"interval_seconds": 0, "max_polls": 2}}]
     owners = []
     result = run(compiler, req, lambda tool, args, task, call: owners.append(task) or {"ok": True, "done": True})
@@ -167,7 +167,7 @@ def test_prompt_queue_bounded_completion_wait(compiler):
     req = request(3)
     req["kind"] = "prompt_queue"
     req["steps"] = [{"tool": "browser_type", "args": {"text": "$item.id"}, "expect": {"ok": True}},
-                    {"tool": "browser_snapshot", "args": {}, "expect": {"done": True},
+                    {"tool": "browser_snapshot", "verifies": ["fan_out_0"], "args": {}, "expect": {"done": True},
                      "wait": {"interval_seconds": 0, "max_polls": 3}}]
     polls = []
     def dispatch(tool, args, task, call):

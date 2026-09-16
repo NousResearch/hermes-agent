@@ -1,5 +1,36 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-052 — Verified recipes, canary admission and durable planner context (2026-09-16)
+
+Starting HEAD `a977651539dd4b793e26f96c6116bce187677cc9`; only existing
+`.workstation-audit/` is untracked. No upstream comparison or general re-audit.
+Hypothesis: item-one admission plus explicit read-to-mutation verification
+prevents multiplying an invalid procedure; artifact-backed recipes and bounded
+state projections remove repeated operational learning/narrative compaction.
+Experiment: extend the existing compiler/checkpoints/ledger/registry, test A–Y,
+then replay invalid/corrected/restarted fake Trello workloads and locked CI.
+Acceptance: <=1 exposed item on invalid workflow, no confirmed mutation replay,
+no executor LLM calls, deterministic <=4 KB handoffs, secret-free recipes,
+provider-only projection and no old compaction replication.
+
+Observed: initial focused contracts 22 passed. Existing acceptance then had
+59 passes and 7 failures: mutable fixtures asserted success without an external
+read relationship; those fixtures now declare verifies and retain restart/replay
+invariants. Expanded focused contracts: 26 passed, including 1000 mutations,
+no executor model calls, confirmed-step resume, provider projection and retained
+SessionDB history. A later combined registry run exposed module-import cache
+dependence in the builtin audit (70 passed, 1 audit failure); a clean subprocess
+with isolated HERMES_HOME fixed the audit (1 passed). New scope/stale-resume/
+read-progress/uncached-telemetry cases: 4 passed. Core seams: 254 passed,
+1 unchanged Windows POSIX-0600 assertion; Linux CI remains authoritative.
+An initial combined suite was interrupted after a long silent scale test;
+separate suite with faulthandler identifies committed SQLite fsync in the
+1000-item test, not a deadlock. No persistence guarantee was weakened.
+Lock, license policy, compileall and core anchors pass. Three replay scenarios
+passed: invalid workflow exposes 1 mutation, corrected completes 12, restart
+recipe hits once; each uses 2 fake-provider calls and 0 executor model calls.
+Full final suite and real GitHub run pending.
+
 ## H-051 — Final durable execution hardening (2026-09-16)
 
 Audit: HEAD and fetched origin/main `17df394cfe3e913e6fce6f3130e3efc47e4592a2`;

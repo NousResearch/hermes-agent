@@ -266,6 +266,28 @@ class ToolCallSignature:
 
 
 @dataclass(frozen=True)
+class ExperimentKey:
+    """Procedure identity: shape minus entity values, plus hypothesis selectors.
+
+    Context fields must originate from the runtime, never from result text.
+    Identical-call/cycle tracking remains separate and retains exact arguments.
+    """
+    fingerprint: str
+
+    @classmethod
+    def from_call(cls, tool_name, args, context=None):
+        def hypothesis(value, field=""):
+            if isinstance(value, Mapping):
+                return {k: hypothesis(v, k) for k, v in sorted(value.items())}
+            if isinstance(value, list):
+                return sorted({canonical_tool_args({"v": hypothesis(v, field)}) for v in value})
+            if field in {"action", "operation", "method", "selector", "testid", "script", "code", "command", "query", "path", "operation_key", "route", "step_id", "recipe_fingerprint", "capability_fingerprint", "verification_generation"}:
+                return value
+            return type(value).__name__
+        return cls(_sha256(canonical_tool_args({"tool": tool_name, "shape": hypothesis(args or {}), "context": context or {}})))
+
+
+@dataclass(frozen=True)
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
@@ -353,6 +375,8 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
+        self._verification_generation = 0
+        self._current_experiments = {}
         self._call_history = deque(maxlen=64)
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
@@ -396,9 +420,19 @@ class ToolCallGuardrailController:
         self._call_history.clear()
         self._identical_streak_sig = None
         self._identical_streak_count = 0
+        self._verification_generation += 1
+        self._current_experiments.clear()
+
+    def _experiment_signature(self, tool_name, args):
+        experiment = ExperimentKey.from_call(tool_name, args, {"verification_generation": self._verification_generation})
+        previous = self._current_experiments.get(tool_name)
+        if previous is not None and previous != experiment:
+            self._same_tool_failure_counts.pop(tool_name, None)
+        self._current_experiments[tool_name] = experiment
+        return ToolCallSignature(tool_name, experiment.fingerprint)
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
-        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        signature = self._experiment_signature(tool_name, _coerce_args(args))
 
         # ── Per-turn runaway-loop caps ──────────────────────────────────
         # These are hard ceilings on how many times a runaway-prone tool may
@@ -463,7 +497,7 @@ class ToolCallGuardrailController:
         actual_delta: bool | None = None,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
-        signature = ToolCallSignature.from_call(tool_name, args)
+        signature = self._experiment_signature(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 

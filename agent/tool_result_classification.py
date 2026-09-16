@@ -12,15 +12,9 @@ FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
 # Tools whose interrupted/dangling execution is safe to discard because they
 # cannot mutate either external state or Hermes session state. Unknown/plugin/
 # MCP tools stay effect-capable by default.
-NO_EFFECT_TOOL_NAMES = frozenset({
-    "read_file", "search_files", "session_search", "skill_view", "skills_list",
-    "web_extract", "web_search", "vision_analyze", "browser_snapshot",
-    "browser_get_images", "browser_console", "read_terminal",
-})
-
-
 def tool_may_have_side_effect(tool_name: str) -> bool:
-    return tool_name not in NO_EFFECT_TOOL_NAMES
+    from tools.effects import READ_EFFECTS, ToolEffect, tool_effect
+    return tool_effect(tool_name) not in READ_EFFECTS | {ToolEffect.COGNITIVE}
 
 
 def file_mutation_result_landed(tool_name: str, result: Any) -> bool:

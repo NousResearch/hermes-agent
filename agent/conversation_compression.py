@@ -2293,6 +2293,12 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    if not force and commit_fence is None:
+        from workstation.continuation import durable_compaction
+        if durable_compaction(agent, messages):
+            # No narrative summary, session rotation or transcript rewrite.
+            # The provider boundary applies the authenticated projection.
+            return messages, getattr(agent, "_cached_system_prompt", None) or system_message
     _compressor_attempt_snapshot = _snapshot_compressor_attempt_state(
         agent.context_compressor
     )

@@ -15,6 +15,13 @@ registry.register(
         "Execute decided repetitive work as a durable plan, with no model call between items. "
         "For homogeneous records, browser transactions or prompt queues, compile once into items "
         "and steps instead of calling individual tools per item. Bind args using $item.field. "
+        "Use action=contract for bounded examples, recipe_key + items/items_ref to reuse a verified graph, "
+        "or setup_steps/steps/finalize_steps with unique IDs and depends_on. "
+        "Use $setup.id.field and $steps.id.field for prior results. "
+        "Unknown mutable batches automatically gate item 1 as canary. Add a read/discovery "
+        "step with verifies=[mutation_id] and expect proving persisted state. "
+        "Confirmed mutations survive restart; uncertain mutations require human review, never blind retry. "
+        "SUMMARY is default; FULL explicitly loads content. "
         "Use a stable operation_key for restart/resume. Mutations require expect: dotted JSON "
         "result paths mapped to expected values. "
         "Use plan_id with action=resume/status to reconstruct directly from durable state. "
@@ -23,7 +30,9 @@ registry.register(
         "Returns compact refs, operational ledger and exceptions; never raw item outputs."),
         "parameters": {"type": "object", "properties": {
             "operation_key": {"type": "string"}, "title": {"type": "string"},
-            "plan_id": {"type": "string"}, "action": {"type": "string", "enum": ["execute", "resume", "status"]},
+            "plan_id": {"type": "string"}, "action": {"type": "string", "enum": ["execute", "resume", "status", "contract"]},
+            "recipe_key": {"type": "string"}, "recipe_scope": {"type": "object", "description": "Stable route/host/path_family; no secrets or item IDs."},
+            "preflight": {"type": "array", "maxItems": 8, "items": {"type": "object"}, "description": "Read-only capability probes with expect; run once before cached fan-out."},
             "verbosity": {"type": "string", "enum": ["minimal", "summary", "full"]},
             "kind": {"type": "string", "enum": ["batch", "browser_transaction", "prompt_queue"]},
             "items": {"type": "array", "items": {"type": "object"}},
@@ -32,6 +41,7 @@ registry.register(
             "finalize_steps": {"type": "array", "items": {"type": "object"}, "description": "Durable fan-in after all items complete; $items_ref contains item result refs."},
             "steps": {"type": "array", "items": {"type": "object", "properties": {
                 "id": {"type": "string"}, "depends_on": {"type": "array", "items": {"type": "string"}},
+                "verifies": {"type": "array", "items": {"type": "string"}, "description": "A read/discovery step with expect proves these mutation IDs."},
                 "tool": {"type": "string"}, "args": {"type": "object"}, "expect": {"type": "object"},
                 "wait": {"type": "object", "properties": {
                     "timeout_seconds": {"type": "number"}, "interval_seconds": {"type": "number"},
@@ -40,5 +50,5 @@ registry.register(
             "constraints": {"type": "object", "properties": {
                 "allowed_routes": {"type": "array", "items": {"type": "string"}},
                 "forbidden_routes": {"type": "array", "items": {"type": "string"}}}},
-        }, "anyOf": [{"required": ["operation_key", "steps"]}, {"required": ["plan_id"]}]}},
+        }, "anyOf": [{"required": ["operation_key", "steps"]}, {"required": ["recipe_key"]}, {"required": ["plan_id"]}, {"properties": {"action": {"const": "contract"}}, "required": ["action"]}]}},
 )

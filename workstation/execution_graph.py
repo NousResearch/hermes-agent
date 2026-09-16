@@ -16,6 +16,9 @@ def prepare_graph(request):
             if not isinstance(step_id, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", step_id) or step_id in nodes:
                 raise ValueError("Graph IDs must be valid and unique")
             step["id"] = step_id
+            verifies = step.get("verifies", [])
+            if not isinstance(verifies, list) or any(not isinstance(v, str) for v in verifies):
+                raise ValueError("Invalid verifier relationship")
             deps = step.get("depends_on", [])
             if not isinstance(deps, list) or any(not isinstance(d, str) for d in deps):
                 raise ValueError("Invalid graph dependencies")
@@ -35,9 +38,16 @@ def prepare_graph(request):
                     return sum((references(v) for v in value), [])
                 return []
             refs = references(step.get("args", {})) + references(step.get("expect", {}))
-            step["depends_on"] = sorted(set(deps + [r[1] for r in refs]))
+            step["depends_on"] = sorted(set(deps + verifies + [r[1] for r in refs]))
             nodes[step_id] = (phase, step, refs)
     for step_id, (phase, step, refs) in nodes.items():
+        if step.get("verifies"):
+            from tools.effects import READ_EFFECTS, WRITE_EFFECTS, tool_effect
+            if tool_effect(step["tool"]) not in READ_EFFECTS or not step.get("expect"):
+                raise ValueError("External verifier requires read/discovery effect and expect")
+            for target in step["verifies"]:
+                if target not in nodes or nodes[target][0] != phase or tool_effect(nodes[target][1]["tool"]) not in WRITE_EFFECTS:
+                    raise ValueError("Verifier must prove an existing mutation in the same phase")
         for dep in step["depends_on"]:
             if dep not in nodes or PHASES.index(nodes[dep][0]) > PHASES.index(phase):
                 raise ValueError("Missing or impossible graph dependency")

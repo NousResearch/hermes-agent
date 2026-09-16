@@ -631,7 +631,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
 
     const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
 
-    if (!isPreserved) {
+    // Membership follows the higher revision (a tie unions, as the publish
+    // merge does). An OLDER projection never unions: a room-side roster edit
+    // bumps the local revision precisely so a lagging mirror cannot re-seat
+    // the member it just removed.
+    if (!isPreserved && remoteRevision >= localRevision) {
       if (remoteRevision > localRevision) {
         members.clear()
       }

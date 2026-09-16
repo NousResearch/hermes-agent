@@ -1,7 +1,10 @@
 /**
  * Membership editing for an EXISTING group room (#91329, #110736): the
- * room-side "Manage members" picker and the save it performs. Split out of
- * group-chat-view.tsx (the room surface facade) as a topical sibling.
+ * room-side "Manage members" picker, the per-Bot "Manage groups" toggle, and
+ * the one write both doors share. The room reads membership from two places —
+ * each local Bot's `groups[]` metadata and the room record's durable member
+ * descriptors — so every edit rewrites both, or the removed Bot keeps its seat
+ * through whichever source the edit skipped.
  */
 
 import {
@@ -21,11 +24,58 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 
 import { $botMeta, $lastRoster, botHandle, botRosterKey, saveBotMeta } from './data'
-import { GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
-import { botGroups, durableGroupChatMembers, groupMembershipPatch } from './group-membership'
+import { $groupChats, GROUP_CHAT_MAX_MEMBERS, updateGroupChat } from './group-chat'
+import type { GroupChatRoom } from './group-chat'
+import {
+  botGroups,
+  durableGroupChatMembers,
+  groupChatMemberBots,
+  groupMemberKey,
+  groupMembershipPatch,
+  groupSessionMemberKey
+} from './group-membership'
+import { harvestStrandedGroupReply } from './group-turns'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
 import type { BotMeta, RosterRow } from './types'
+
+/** Rewrite the room record for a new seat list. Removed members lose their
+ *  per-member room state (sticky hold, stranded marker, thread sessions and
+ *  watermarks) so a later re-add starts clean instead of stop-held; a
+ *  stranded reply is harvested first so finished work is not lost. The
+ *  roster write bumps the room's sync revision: the gateway mirror unions
+ *  members on a revision tie, so an unbumped save would let the very next
+ *  poll seat the removed Bot again. */
+async function commitGroupChatRoster(group: string, previous: RosterRow[], seated: RosterRow[]) {
+  const kept = new Set(seated.map(botRosterKey))
+  const removed = previous.filter(member => !kept.has(botRosterKey(member)))
+
+  for (const member of removed) {
+    await harvestStrandedGroupReply(group, member)
+  }
+
+  // Local members are keyed by bare name, stored descriptors by roster key;
+  // the same Bot may own state under either, so drop both spellings.
+  const gone = new Set(removed.flatMap(member => [groupMemberKey(member), botRosterKey(member), member.name]))
+
+  const without = <T,>(record: Record<string, T> | undefined, memberOf: (key: string) => string) =>
+    Object.fromEntries(Object.entries(record || {}).filter(([key]) => !gone.has(memberOf(key))))
+
+  // Watermarks are `<thread>::<memberKey>` (group-round-members); the member
+  // key may itself carry a `::`, so split at the first one only.
+  const watermarkMember = (key: string) => (key.includes('::') ? key.slice(key.indexOf('::') + 2) : key)
+
+  updateGroupChat(group, (room: GroupChatRoom) => ({
+    ...room,
+    members: durableGroupChatMembers(seated),
+    holds: without(room.holds, key => key),
+    stranded: without(room.stranded, key => key),
+    sessions: without(room.sessions, groupSessionMemberKey),
+    sessionOwners: without(room.sessionOwners, groupSessionMemberKey),
+    watermarks: without(room.watermarks, watermarkMember),
+    syncRevision: Math.max(0, Number(room.syncRevision || 0)) + 1
+  }))
+}
 
 /** Persist the room-side member picker result.  Stored descriptors are the
  * source of truth for remote Bots; local metadata remains a compatibility
@@ -40,6 +90,7 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
   // identity rather than accidentally seating its local namesake too.
   const selectedKeys = new Set(selected.map(botRosterKey))
   const meta = $botMeta.get()
+  const previous = groupChatMemberBots(group, $lastRoster.get(), meta)
 
   for (const bot of $lastRoster.get().filter(bot => !bot.remoteSource)) {
     const enabled = selectedKeys.has(botRosterKey(bot))
@@ -50,7 +101,26 @@ export async function setGroupChatMembers(group: string, selected: RosterRow[]) 
     }
   }
 
-  updateGroupChat(group, room => ({ ...room, members: durableGroupChatMembers(selected) }))
+  await commitGroupChatRoster(group, previous, selected)
+}
+
+/** The per-Bot door ("Manage groups"): toggle ONE Bot's seat in a room. Writes
+ *  the Bot's `groups[]` metadata and the room's stored descriptors together —
+ *  unchecking a Bot here used to leave its stored descriptor behind, so the
+ *  room still gave it a turn (#91329). */
+export async function setGroupMembership(bot: RosterRow, group: string, enabled: boolean) {
+  const previous = groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
+  await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, $botMeta.get()), group, enabled))
+
+  if (!$groupChats.get()[group]) {
+    // Metadata-only group (never opened as a room): no stored seats to reconcile.
+    return
+  }
+
+  const key = botRosterKey(bot)
+  const others = previous.filter(member => botRosterKey(member) !== key)
+
+  await commitGroupChatRoster(group, previous, enabled ? [...others, bot] : others)
 }
 
 interface GroupMemberPickerProps {
@@ -165,4 +235,3 @@ export function GroupMemberPicker({ group, members, open, onClose }: GroupMember
     </Dialog>
   )
 }
-

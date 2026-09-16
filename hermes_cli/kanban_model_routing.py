@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import Optional
 
 from agent.model_selection import select
-from agent.model_selection_guard import managed_child_kwargs
-from agent.model_selection_store import get_active_policy, persist_receipt
+from agent.model_selection_guard import managed_child_kwargs, validate_actual_route
+from agent.model_selection_store import get_active_policy, get_receipt, persist_receipt
 from agent.model_selection_types import RoutingBlocked
 
 _POLICY_ID = "kanban-default"
@@ -71,4 +71,44 @@ def resolve_task_route(
     from hermes_cli.kanban_db import set_routing_receipt
 
     set_routing_receipt(conn, task.id, receipt_id)
-    return managed_child_kwargs(decision)
+    kwargs = managed_child_kwargs(decision)
+    # The worker process cannot re-run select(); it validates its own
+    # actually-constructed route against this SAME receipted decision right
+    # before its first inference (see ``enforce_worker_route`` below). Carried
+    # through the dispatcher's env, never re-derived.
+    kwargs["receipt_id"] = receipt_id
+    return kwargs
+
+
+def enforce_worker_route(
+    hermes_home,
+    receipt_id: str,
+    *,
+    actual_provider: str,
+    actual_model: str,
+    actual_endpoint: Optional[str],
+    actual_reasoning: Optional[str],
+) -> None:
+    """The worker-side half of the guard (design §4 step 7, §12 "Claim/start/crash
+    sequence" step 5): called from the actual Kanban worker process immediately
+    before its first real inference, with the actually-constructed
+    provider/model/endpoint/reasoning. Loads the SAME receipt the dispatcher
+    persisted at claim time and raises ``RoutingBlocked`` on any divergence
+    (revoked/stale decision, a code path that silently substituted a different
+    route, etc.) — the worker must stop before sending task content, never
+    silently fall back to whatever it was actually constructed with.
+    """
+    decision = get_receipt(hermes_home, receipt_id)
+    if decision is None:
+        raise RoutingBlocked(
+            "stale_or_revoked_decision",
+            f"no routing receipt found for id={receipt_id!r}; the decision this worker "
+            "was claimed under is missing or was never persisted",
+        )
+    validate_actual_route(
+        decision,
+        actual_provider=actual_provider,
+        actual_model=actual_model,
+        actual_endpoint=actual_endpoint,
+        actual_reasoning=actual_reasoning,
+    )

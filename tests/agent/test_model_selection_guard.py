@@ -34,9 +34,11 @@ def test_mismatched_provider_or_model_blocks_before_send():
     from agent.model_selection_guard import validate_actual_route
 
     with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
-        validate_actual_route(_decision(), actual_provider="anthropic", actual_model="gpt-x")
+        validate_actual_route(_decision(), actual_provider="anthropic", actual_model="gpt-x",
+                               actual_endpoint="https://api.openai.com/v1", actual_reasoning="high")
     with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
-        validate_actual_route(_decision(), actual_provider="openai", actual_model="other-model")
+        validate_actual_route(_decision(), actual_provider="openai", actual_model="other-model",
+                               actual_endpoint="https://api.openai.com/v1", actual_reasoning="high")
 
 
 def test_mismatched_reasoning_blocks():
@@ -44,7 +46,7 @@ def test_mismatched_reasoning_blocks():
 
     with pytest.raises(RoutingBlocked, match="reasoning_unsupported"):
         validate_actual_route(_decision(), actual_provider="openai", actual_model="gpt-x",
-                               actual_reasoning="low")
+                               actual_endpoint="https://api.openai.com/v1", actual_reasoning="low")
 
 
 def test_managed_child_kwargs_is_exact_route_no_inherited_fallback():

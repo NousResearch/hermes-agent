@@ -1,0 +1,378 @@
+"""Real Kanban worker launch integration evidence (parent-flagged acceptance
+gap): the guard tests in ``test_kanban_worker_route_enforcement.py`` call
+``enforce_worker_route`` directly with hand-supplied ``actual_*`` fields.
+That proves the guard function's own logic, but NOT that a genuinely
+spawned Kanban worker process — going through ``hermes_cli.main`` argv
+parsing, ``cli.py``'s single-query bootstrap, and its real first
+inference call — actually reaches (or is actually blocked by)
+``_enforce_kanban_routing_receipt`` at the location cli.py wires it in.
+
+This test launches a REAL ``python -m hermes_cli.main -p <profile> --provider
+custom-fake --model fake-model chat -q ... -Q`` subprocess (the exact argv
+shape ``hermes_cli/kanban_db_dispatch.py::_worker_argv`` builds), pointed at
+a local fake OpenAI-compatible HTTP server via a ``custom_providers`` config
+entry, with ``HERMES_KANBAN_ROUTING_RECEIPT`` set in the child's env exactly
+as ``_default_spawn`` sets it. No guard helper is called directly; only the
+receipt is pre-persisted (equivalent of the dispatcher's claim-time
+``resolve_task_route``) and the child process's own inference call (or
+non-call) is observed.
+
+Cases:
+  * matched route -> worker's first inference call actually reaches the
+    fake endpoint (non-zero requests recorded, request content is exactly
+    the expected task text — no other content leaked).
+  * mismatched/missing receipt -> worker exits non-zero BEFORE any request
+    reaches the fake endpoint (zero requests recorded) -- proves fail-closed
+    at the real subprocess boundary, not just in the guard's return value.
+  * profile A / profile B scope (A-B-A): each profile's own
+    model_routing.db receipt is found by that profile's own worker; a
+    worker launched under the wrong profile's HERMES_HOME never
+    reads or matches the other profile's receipt.
+
+Isolated: everything under tmp_path; the fake server binds 127.0.0.1:0
+(ephemeral loopback port only); no external network, no paid inference.
+"""
+from __future__ import annotations
+
+import http.server
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class _CapturingHandler(http.server.BaseHTTPRequestHandler):
+    """Records every chat-completions request body it receives (the actual
+    first-inference call); always answers a minimal valid response so the
+    worker's turn completes. Non-chat GET/POST paths (model-list/model-show
+    probes some transports issue before the real inference call) get a
+    harmless canned reply and are NOT counted as "requests" for the
+    fail-closed assertions — only a real chat/completions call counts as
+    task content actually reaching the endpoint."""
+
+    requests: list  # class-level, set per-server by the fixture
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length) if length else b""
+        try:
+            parsed = json.loads(body.decode("utf-8")) if body else {}
+        except Exception:
+            parsed = {"_raw": body.decode("utf-8", "replace")}
+        if not self.path.rstrip("/").endswith("chat/completions"):
+            resp = json.dumps({"ok": True}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+            return
+        type(self).requests.append(parsed)
+        model = parsed.get("model", "fake-model")
+        stream = bool(parsed.get("stream"))
+        if stream:
+            chunk1 = json.dumps({
+                "id": "chatcmpl-fake", "object": "chat.completion.chunk", "created": 0,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "ack"}, "finish_reason": None}],
+            })
+            chunk2 = json.dumps({
+                "id": "chatcmpl-fake", "object": "chat.completion.chunk", "created": 0,
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
+            body_out = (f"data: {chunk1}\n\n" f"data: {chunk2}\n\n" "data: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body_out)))
+            self.end_headers()
+            self.wfile.write(body_out)
+            return
+        resp = json.dumps({
+            "id": "chatcmpl-fake", "object": "chat.completion", "created": 0,
+            "model": model,
+            "choices": [{
+                "index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ack"},
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+
+    def do_GET(self):
+        # Model-list/show discovery probes (/v1/models, /api/v1/models, ...) —
+        # harmless canned reply; never counted toward the fail-closed assertions.
+        resp = json.dumps({"data": [{"id": "fake-model"}, {"id": "fake-model-a"}, {"id": "fake-model-b"}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(resp)))
+        self.end_headers()
+        self.wfile.write(resp)
+
+    def log_message(self, *a):
+        pass
+
+
+def _start_fake_server():
+    """A fresh handler subclass per server so ``requests`` never leaks
+    between tests / profiles (A-B-A isolation of what the FIXTURE
+    records, independent of the routing isolation under test)."""
+    handler_cls = type("Handler", (_CapturingHandler,), {"requests": []})
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, handler_cls
+
+
+def _write_profile_home(home: Path, base_url: str, model: str, provider_name: str):
+    """A minimal real Hermes profile root: config.yaml with a custom_providers
+    entry pointed at the fake server, plus the on-disk shape resolve_profile_env
+    expects for a named profile (parent dir literally named ``profiles``)."""
+    home.mkdir(parents=True, exist_ok=True)
+    config = {
+        "model": {"default": model, "provider": provider_name},
+        "security": {"tirith_enabled": False},
+        "custom_providers": [{
+            "name": provider_name,
+            "base_url": base_url,
+            "api_key": "fake-test-key-not-real",
+            "api_mode": "chat_completions",
+            "models": [model],
+        }],
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+
+
+def _persist_receipt(hermes_home: Path, *, provider: str, model: str, endpoint: str,
+                      reasoning: str = "high", execution_id: str = "t_worker_cli_it"):
+    from agent.model_selection import select
+    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
+
+    policy = {
+        "schema_version": 1, "policy_id": "kanban-default", "revision": 1,
+        "approval_ref": "operator:test",
+        "routes": [{
+            "route_id": "fake-route", "route_revision": 1, "provider": provider,
+            "model": model, "endpoint": endpoint, "maker": "test",
+            "model_family": model, "status": "approved", "allowed_roles": ["builder"],
+            "capabilities": [], "verified_input_budget": 200000,
+            "allowed_reasoning": ["low", "medium", "high"],
+            "qualifications": ["shallow", "deep"], "assessment": "reviewed", "evidence": {},
+        }],
+        "rankings": {"builder": {"deep": ["fake-route"], "shallow": ["fake-route"]}},
+    }
+    requirements = {
+        "schema_version": 1, "role": "builder", "execution_kind": "kanban",
+        "execution_id": execution_id, "attempt_id": "1", "slot_id": "",
+        "task_class": "cross-component", "required_capabilities": [],
+        "input_tokens": 0, "reserve_tokens": 0, "reasoning": reasoning,
+        "provenance": {"frozen_sha": "deadbeef", "verified_by": "test",
+                       "complete": True, "contributors": []},
+    }
+    record = publish_policy(hermes_home, policy, approval_ref="operator:test")
+    activate_policy(hermes_home, "kanban-default", record["revision"])
+    decision = select(requirements, policy, {}, now=1000)
+    return persist_receipt(hermes_home, decision)
+
+
+def _worker_python() -> str:
+    """The real interpreter this worktree's tests actually run under (mirrors
+    ``hermes_cli.kanban_db_dispatch._module_hermes_argv``'s ``sys.executable``
+    fallback for shim-less launch environments) — never the bare system
+    ``python3``, which may be an unrelated interpreter without this repo's
+    deps installed (see ``.hermes/pinned_python.py``)."""
+    venv_python = REPO_ROOT.parent.parent / "venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
+def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: str,
+                 query: str, reasoning: str = "high", timeout: float = 60.0):
+    """Launches the REAL CLI entry point exactly as
+    ``hermes_cli.kanban_db_dispatch._worker_argv``/``_resolve_hermes_argv``
+    would (module form, since no ``hermes`` console script is guaranteed on
+    PATH inside a test sandbox) with the SAME env vars
+    ``_default_spawn`` sets for a managed task."""
+    env = dict(os.environ)
+    for k in list(env):
+        if k.startswith("HERMES_") and k not in ("HERMES_HOME",):
+            env.pop(k, None)
+    env["HERMES_HOME"] = str(profile_home)
+    env["HERMES_KANBAN_ROUTING_RECEIPT"] = receipt_id
+    env["HERMES_SESSION_SOURCE"] = "kanban"
+    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    env["HERMES_SINGLE_QUERY_SESSION"] = "1"
+    argv = [
+        _worker_python(), "-m", "hermes_cli.main",
+        "--provider", provider, "-m", model, "--reasoning", reasoning,
+        "chat", "-q", query, "-Q",
+    ]
+    proc = subprocess.run(
+        argv, cwd=str(REPO_ROOT), env=env,
+        capture_output=True, text=True, timeout=timeout,
+    )
+    return proc
+
+
+@pytest.fixture
+def fake_server():
+    server, handler_cls = _start_fake_server()
+    try:
+        yield server, handler_cls
+    finally:
+        server.shutdown()
+
+
+# ── matched route: the real worker's first inference actually lands ─────────
+
+def test_matched_route_reaches_fake_endpoint_with_only_task_content(tmp_path, fake_server):
+    server, handler_cls = fake_server
+    port = server.server_address[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+    home = tmp_path / "profileA" / ".hermes"
+    _write_profile_home(home, base_url, "fake-model", "custom-fake")
+    receipt_id = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=base_url)
+
+    proc = _run_worker(
+        profile_home=home, provider="custom-fake", model="fake-model",
+        receipt_id=receipt_id, query="what is 2+2, answer in one word",
+    )
+
+    assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    assert len(handler_cls.requests) >= 1, (
+        "matched route must actually reach the fake endpoint's first inference call "
+        f"(stdout={proc.stdout!r} stderr={proc.stderr!r})"
+    )
+    sent = handler_cls.requests[0]
+    assert sent.get("model") == "fake-model"
+    all_text = json.dumps(sent)
+    assert "2+2" in all_text
+    # only the one allowed task's content — no stray leaked content from another route
+    assert "guided-routing enforcement blocked" not in (proc.stdout + proc.stderr)
+
+
+# ── mismatched/missing receipt: ZERO content ever reaches the endpoint ──────
+
+def test_missing_receipt_sends_zero_requests_and_fails_closed(tmp_path, fake_server):
+    server, handler_cls = fake_server
+    port = server.server_address[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+    home = tmp_path / "profileA" / ".hermes"
+    _write_profile_home(home, base_url, "fake-model", "custom-fake")
+    # No receipt persisted at all -> get_receipt() returns None -> RoutingBlocked.
+    proc = _run_worker(
+        profile_home=home, provider="custom-fake", model="fake-model",
+        receipt_id="rr_never_persisted", query="do not send this content",
+    )
+
+    assert proc.returncode != 0, "a worker with no valid receipt must exit non-zero, not silently succeed"
+    assert handler_cls.requests == [], (
+        "a worker whose route enforcement fails must send ZERO requests to the endpoint — "
+        f"got {handler_cls.requests!r}"
+    )
+    assert "do not send this content" not in json.dumps(handler_cls.requests)
+
+
+def test_actual_model_diverging_from_receipt_sends_zero_requests(tmp_path, fake_server):
+    """The receipted decision says fake-model-a; the worker is actually
+    launched (argv-level) with a different model -- must block before any
+    request is sent, exactly like a code path that silently substituted a
+    different route."""
+    server, handler_cls = fake_server
+    port = server.server_address[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+    home = tmp_path / "profileA" / ".hermes"
+    _write_profile_home(home, base_url, "fake-model-a", "custom-fake")
+    # also register the divergent model so the CLI can construct it at all
+    cfg_path = home / "config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text())
+    cfg["custom_providers"][0]["models"] = ["fake-model-a", "fake-model-b"]
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    receipt_id = _persist_receipt(
+        home, provider="custom-fake", model="fake-model-a", endpoint=base_url,
+    )
+    proc = _run_worker(
+        profile_home=home, provider="custom-fake", model="fake-model-b",  # diverges
+        receipt_id=receipt_id, query="secret task content",
+    )
+
+    assert proc.returncode != 0
+    assert handler_cls.requests == [], (
+        f"a divergent actual model must block before sending — got {handler_cls.requests!r}"
+    )
+
+
+# ── A-B-A profile scope: each worker only ever finds its own receipt ────────
+
+def test_profile_a_and_b_workers_only_find_their_own_receipt(tmp_path, fake_server):
+    server, handler_cls = fake_server
+    port = server.server_address[1]
+    base_url = f"http://127.0.0.1:{port}/v1"
+
+    home_a = tmp_path / "profileA" / ".hermes"
+    home_b = tmp_path / "profileB" / ".hermes"
+    _write_profile_home(home_a, base_url, "fake-model", "custom-fake")
+    _write_profile_home(home_b, base_url, "fake-model", "custom-fake")
+
+    receipt_a = _persist_receipt(home_a, provider="custom-fake", model="fake-model", endpoint=base_url,
+                                  execution_id="t_worker_cli_it_a")
+    receipt_b = _persist_receipt(home_b, provider="custom-fake", model="fake-model", endpoint=base_url,
+                                  execution_id="t_worker_cli_it_b")
+    assert receipt_a != receipt_b
+
+    # A's own worker, A's own receipt -> succeeds (origin-owned receipt found).
+    proc_a1 = _run_worker(
+        profile_home=home_a, provider="custom-fake", model="fake-model",
+        receipt_id=receipt_a, query="A origin task",
+    )
+    assert proc_a1.returncode == 0, f"stdout={proc_a1.stdout!r} stderr={proc_a1.stderr!r}"
+    n_after_a1 = len(handler_cls.requests)
+    assert n_after_a1 >= 1
+    assert any("A origin task" in json.dumps(r) for r in handler_cls.requests)
+
+    # B's worker handed A's receipt id -> B's model_routing.db has no such row
+    # -> must fail closed, never consult / reuse A's DB.
+    proc_b_with_a_receipt = _run_worker(
+        profile_home=home_b, provider="custom-fake", model="fake-model",
+        receipt_id=receipt_a, query="B must not use A receipt",
+    )
+    assert proc_b_with_a_receipt.returncode != 0
+    assert len(handler_cls.requests) == n_after_a1, (
+        "profile B worker must not find/consult profile A's receipt store"
+    )
+
+    # Back to A again with a fresh, still-A-owned receipt -> succeeds again
+    # (A-B-A: A's own scope is unaffected by the intervening B attempt). A worker
+    # turn may also fire an auxiliary session-title-generation call, so assert on
+    # the task content actually landing rather than an exact request count.
+    proc_a2 = _run_worker(
+        profile_home=home_a, provider="custom-fake", model="fake-model",
+        receipt_id=receipt_a, query="A origin task again",
+    )
+    assert proc_a2.returncode == 0, f"stdout={proc_a2.stdout!r} stderr={proc_a2.stderr!r}"
+    assert len(handler_cls.requests) > n_after_a1
+    assert any("A origin task again" in json.dumps(r) for r in handler_cls.requests[n_after_a1:])
+    n_after_a2 = len(handler_cls.requests)
+
+    # And B's own receipt still resolves fine under B.
+    proc_b_own = _run_worker(
+        profile_home=home_b, provider="custom-fake", model="fake-model",
+        receipt_id=receipt_b, query="B origin task",
+    )
+    assert proc_b_own.returncode == 0, f"stdout={proc_b_own.stdout!r} stderr={proc_b_own.stderr!r}"
+    assert any("B origin task" in json.dumps(r) for r in handler_cls.requests[n_after_a2:])

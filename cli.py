@@ -4235,6 +4235,56 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
         return _text_fallback()
 
 
+def _enforce_kanban_routing_receipt(cli) -> bool:
+    """Worker-side guided-routing enforcement (design §4 step 7, §12): a managed
+    Kanban task carries ``HERMES_KANBAN_ROUTING_RECEIPT`` — the receipted
+    decision the dispatcher resolved and persisted at claim time. This is the
+    LAST checkpoint before the worker's first real inference call: it loads
+    that exact receipt and validates the agent's actually-constructed
+    provider/model/reasoning against it, raising (and refusing to proceed)
+    on any divergence — a code path that silently substituted a different
+    route than the one the dispatcher/policy actually authorized never
+    reaches the model. A non-managed task (no receipt id in the env) is a
+    complete no-op: True, unchanged behavior.
+    """
+    receipt_id = os.environ.get("HERMES_KANBAN_ROUTING_RECEIPT", "").strip()
+    if not receipt_id:
+        return True
+    from agent.model_selection_types import RoutingBlocked
+    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from hermes_constants import get_hermes_home
+
+    agent = cli.agent
+    # NOTE: agent.provider is canonicalized transport family (e.g. "custom" for
+    # every named custom_providers entry); agent.requested_provider preserves the
+    # actually-resolved provider identity (e.g. "custom-fake") the receipt was
+    # written against. Comparing agent.provider here made every custom-provider
+    # worker mismatch its own correctly-selected route (RED, discovered via a
+    # real CLI subprocess launch — see test_kanban_worker_cli_route_enforcement_integration.py).
+    actual_provider = (getattr(agent, "requested_provider", "") or agent.provider or "").strip()
+    try:
+        enforce_worker_route(
+            get_hermes_home(), receipt_id,
+            actual_provider=actual_provider,
+            actual_model=(agent.model or "").strip(),
+            actual_endpoint=(getattr(agent, "base_url", None) or None),
+            actual_reasoning=requested_effort_for_kanban_guard(cli),
+        )
+    except RoutingBlocked as exc:
+        logger.error("guided-routing enforcement blocked this Kanban worker: %s", exc)
+        return False
+    return True
+
+
+def requested_effort_for_kanban_guard(cli) -> Optional[str]:
+    """The reasoning effort actually wired into this turn's request, in the
+    same vocabulary ``resolve_task_route`` receipted (see
+    ``agent.reasoning_effort.requested_effort``)."""
+    from agent.reasoning_effort import requested_effort
+
+    return requested_effort(getattr(cli, "reasoning_config", None))
+
+
 def _collect_kanban_task_images(single_query_images):
     """Kanban workers: image paths/URLs in the task body join the first turn's attachments."""
     single_query_image_urls: list[str] = []
@@ -4513,6 +4563,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
+                    if not _enforce_kanban_routing_receipt(cli):
+                        if emitter is not None:
+                            emitter.emit_result(
+                                {"failed": True, "error": "guided-routing enforcement blocked this worker"},
+                                session_id=cli.session_id or "", exit_code=1)
+                        sys.exit(1)
                     _configure_quiet_agent(cli.agent)
                     if emitter is not None:
                         emitter.attach(cli.agent)

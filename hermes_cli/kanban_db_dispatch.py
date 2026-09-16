@@ -1670,6 +1670,12 @@ def _dispatch_lane_task(
             claimed.provider_override = kwargs["provider"]
             claimed.model_override = kwargs["model"]
             claimed.reasoning_effort = kwargs["reasoning_effort"]
+            # In-memory mirror of what set_routing_receipt() already persisted:
+            # the worker's env is built from THIS claimed object a few lines down
+            # (_default_spawn -> env["HERMES_KANBAN_ROUTING_RECEIPT"]), so the
+            # receipt id must be visible here even though the row read that
+            # populated `claimed` predates the receipt write.
+            claimed.routing_receipt_id = kwargs["receipt_id"]
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -2358,6 +2364,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    if getattr(task, "routing_receipt_id", None):
+        # Guided-routing worker-side enforcement (design §4 step 7, §12): the
+        # ONLY way the worker process learns which receipted decision it was
+        # claimed under. cli.py's first-inference boundary loads this receipt
+        # and validates its own actually-constructed route against it before
+        # sending any task content — never re-derives/re-selects a route.
+        env["HERMES_KANBAN_ROUTING_RECEIPT"] = task.routing_receipt_id
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

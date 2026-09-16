@@ -21,12 +21,18 @@ def validate_actual_route(
     *,
     actual_provider: str,
     actual_model: str,
-    actual_endpoint: Optional[str] = None,
-    actual_reasoning: Optional[str] = None,
+    actual_endpoint: Optional[str],
+    actual_reasoning: Optional[str],
 ) -> None:
     """Raise RoutingBlocked if the actually-constructed route/reasoning does
     not match the receipted decision. Called at the last possible moment
     before content transmission (§12 "Claim/start/crash sequence" step 5).
+
+    ``actual_endpoint``/``actual_reasoning`` are REQUIRED keyword args (no
+    default) so a call site cannot omit them and silently skip that half of
+    the check; pass ``None`` explicitly when the caller genuinely has no
+    endpoint/reasoning concept -- the check still enforces whenever the
+    receipted decision specifies one.
     """
     selected = decision["selected"]
     if actual_provider != selected["provider"] or actual_model != selected["model"]:
@@ -36,14 +42,14 @@ def validate_actual_route(
             f"does not match receipted selection provider={selected['provider']!r} "
             f"model={selected['model']!r}",
         )
-    if actual_endpoint is not None and selected.get("endpoint") and actual_endpoint != selected["endpoint"]:
+    if selected.get("endpoint") and actual_endpoint != selected["endpoint"]:
         raise RoutingBlocked(
             "stale_or_revoked_decision",
             f"constructed endpoint {actual_endpoint!r} does not match receipted "
             f"endpoint {selected['endpoint']!r}",
         )
     expected_reasoning = decision["requirements"].get("reasoning")
-    if actual_reasoning is not None and expected_reasoning and actual_reasoning != expected_reasoning:
+    if expected_reasoning and actual_reasoning != expected_reasoning:
         raise RoutingBlocked(
             "reasoning_unsupported",
             f"constructed reasoning {actual_reasoning!r} does not match receipted "

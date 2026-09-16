@@ -456,6 +456,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._telegram_typing_cooldown_until: Dict[str, float] = {}
         self._telegram_typing_cooldown_seconds: float = self._coerce_float_extra(
             "typing_cooldown_seconds", 30.0, min_value=1.0, max_value=300.0)
+        # Post-send typing re-arm: scheduled, deduped and rate-limited per chat. Awaiting a
+        # sendChatAction round-trip on the send path shares the loop with the getUpdates long-polls,
+        # and under concurrent streaming it starved them until they rotted into CLOSE-WAIT (#111727).
+        self._telegram_typing_retrigger_tasks: Dict[str, asyncio.Task] = {}
+        self._telegram_typing_retrigger_at: Dict[str, float] = {}
+        # Telegram's bubble lasts ~5s and _keep_typing already refreshes every 2s, so the re-arm only
+        # has to cover the gap left by a landed message. 0 restores a call per intermediate send.
+        self._telegram_typing_retrigger_interval: float = self._coerce_float_extra(
+            "typing_retrigger_min_interval_seconds", 2.0, min_value=0.0, max_value=30.0)
         # Buffer album/photo bursts into a single MessageEvent instead of self-interrupting turns.
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
         self._pending_photo_batches: Dict[str, MessageEvent] = {}
@@ -3385,11 +3394,42 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _retrigger_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> None:
         """Re-arm typing after an intermediate send (Telegram clears it when a message lands). Skipped on
-        the FINAL reply (``metadata["notify"]``): the refresh loop is gone and no API cancels the bubble."""
-        if (metadata or {}).get("notify"):
+        the FINAL reply (``metadata["notify"]``): the refresh loop is gone and no API cancels the bubble.
+
+        Scheduled, never awaited: ``sendChatAction`` is a fire-and-forget UI hint, and awaiting its TLS
+        round-trip on the send path after *every* streamed chunk pinned the event loop the ``getUpdates``
+        long-polls live on until they rotted into CLOSE-WAIT while the adapter still reported connected
+        (#111727). ``_keep_typing`` already refreshes every 2s, so one in-flight re-arm per chat, at most
+        one per ``typing_retrigger_min_interval_seconds``, covers the gap a landed message leaves."""
+        if (metadata or {}).get("notify") or not getattr(getattr(self, "config", None), "typing_indicator", True):
             return
-        with contextlib.suppress(Exception):
-            await self.send_typing(chat_id, metadata=metadata)
+        # __dict__.setdefault: tests build adapters via object.__new__() (no __init__).
+        tasks: Dict[str, asyncio.Task] = self.__dict__.setdefault("_telegram_typing_retrigger_tasks", {})
+        sent_at: Dict[str, float] = self.__dict__.setdefault("_telegram_typing_retrigger_at", {})
+        key = str(chat_id)
+        in_flight = tasks.get(key)
+        if in_flight is not None and not in_flight.done():
+            return
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        # Stamped at scheduling time, not completion, so a burst of chunks cannot all pass while the
+        # first round-trip is still open.
+        if now - sent_at.get(key, float("-inf")) < getattr(self, "_telegram_typing_retrigger_interval", 2.0):
+            return
+        sent_at[key] = now
+
+        async def _quiet() -> None:
+            with contextlib.suppress(Exception):
+                await self.send_typing(chat_id, metadata=metadata)
+
+        task = loop.create_task(_quiet())
+        tasks[key] = task
+        task.add_done_callback(lambda done: tasks.get(key) is done and tasks.pop(key, None))
+        # Shutdown cancels _background_tasks, so a detached re-arm cannot outlive the adapter.
+        tracked = getattr(self, "_background_tasks", None)
+        if isinstance(tracked, set):
+            tracked.add(task)
+            task.add_done_callback(tracked.discard)
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:

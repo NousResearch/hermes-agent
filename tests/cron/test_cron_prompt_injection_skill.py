@@ -393,3 +393,17 @@ class TestScriptOutputNotStrictScanned:
         assert "\u200b" not in prompt
         assert "item oneitem two" in prompt
 
+
+class TestMonitorOutputIsRuntimeData:
+    """Monitor context is runtime data, not part of the stored user prompt (#111523).
+    The positive case (bidi data sanitized, job runs) lives in tests/cron/test_monitor_kind.py
+    through the real run_job path; this pins the control: the operator's own prompt stays strict."""
+
+    def test_stored_user_prompt_remains_strict_with_monitor_data(self, cron_env):
+        _, scheduler = cron_env
+        with pytest.raises(scheduler.CronPromptInjectionBlocked) as exc_info:
+            scheduler._build_job_prompt(
+                {"id": "job-monitor", "name": "legacy", "prompt": "normal\u202atext"},
+                runtime_data_prompt="## Monitor Baseline\n\nordinary monitor output",
+            )
+        assert "invisible unicode" in str(exc_info.value)

@@ -1087,7 +1087,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
         requirements = model_tools.check_toolset_requirements()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
-            print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+            agent._safe_print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}", diagnostic=True)
     else:
         print("🛠️  No tools loaded (all tools filtered out or unavailable)")
     if agent.save_trajectories:

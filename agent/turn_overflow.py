@@ -203,9 +203,9 @@ class _Recovery(OverflowVerdict):
         new_tokens = estimate_messages_tokens_rough(messages)
         shrank_tokens = new_tokens > 0 and new_tokens < original_tokens * 0.95
         if len(messages) < original_len:
-            self.agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            self.agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         elif shrank_tokens:
-            self.agent._buffer_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
+            self.agent._buffer_diagnostic_status(COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE.format(before=original_tokens, after=new_tokens))
         return None, len(messages) < original_len or shrank_tokens, new_tokens
 
     def request_tokens(self) -> int:
@@ -252,9 +252,9 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     new_bytes = serialized_messages_bytes(messages)
     if len(messages) < original_len or (new_bytes > 0 and new_bytes < original_bytes * 0.95):
         if len(messages) < original_len:
-            agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
+            agent._buffer_diagnostic_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         else:
-            agent._buffer_status(
+            agent._buffer_diagnostic_status(
                 f"🗜️ Compressed {original_bytes:,} → {new_bytes:,} " f"payload bytes, retrying..."
             )
         time.sleep(2)  # Brief pause between compression retries

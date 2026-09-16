@@ -1535,7 +1535,7 @@ def route_classified_error(
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:
-                agent._buffer_status(
+                agent._buffer_diagnostic_status(
                     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
                         new_ctx=_LONG_CONTEXT_TIER_CAP, old_ctx=old_ctx
                     )

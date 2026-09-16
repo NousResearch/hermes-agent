@@ -110,7 +110,7 @@ def handle_outer_loop_error(
         logger.error(error_msg)
     else:
         try:
-            print(f"❌ {error_msg}")
+            agent._safe_print(f"❌ {error_msg}", diagnostic=True)
         except (OSError, ValueError):
             logger.error(error_msg)
 

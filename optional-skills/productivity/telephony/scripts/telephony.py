@@ -234,6 +234,43 @@ def _parse_twilio_date(value: str | None) -> datetime | None:
         return None
 
 
+def _vapi_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make an HTTP request to Vapi with a curl User-Agent to pass Cloudflare.
+
+    Vapi's Cloudflare WAF blocks Python urllib when requests originate from
+    certain cloud provider ASNs (HTTP 403 / error 1010).  Adding a curl-compatible
+    User-Agent is sufficient to pass through; avoids subprocess overhead.
+    """
+    request_headers = {
+        "User-Agent": "curl/8.1.2",
+        **(headers or {}),
+    }
+    body: bytes | None = None
+    if json_body is not None:
+        body = json.dumps(json_body).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=request_headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = resp.read().decode("utf-8")
+            return json.loads(payload) if payload else {}
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        try:
+            parsed = json.loads(body_text) if body_text else {}
+        except Exception:
+            parsed = {"raw": body_text}
+        raise TelephonyError(f"HTTP {exc.code} from {url}: {parsed or exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise TelephonyError(f"Connection error for {url}: {exc.reason}") from exc
+
+
 def _json_request(
     method: str,
     url: str,
@@ -243,9 +280,13 @@ def _json_request(
     form: dict[str, Any] | None = None,
     json_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Vapi's Cloudflare WAF blocks Python urllib on certain cloud ASNs (error 1010).
+    # Adding a curl User-Agent is sufficient to pass through; avoids subprocess overhead.
+    if url.startswith(VAPI_API_BASE):
+        return _vapi_request(method, url, headers=headers, json_body=json_body)
+
     if params:
-        query = urllib.parse.urlencode(params, doseq=True)
-        url = f"{url}?{query}"
+        url = f"{url}?{urllib.parse.urlencode(params, doseq=True)}"
 
     request_headers = dict(headers or {})
     body: bytes | None = None
@@ -877,6 +918,8 @@ def _vapi_call(
     voice_id: str | None = None,
     first_sentence: str | None = None,
     max_duration: int = 3,
+    end_call_message: str | None = None,
+    end_call_phrases: str | None = None,
 ) -> dict[str, Any]:
     api_key = _vapi_api_key()
     if not api_key:
@@ -920,6 +963,10 @@ def _vapi_call(
     }
     if first_sentence:
         assistant["firstMessage"] = first_sentence
+    if end_call_message:
+        assistant["endCallMessage"] = end_call_message
+    if end_call_phrases:
+        assistant["endCallPhrases"] = [p.strip() for p in end_call_phrases.split(",") if p.strip()]
     payload = _json_request(
         "POST",
         f"{VAPI_API_BASE}/call",
@@ -1221,6 +1268,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--voice", default="")
     p.add_argument("--first-sentence", default="")
     p.add_argument("--max-duration", type=int, default=3)
+    p.add_argument(
+        "--end-call-message", default="",
+        help="Final phrase the AI speaks before hanging up (Vapi only)",
+    )
+    p.add_argument(
+        "--end-call-phrases", default="",
+        help="Comma-separated trigger words that signal the AI to end the call, e.g. 'goodbye,bye,confirmed' (Vapi only)",
+    )
 
     p = sub.add_parser("ai-status", help="Check an AI call status via Bland.ai or Vapi")
     p.add_argument("call_id")
@@ -1301,6 +1356,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
                 voice_id=args.voice or None,
                 first_sentence=args.first_sentence or None,
                 max_duration=args.max_duration,
+                end_call_message=args.end_call_message or None,
+                end_call_phrases=args.end_call_phrases or None,
             )
         if provider == "bland":
             return _bland_call(

@@ -118,6 +118,17 @@ def _summarise_tool_activity(
     files_seen: dict[str, str] = {}  # raw path -> shortened, insertion ordered
     for name, args in reversed(list(tool_calls)):  # reversed so files_seen comes out newest -> oldest
         counter[name] += 1
+        if name == "skill_manage":
+            from tools.skill_manager_batch import iter_recorded_skill_operations
+            for op in iter_recorded_skill_operations(dict(args)):
+                skill = op.get("name")
+                if not isinstance(skill, str) or not skill:
+                    continue
+                path = op.get("file_path") or "SKILL.md"
+                display = f"skills/{skill}/{path}"
+                if display not in files_seen:
+                    files_seen[display] = _shortened_path(display)
+            continue
         path = args.get(_FILE_EDIT_TOOLS[name]) if name in _FILE_EDIT_TOOLS else None
         if isinstance(path, str) and path and path not in files_seen:
             files_seen[path] = _shortened_path(path)

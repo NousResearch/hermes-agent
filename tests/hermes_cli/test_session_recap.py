@@ -60,3 +60,18 @@ def test_escape_sequences_sanitized_in_previews():
     assert "\x07" not in out
     assert "do the thing" in out
     assert "with it" in out
+
+
+def test_action_keyed_skill_manage_lists_touched_file():
+    messages = [
+        _user("update the skill"),
+        _assistant(tool_calls=[_tool_call("skill_manage", {"operations": [{
+            "name": "probe",
+            "write_file": {"file_path": "references/a.md", "content": "x"},
+        }]})]),
+        _tool_result('{"success": true}'),
+    ]
+
+    recap = build_recap(messages)
+
+    assert "skills/probe/references/a.md" in recap.replace("\\", "/")

@@ -623,7 +623,7 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     if is_skill and "results" in data:
         # The requested operations are not evidence of applied writes (approval
         # and atomic rollback can leave all of them unapplied).
-        verbs = {"create": "created", "patch": "patched", "edit": "rewritten",
+        verbs = {"create": "created", "patch": "patched", "rewrite": "rewritten", "edit": "rewritten",
                  "write_file": "written", "remove_file": "removed", "delete": "deleted"}
         results = data.get("results")
         if not data.get("operations_applied") or not isinstance(results, list):

@@ -12,6 +12,8 @@ from acp_adapter.tools import (
     extract_locations,
     get_tool_kind,
     make_tool_call_id,
+    _start_skill_manage,
+    _format_skill_manage_result,
 )
 from acp.schema import (
     FileEditToolCallContent,
@@ -132,6 +134,17 @@ class TestBuildToolTitle:
 
 
 class TestBuildToolStart:
+    def test_action_keyed_skill_manage_start_preserves_patch_diff(self):
+        content = _start_skill_manage({"operations": [{
+            "name": "probe",
+            "patch": {"old_string": "before", "new_string": "after"},
+        }]})
+
+        assert isinstance(content, FileEditToolCallContent)
+        assert content.path == "skills/probe/SKILL.md"
+        assert content.old_text == "before"
+        assert content.new_text == "after"
+
     def test_build_tool_start_for_patch(self):
         """patch start should not duplicate the edit-approval diff."""
         args = {
@@ -197,6 +210,16 @@ class TestBuildToolStart:
 
 
 class TestBuildToolComplete:
+    def test_action_keyed_skill_manage_result_preserves_identity(self):
+        text = _format_skill_manage_result(
+            "skill_manage", {"success": True, "message": "done"},
+            {"operations": [{"name": "probe", "rewrite": {"content": "new"}}]},
+        )
+
+        assert "`rewrite`" in text
+        assert "`probe`" in text
+        assert "`manage`" not in text
+
     def test_build_tool_complete_for_terminal(self):
         """Completed terminal call should include output text."""
         result = build_tool_complete("tc-2", "terminal", "total 42\ndrwxr-xr-x 2 root root 4096 ...")

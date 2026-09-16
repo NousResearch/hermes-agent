@@ -13,11 +13,12 @@ def test_applied_skill_operations_notify_with_names(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     name = "notify-contract"
     content = f"---\nname: {name}\ndescription: Use when checking notices. Verify applied writes.\n---\nRead the sample before editing.\n"
-    operations = [{"name": name, "action": "create", "content": content},
-                  {"name": name, "action": "patch", "old_string": "sample", "new_string": "example"},
-                  {"name": name, "action": "write_file", "file_path": "references/a.md", "file_content": "Check the example."},
-                  {"name": name, "action": "remove_file", "file_path": "references/a.md"},
-                  {"name": name, "action": "delete"}]
+    operations = [{"name": name, "create": {"content": content}},
+                  {"name": name, "patch": {"old_string": "sample", "new_string": "example"}},
+                  {"name": name, "rewrite": {"content": content.replace("sample", "example")}},
+                  {"name": name, "write_file": {"file_path": "references/a.md", "content": "Check the example."}},
+                  {"name": name, "remove_file": {"file_path": "references/a.md"}},
+                  {"name": name, "delete": {"absorbed_into": ""}}]
     for op in operations:
         data = json.loads(skill_manage(action="", name="", operations=[op]))
         assert data["success"], data
@@ -30,7 +31,7 @@ def test_applied_skill_operations_notify_with_names(tmp_path, monkeypatch):
 
 
 def test_unapplied_skill_operations_never_notify():
-    args = {"operations": [{"name": "pending", "action": "create"}]}
+    args = {"operations": [{"name": "pending", "create": {"content": "x"}}]}
     for data in (
         {"success": True, "staged": True, "message": "Write staged for approval."},
         {"success": False, "results": [{"success": True, "name": "pending", "action": "create"}]},

@@ -64,6 +64,19 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+def test_action_keyed_skill_manage_summary_preserves_targets():
+    args = json.dumps({"operations": [
+        {"name": "probe", "rewrite": {"content": "updated"}},
+        {"name": "probe", "write_file": {"file_path": "references/a.md", "content": "x"}},
+    ]})
+
+    summary = _summarize_tool_result("skill_manage", args, "x" * 500)
+
+    assert "rewrite:probe" in summary
+    assert "write_file:probe" in summary
+    assert "name=?" not in summary
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
         content = json.dumps({

@@ -571,24 +571,29 @@ def _display_diff_path(path: Path) -> str:
 
 def _resolve_skill_manage_paths(args: dict) -> list[Path]:
     """Resolve skill_manage write targets to filesystem paths."""
-    action = args.get("action")
-    name = args.get("name")
-    if not action or not name:
-        return []
+    from tools.skill_manager_batch import iter_recorded_skill_operations
     from tools.skill_manager_tool import _find_skill, _resolve_skill_dir
 
-    if action == "create":
-        return [_resolve_skill_dir(name, args.get("category")) / "SKILL.md"]
-    existing = _find_skill(name)
-    if not existing:
-        return []
-    skill_dir = Path(existing["path"])
-    file_path = args.get("file_path")
-    if action == "delete":
-        return [path for path in sorted(skill_dir.rglob("*")) if path.is_file()]
-    if file_path and action in {"edit", "patch", "write_file", "remove_file"}:
-        return [skill_dir / file_path]
-    return [skill_dir / "SKILL.md"] if action in {"edit", "patch"} else []
+    paths: list[Path] = []
+    for op in iter_recorded_skill_operations(args):
+        action, name = op.get("action"), op.get("name")
+        if not action or not name:
+            continue
+        if action == "create":
+            paths.append(_resolve_skill_dir(name, op.get("category")) / "SKILL.md")
+            continue
+        existing = _find_skill(name)
+        if not existing:
+            continue
+        skill_dir = Path(existing["path"])
+        file_path = op.get("file_path")
+        if action == "delete":
+            paths.extend(path for path in sorted(skill_dir.rglob("*")) if path.is_file())
+        elif file_path and action in {"edit", "patch", "write_file", "remove_file"}:
+            paths.append(skill_dir / file_path)
+        elif action in {"edit", "patch"}:
+            paths.append(skill_dir / "SKILL.md")
+    return list(dict.fromkeys(paths))
 
 
 def _resolve_local_edit_paths(tool_name: str, function_args: dict | None) -> list[Path]:

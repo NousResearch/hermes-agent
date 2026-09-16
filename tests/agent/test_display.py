@@ -225,6 +225,25 @@ class TestEditDiffPreview:
         assert "-old" in diff
         assert "+new" in diff
 
+    def test_action_keyed_skill_manage_resolves_all_batch_paths(self, tmp_path, monkeypatch):
+        from agent.display import _resolve_skill_manage_paths
+        from tools import skill_manager_tool
+
+        skill_dir = tmp_path / "skills" / "probe"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("before", encoding="utf-8")
+        monkeypatch.setattr(
+            skill_manager_tool, "_find_skill",
+            lambda name: {"path": str(skill_dir)} if name == "probe" else None,
+        )
+
+        paths = _resolve_skill_manage_paths({"operations": [
+            {"name": "probe", "patch": {"old_string": "before", "new_string": "after"}},
+            {"name": "probe", "write_file": {"file_path": "references/a.md", "content": "x"}},
+        ]})
+
+        assert paths == [skill_dir / "SKILL.md", skill_dir / "references/a.md"]
+
 
 
     def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):

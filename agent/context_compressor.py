@@ -1494,6 +1494,20 @@ def _sum_named(name, args, content, content_len, line_count):
     return f"[{name}] name={args.get('name', '?')} ({content_len:,} chars)"
 
 
+def _sum_skill_manage(name, args, content, content_len, line_count):
+    from tools.skill_manager_batch import iter_recorded_skill_operations
+    operations = list(iter_recorded_skill_operations(args))
+    if not operations:
+        return _sum_named(name, args, content, content_len, line_count)
+    targets = ", ".join(
+        f"{op.get('source_action') or op.get('action', '?')}:{op.get('name', '?')}"
+        for op in operations[:6]
+    )
+    if len(operations) > 6:
+        targets += f", +{len(operations) - 6} more"
+    return f"[skill_manage] {targets} ({content_len:,} chars)"
+
+
 def _sum_template(template: str, **defaults):
     """Summarizer formatting ``template`` from the parsed args (``defaults`` fill missing keys) plus ``content_len``."""
     return lambda name, args, content, content_len, line_count: template.format_map(
@@ -1518,7 +1532,7 @@ _TOOL_RESULT_SUMMARIZERS = {
     "execute_code": _sum_execute_code,
     "skill_view": _sum_skill_view,
     "skills_list": _sum_named,
-    "skill_manage": _sum_named,
+    "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
     ),

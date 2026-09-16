@@ -60,6 +60,11 @@ Args = Dict[str, Any]
 _Formatter = Callable[[str, Optional[str], Optional[Args]], Optional[str]]
 
 
+def _skill_manage_operations(args: Args) -> List[Args]:
+    from tools.skill_manager_batch import iter_recorded_skill_operations
+    return list(iter_recorded_skill_operations(args))
+
+
 def get_tool_kind(tool_name: str) -> ToolKind:
     """Return the ACP ToolKind for a hermes tool, defaulting to 'other'."""
     return TOOL_KIND_MAP.get(tool_name, "other")
@@ -318,12 +323,23 @@ def _format_skill_view_result(tool_name: str, data: Args, args: Args) -> Optiona
 
 @_structured()
 def _format_skill_manage_result(tool_name: str, data: Args, a: Args) -> Optional[str]:
-    action = _arg(a, "action", default="manage")
-    name = str(a.get("name") or data.get("name") or "skill").strip() or "skill"
-    file_path = str(a.get("file_path") or data.get("file_path") or "SKILL.md").strip() or "SKILL.md"
+    operations = _skill_manage_operations(a)
+    op = operations[0] if len(operations) == 1 else a
+    action = _arg(op, "source_action", "action", default="manage")
+    name = str(op.get("name") or data.get("name") or "skill").strip() or "skill"
+    file_path = str(op.get("file_path") or data.get("file_path") or "SKILL.md").strip() or "SKILL.md"
     status = "✅ Skill updated" if data.get("success") is not False else "✗ Skill update failed"
     lines = [f"**{status}**", "", f"- **Action:** `{action}`", f"- **Skill:** `{name}`"]
-    if action != "delete":
+    if len(operations) > 1:
+        lines[2:] = [f"- **Operations:** {len(operations)}"]
+        for item in operations[:8]:
+            item_action = _arg(item, "source_action", "action", default="manage")
+            item_name = str(item.get("name") or "skill")
+            item_path = str(item.get("file_path") or "SKILL.md")
+            lines.append(f"  - `{item_action}` `{item_name}` `{item_path}`")
+        if len(operations) > 8:
+            lines.append(f"  - ... {len(operations) - 8} more")
+    if len(operations) <= 1 and action != "delete":
         lines.append(f"- **File:** `{file_path}`")
     if message := str(data.get("message") or data.get("error") or "").strip():
         lines.append(f"- **Result:** {message}")
@@ -712,20 +728,28 @@ def _start_todo(args: Args) -> str:
 
 
 def _start_skill_manage(args: Args) -> Any:
-    action = _arg(args, "action", default="manage")
-    name = _arg(args, "name", default="?")
-    file_path = _arg(args, "file_path", default="SKILL.md")
+    operations = _skill_manage_operations(args)
+    if len(operations) > 1:
+        summary = ", ".join(
+            f"{_arg(op, 'source_action', 'action', default='manage')}:{_arg(op, 'name', default='?')}"
+            for op in operations[:8]
+        )
+        return f"Running skill_manage batch ({len(operations)} operations): {summary}"
+    op = operations[0] if operations else args
+    action = _arg(op, "source_action", "action", default="manage")
+    name = _arg(op, "name", default="?")
+    file_path = _arg(op, "file_path", default="SKILL.md")
     path = f"skills/{name}/{file_path}"
     if action == "patch":
-        old = str(args.get("old_string") or "")
-        return acp.tool_diff_content(path=path, old_text=old or None, new_text=str(args.get("new_string") or ""))
-    if action in {"edit", "create"}:
-        return acp.tool_diff_content(path=path, new_text=str(args.get("content") or ""))
+        old = str(op.get("old_string") or "")
+        return acp.tool_diff_content(path=path, old_text=old or None, new_text=str(op.get("new_string") or ""))
+    if action in {"edit", "rewrite", "create"}:
+        return acp.tool_diff_content(path=path, new_text=str(op.get("content") or ""))
     if action == "write_file":
-        target = str(args.get("file_path") or "file")
-        return acp.tool_diff_content(path=f"skills/{name}/{target}", new_text=str(args.get("file_content") or ""))
+        target = str(op.get("file_path") or "file")
+        return acp.tool_diff_content(path=f"skills/{name}/{target}", new_text=str(op.get("file_content") or ""))
     if action in {"delete", "remove_file"}:
-        return f"Removing {str(args.get('file_path') or file_path)} from skill '{name}'"
+        return f"Removing {str(op.get('file_path') or file_path)} from skill '{name}'"
     return f"Running skill_manage action '{action}' on skill '{name}' ({file_path})"
 
 

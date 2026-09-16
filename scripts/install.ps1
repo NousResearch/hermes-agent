@@ -799,6 +799,8 @@ function Install-Uv {
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
+    # Nested because only the salvage rung below needs shim resolution; move
+    # to script scope (like Get-UsableUvVersion) if Resolve-UvCmd ever does.
     function Resolve-ExecutableTarget($ExePath) {
         if (-not $ExePath -or -not (Test-Path $ExePath)) { return $null }
 
@@ -824,13 +826,11 @@ function Install-Uv {
         }
 
         # 3. Windows symlink / reparse point: resolve underlying target.
-        try {
-            $item = Get-Item $ExePath -ErrorAction SilentlyContinue
-            if ($item.LinkType -and $item.Target) {
-                $target = if ($item.Target -is [array]) { $item.Target[0] } else { $item.Target }
-                if (Test-Path $target) { return $target }
-            }
-        } catch {}
+        $item = Get-Item $ExePath -ErrorAction SilentlyContinue
+        if ($item -and $item.LinkType -and $item.Target) {
+            $target = if ($item.Target -is [array]) { $item.Target[0] } else { $item.Target }
+            if (Test-Path $target) { return $target }
+        }
 
         return $ExePath
     }
@@ -1540,7 +1540,8 @@ function Get-ManagedGitUserPath {
                 $repaired = $false
                 # Repair only the exact concatenation emitted by the old
                 # installer, including repeated retries. Do not split arbitrary
-                # drive letters or rewrite unrelated entries.
+                # drive letters or rewrite unrelated entries. Safe to delete
+                # once installers from before this fix (2026) have aged out.
                 while ($prefix.EndsWith($legacySuffix, [StringComparison]::OrdinalIgnoreCase)) {
                     $prefix = $prefix.Substring(0, $prefix.Length - $legacySuffix.Length)
                     $repaired = $true

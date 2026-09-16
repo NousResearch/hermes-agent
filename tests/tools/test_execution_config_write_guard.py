@@ -1,7 +1,6 @@
 """Execution tools must report active security-config mutations safely."""
 
 import json
-import os
 import shlex
 import sys
 
@@ -66,7 +65,7 @@ def test_terminal_reports_direct_config_write_without_stale_rollback(tmp_path, m
     from tools.terminal_tool import terminal_tool
 
     script = f"open({str(config_path)!r}, 'wb').write({changed!r})"
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = f"{shlex.quote(sys.executable.replace(chr(92), '/'))} -c {shlex.quote(script)}"
     result = json.loads(terminal_tool(command, task_id="terminal-config-write-guard"))
 
     assert result["exit_code"] == 126
@@ -114,7 +113,7 @@ def test_terminal_detects_config_symlink_retarget(tmp_path, monkeypatch):
         f"import os; os.unlink({str(config_path)!r}); "
         f"os.symlink({str(target_b)!r}, {str(config_path)!r})"
     )
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = f"{shlex.quote(sys.executable.replace(chr(92), '/'))} -c {shlex.quote(script)}"
     result = json.loads(terminal_tool(command, task_id="terminal-symlink-retarget-guard"))
 
     assert result["exit_code"] == 126

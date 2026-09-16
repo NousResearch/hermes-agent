@@ -161,11 +161,18 @@ def _scoped_operator_override(name: str) -> Optional[str]:
     raises is a multi-profile call that has lost its profile scope. That call has no authority to
     route on the launch profile's value — returning the ambient env there would send a secondary's
     tokens to the launch profile's Portal or inference host — so the override is simply absent.
+    Absent is not free: the stored/default routing then applies, so a non-production deployment's
+    token is spent against the production hosts. Log it by name — the downstream
+    "ignoring invalid portal_base_url" warning hides which caller lost its scope.
     """
     from agent.secret_scope import UnscopedSecretError, get_secret
     try:
         return get_secret(name)
     except UnscopedSecretError:
+        logger.warning(
+            "nous: %s unreadable — no profile secret scope on a multiplexed call; treating the "
+            "override as absent (default routing applies). The caller needs a profile scope binding.",
+            name)
         return None
 
 

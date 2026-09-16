@@ -15,6 +15,7 @@ import os
 import signal
 import time
 from contextlib import suppress
+from contextvars import copy_context
 from datetime import datetime
 from pathlib import Path
 from gateway.config import Platform
@@ -109,7 +110,15 @@ class GatewayStartupMixin:
 
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
-        failed warm-up degrades to lazy init and must not block startup."""
+        failed warm-up degrades to lazy init and must not block startup.
+
+        Under multiplex the warm-up runs inside the launch profile's ``_profile_runtime_scope`` and
+        carries that context into the executor thread (the ``_discover_gateway_mcp_tools`` shape).
+        ``get_tool_definitions`` runs every ``check_fn``, and the vision probe resolves live Nous
+        runtime credentials; with no scope installed ``get_secret`` fails closed, the Portal / inference
+        env overrides read as absent, and the refresh token of a non-production Portal is POSTed to the
+        production Portal — ``invalid_grant`` and a quarantined login ~10 s after every boot, before any
+        inbound turn (live on hosted staging, 2026-09-16)."""
         from gateway.run import _warm_turn_machinery_sync
         with _log_suppressed(
             logging.WARNING, "Turn-machinery warm-up failed; first inbound turn will initialize lazily",
@@ -117,7 +126,14 @@ class GatewayStartupMixin:
         ):
             loop = asyncio.get_running_loop()
             t0 = time.monotonic()
-            tool_count = await loop.run_in_executor(None, _warm_turn_machinery_sync)
+            if getattr(self.config, "multiplex_profiles", False):
+                from gateway.run import _async_profile_runtime_scope
+                from hermes_constants import get_hermes_home
+                async with _async_profile_runtime_scope(get_hermes_home()):
+                    tool_count = await loop.run_in_executor(
+                        None, copy_context().run, _warm_turn_machinery_sync)
+            else:
+                tool_count = await loop.run_in_executor(None, _warm_turn_machinery_sync)
             logger.info(
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,

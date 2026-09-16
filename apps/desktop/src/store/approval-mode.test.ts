@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '../test/deferred'
+
 import {
   $approvalModes,
   approvalModeForProfile,
@@ -7,18 +9,6 @@ import {
   setApprovalModeForProfile,
   syncApprovalModeForProfile
 } from './approval-mode'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-
-  return { promise, reject, resolve }
-}
 
 describe('profile-scoped approval mode cache', () => {
   beforeEach(() => $approvalModes.set({}))
@@ -76,6 +66,7 @@ describe('profile-scoped approval mode cache', () => {
 
   it('lets a backend event supersede an optimistic write and its later failure', async () => {
     const write = deferred<{ value: string }>()
+
     const pending = setApprovalModeForProfile(
       vi.fn(() => write.promise),
       'work',

@@ -338,11 +338,11 @@ Prompt（提示词）缓存和 provider 专属的调节项很容易出现回归�
 - `provider:model` 解析
 - 任何适配器专属的消息转换
 
-使用禁用 xdist 的方式运行测试：
+运行目标测试（或使用 `scripts/run_tests.sh`，它在独立子进程中运行每个文件）：
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
+python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -q
 ```
 
 对于更深层的修改，在推送前运行完整测试套件：

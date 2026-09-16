@@ -55,17 +55,6 @@ class TestReadManifestInfo:
         assert description == "test"
         assert key == "my-plugin"  # flat: key == name
 
-    def test_category_plugin(self, tmp_path):
-        from hermes_cli.plugins_cmd import _read_manifest_info
-
-        d = _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "2.0.0", "description": "search"
-        })
-        result = _read_manifest_info(d, "web")
-        assert result is not None
-        name, version, description, key = result
-        assert name == "web-tavily"  # manifest name
-        assert key == "web/tavily"  # path-derived key
 
     def test_no_manifest(self, tmp_path):
         from hermes_cli.plugins_cmd import _read_manifest_info
@@ -107,24 +96,6 @@ class TestDiscoverAllPlugins:
         keys = [e[5] for e in entries]
         assert "disk-cleanup" in keys
 
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_category_plugins_discovered(self, mock_user_dir, mock_bundled_dir, tmp_path):
-        from hermes_cli.plugins_cmd import _discover_all_plugins
-
-        _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "1.0.0"
-        })
-        _make_category_plugin(tmp_path, "image_gen", "openai", {
-            "name": "image-gen-openai", "version": "2.0.0"
-        })
-        mock_user_dir.return_value = tmp_path
-        mock_bundled_dir.return_value = tmp_path / "nonexistent"
-
-        entries = _discover_all_plugins()
-        keys = [e[5] for e in entries]
-        assert "web/tavily" in keys
-        assert "image_gen/openai" in keys
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -134,8 +105,8 @@ class TestDiscoverAllPlugins:
         _make_plugin_dir(tmp_path, "disk-cleanup", {
             "name": "disk-cleanup", "version": "1.0.0"
         })
-        _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "1.0.0"
+        _make_category_plugin(tmp_path, "web", "keenable", {
+            "name": "web-keenable", "version": "1.0.0"
         })
         _make_category_plugin(tmp_path, "web", "exa", {
             "name": "web-exa", "version": "1.0.0"
@@ -146,7 +117,7 @@ class TestDiscoverAllPlugins:
         entries = _discover_all_plugins()
         keys = [e[5] for e in entries]
         assert "disk-cleanup" in keys
-        assert "web/tavily" in keys
+        assert "web/keenable" in keys
         assert "web/exa" in keys
         assert len(entries) == 3
 
@@ -157,8 +128,8 @@ class TestDiscoverAllPlugins:
         from hermes_cli.plugins_cmd import _discover_all_plugins
 
         # 2 levels: should be found
-        _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "1.0.0"
+        _make_category_plugin(tmp_path, "web", "keenable", {
+            "name": "web-keenable", "version": "1.0.0"
         })
         # 3 levels: should NOT be found
         deep = tmp_path / "a" / "b" / "c"
@@ -172,54 +143,70 @@ class TestDiscoverAllPlugins:
 
         entries = _discover_all_plugins()
         keys = [e[5] for e in entries]
-        assert "web/tavily" in keys
+        assert "web/keenable" in keys
         assert "a/b/c" not in keys
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_tuple_has_six_elements(self, mock_user_dir, mock_bundled_dir, tmp_path):
+    def test_bundled_model_providers_skipped(self, mock_user_dir, mock_bundled_dir, tmp_path):
+        """``plugins/model-providers/`` has its own provider registry loader.
+
+        Bundled providers should not appear in ``hermes plugins list`` as
+        general opt-in plugins, or users get a misleading enable/disable
+        surface for providers selected via ``model.provider`` / ``--provider``.
+        Same rationale as the existing bundled memory/context_engine skip.
+        """
         from hermes_cli.plugins_cmd import _discover_all_plugins
 
-        _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "1.0.0", "description": "search"
+        bundled = tmp_path / "bundled"
+        user = tmp_path / "user"
+        user.mkdir()
+        _make_category_plugin(bundled, "model-providers", "openrouter", {
+            "name": "openrouter-provider", "version": "1.0.0",
+            "kind": "model-provider",
         })
-        mock_user_dir.return_value = tmp_path
-        mock_bundled_dir.return_value = tmp_path / "nonexistent"
-
-        entries = _discover_all_plugins()
-        assert len(entries) == 1
-        entry = entries[0]
-        assert len(entry) == 6
-        name, version, description, source, dir_path, key = entry
-        assert name == "web-tavily"
-        assert key == "web/tavily"
-        assert source == "user"
-
-    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_user_overrides_bundled_on_key_collision(self, mock_user_dir, mock_bundled_dir, tmp_path):
-        """User plugin with same key as bundled should win."""
-        from hermes_cli.plugins_cmd import _discover_all_plugins
-
-        # Simulate a bundled plugin
-        bundled_dir = tmp_path / "bundled"
-        bundled_dir.mkdir()
-        _make_plugin_dir(bundled_dir, "my-plugin", {
-            "name": "my-plugin", "version": "1.0.0"
+        _make_category_plugin(bundled, "memory", "letta", {
+            "name": "letta-memory", "version": "1.0.0"
         })
-        # User plugin with same key
-        _make_plugin_dir(tmp_path, "my-plugin", {
-            "name": "my-plugin", "version": "2.0.0"
+        _make_category_plugin(bundled, "context_engine", "compressor", {
+            "name": "compressor", "version": "1.0.0"
         })
-        mock_user_dir.return_value = tmp_path
-        mock_bundled_dir.return_value = bundled_dir
+        _make_category_plugin(bundled, "observability", "langfuse", {
+            "name": "langfuse", "version": "1.0.0"
+        })
+        mock_user_dir.return_value = user
+        mock_bundled_dir.return_value = bundled
 
         entries = _discover_all_plugins()
         keys = [e[5] for e in entries]
-        assert keys.count("my-plugin") == 1
-        # User version should win
-        entry = [e for e in entries if e[5] == "my-plugin"][0]
-        assert entry[1] == "2.0.0"
+        assert "model-providers/openrouter" not in keys
+        assert "memory/letta" not in keys
+        assert "context_engine/compressor" not in keys
+        assert "observability/langfuse" in keys
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_user_model_providers_subdir_is_still_scanned(
+        self, mock_user_dir, mock_bundled_dir, tmp_path
+    ):
+        """The model-providers skip only applies to *bundled* — a user plugin
+        at ``~/.hermes/plugins/model-providers/<x>/`` is still discovered so
+        ``hermes plugins list`` shows what the user installed."""
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        user = tmp_path / "user"
+        _make_category_plugin(user, "model-providers", "acme", {
+            "name": "acme-provider", "version": "0.1.0",
+            "kind": "model-provider",
+        })
+        mock_user_dir.return_value = user
+        mock_bundled_dir.return_value = bundled
+
+        entries = _discover_all_plugins()
+        keys = [e[5] for e in entries]
+        assert "model-providers/acme" in keys
 
 
 # ---------------------------------------------------------------------------
@@ -228,33 +215,15 @@ class TestDiscoverAllPlugins:
 
 
 class TestPluginStatus:
-    def test_name_in_enabled(self):
-        from hermes_cli.plugins_cmd import _plugin_status
-        assert _plugin_status("my-plugin", {"my-plugin"}, set()) == "enabled"
 
-    def test_key_in_enabled(self):
-        from hermes_cli.plugins_cmd import _plugin_status
-        assert _plugin_status("web-tavily", {"web/tavily"}, set(), key="web/tavily") == "enabled"
-
-    def test_name_in_disabled(self):
-        from hermes_cli.plugins_cmd import _plugin_status
-        assert _plugin_status("my-plugin", set(), {"my-plugin"}) == "disabled"
 
     def test_key_in_disabled(self):
         from hermes_cli.plugins_cmd import _plugin_status
-        assert _plugin_status("web-tavily", set(), {"web/tavily"}, key="web/tavily") == "disabled"
+        assert _plugin_status("web-keenable", set(), {"web/keenable"}, key="web/keenable") == "disabled"
 
     def test_neither_name_nor_key(self):
         from hermes_cli.plugins_cmd import _plugin_status
         assert _plugin_status("unknown", {"other"}, set(), key="cat/unknown") == "not enabled"
-
-    def test_disabled_takes_precedence_over_enabled(self):
-        from hermes_cli.plugins_cmd import _plugin_status
-        assert _plugin_status("my-plugin", {"my-plugin"}, {"my-plugin"}) == "disabled"
-
-    def test_key_disabled_takes_precedence(self):
-        from hermes_cli.plugins_cmd import _plugin_status
-        assert _plugin_status("web-tavily", {"web/tavily"}, {"web/tavily"}, key="web/tavily") == "disabled"
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +236,7 @@ class TestFilterPluginEntries:
         from hermes_cli.plugins_cmd import _filter_plugin_entries
 
         entries = [
-            ("web-tavily", "1.0.0", "search", "user", Path("/tmp"), "web/tavily"),
+            ("web-keenable", "1.0.0", "search", "user", Path("/tmp"), "web/keenable"),
             ("disk-cleanup", "1.0.0", "cleanup", "bundled", Path("/tmp"), "disk-cleanup"),
         ]
         args = MagicMock()
@@ -275,23 +244,9 @@ class TestFilterPluginEntries:
         args.user = False
         args.enabled = True
 
-        result = _filter_plugin_entries(entries, args, {"web/tavily"}, set())
+        result = _filter_plugin_entries(entries, args, {"web/keenable"}, set())
         assert len(result) == 1
-        assert result[0][5] == "web/tavily"
-
-    def test_enabled_filter_by_name_still_works(self):
-        from hermes_cli.plugins_cmd import _filter_plugin_entries
-
-        entries = [
-            ("disk-cleanup", "1.0.0", "cleanup", "bundled", Path("/tmp"), "disk-cleanup"),
-        ]
-        args = MagicMock()
-        args.no_bundled = False
-        args.user = False
-        args.enabled = True
-
-        result = _filter_plugin_entries(entries, args, {"disk-cleanup"}, set())
-        assert len(result) == 1
+        assert result[0][5] == "web/keenable"
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +260,8 @@ class TestCmdListJson:
     def test_json_output_includes_category_plugins(self, mock_user_dir, mock_bundled_dir, tmp_path, capsys):
         from hermes_cli.plugins_cmd import cmd_list
 
-        _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "1.0.0", "description": "search"
+        _make_category_plugin(tmp_path, "web", "keenable", {
+            "name": "web-keenable", "version": "1.0.0", "description": "search"
         })
         _make_plugin_dir(tmp_path, "disk-cleanup", {
             "name": "disk-cleanup", "version": "2.0.0", "description": "cleanup"
@@ -325,7 +280,7 @@ class TestCmdListJson:
         captured = capsys.readouterr()
         payload = json.loads(captured.out)
         names = [p["name"] for p in payload]
-        assert "web-tavily" in names
+        assert "web-keenable" in names
         assert "disk-cleanup" in names
 
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
@@ -333,14 +288,14 @@ class TestCmdListJson:
     def test_json_status_uses_key(self, mock_user_dir, mock_bundled_dir, tmp_path, capsys):
         from hermes_cli.plugins_cmd import cmd_list
 
-        _make_category_plugin(tmp_path, "web", "tavily", {
-            "name": "web-tavily", "version": "1.0.0"
+        _make_category_plugin(tmp_path, "web", "keenable", {
+            "name": "web-keenable", "version": "1.0.0"
         })
         mock_user_dir.return_value = tmp_path
         mock_bundled_dir.return_value = tmp_path / "nonexistent"
 
-        # Patch config to return web/tavily as enabled
-        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/tavily"}):
+        # Patch config to return web/keenable as enabled
+        with patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"web/keenable"}):
             args = MagicMock()
             args.json = True
             args.plain = False

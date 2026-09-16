@@ -11,28 +11,26 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom } from 'nanostores'
-import type { CSSProperties } from 'react'
 
-import { ChatPreviewRail } from '@/app/chat/right-rail/preview'
 import { RightSidebarPane } from '@/app/right-sidebar'
 import { ReviewPane } from '@/app/right-sidebar/review'
 import type { GroupSetter } from '@/app/shell/group-setter'
 import type { StatusbarItem } from '@/app/shell/statusbar-controls'
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import type { TitlebarTool } from '@/app/shell/titlebar-controls'
 import { DecodeText } from '@/components/ui/decode-text'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { getLogs } from '@/hermes'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $filePreviewTarget, $previewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
+import { openPreview } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
 // ---------------------------------------------------------------------------
-// Logs — live agent-log tail. OPTIONAL chrome: not in any default layout,
-// hidden until the ⌘K "Toggle logs" command opens it ($logsOpen).
+// Logs — live agent-log tail. ⌘K-only chrome: the pane contribution exists
+// only while the "Toggle logs" palette command has it summoned ($logsOpen in
+// the controller) — never in a default layout, never a standing tab.
 // ---------------------------------------------------------------------------
 
 export function LogsPane() {
@@ -71,45 +69,12 @@ export function LogsPane() {
  *  Atom-bridged: this module can't import contrib-wiring (it imports us). */
 export const $restartPreviewServer = atom<((url: string, context?: string) => Promise<string>) | null>(null)
 
-export function PreviewRailPane() {
-  const previewTarget = useStore($previewTarget)
-  const fileTarget = useStore($filePreviewTarget)
-  const restartPreviewServer = useStore($restartPreviewServer)
-
-  if (!previewTarget && !fileTarget) {
-    return (
-      <div className="grid h-full place-items-center px-4 text-center">
-        <div className="flex flex-col items-center gap-1.5">
-          <DecodeText className="text-(--ui-text-quaternary)" prefix={1} text="PREVIEW" />
-          <span className="text-[0.68rem] text-(--ui-text-quaternary)">click a file in the files pane</span>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    // The contrib layout zeroes --titlebar-height (content sits BELOW the
-    // titlebar, so the real components' clearance padding must collapse) —
-    // but the rail SIZES its per-file tab strip with that var. Restore the
-    // real value for this subtree so the tabs always render at full height.
-    <div
-      className={cn(ZONE_CONTENT, 'min-h-0 w-full overflow-hidden [&>aside]:pt-0')}
-      style={{ '--titlebar-height': `${TITLEBAR_HEIGHT}px` } as CSSProperties}
-    >
-      <ChatPreviewRail
-        onRestartServer={restartPreviewServer ?? undefined}
-        setTitlebarToolGroup={setTitlebarToolGroup}
-      />
-    </div>
-  )
-}
-
 /** Open a file from the tree in the real preview pipeline. */
 function previewFile(path: string) {
   void normalizeOrLocalPreviewTarget(path, $currentCwd.get() || undefined)
     .then(target => {
       if (target) {
-        setCurrentSessionPreviewTarget(target, 'file-browser', path)
+        openPreview(target, 'file-browser')
       }
     })
     .catch(() => undefined)
@@ -164,7 +129,7 @@ export function useStatusbarContributions(side: 'left' | 'right'): StatusbarItem
             id: c.id,
             render: () => (
               <ContribBoundary id={c.id} variant="chip">
-                {c.render!()}
+                <ContribRender render={c.render!} />
               </ContribBoundary>
             )
           } satisfies StatusbarItem)

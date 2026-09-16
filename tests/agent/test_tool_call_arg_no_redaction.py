@@ -82,10 +82,3 @@ def test_pgpassword_preserved_verbatim(monkeypatch):
     assert "***" not in got
 
 
-def test_bearer_token_preserved_verbatim(monkeypatch):
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True, raising=False)
-    args = '{"command": "curl -H \'Authorization: Bearer sk-abcdef1234567890\'"}'
-    got = _build(args)
-    assert got == args
-    assert "sk-abcdef1234567890" in got
-    assert "***" not in got

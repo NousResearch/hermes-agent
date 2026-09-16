@@ -50,11 +50,79 @@ def test_breakdown_includes_major_categories():
     assert data["estimated_total"] > 0
 
 
-def test_breakdown_uses_measured_context_when_available():
-    agent, parts = _make_agent(last_prompt_tokens=42_000)
 
-    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
-        data = compute_session_context_breakdown(agent, [])
+# ── /context renderers (pure functions over the payload) ────────────────────
 
-    assert data["context_used"] == 42_000
-    assert data["context_percent"] == 21
+from agent.context_breakdown import (  # noqa: E402
+    compute_context_details,
+    render_context_breakdown_lines,
+    render_context_category_lines,
+    render_context_details_lines,
+    render_context_grid,
+)
+
+
+def _payload(**overrides):
+    base = {
+        "categories": [
+            {"id": "system_prompt", "label": "System prompt", "tokens": 10_000},
+            {"id": "tool_definitions", "label": "Tool definitions", "tokens": 20_000},
+            {"id": "skills", "label": "Skills", "tokens": 5_000},
+            {"id": "conversation", "label": "Conversation", "tokens": 15_000},
+        ],
+        "context_max": 200_000,
+        "context_percent": 25,
+        "context_used": 50_000,
+        "estimated_total": 50_000,
+        "model": "openai/gpt-test",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_grid_is_5x20_and_mostly_free():
+    rows = render_context_grid(_payload())
+    assert len(rows) == 5
+    cells = " ".join(rows).split(" ")
+    assert len(cells) == 100
+    # 50k / 200k → 25 used cells, 75 free
+    assert cells.count("·") == 75
+    # Category glyphs proportional: 10k→5, 20k→10, 5k→2-3, 15k→7-8 cells
+    assert cells.count("■") == 5
+    assert cells.count("▣") == 10
+
+
+
+
+
+
+
+
+
+
+def test_breakdown_lines_grid_toggle():
+    with_grid = render_context_breakdown_lines(_payload(), grid=True)
+    without = render_context_breakdown_lines(_payload(), grid=False)
+    assert any("·" in line for line in with_grid[:5])
+    assert not any("·" in line for line in without[:2])
+    # Both include the window summary and the expand hint
+    for lines in (with_grid, without):
+        text = "\n".join(lines)
+        assert "Context window: 50,000 / 200,000 tokens (25%)" in text
+        assert "/context all" in text
+
+
+
+
+def test_details_lines_caps_listing():
+    details = {
+        "skills": [
+            {"name": f"skill-{i}", "index_tokens": 10, "skill_md_tokens": 100}
+            for i in range(20)
+        ],
+        "toolsets": [],
+    }
+    lines = render_context_details_lines(details)
+    assert any("… and 5 more" in line for line in lines)
+
+

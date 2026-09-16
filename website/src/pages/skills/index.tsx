@@ -1,6 +1,8 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
+import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
+import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface Skill {
   name: string;
@@ -18,6 +20,7 @@ interface Skill {
   commands?: string[];
   docsPath?: string;
   identifier?: string;
+  installIdentifier?: string;
   installCmd?: string;
   /** Clickable URL to the skill's origin (repo / detail page). Synthesized
    *  in extract-skills.py for community skills that have no generated docs
@@ -125,13 +128,6 @@ const SOURCE_CONFIG: Record<
     border: "rgba(96, 165, 250, 0.2)",
     icon: "\u{25CB}",
   },
-  "Claude Marketplace": {
-    label: "Marketplace",
-    color: "#a78bfa",
-    bg: "rgba(167, 139, 250, 0.08)",
-    border: "rgba(167, 139, 250, 0.2)",
-    icon: "\u{25A0}",
-  },
   "skills.sh": {
     label: "skills.sh",
     color: "#34d399",
@@ -223,7 +219,6 @@ const SOURCE_ORDER = [
   "ClawHub",
   "browse.sh",
   "LobeHub",
-  "Claude Marketplace",
   "VoltAgent",
   "Well-Known",
   "GitHub",
@@ -293,6 +288,7 @@ function SkillCard({
   onCategoryClick,
   onTagClick,
   style,
+  onPick,
 }: {
   skill: Skill;
   query: string;
@@ -301,9 +297,12 @@ function SkillCard({
   onCategoryClick: (cat: string) => void;
   onTagClick: (tag: string) => void;
   style?: React.CSSProperties;
+  /** Picker embed mode: render "+ Add to this Agent" and call this. */
+  onPick?: (skill: Skill) => void;
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
+  const installUrl = skillCatalogInstallUrl(skill);
 
   return (
     <div
@@ -354,6 +353,16 @@ function SkillCard({
             </span>
           ))}
         </div>
+
+        {!onPick && installUrl && (
+          <a
+            className={styles.pickBtn}
+            href={installUrl}
+            onClick={(e) => e.stopPropagation()}
+          >
+            Install in Hermes
+          </a>
+        )}
 
         {expanded && (
           <div className={styles.cardDetail}>
@@ -423,11 +432,22 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>{skill.installCmd || `hermes skills install ${skill.name}`}</code>
+              <code>{skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}</code>
               <CopyButton
-                text={skill.installCmd || `hermes skills install ${skill.name}`}
+                text={skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`}
               />
             </div>
+            {onPick ? (
+              <button
+                className={styles.pickBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPick(skill);
+                }}
+              >
+                + Add to this Agent
+              </button>
+            ) : null}
             <div className={styles.cardLinks}>
               {skill.docsPath ? (
                 <a
@@ -494,6 +514,36 @@ function buildSearchHaystack(s: Skill): string {
 }
 
 export default function SkillsDashboard() {
+  // Picker embed mode (?embed=picker): the page is being iframed by a host
+  // app (Hermes desktop's Bot Mode agent editor) as a skill PICKER. Site
+  // chrome is hidden via a CSS class and every card gains an
+  // "+ Add to this Agent" button that posts
+  //   { type: 'hermes-skill-pick', name, identifier, installCmd, source }
+  // to the parent window. The HOST performs the actual install through its
+  // own gateway (skills.manage) — the page never installs anything, so
+  // there is no origin to trust in this direction; parents must validate
+  // event.origin themselves before acting on the message.
+  const pickerMode =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("embed") === "picker";
+
+  const pickSkill = useCallback(
+    (skill: Skill) => {
+      if (typeof window === "undefined" || window.parent === window) return;
+      window.parent.postMessage(
+        {
+          type: "hermes-skill-pick",
+          name: skill.name,
+          identifier: skillCatalogInstallIdentifier(skill) || skill.name,
+          installCmd: skill.installCmd || `hermes skills install ${skillCatalogInstallIdentifier(skill) || skill.name}`,
+          source: skill.source,
+        },
+        "*"
+      );
+    },
+    []
+  );
+
   // Lazy-loaded data. Was bundled into the JS chunk (~22 MB at 50k skills,
   // which made the initial page load unusable on mobile). Now fetched on
   // mount from the same CDN that serves the docs.
@@ -644,18 +694,26 @@ export default function SkillsDashboard() {
       title="Skills Hub"
       description="Browse all skills and plugins available for Hermes Agent"
     >
-      <div className={styles.page}>
+      <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
           <div className={styles.heroContent}>
             <p className={styles.heroEyebrow}>Hermes Agent</p>
             <h1 className={styles.heroTitle}>Skills Hub</h1>
+            <nav className={styles.crossNav} aria-label="Catalog pages">
+              <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
+                Skills
+              </span>
+              <Link className={styles.crossNavLink} to="/plugins">
+                Plugins
+              </Link>
+            </nav>
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
               <strong className={styles.heroAccent}>
                 {data ? allSkillsLocal.length.toLocaleString() : "…"}
               </strong>{" "}
-              skills across {sources.length - 1} registries
+              skills across {sources.length - 1} registries. Open in Hermes Desktop to review and install, or copy the CLI command.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})
@@ -877,6 +935,7 @@ export default function SkillsDashboard() {
                         onCategoryClick={handleCategoryClick}
                         onTagClick={handleTagClick}
                         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
+                        onPick={pickerMode ? pickSkill : undefined}
                       />
                     );
                   })}

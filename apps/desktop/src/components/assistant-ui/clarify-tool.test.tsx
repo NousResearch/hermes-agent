@@ -658,6 +658,46 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('0 of 2 answered')).toBeTruthy()
   })
 
+  it('paints batch questions from tool args while the gateway request is still racing', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByText('red')).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Confirm and continue/ }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('becomes live once the gateway request lands over the preview', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true, remaining: [] }) } as never)
+    const { rerender } = renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeTruthy()
+
+    act(() => {
+      liveServerRequest('request-batch')
+      setClarifyRequest({
+        choices: null,
+        multiSelect: false,
+        question: '',
+        questions: [
+          { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+        ],
+        requestId: 'request-batch',
+        sessionId: 'session-1'
+      })
+    })
+    rerender(clarifyTree(<ClarifyTool {...liveBatchProps()} />))
+
+    expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
+  })
+
   it('stages locally and keeps the single confirm disabled until all answered', async () => {
     const { request } = renderLiveBatch()
     const confirm = screen.getByRole('button', { name: /Confirm and continue/ })

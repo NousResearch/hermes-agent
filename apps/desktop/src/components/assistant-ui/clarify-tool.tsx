@@ -394,9 +394,12 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   }
 
   // Batch: the gateway request carries qid-keyed questions. Args alone can't
-  // drive the form (no qids to respond with), so batch waits for the request.
+  // drive the form (no qids to respond with), so the live form waits for the
+  // request — but the question TEXT is already in the tool args, so paint a
+  // disabled preview immediately instead of a spinner (the single-question
+  // card does the same while request_id races the tool block).
   if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending onAnswered={() => setAnswered(true)} request={request} />
+    return <ClarifyToolBatchPending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
   }
 
   return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
@@ -937,7 +940,15 @@ const emptyStage = { choices: [] as string[], draft: '' }
  * back-to-back and completes the batch. Staged answers stay editable up to
  * that moment. The per-question wire protocol is unchanged (the TUI/CLI
  * still lock incrementally); this card just batches its locks at the end. */
-function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => void; request: ClarifyRequest | null }) {
+function ClarifyToolBatchPending({
+  fromArgs,
+  onAnswered,
+  request
+}: {
+  fromArgs?: ClarifyArgs
+  onAnswered: () => void
+  request: ClarifyRequest | null
+}) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -946,6 +957,21 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   // fallback for display, never answerable (no ids to respond with).
   const questions = request?.questions ?? []
   const ready = Boolean(request?.requestId) && questions.length > 0
+
+  // Preview items from the tool args: same question text/choices, synthetic
+  // qids, shown disabled until the live request lands (or indefinitely when
+  // the caller has no gateway request at all — e.g. an external tool call —
+  // so the user sees the question instead of an endless spinner).
+  const previewQuestions: ClarifyQuestion[] = useMemo(
+    () =>
+      (fromArgs?.questions ?? []).map((entry, index) => ({
+        choices: entry.choices ?? null,
+        multiSelect: entry.multiSelect ?? false,
+        qid: `args-${index}`,
+        question: entry.question
+      })),
+    [fromArgs]
+  )
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -1099,6 +1125,50 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   )
 
   if (!ready) {
+    if (previewQuestions.length > 0) {
+      return (
+        <form
+          aria-disabled="true"
+          className="my-1.5 grid gap-4"
+          data-clarify-batch={previewQuestions.length}
+          data-clarify-batch-preview=""
+          onSubmit={event => event.preventDefault()}
+        >
+          <ClarifyShell className="grid gap-3">
+            <div className="flex items-start gap-2">
+              <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
+                {copy.questionProgress(0, previewQuestions.length)}
+              </span>
+              <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+            </div>
+            {previewQuestions.map(question => (
+              <BatchQuestionBlock
+                disabled
+                key={question.qid}
+                locked={false}
+                onDraft={() => {}}
+                onToggle={() => {}}
+                question={question}
+                staged={emptyStage}
+              />
+            ))}
+          </ClarifyShell>
+
+          <div className="flex items-center justify-end gap-1">
+            <Button disabled size="xs" type="button" variant="text">
+              {copy.skip}
+            </Button>
+            <Button disabled size="xs" type="submit">
+              {copy.confirmAndContinueLabel}
+              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+                ⏎
+              </span>
+            </Button>
+          </div>
+        </form>
+      )
+    }
+
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />

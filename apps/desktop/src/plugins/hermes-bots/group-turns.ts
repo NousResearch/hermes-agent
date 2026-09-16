@@ -884,7 +884,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
       if (replyText !== null) {
         recordGroupActivity(context.group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-          member: member.name,
+          member: groupMemberKey(member),
           thread
         })
 
@@ -893,7 +893,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
 
       recordGroupActivity(context.group, {
         kind: 'passed',
-        member: member.name,
+        member: groupMemberKey(member),
         thread
       })
 
@@ -918,7 +918,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   // thread instead of vanishing.
   recordGroupActivity(context.group, {
     kind: 'timed-out',
-    member: member.name,
+    member: groupMemberKey(member),
     thread
   })
   syncGroupClarify(context.group, member, thread, null)
@@ -989,7 +989,7 @@ async function runGroupChatMemberTurnLeased(
     const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
     recordGroupActivity(group, {
       kind: 'working',
-      member: member.name,
+      member: groupMemberKey(member),
       thread
     })
 
@@ -1103,7 +1103,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     if (reply && !isGroupPassText(reply)) {
       recordGroupActivity(group, {
         kind: 'delivered',
-        member: member.name,
+        member: groupMemberKey(member),
         thread: strandedThread
       })
       appendGroupChatEntry(

@@ -2522,6 +2522,8 @@ def run_one_job(
                         if cancel_event is not None
                         else lost_ownership
                     ),
+                    transport_cancel=cancel_event,
+                    sampled_claim_lost=lost_ownership,
                     execution_token=execution_token))
     finally:
         with _running_lock:
@@ -2619,9 +2621,21 @@ class _FireClaimLostDuringSideEffect(Exception):
 class _FireOwnership:
     """Fire-claim ownership checks for one run (``owner`` is None when the job carries no claim)."""
 
-    def __init__(self, job: dict, fire_claim_lost: Optional[_CancelEventLike]):
+    def __init__(
+        self, job: dict, fire_claim_lost: Optional[_CancelEventLike],
+        sampled_claim_lost: Optional[_CancelEventLike] = None,
+    ):
         self.job = job
         self.fire_claim_lost = fire_claim_lost
+        # ``fire_claim_lost`` may be a ``_CombinedCancelEvent``, whose ``set()`` propagates into
+        # EVERY source it ORs — including the caller's transport ``cancel_event`` (dashboard drain).
+        # Latching a sampled loss through that wrapper therefore made the transport event read as
+        # cancelled: the delivered-run exemption at the call site became unreachable, and the drain
+        # event the caller owns was mutated by this run's bookkeeping. Latch the sampled source
+        # itself; the combined still reports it through ``is_set()``, so an in-flight agent is
+        # interrupted exactly as before (#105861 review).
+        self.sampled_claim_lost = (
+            sampled_claim_lost if sampled_claim_lost is not None else fire_claim_lost)
         claim = job.get("fire_claim")
         self.owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
 
@@ -2645,8 +2659,8 @@ class _FireOwnership:
             logger.debug(
                 "Job '%s': fire_claim ownership validation failed", self.job["id"], exc_info=True)
             return False
-        if self.fire_claim_lost is not None:
-            self.fire_claim_lost.set()
+        if self.sampled_claim_lost is not None:
+            self.sampled_claim_lost.set()
         return True
 
 
@@ -2857,9 +2871,11 @@ def _deliver_crash_failure(
 def _run_one_job_body(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, fire_claim_lost: Optional[_CancelEventLike] = None,
+    transport_cancel: Optional[_CancelEventLike] = None,
+    sampled_claim_lost: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
 ) -> bool:
-    fence = _FireOwnership(job, fire_claim_lost)
+    fence = _FireOwnership(job, fire_claim_lost, sampled_claim_lost)
     fire_owner = fence.owner
     _side_effect_fence = fence.side_effect_fence
     _fire_claim_ownership_lost = fence.lost
@@ -2981,9 +2997,45 @@ def _run_one_job_body(
             # Every path must tear down deferred agent(s) so they never leak subprocesses/clients.
             _teardown_deferred()
 
-        if d.side_effect_ownership_lost or _fire_claim_ownership_lost():
+        if d.side_effect_ownership_lost:
+            # The claim died inside a side-effect fence: the side effect did NOT complete.
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
+
+        if _fire_claim_ownership_lost():
+            # #105861: that check is one sample of the claim, and a sample that misses AFTER the
+            # notice already left the process used to overwrite a delivered success with an error
+            # (the operator's health watchdog then alerted on every tick for a job that was
+            # working). A completed delivery is this run's terminal outcome, so warn and fall
+            # through to _finish_completed_run: its owner-fenced mark_job_run is the authoritative
+            # claim check — it records ok while the claim is still held and records nothing when it
+            # really is gone, so a genuine loss is still not papered over. A run that did not
+            # deliver (failed / never attempted) keeps the ownership-loss error below.
+            # #105861 review: ``fire_claim_lost`` ORs the sampled claim with the transport-level
+            # ``cancel_event`` (dashboard drain / shutdown), and the flag alone cannot tell which one
+            # fired — so the exemption is scoped to the sampled path only. An explicit transport
+            # cancel is a cooperative stop signal the provider relies on, not a sampling artefact:
+            # it stays fail-closed and records the interrupted run.
+            transport_cancelled = transport_cancel is not None and transport_cancel.is_set()
+            if (
+                d.success
+                and d.delivery_attempted
+                and not d.delivery_error
+                and final_response.strip()
+                and not transport_cancelled
+            ):
+                logger.warning(
+                    "Job '%s': fire claim ownership lost after successful delivery; "
+                    "recording the delivered run's terminal status",
+                    job["id"])
+            else:
+                if transport_cancelled:
+                    logger.warning(
+                        "Job '%s': transport cancellation arrived during a successful delivery; "
+                        "keeping the interrupted terminal status",
+                        job["id"])
+                _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
+                return True
 
         # Empty final_response is a soft failure so last_status is not "ok".
         if d.success and not final_response.strip():

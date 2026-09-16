@@ -146,11 +146,11 @@ def resolve_response(frame: dict) -> bool:
     if not isinstance(rid, str):
         return False
     with _lock:
-        req = _open.get(rid)
+        # Claim the reply before waking its waiter: a duplicate response or cancellation
+        # must not replace the result while the waiting thread is still being scheduled.
+        req = _open.pop(rid, None)
         if req is None:
             return False
-        if req.on_result is not None:
-            _open.pop(rid, None)
     if "error" in frame:
         logger.debug("server request %s (%s) answered with error: %s", rid, req.method, frame.get("error"))
         req.result, req.answered = None, False
@@ -186,6 +186,7 @@ def lock_answer(request_id: str, question_id: str, answer: str) -> list[str] | N
         remaining = [qid for qid in req.qids if qid not in req.locked]
         if not remaining:
             req.result, req.answered = {"answers": dict(req.locked)}, True
+            _open.pop(req.id, None)
     if not remaining:
         req.event.set()
     return remaining

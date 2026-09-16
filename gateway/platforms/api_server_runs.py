@@ -147,7 +147,10 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
     return {
         "supported": True,
         "durable": self._run_idempotency_store.durable,
-        "retention_seconds": store_type.RETENTION_SECONDS}
+        "retention_seconds": store_type.RETENTION_SECONDS,
+        "event_replay": self._run_idempotency_store.durable,
+        "approval_receipts": self._run_idempotency_store.durable,
+    }
 
 
 def _close_run_state(self) -> None:
@@ -158,7 +161,9 @@ def _close_run_state(self) -> None:
         logger.debug("Failed to close run idempotency store for %s", self.name, exc_info=True)
 
 
-def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
+def _set_run_status(
+    self, run_id: str, status: str, *, _persist: bool = True, **fields: Any
+) -> Dict[str, Any]:
     """Update pollable run status without exposing private agent objects."""
     now = time.time()
     current = self._run_statuses.get(run_id, {})
@@ -174,7 +179,7 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
         status != previous_status
         or status in TERMINAL_STATUSES
         or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id"}))
-    if run_id in self._run_idempotency_ids and should_persist:
+    if _persist and run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
         except Exception:
@@ -189,10 +194,7 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
     def _push(event: Dict[str, Any]) -> None:
         self._set_run_status(
             run_id, self._run_statuses.get(run_id, {}).get("status", "running"), last_event=event.get("event"))
-        q = self._run_streams.get(run_id)
-        if q is not None:
-            with suppress(Exception):
-                loop.call_soon_threadsafe(q.put_nowait, event)
+        _publish_run_event(self, run_id, event, loop=loop)
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
@@ -280,7 +282,15 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
-        self._run_idempotency_store.update_status(run_id, status)
+        self._run_idempotency_store.update_status_and_append_event(
+            run_id,
+            status,
+            _run_event(
+                run_id,
+                "run.interrupted",
+                error="The gateway restarted before this run settled.",
+            ),
+        )
     self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope
@@ -616,7 +626,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
     """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
-    run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
+    run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
         event = dict(approval_data or {})
@@ -631,9 +641,23 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
             smart_denied=bool(event.get("smart_denied")),
             allow_session=event.get("allow_session") is not False,
             allow_permanent=event.get("allow_permanent") is not False)))
-        self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
-        with suppress(Exception):
-            loop.call_soon_threadsafe(q.put_nowait, event)
+        durable = run_id in self._run_idempotency_ids
+        current = self._set_run_status(
+            run_id,
+            "waiting_for_approval",
+            _persist=not durable,
+            last_event="approval.request",
+            approval=event,
+        )
+        if durable:
+            try:
+                event = self._run_idempotency_store.record_approval_request(
+                    run_id, current, event
+                )
+            except Exception:
+                logger.exception("[api_server] failed to persist run approval %s", run_id)
+                return
+        _publish_run_event(self, run_id, event, loop=loop, persist=not durable)
 
     return _approval_notify
 
@@ -644,17 +668,37 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     run_id, loop = run.run_id, asyncio.get_running_loop()
 
     def _text_cb(delta: Optional[str]) -> None:
-        if delta is None or run_id not in self._run_streams:
+        if delta is None or (
+            run_id not in self._run_streams and run_id not in self._run_idempotency_ids
+        ):
             return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            _publish_run_event(
+                self,
+                run_id,
+                _run_event(run_id, "message.delta", delta=delta),
+                loop=loop,
+            )
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
-        self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
+        durable = run_id in self._run_idempotency_ids
+        current = self._set_run_status(
+            run_id,
+            status,
+            _persist=not durable,
+            **fields,
+            last_event=f"run.{status}",
+            **extra,
+        )
         with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+            event = _run_event(run_id, f"run.{status}", **fields, **extra)
+            if durable:
+                event = self._run_idempotency_store.update_status_and_append_event(
+                    run_id, current, event
+                )
+            _publish_run_event(self, run_id, event, persist=not durable)
 
     try:
         self._set_run_status(run_id, "running")
@@ -764,6 +808,44 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     run_id = request.match_info["run_id"]
     if not self._request_owns_run(request, run_id):
         return _run_not_found(_api_server._openai_error, run_id)
+    raw_cursor = request.headers.get("Last-Event-ID") or request.query.get("after") or "0"
+    try:
+        cursor = int(raw_cursor)
+        if cursor < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return _json_error(
+            _api_server._openai_error,
+            "Event cursor must be a non-negative integer.",
+            code="invalid_event_cursor",
+            status=400,
+        )
+    scope = self._run_idempotency_scope(request)
+    if self._run_idempotency_store.owns_run(scope, run_id):
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        await response.prepare(request)
+        last_write = time.monotonic()
+        try:
+            while True:
+                status = _durable_run_status(self, request, run_id)
+                events = self._run_idempotency_store.events_after(scope, run_id, cursor)
+                for event in events:
+                    cursor = int(event["sequence"])
+                    await response.write(
+                        f"id: {cursor}\n".encode() + _api_server._sse_frame(event)
+                    )
+                    last_write = time.monotonic()
+                if status is None or status.get("status") in TERMINAL_STATUSES:
+                    await response.write(b": stream closed\n\n")
+                    break
+                if time.monotonic() - last_write >= 30:
+                    await response.write(b": keepalive\n\n")
+                    last_write = time.monotonic()
+                await asyncio.sleep(0.1)
+        except Exception as exc:
+            logger.debug("[api_server] durable SSE stream error for run %s: %s", run_id, exc)
+        return response
     # Allow subscribing slightly before the run is registered (race window).
     # Confirm the force-kill actually reaped the process before we clear its PID file / scoped locks.
     # SIGKILL can fail to take (e.g. an uninterruptible-sleep or zombie-reaping parent), and if we blindly
@@ -803,10 +885,33 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
     self._set_run_status(run_id, "running", last_event=name)
+    _publish_run_event(self, run_id, _run_event(run_id, name, **fields))
+
+
+def _publish_run_event(
+    self,
+    run_id: str,
+    event: Dict[str, Any],
+    *,
+    loop: Optional["asyncio.AbstractEventLoop"] = None,
+    persist: bool = True,
+) -> Dict[str, Any]:
+    """Persist before fan-out, then enqueue the same cursor-stamped payload."""
+    published = event
+    if persist and run_id in self._run_idempotency_ids:
+        try:
+            published = self._run_idempotency_store.append_event(run_id, event)
+        except Exception:
+            logger.exception("[api_server] failed to persist run event %s", run_id)
+            return event
     q = self._run_streams.get(run_id)
     if q is not None:
         with suppress(Exception):
-            q.put_nowait(_run_event(run_id, name, **fields))
+            if loop is None:
+                q.put_nowait(published)
+            else:
+                loop.call_soon_threadsafe(q.put_nowait, published)
+    return published
 
 
 _APPROVAL_CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
@@ -832,6 +937,16 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
     allowed = {"once", "deny"} if room_scoped else {"once", "session", "always", "deny"}
     resolve_all = any(_api_server._coerce_request_bool(body.get(k), default=False) for k in ("all", "resolve_all"))
     approval_session_key = self._run_approval_sessions.get(run_id)
+    scope = (
+        self._run_idempotency_scope(request)
+        if run_id in self._run_idempotency_ids
+        else ""
+    )
+    durable_approval = self._run_idempotency_store.approval_for_run(
+        scope, run_id, request_id
+    ) if run_id in self._run_idempotency_ids else None
+    durable_pending = durable_approval if (durable_approval or {}).get("state") == "pending" else None
+    durable_request_id = str((durable_approval or {}).get("request_id") or "")
     for failed, message, code, status in (
         (raw_request_id is not None and (not request_id or len(request_id) > 256),
          "Approval request_id is invalid.", "invalid_approval_request", 400),
@@ -842,20 +957,61 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
          "Room approvals can resolve only one exact request", "invalid_approval_scope", 400),
         (room_scoped and not request_id,
          "Room approvals require the exact request_id.", "approval_request_required", 400),
-        (not approval_session_key,
+        (not approval_session_key and durable_approval is None,
          f"Run has no active approval session: {run_id}", "approval_not_active", 409)):
         if failed:
             return _json_error(_openai_error, message, code=code, status=status)
-    try:
-        from tools.approval import resolve_gateway_approval
-        resolved = resolve_gateway_approval(
-            approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
-    except Exception as exc:
-        logger.exception("[api_server] approval resolution failed for run %s", run_id)
-        return _json_error(_openai_error, str(exc), status=500)
-    if resolved <= 0:
-        return _json_error(
-            _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
+    resolved = 0
+    if approval_session_key:
+        try:
+            from tools.approval import resolve_gateway_approval
+            resolved = resolve_gateway_approval(
+                approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
+        except Exception as exc:
+            logger.exception("[api_server] approval resolution failed for run %s", run_id)
+            return _json_error(_openai_error, str(exc), status=500)
+        if resolved <= 0 and durable_pending is None:
+            return _json_error(
+                _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
+    receipt_request_id = request_id or durable_request_id
+    if run_id in self._run_idempotency_ids and receipt_request_id:
+        outcome, receipt = self._run_idempotency_store.resolve_approval(
+            scope,
+            run_id,
+            receipt_request_id,
+            choice,
+            applied=resolved > 0,
+            resolved=resolved,
+        )
+        if outcome == "conflict":
+            return _json_error(
+                _openai_error,
+                "Approval request already has a different decision.",
+                code="approval_decision_conflict",
+                status=409,
+            )
+        if outcome == "missing" or receipt is None:
+            return _json_error(
+                _openai_error, f"Run has no pending approval: {run_id}", code="approval_not_pending", status=409)
+        response = {
+            "object": "hermes.run.approval_response",
+            **receipt,
+            "replayed": outcome == "replayed",
+        }
+        if outcome == "created":
+            fields = {
+                "choice": choice,
+                "request_id": receipt_request_id,
+                "resolved": resolved,
+                "applied": resolved > 0,
+            }
+            if resolved > 0:
+                _mark_run_event(self, run_id, "approval.responded", **fields)
+            else:
+                _publish_run_event(
+                    self, run_id, _run_event(run_id, "approval.responded", **fields)
+                )
+        return web.json_response(response)
     request_id_field = {"request_id": request_id} if request_id else {}
     _mark_run_event(self, run_id, "approval.responded", choice=choice, **request_id_field, resolved=resolved)
     return web.json_response({

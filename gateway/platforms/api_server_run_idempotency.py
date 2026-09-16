@@ -106,6 +106,29 @@ class RunIdempotencyStore:
                 add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_events (
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                event_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (run_id, sequence)
+            )"""
+        )
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS run_approvals (
+                run_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                choice TEXT,
+                applied INTEGER,
+                resolved INTEGER,
+                created_at REAL NOT NULL,
+                responded_at REAL,
+                PRIMARY KEY (run_id, request_id)
+            )"""
+        )
         self._conn.commit()
         self._lock = threading.Lock()
         self._tighten_permissions()
@@ -183,6 +206,13 @@ class RunIdempotencyStore:
             except Exception:
                 terminal = False
             if terminal:
+                run_row = self._conn.execute(
+                    "SELECT run_id FROM run_idempotency WHERE scope=? AND idempotency_key=?",
+                    (stale_scope, stale_key),
+                ).fetchone()
+                if run_row is not None:
+                    self._conn.execute("DELETE FROM run_events WHERE run_id=?", (run_row[0],))
+                    self._conn.execute("DELETE FROM run_approvals WHERE run_id=?", (run_row[0],))
                 self._conn.execute(
                     "DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (stale_scope, stale_key))
 
@@ -223,6 +253,229 @@ class RunIdempotencyStore:
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
             self._conn.commit()
+
+    def append_event(self, run_id: str, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Append one event and return its stable, run-local sequence envelope.
+
+        Events are admitted only for durable run rows. Callers can therefore
+        expose the cursor under the same authenticated scope as run status.
+        """
+        now = time.time()
+        with self._immediate_txn():
+            if self._conn.execute(
+                "SELECT 1 FROM run_idempotency WHERE run_id=?", (run_id,)
+            ).fetchone() is None:
+                raise KeyError(run_id)
+            stored = self._append_event_locked(run_id, event, now)
+            self._conn.commit()
+        return stored
+
+    def _append_event_locked(
+        self, run_id: str, event: Dict[str, Any], created_at: float
+    ) -> Dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        sequence = int(row[0])
+        stored = dict(event)
+        stored["sequence"] = sequence
+        self._conn.execute(
+            "INSERT INTO run_events(run_id,sequence,event_json,created_at) VALUES(?,?,?,?)",
+            (run_id, sequence, _encode_status(stored), created_at),
+        )
+        return stored
+
+    def update_status_and_append_event(
+        self, run_id: str, status: Dict[str, Any], event: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Commit a status transition and its replay event as one boundary."""
+        now = time.time()
+        with self._immediate_txn():
+            changed = self._conn.execute(
+                "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
+                (_encode_status(status), now, run_id),
+            ).rowcount
+            if changed != 1:
+                raise KeyError(run_id)
+            stored = self._append_event_locked(run_id, event, now)
+            self._conn.commit()
+        return stored
+
+    def events_after(self, scope: str, run_id: str, sequence: int) -> list[Dict[str, Any]]:
+        """Return events after *sequence* only when *scope* owns the run."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT e.event_json
+                     FROM run_events AS e
+                     JOIN run_idempotency AS r ON r.run_id=e.run_id
+                    WHERE r.scope=? AND e.run_id=? AND e.sequence>?
+                    ORDER BY e.sequence""",
+                (scope, run_id, max(0, int(sequence or 0))),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def save_approval_request(self, run_id: str, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a redacted approval request without rewriting an existing one."""
+        request_id = str(request.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("approval request_id is required")
+        encoded = _encode_status(dict(request))
+        now = time.time()
+        with self._immediate_txn():
+            if self._conn.execute(
+                "SELECT 1 FROM run_idempotency WHERE run_id=?", (run_id,)
+            ).fetchone() is None:
+                raise KeyError(run_id)
+            row = self._save_approval_request_locked(
+                run_id, request_id, encoded, now
+            )
+            self._conn.commit()
+        return {
+            "run_id": run_id,
+            "request_id": request_id,
+            "request": json.loads(row[0]),
+            "state": str(row[1]),
+        }
+
+    def _save_approval_request_locked(
+        self, run_id: str, request_id: str, encoded: str, created_at: float
+    ):
+        self._conn.execute(
+            """INSERT OR IGNORE INTO run_approvals(
+                   run_id,request_id,request_json,state,created_at
+               ) VALUES(?,?,?,'pending',?)""",
+            (run_id, request_id, encoded, created_at),
+        )
+        row = self._conn.execute(
+            "SELECT request_json,state FROM run_approvals WHERE run_id=? AND request_id=?",
+            (run_id, request_id),
+        ).fetchone()
+        if row is None or not hmac.compare_digest(str(row[0]), encoded):
+            raise ValueError("approval request_id conflicts with an existing request")
+        return row
+
+    def record_approval_request(
+        self,
+        run_id: str,
+        status: Dict[str, Any],
+        event: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Commit pending status, request, and replay event as one boundary."""
+        request_id = str(event.get("request_id") or "").strip()
+        if not request_id:
+            raise ValueError("approval request_id is required")
+        now = time.time()
+        with self._immediate_txn():
+            changed = self._conn.execute(
+                "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
+                (_encode_status(status), now, run_id),
+            ).rowcount
+            if changed != 1:
+                raise KeyError(run_id)
+            self._save_approval_request_locked(
+                run_id, request_id, _encode_status(dict(event)), now
+            )
+            stored = self._append_event_locked(run_id, event, now)
+            self._conn.commit()
+        return stored
+
+    def pending_approval(
+        self, scope: str, run_id: str, request_id: str = ""
+    ) -> Dict[str, Any] | None:
+        """Load one unresolved approval through the run's authenticated scope."""
+        return self.approval_for_run(scope, run_id, request_id, pending_only=True)
+
+    def approval_for_run(
+        self,
+        scope: str,
+        run_id: str,
+        request_id: str = "",
+        *,
+        pending_only: bool = False,
+    ) -> Dict[str, Any] | None:
+        """Load one approval request or receipt through the run's scope."""
+        query = (
+            """SELECT a.request_id,a.request_json,a.state,a.choice,a.applied,a.resolved
+                 FROM run_approvals AS a
+                 JOIN run_idempotency AS r ON r.run_id=a.run_id
+                WHERE r.scope=? AND a.run_id=?"""
+        )
+        params: list[Any] = [scope, run_id]
+        if pending_only:
+            query += " AND a.state='pending'"
+        if request_id:
+            query += " AND a.request_id=?"
+            params.append(request_id)
+        query += " ORDER BY a.created_at,a.request_id LIMIT 1"
+        with self._lock:
+            row = self._conn.execute(query, params).fetchone()
+        if row is None:
+            return None
+        result = {
+            "run_id": run_id,
+            "request_id": str(row[0]),
+            "request": json.loads(row[1]),
+            "state": str(row[2]),
+        }
+        if result["state"] == "resolved":
+            result["receipt"] = {
+                "run_id": run_id,
+                "request_id": str(row[0]),
+                "choice": str(row[3]),
+                "applied": bool(row[4]),
+                "resolved": int(row[5] or 0),
+            }
+        return result
+
+    def resolve_approval(
+        self,
+        scope: str,
+        run_id: str,
+        request_id: str,
+        choice: str,
+        *,
+        applied: bool,
+        resolved: int,
+    ) -> tuple[str, Dict[str, Any] | None]:
+        """Persist a decision receipt; identical retries replay the first receipt."""
+        with self._immediate_txn():
+            row = self._conn.execute(
+                """SELECT a.state,a.choice,a.applied,a.resolved
+                     FROM run_approvals AS a
+                     JOIN run_idempotency AS r ON r.run_id=a.run_id
+                    WHERE r.scope=? AND a.run_id=? AND a.request_id=?""",
+                (scope, run_id, request_id),
+            ).fetchone()
+            if row is None:
+                self._conn.commit()
+                return "missing", None
+            state, stored_choice, stored_applied, stored_resolved = row
+            if state != "pending":
+                receipt = {
+                    "run_id": run_id,
+                    "request_id": request_id,
+                    "choice": str(stored_choice),
+                    "applied": bool(stored_applied),
+                    "resolved": int(stored_resolved or 0),
+                }
+                self._conn.commit()
+                return ("replayed" if hmac.compare_digest(str(stored_choice), choice) else "conflict"), receipt
+            receipt = {
+                "run_id": run_id,
+                "request_id": request_id,
+                "choice": choice,
+                "applied": bool(applied),
+                "resolved": max(0, int(resolved)),
+            }
+            self._conn.execute(
+                """UPDATE run_approvals
+                      SET state='resolved',choice=?,applied=?,resolved=?,responded_at=?
+                    WHERE run_id=? AND request_id=? AND state='pending'""",
+                (choice, int(applied), receipt["resolved"], time.time(), run_id, request_id),
+            )
+            self._conn.commit()
+            return "created", receipt
 
     def close(self) -> None:
         with self._lock:

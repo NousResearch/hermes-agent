@@ -466,6 +466,120 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_event_cursor_replays_only_missed_events_after_adapter_restart(self, tmp_path):
+        """Contract: Last-Event-ID resumes a durable idempotent run after replacement."""
+        path = tmp_path / "idem.db"
+        first = _make_adapter()
+        _use_idempotency_db(first, path)
+        app = _create_runs_app(first)
+
+        def make_agent(**kwargs):
+            agent = MagicMock()
+
+            def run_conversation(**_run_kwargs):
+                kwargs["tool_progress_callback"]("tool.started", "shell", "inspect")
+                return {"final_response": "done"}
+
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(first, "_create_agent", side_effect=make_agent):
+                started = await cli.post(
+                    "/v1/runs",
+                    json={"input": "same"},
+                    headers={"Idempotency-Key": "restart-events"},
+                )
+                run_id = (await started.json())["run_id"]
+                for _ in range(40):
+                    status = await cli.get(f"/v1/runs/{run_id}")
+                    if (await status.json()).get("status") == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+        first._run_idempotency_store.close()
+
+        restarted = _make_adapter()
+        _use_idempotency_db(restarted, path)
+        restarted_app = _create_runs_app(restarted)
+        async with TestClient(TestServer(restarted_app)) as cli:
+            replay = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={"Last-Event-ID": "1"},
+            )
+            body = await replay.text()
+
+        assert replay.status == 200
+        assert "id: 1\n" not in body
+        assert "id: 2\n" in body
+        assert '"event": "run.completed"' in body
+        assert '"event": "tool.started"' not in body
+
+    @pytest.mark.asyncio
+    async def test_pending_approval_decision_is_readable_after_adapter_restart(self, tmp_path):
+        """Contract: replacement preserves one exact, conflict-safe decision receipt."""
+        from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+
+        path = tmp_path / "idem.db"
+        scope = hashlib.sha256(
+            "default\0unauthenticated-test-listener".encode()
+        ).hexdigest()
+        store = RunIdempotencyStore(str(path))
+        store.reserve(
+            scope,
+            "approval-restart",
+            "fingerprint",
+            "run_approval_restart",
+            {
+                "run_id": "run_approval_restart",
+                "status": "waiting_for_approval",
+                "approval": {"request_id": "approval-a"},
+            },
+            owner_pid=999_999_999,
+            owner_started=1,
+        )
+        store.save_approval_request(
+            "run_approval_restart",
+            {"request_id": "approval-a", "command": "redacted"},
+        )
+        store.close()
+
+        restarted = _make_adapter()
+        _use_idempotency_db(restarted, path)
+        app = _create_runs_app(restarted)
+        async with TestClient(TestServer(app)) as cli:
+            first = await cli.post(
+                "/v1/runs/run_approval_restart/approval",
+                json={"choice": "deny", "request_id": "approval-a"},
+            )
+            replay = await cli.post(
+                "/v1/runs/run_approval_restart/approval",
+                json={"choice": "deny", "request_id": "approval-a"},
+            )
+            conflict = await cli.post(
+                "/v1/runs/run_approval_restart/approval",
+                json={"choice": "once", "request_id": "approval-a"},
+            )
+            first_body = await first.json()
+            replay_body = await replay.json()
+            conflict_body = await conflict.json()
+
+        assert first.status == 200
+        assert first_body == {
+            "object": "hermes.run.approval_response",
+            "run_id": "run_approval_restart",
+            "request_id": "approval-a",
+            "choice": "deny",
+            "resolved": 0,
+            "applied": False,
+            "replayed": False,
+        }
+        assert replay.status == 200
+        assert replay_body == {**first_body, "replayed": True}
+        assert conflict.status == 409
+        assert conflict_body["error"]["code"] == "approval_decision_conflict"
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
@@ -1515,9 +1629,14 @@ class TestRunIdempotency:
         async with TestClient(TestServer(app)) as cli:
             response = await cli.get("/v1/runs/run_stale")
             body = await response.json()
+            events = await cli.get("/v1/runs/run_stale/events")
+            event_body = await events.text()
         assert response.status == 200
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
+        assert events.status == 200
+        assert "id: 1\n" in event_body
+        assert '"event": "run.interrupted"' in event_body
 
     def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
         adapter._run_statuses["run_progress"] = {

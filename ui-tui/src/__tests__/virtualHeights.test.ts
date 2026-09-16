@@ -56,7 +56,7 @@ describe('virtual height estimates', () => {
     const hidden = estimatedMsgHeight(msg, 50, { compact: false, details: false })
     const visible = estimatedMsgHeight(msg, 50, { compact: false, details: true })
 
-    expect(visible - hidden).toBeGreaterThan(24)
+    expect(visible - hidden).toBeGreaterThan(msg.tools!.length)
   })
 
   it('accounts for the response separator when assistant details are visible', () => {

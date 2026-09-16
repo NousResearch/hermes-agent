@@ -340,3 +340,12 @@ def test_extra_welcome_hosts_make_a_local_stand_in_the_welcome_host(monkeypatch)
 ])
 def test_friendly_wait_never_prints_raw_seconds(seconds, expected):
     assert anon_auth.friendly_wait(seconds) == expected
+
+
+def test_retry_after_is_the_whole_wait_not_the_wait_plus_float_dust(monkeypatch):
+    """``(now + 60) - now`` is 60.000000000000455 for this ``now``; the payload must still say 60."""
+    now = 4064.78551427515 + 16.0
+    monkeypatch.setattr(anon_auth.time, "monotonic", lambda: now)
+    failure = anon_auth.MintFailure(code=anon_auth.ANON_SERVER_ERROR, message="x", retryable=True,
+                                    retry_after=60.0, not_before=now + 60.0)
+    assert failure.as_payload()["retry_after"] == 60

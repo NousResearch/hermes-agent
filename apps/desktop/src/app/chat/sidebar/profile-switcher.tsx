@@ -372,6 +372,7 @@ export function ProfileRail() {
                   color={resolveProfileColor(profile.name, colors)}
                   key={profile.name}
                   label={profileLabel(profile)}
+                  name={profile.name}
                   // The legacy per-profile remote override predates the
                   // gateway registry; once the rail shows machines directly
                   // it only confuses, so it is offered on single-gateway
@@ -1134,6 +1135,11 @@ interface ProfileSquareProps {
   active: boolean
   color: null | string
   label: string
+  // The canonical profile id -- distinct from `label`, which is the display
+  // name and may be absent, non-ASCII, or renamed. Sortable identity must
+  // track this, not the label, or dnd-kit's id space diverges from the
+  // SortableContext/handleDragEnd id space (both keyed by name).
+  name: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
@@ -1162,6 +1168,7 @@ function ProfileSquare({
   active,
   color,
   label,
+  name,
   onConnectRemote,
   onDelete,
   onEditSoul,
@@ -1181,7 +1188,7 @@ function ProfileSquare({
   const { cancelPrewarm, startPrewarm } = useProfilePrewarm(label)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
-    id: label,
+    id: name,
     transition: RAIL_TRANSITION
   })
 

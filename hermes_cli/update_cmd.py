@@ -18,7 +18,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli.update_cmd_common import _best_effort
-from hermes_constants import get_default_hermes_root, venv_python_path
+from hermes_constants import get_default_hermes_root, project_venv_dir, venv_python_path
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -613,8 +613,8 @@ def _repair_venv_on_current_checkout(
     from hermes_cli.managed_uv import ensure_uv
     repair_uv = ensure_uv()
     # Venv gone entirely (repair interrupted after the old one was moved aside): recreate.
-    venv_python_missing = not (
-        venv_python_path(_m().PROJECT_ROOT / "venv", windows=_m()._is_windows())).exists()
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv"
+    venv_python_missing = not venv_python_path(venv_dir, windows=_m()._is_windows()).exists()
     if venv_python_missing and repair_uv:
         print("→ Recreating virtual environment...")
         subprocess.run([repair_uv, "venv", "venv"], cwd=_m().PROJECT_ROOT, check=False)
@@ -655,7 +655,7 @@ def _pip_install_prefix(uv_bin) -> tuple[list[str], dict | None]:
         # See #83914.
         from hermes_cli.managed_uv import managed_python_env
         env = managed_python_env()
-        env["VIRTUAL_ENV"] = str(_m().PROJECT_ROOT / "venv")
+        env["VIRTUAL_ENV"] = str(project_venv_dir(_m().PROJECT_ROOT) or _m().PROJECT_ROOT / "venv")
         return [uv_bin, "pip"], env
     return [sys.executable, "-m", "pip"], None
 

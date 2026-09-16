@@ -351,13 +351,13 @@ def test_swap_preserve_set_is_the_module_constant():
 
 
 def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):
-    """venv/node_modules are gitignored on every normal install and the swap
+    """venv/.venv/node_modules are gitignored on every normal install and the swap
     preserves them — the ignored probe must not turn them into a false
     refusal."""
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(
         update_cmd.subprocess,
         "run",
-        _porcelain_run("!! venv/\n!! node_modules/\n!! .env\n"),
+        _porcelain_run("!! venv/\n!! .venv/\n!! node_modules/\n!! .env\n"),
     )
     assert update_cmd._zip_overlay_block_reason(tmp_path) is None

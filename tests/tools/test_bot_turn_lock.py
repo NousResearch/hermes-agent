@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 
@@ -306,6 +307,7 @@ def test_relay_deliver_returns_target_busy_error(tmp_path, monkeypatch):
         assert "error" in out
         assert out["error"]["code"] == 5096
         assert "target_busy" in out["error"]["message"]
+        assert out["error"]["data"]["reason"] == "target_busy"
         assert not spawned, "turn must not spawn while the profile is busy"
     finally:
         release.set()
@@ -341,3 +343,37 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
     assert "error" not in out, out
     assert out["result"]["reply"] == "pong"
     assert time.monotonic() - start >= 0.2, "deliver should have queued"
+
+
+@pytest.mark.parametrize(
+    ("failure", "code", "reason"),
+    [
+        (TurnBusyError("ops", 0.2), 5096, "target_busy"),
+        (subprocess.TimeoutExpired(["hermes"], 600), 5093, "delivery_timeout"),
+        (RuntimeError("Error code: 401 - invalid api key"), 5094, "provider_auth_or_access"),
+        (RuntimeError("something nobody has a rule for"), 5094, "unknown"),
+    ],
+    ids=["busy", "turn-timed-out", "classifiable-failure", "unclassifiable-failure"],
+)
+def test_every_relay_refusal_carries_its_typed_reason(tmp_path, monkeypatch, failure, code, reason):
+    """`data.reason` is the only channel the Desktop forwards: it reads `error.data.reason` and puts
+    it in the sender's reply file, and the sender re-classifies from free text otherwise — which can
+    never produce these codes. A refusal that ships only a JSON-RPC code reaches the sending agent as
+    `[reason: unknown]`, so it cannot tell "retry shortly" from an auth failure. The turn-failure
+    branch already did this; these three did not."""
+    import tui_gateway.server as srv
+
+    h = tmp_path / "h"
+    (h / "profiles" / "ops").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(h))
+    monkeypatch.setattr(bot_relay, "local_delivery_command", lambda prof, tmp: ["__delivery__", prof])
+
+    def _raise(argv, **kwargs):
+        raise failure
+
+    monkeypatch.setattr("subprocess.run", _raise)
+
+    out = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "x"})
+
+    assert out["error"]["code"] == code
+    assert out["error"]["data"]["reason"] == reason

@@ -154,10 +154,17 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         reply = _bot_mode_delivery_text((proc.stdout or "").strip(), successful=True)
         return _ok(rid, {"reply": reply})
     except subprocess.TimeoutExpired:
-        return _err(rid, 5093, "delivery turn timed out")
+        # Every classified refusal has to ride `data.reason`: the Desktop forwards only that field,
+        # and the sender re-classifies from free text, which cannot name these. This branch is also
+        # `delivery_timeout`'s only producer.
+        from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+        return _err(rid, 5093, "delivery turn timed out", data={"reason": DELIVERY_TIMEOUT})
     except Exception as e:
-        # 'target_busy' extends the structured refusal enum.
-        return _err(rid, 5096 if getattr(e, "reason", "") == "target_busy" else 5094, str(e))
+        from tools.bot_failure_reasons import classify_agent_error
+        # 'target_busy' extends the structured refusal enum; the exception carries it already.
+        reason = str(getattr(e, "reason", "") or "")
+        return _err(rid, 5096 if reason == "target_busy" else 5094, str(e),
+                    data={"reason": reason or classify_agent_error(str(e))})
 
 
 @method("bot_relay.reply")

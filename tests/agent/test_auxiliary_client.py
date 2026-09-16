@@ -2813,10 +2813,12 @@ class TestAuxiliaryAuthRefreshRetry:
             from agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("anthropic", failed_api_key="expired-token") is True
+            import agent.auxiliary_client as aux
+            assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
         mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
-        stale_client.close.assert_called_once()
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_remints_vertex_token_and_evicts_cache(self):
         """Vertex tokens live ~1h; on a long-running gateway the cached
@@ -2841,9 +2843,11 @@ class TestAuxiliaryAuthRefreshRetry:
             from agent.auxiliary_client import _refresh_provider_credentials
 
             assert _refresh_provider_credentials("vertex") is True
+            import agent.auxiliary_client as aux
+            assert cache_key not in aux._client_cache  # evicted, not closed (in-flight users)
 
         mock_get_config.assert_called_once()
-        stale_client.close.assert_called_once()
+        stale_client.close.assert_not_called()
 
     def test_refresh_provider_credentials_vertex_returns_false_when_unminted(self):
         """No usable token/base_url (e.g. ADC and the service-account file

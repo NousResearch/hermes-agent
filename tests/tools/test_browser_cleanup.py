@@ -203,3 +203,16 @@ class TestAtexitStopSwallowsInterrupt:
         monkeypatch.setattr(browser_tool, "_cleanup_running", True)
         bt_lifecycle._stop_browser_cleanup_thread()  # must not raise
         assert browser_tool._cleanup_running is False
+
+
+class TestSafeAtexitSwallowsStaleModuleRace:
+    def test_wrapped_callback_does_not_raise(self):
+        """#112522: origin_module()'s atexit fallback does a bare re-import that can hit a
+        transient ImportError when hermes update's post-pull module purge races a still-
+        cached dependent. The registered atexit callback must not let that raise."""
+        from tools import browser_tool
+
+        def _boom():
+            raise ImportError("cannot import name 'file_signature' from 'utils'")
+
+        browser_tool._safe_atexit(_boom)()  # must not raise

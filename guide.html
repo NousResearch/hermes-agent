@@ -165,6 +165,17 @@
     font-size: 0.93rem;
   }
   .tip { background: rgba(63,185,80,0.08); border: 1px solid rgba(63,185,80,0.35); }
+  figure.shot { margin: 1rem auto; max-width: 820px; }
+  figure.shot img {
+    width: 100%; display: block;
+    border: 1px solid var(--border, #30363d);
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12);
+  }
+  figure.shot figcaption {
+    text-align: center; color: var(--text-secondary, #9aa4b2);
+    font-size: 0.85rem; margin-top: 0.4rem;
+  }
   .tip::before { content: "💡 نکته: "; color: var(--green); font-weight: bold; }
   .warn { background: rgba(248,81,73,0.08); border: 1px solid rgba(248,81,73,0.35); }
   .warn::before { content: "⚠️ توجه: "; color: var(--red); font-weight: bold; }
@@ -290,6 +301,34 @@
     <li>برای کار با مدل‌ها، از صفحه نخست یا بخش تنظیمات ← «ارائه‌دهنده‌ها» کلید API خود را وارد کنید (Nous Portal، OpenRouter، OpenAI، Anthropic، Ollama محلی و ده‌ها ارائه‌دهنده دیگر).</li>
     <li>زبان فارسی از مسیر تنظیمات ← «زبان» فعال می‌شود؛ کل رابط خودکار راست‌به‌چپ می‌شود.</li>
   </ul>
+
+  <h3>راهنمای گام‌به‌گام اولین اجرا</h3>
+  <p>این تصاویر از خودِ برنامه (نسخه فارسی‌شده) گرفته شده‌اند و دقیقاً همان چیزی را نشان می‌دهند که در اولین اجرا می‌بینید:</p>
+
+  <figure class="shot">
+    <img src="guide-images/01-first-launch.png" alt="پنجره برنامه در اولین اجرا با زبان انگلیسی" loading="lazy">
+    <figcaption>۱ — برنامه باز شد؛ در اولین اجرا زبان پیش‌فرض انگلیسی است.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/02-language-menu.png" alt="فهرست انتخاب زبان با گزینه فارسی" loading="lazy">
+    <figcaption>۲ — در پایین نوار کناری روی «Switch language» کلیک کنید و <strong>فارسی</strong> را انتخاب کنید.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/03-persian-rtl.png" alt="رابط کاربری پس از انتخاب فارسی، راست‌به‌چپ" loading="lazy">
+    <figcaption>۳ — کل رابط بلافاصله فارسی و راست‌به‌چپ می‌شود؛ نوار کناری به سمت راست می‌رود.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/04-models-persian.png" alt="صفحه مدل‌ها برای تنظیم ارائه‌دهنده" loading="lazy">
+    <figcaption>۴ — از بخش «مدل‌ها» ارائه‌دهنده (Nous Portal، OpenRouter، OpenAI و…) و مدل دلخواه را تنظیم کنید.</figcaption>
+  </figure>
+
+  <figure class="shot">
+    <img src="guide-images/05-guide-persian.png" alt="راهنمای فارسی درون‌برنامه‌ای در صفحه مستندات" loading="lazy">
+    <figcaption>۵ — همین راهنما همیشه در دسترس است: بخش «مستندات» در خود برنامه.</figcaption>
+  </figure>
 
   <div class="tip">اگر در طول راه‌اندازی به خطا خوردید، بخش «عیب‌یابی» در انتهای همین راهنما و بخش «اجرای برنامه در حالت توسعه» را ببینید — رایج‌ترین خطاها و راه‌حل آن‌ها آنجا فهرست شده است.</div>
 </section>

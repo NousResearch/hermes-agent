@@ -203,6 +203,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'compression_recovery_deadline', 'compression_ineffective_count'),
         )),
         ('26 2026-09-02T14:22Z 8e4366d358', (('+', 'tool_names', 'last_read_at'),)),
+        ('27 2026-09-12T15:07Z 5ee7a4473', (('+', 'import_identity_digest', 'origin_json'),)),
         ),
     ),
     "messages": _TableHistory(

@@ -45,10 +45,14 @@ def resolve_and_repair_transcript_batch(
         decoded = decode_content_fn(target_row["content"])
         msg["_row_id"] = target_id
         if is_content_blank(decoded):
+            # This is a durable rewrite, so project the live content through the
+            # same boundary as ordinary inserts. Keep ``msg`` raw for the caller;
+            # changing it here would alter the live conversation after a repair.
+            from hermes_state_messages import _redact_durable_projection
             conn.execute(
                 "UPDATE messages SET content = ? "
                 "WHERE id = ? AND session_id = ? AND active = 1",
-                (encode_content_fn(msg.get("content")), target_id, session_id),
+                (encode_content_fn(_redact_durable_projection(msg.get("content"))), target_id, session_id),
             )
         else:
             msg["_canonical_content"] = decoded  # concurrent winner: adopt, don't overwrite

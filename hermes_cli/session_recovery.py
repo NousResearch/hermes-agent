@@ -907,6 +907,24 @@ def _verify_recovered_database(
     return verification
 
 
+def _sanitize_recovered_durable_projections(destination: sqlite3.Connection) -> None:
+    """Apply the trusted current-schema redaction pass before recovery admits FTS.
+
+    Recovery deliberately copies readable legacy rows verbatim; that bypasses every
+    normal write boundary. Run the same schema-level projection sanitizer before the
+    derived indexes are finalized so neither canonical storage nor FTS can revive a
+    historical secret.
+    """
+    shim = object.__new__(SessionDB)
+    shim._conn = destination
+    destination.row_factory = sqlite3.Row
+    fts5_available = bool(_table_columns(destination, "messages_fts"))
+    SessionDB._redact_legacy_durable_projections(shim, destination.cursor(), fts5_available=fts5_available)
+    # Use the migration's fail-closed physical boundary verbatim: a copied row can
+    # otherwise survive in WAL/freelist pages even though its logical projection is clean.
+    SessionDB._sanitize_v31_legacy_redaction_storage(shim)
+
+
 def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any]:
     """Stamp only metadata that the newly created destination actually owns."""
     fts_tables = {
@@ -1014,6 +1032,7 @@ def _recover_via_lost_and_found(
     try:
         mapping = map_lost_and_found_rows(lf_conn, destination_conn)
         stubbing = stub_missing_parent_sessions(destination_conn)
+        _sanitize_recovered_durable_projections(destination_conn)
         fts = rebuild_fts_indexes(destination_conn)
         derived_metadata = _finalize_derived_metadata(destination_conn)
     finally:
@@ -1154,6 +1173,7 @@ def recover_session_database(
                     progress_cb=progress_cb, source_rows=inspection["tables"][table].get("rows"),
                 )
             orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
+            _sanitize_recovered_durable_projections(destination_conn)
             derived_metadata = _finalize_derived_metadata(destination_conn)
         finally:
             source_conn.close()

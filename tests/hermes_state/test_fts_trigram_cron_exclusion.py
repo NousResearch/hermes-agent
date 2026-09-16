@@ -125,7 +125,9 @@ def test_existing_external_layout_rebuilds_trigram_on_upgrade(tmp_path):
     cli_id = old.append_message("cli", role="user", content="交互迁移内容")
     cron_id = old.append_message("cron", role="user", content="定时迁移内容")
     assert _trigram_rowids(old) == {cli_id, cron_id}
-    old._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION - 1,))
+    # v30 is the durable-redaction predecessor. Its previously gated v30
+    # trigram repair must still run before the v31 sanitation pass.
+    old._conn.execute("UPDATE schema_version SET version = 30")
     old._conn.commit()
     old.close()
 
@@ -234,6 +236,28 @@ def test_partial_upgrade_view_does_not_skip_historical_rebuild(tmp_path):
     old._conn.execute("DROP VIEW messages_fts_trigram_src")
     old._conn.executescript(FTS_TRIGRAM_SQL)
     old._conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION - 1,))
+    old._conn.commit()
+    old.close()
+
+    migrated = SessionDB(db_path=db_path)
+    try:
+        assert _trigram_rowids(migrated) == set()
+    finally:
+        migrated.close()
+
+
+def test_v31_to_v32_reruns_historical_trigram_exclusion_repair(tmp_path):
+    """v31 installs can have new DDL but stale cron rows after an interrupted v30 repair."""
+    db_path = tmp_path / "state.db"
+    old = SessionDB(db_path=db_path)
+    if not old._trigram_available:
+        old.close()
+        pytest.skip("trigram tokenizer unavailable in this SQLite build")
+    _install_pre_v27_trigram(old)
+    old.create_session("cron", source="cron")
+    cron_id = old.append_message("cron", role="assistant", content="v31 interrupted repair")
+    assert _trigram_rowids(old) == {cron_id}
+    old._conn.execute("UPDATE schema_version SET version = 31")
     old._conn.commit()
     old.close()
 

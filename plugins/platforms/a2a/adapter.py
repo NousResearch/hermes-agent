@@ -576,7 +576,9 @@ class A2AAdapter(BasePlatformAdapter):
         ``source=a2a`` session and titles it deterministically; later turns ``--resume`` that id."""
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
         slug = str(agent.get("slug") or profile or "agent")
-        safe_ctx = _safe_context_slug(context_id)
+        # Redact the untrusted component before slugging it. The slug's '-' separators
+        # can otherwise make a token look embedded and evade boundary-aware patterns.
+        safe_ctx = _safe_context_slug(security.redact_outbound(context_id))
         session_title = f"a2a-{slug}-{safe_ctx}"
         key = (profile or "default", slug, safe_ctx)
         timeout = int(agent.get("timeout") or _reply_timeout())
@@ -605,9 +607,17 @@ class A2AAdapter(BasePlatformAdapter):
                     profile, "SELECT id FROM sessions WHERE source = 'a2a' AND started_at >= ? ORDER BY started_at DESC LIMIT 1",
                     (start - 2.0,), "A2A: could not find latest forwarded session")):
                 self._profile_sessions[key] = session_id
-                _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?", (session_title, session_id),
-                          "A2A: could not title forwarded session", commit=True)
+                self._set_forwarded_session_title(profile, session_id, session_title)
             return security.redact_outbound((proc.stdout or "").strip()), protocol.STATE_COMPLETED
+
+    @staticmethod
+    def _set_forwarded_session_title(profile: str, session_id: str, title: str) -> None:
+        """Route A2A's direct state.db title write through the durable boundary."""
+        from hermes_state_titles import SessionTitlesMixin
+
+        _state_db(profile, "UPDATE sessions SET title = ? WHERE id = ?",
+                  (SessionTitlesMixin.sanitize_durable_title(title), session_id),
+                  "A2A: could not title forwarded session", commit=True)
 
     def _record_outcome(self, task_id: str, context_id: str, peer: str, state: str, reply: str,
                         started: Optional[float] = None) -> None:

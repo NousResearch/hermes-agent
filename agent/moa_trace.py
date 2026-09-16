@@ -109,6 +109,11 @@ def save_moa_turn(
                 "streamed": aggregator_streamed, "output_location": output_location,
             },
         }
+        # Trace JSONL is opt-in but still a durable projection. Keep its complete
+        # diagnostic shape while copying/redacting every nested prompt, argument,
+        # and output; callers retain their raw accounting operands.
+        from hermes_state_messages import _redact_durable_projection
+        record = _redact_durable_projection(record)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception as exc:  # pragma: no cover - tracing must never break a turn

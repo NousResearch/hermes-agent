@@ -21,7 +21,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     db = await self._ensure_session_db_async()
     if db is None:
         raise RuntimeError("session database unavailable")
-    title = f"Group: {dispatch.room_id}"
+    title = db.sanitize_durable_title(f"Group: {dispatch.room_id}")
     seed = (
         f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
         f"{dispatch.member_id}\0{dispatch.target_profile}")
@@ -33,7 +33,7 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
             if row["title"] != title or row["source"] != "bot_room":
                 raise RuntimeError("room session identity conflicts with existing data")
             return session_id
-        clean_title = db.sanitize_title(title)
+        clean_title = db.sanitize_durable_title(title)
         conflict = conn.execute(
             "SELECT id FROM sessions WHERE title=? AND id!=?", (clean_title, session_id)).fetchone()
         if conflict:

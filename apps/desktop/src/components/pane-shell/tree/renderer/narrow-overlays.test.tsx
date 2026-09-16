@@ -62,6 +62,15 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('extends the revealed side panel to the top of the window', () => {
+    render(<NarrowOverlays />)
+
+    revealPane('sessions')
+
+    const overlay = document.querySelector<HTMLElement>('[data-glass-opaque]')
+    expect(overlay?.style.top).toBe('0px')
+  })
+
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
 

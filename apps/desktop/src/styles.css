@@ -1785,7 +1785,7 @@ body.guest-pointer-lock :is(webview, iframe) {
    already-painted layer instead of repainting descendants. */
 [data-chat-surface][data-chat-unfocused] {
   opacity: var(--chat-unfocused-opacity);
-  filter: grayscale(1);
+  filter: grayscale(0.2);
 }
 
 [data-chat-surface] {

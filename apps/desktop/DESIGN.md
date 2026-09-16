@@ -297,6 +297,16 @@ so glass and message-bubble transparency do not reveal scrolling text.
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain
   visible at the bottom of the stack, below the queue and all status groups.
+- Popping out a composer makes it the window's only visible composer. It keeps
+  its viewport placement while hover or keyboard focus selects a chat pane;
+  moving back into the editor retains that recipient. Drafts, attachments and
+  queues stay session-owned. Docking restores the individual pane composers.
+  In either placement, moving into a chat pane gives its editor typing focus
+  immediately and preserves its caret. Layout-only hover events and delayed
+  focus callbacks cannot replace that choice. Movement within the same pane
+  must not flush React; deliberate Tab navigation and clicked controls still work.
+  Active dictation or voice conversation pins the recipient until capture ends,
+  keeping the microphone's stop controls and shortcut attached to its owner.
 - Status-stack rows use `StatusRow` with a leading `dismiss` action, a state
   icon and optional trailing actions. `StatusDismissButton` owns the Codicon
   close button for previews, background tasks and queued prompts; do not swap
@@ -382,6 +392,8 @@ long transcript or a busy terminal.
 - Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
   Dimming still distinguishes session panes; sidebar navigation must not desaturate
   the chat or transfer its active highlight to a hidden primary tab.
+- Focused and hovered chat panes both retain full color and opacity. Only panes
+  that are neither focused nor hovered recede, with 20% desaturation.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.

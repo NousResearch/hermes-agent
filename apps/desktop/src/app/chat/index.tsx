@@ -13,8 +13,8 @@ import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
+import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
@@ -59,6 +59,7 @@ import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitle
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
+import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
 import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
@@ -449,6 +450,8 @@ const ChatViewContent = memo(function ChatViewContent({
   // always focused (the atom falls back to the primary's selection), so a
   // single-pane workspace never dims.
   const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => focused === storedId)
+  const groupId = usePaneGroup()
+  const surfaceHovered = useStoreSelector($hoveredTreeGroup, hovered => hovered === groupId)
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
   const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
@@ -696,7 +699,7 @@ const ChatViewContent = memo(function ChatViewContent({
         className
       )}
       data-chat-surface=""
-      data-chat-unfocused={surfaceFocused ? undefined : ''}
+      data-chat-unfocused={surfaceFocused || surfaceHovered ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
@@ -782,44 +785,40 @@ const ChatViewContent = memo(function ChatViewContent({
               settling in the background — subtle badge, not an overlay. */}
           {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
-        {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
-            that wrapper is a containing block for — and clips — position:fixed
-            descendants, so the popped-out (fixed) composer would anchor to the
-            chat column (which shifts/resizes with the sidebars) and get clipped
-            off-screen instead of floating against the viewport. As a sibling it
-            anchors to the outer relative container instead: docked is absolute
-            (identical placement), floating resolves against the viewport. Both
-            states stay mounted here, so dock⇄float never remounts the editor. */}
+        {/* Docked composers overlay their pane; the shared float escapes pane
+            clipping through a stable portal host without remounting its editor. */}
         {showChatBar && (
-          <Suspense fallback={<ChatBarFallback />}>
-            <ChatBar
-              busy={busy}
-              cwd={currentCwd}
-              disabled={!gatewayOpen}
-              focusKey={activeSessionId}
-              gateway={gateway}
-              maxRecordingSeconds={maxVoiceRecordingSeconds}
-              onAddContextRef={onAddContextRef}
-              onAddUrl={onAddUrl}
-              onAttachDroppedItems={onAttachDroppedItems}
-              onAttachImageBlob={onAttachImageBlob}
-              onAttachPastedText={onAttachPastedText}
-              onAttachPrCommentUrl={onAttachPrCommentUrl}
-              onCancel={onCancel}
-              onPasteClipboardImage={onPasteClipboardImage}
-              onPickFiles={onPickFiles}
-              onPickFolders={onPickFolders}
-              onPickImages={onPickImages}
-              onRemoveAttachment={onRemoveAttachment}
-              onSteer={onSteer}
-              onSteerHidden={onSteerHidden}
-              onSubmit={onSubmit}
-              onTranscribeAudio={onTranscribeAudio}
-              queueSessionKey={queueSessionKey}
-              sessionId={activeSessionId}
-              state={chatBarState}
-            />
-          </Suspense>
+          <FloatingComposerSurface>
+            <Suspense fallback={<ChatBarFallback />}>
+              <ChatBar
+                busy={busy}
+                cwd={currentCwd}
+                disabled={!gatewayOpen}
+                focusKey={activeSessionId}
+                gateway={gateway}
+                maxRecordingSeconds={maxVoiceRecordingSeconds}
+                onAddContextRef={onAddContextRef}
+                onAddUrl={onAddUrl}
+                onAttachDroppedItems={onAttachDroppedItems}
+                onAttachImageBlob={onAttachImageBlob}
+                onAttachPastedText={onAttachPastedText}
+                onAttachPrCommentUrl={onAttachPrCommentUrl}
+                onCancel={onCancel}
+                onPasteClipboardImage={onPasteClipboardImage}
+                onPickFiles={onPickFiles}
+                onPickFolders={onPickFolders}
+                onPickImages={onPickImages}
+                onRemoveAttachment={onRemoveAttachment}
+                onSteer={onSteer}
+                onSteerHidden={onSteerHidden}
+                onSubmit={onSubmit}
+                onTranscribeAudio={onTranscribeAudio}
+                queueSessionKey={queueSessionKey}
+                sessionId={activeSessionId}
+                state={chatBarState}
+              />
+            </Suspense>
+          </FloatingComposerSurface>
         )}
       </ChatRuntimeBoundary>
     </div>

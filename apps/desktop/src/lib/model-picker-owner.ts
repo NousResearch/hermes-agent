@@ -22,7 +22,7 @@ export function resolveModelPickerProviderSetupScope(
   owner: ModelPickerOwner,
   ambientScope?: ProfileScope
 ): ProfileScope {
-  if (!owner.route && ambientScope && typeof ambientScope === 'object') {
+  if (ambientScope && typeof ambientScope === 'object') {
     const ambientProfile = (ambientScope.profile ?? '').trim() || 'default'
     const ambientConnectionId = (ambientScope.connectionId ?? '').trim() || undefined
 

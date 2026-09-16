@@ -26,6 +26,7 @@ import { HighlightMatches } from './ui/highlight-matches'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
+  allowProviderSetup?: boolean
   open: boolean
   onOpenChange: (open: boolean) => void
   gw?: HermesGateway
@@ -47,6 +48,7 @@ interface ModelPickerDialogProps {
 }
 
 export function ModelPickerDialog({
+  allowProviderSetup = true,
   open,
   onOpenChange,
   gw,
@@ -219,9 +221,11 @@ export function ModelPickerDialog({
         </Command>
 
         <DialogFooter className="flex-row items-center justify-end gap-2 bg-card p-3">
-          <Button onClick={addProvider} variant="ghost">
-            {copy.addProvider}
-          </Button>
+          {allowProviderSetup && (
+            <Button onClick={addProvider} variant="ghost">
+              {copy.addProvider}
+            </Button>
+          )}
           <Button onClick={() => onOpenChange(false)} variant="outline">
             {t.common.cancel}
           </Button>

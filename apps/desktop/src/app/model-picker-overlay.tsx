@@ -89,6 +89,7 @@ export function ModelPickerOverlay({
 
   return (
     <ModelPickerDialog
+      allowProviderSetup={!pickerOwner.route}
       currentModel={currentModel}
       currentProvider={currentProvider}
       gw={gateway}

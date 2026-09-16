@@ -57,4 +57,22 @@ describe('resolveModelPickerOwner', () => {
 
     expect(resolveModelPickerProviderSetupScope(owner, ambientScope)).toBe(ambientScope)
   })
+
+  it('preserves a matching routed owner descriptor through nested provider setup', () => {
+    const connectionOwner = {
+      mode: 'remote' as const,
+      baseUrl: 'https://registered.example',
+      token: 'private-token'
+    }
+
+    const ambientScope = { connectionId: 'connection-b', profile: 'backend-b', connectionOwner }
+
+    const owner = {
+      connectionId: 'connection-b',
+      profile: 'backend-b',
+      route: { connectionId: 'connection-b', profile: 'desktop-b', targetProfile: 'backend-b' }
+    }
+
+    expect(resolveModelPickerProviderSetupScope(owner, ambientScope)).toBe(ambientScope)
+  })
 })

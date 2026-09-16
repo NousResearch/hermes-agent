@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.8.11`:
+# On macOS, `npx -y apple-notes-mcp@2.8.13`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.8.11 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.8.13 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 51 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -46,6 +46,18 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # `hasMore`). A caller that expects the whole library must follow
 # `page.nextOffset` while `hasMore` is true.
 #
+# 2.8.13 (2026-09-16) is re-pinned on the same footing — a defect in a
+# default_enabled tool, sweetrb/apple-notes-mcp#166: `get-note-content`'s
+# rich-text reconciliation (and full-body `update-note`) rejected any note
+# whose body had a straight double quote glued to a letter, e.g.
+# `say "hello" now`. AppleScript emits that quote as `&quot` with no trailing
+# semicolon and the entity decoder required one, so the AppleScript HTML and
+# the database rich text desynced and the read fell back to a generic
+# "Rich Notes metadata could not be read or matched" warning. The legacy HTML5
+# named references (`amp`/`lt`/`gt`/`quot`/`nbsp`) now decode with or without
+# the semicolon, matching browser text-content behaviour. No tool surface
+# change: still 51 tools, all 20 default_enabled entries resolve.
+#
 # The 15 tools added since 2.8.3 (native objects and tags, attachments,
 # folder rename, Shortcut-bridge setup) all stay out of default_enabled.
 transport:
@@ -53,7 +65,7 @@ transport:
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.8.11"
+    - "apple-notes-mcp@2.8.13"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

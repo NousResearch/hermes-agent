@@ -1932,7 +1932,7 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
     assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
     assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
@@ -1941,3 +1941,20 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     known, suggestion = _validate_config_key("gateway.auto_migrate")
     assert known is False
     assert suggestion == "gateway.auto_multiplex_migration"
+
+
+def test_empty_dict_default_sections_are_open_containers():
+    """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
+    mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as
+    typos, while a real typo under a populated sibling section still gets a suggestion."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["compression"]["model_thresholds"] == {}
+    assert DEFAULT_CONFIG["terminal"]["docker_env"] == {}
+    assert _validate_config_key("compression.model_thresholds.gpt-5") == (True, None)
+    assert _validate_config_key("terminal.docker_env.FOO") == (True, None)
+    assert _validate_config_key("lsp.servers.python.command") == (True, None)
+    assert _validate_config_key("auxiliary.vision.extra_body.reasoning") == (True, None)
+    known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
+    assert known is False
+    assert suggestion == "compression.model_thresholds"

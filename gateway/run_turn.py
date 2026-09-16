@@ -78,6 +78,38 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
+# Setup/prefix rows rather than conversation: the agent rebuilds its own system prompt, and a
+# transcript meta row is logging-only — neither reaches the model, but both are the head a
+# fail-closed payload keeps.
+_HYGIENE_SETUP_ROLES = ("system", "session_meta")
+
+
+def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[Any]:
+    """Fail-closed in-context bound for a turn where hygiene has not landed (#111988).
+
+    Keeps the leading ``system``/``session_meta`` setup rows plus the newest tail, total <= ``limit``.
+    Deterministic (the same transcript always yields the same cut) and payload-only: the stored
+    transcript is never touched, so the agent's durable-prefix slice (``history_offset``) is
+    unaffected. Returns ``history`` unchanged — same object — when nothing needs dropping, so the
+    landed-compression and below-the-limit paths stay byte-identical.
+    """
+    if len(history) <= limit:
+        return history
+    head_end = 0
+    while (head_end < len(history) and isinstance(history[head_end], dict)
+           and history[head_end].get("role") in _HYGIENE_SETUP_ROLES):
+        head_end += 1
+    # Always leave room for the newest row: a setup-only payload would answer nothing.
+    head_end = min(head_end, limit - 1)
+    tail_start = len(history) - (limit - head_end)
+    # Never start the kept tail on a tool result: its parent assistant(tool_calls) row is dropped
+    # with it, and an orphaned tool result is an invalid sequence for every provider.
+    while (tail_start < len(history) and isinstance(history[tail_start], dict)
+           and history[tail_start].get("role") == "tool"):
+        tail_start += 1
+    return history[:head_end] + history[tail_start:]
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -1237,11 +1269,14 @@ class GatewayTurnMixin:
             return history
 
         hs = await self._hmwa_hygiene_settings(source, session_key)
+        # Hygiene can never land with compression disabled; a sub-limit transcript is the identity (#111988).
         if not hs.compression_enabled:
-            return history
+            return self._bound_hygiene_payload(history, hs, session_entry)
         plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        # No compression this turn (under both thresholds, cooldown, or one already in flight): without
+        # the bound the model would get the full uncompressed transcript.
         if not plan.needs_compress:
-            return history
+            return self._bound_hygiene_payload(history, hs, session_entry)
 
         attempt = self._HygieneAttempt(agent=None, meta=self._event_thread_metadata(event, source), history=history)
         try:
@@ -1267,7 +1302,25 @@ class GatewayTurnMixin:
             pass
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
+        # A landed compression published a NEW transcript on attempt.history: leave it byte-identical.
+        # Anything else (turn-hold, timeout, unwind, codex path) left the FULL uncompressed transcript
+        # there — that is the fail-closed case (#111988).
+        if attempt.history is history:
+            return self._bound_hygiene_payload(history, hs, session_entry)
         return attempt.history
+
+    @staticmethod
+    def _bound_hygiene_payload(history, hs, session_entry):
+        """``bound_model_input_without_hygiene`` over ``hs.hard_msg_limit``, with one INFO line when the
+        cut is real. Below the limit this is the identity — no allocation, no behaviour change."""
+        bounded = bound_model_input_without_hygiene(history, hs.hard_msg_limit)
+        if bounded is not history:
+            logger.info(
+                "Session hygiene did not land for %s: bounding the model payload to %s of %s "
+                "messages (hard limit %s) — the stored transcript is unchanged",
+                session_entry.session_id, len(bounded), len(history), hs.hard_msg_limit,
+            )
+        return bounded
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
@@ -1412,8 +1465,8 @@ class GatewayTurnMixin:
             response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
         logger.info(
-            "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
-            _platform_name, source.chat_id or "unknown",
+            "response ready: platform=%s chat=%s session=%s time=%.1fs api_calls=%d response=%d chars",
+            _platform_name, source.chat_id or "unknown", session_key or "unknown",
             time.time() - _msg_start_time, agent_result.get("api_calls", 0), len(response),
         )
 

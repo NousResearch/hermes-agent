@@ -79,7 +79,7 @@ export function VoiceMenu({
 
   return (
     <DropdownMenu>
-      <Tip label={wake.notice && !dictating ? `${triggerLabel} — ${wake.notice}` : triggerLabel}>
+      <Tip label={wake.notice && !dictating ? `${triggerLabel} — ${wake.notice}` : triggerLabel} placement="control">
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={triggerLabel}

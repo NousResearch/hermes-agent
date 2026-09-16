@@ -2410,6 +2410,22 @@ class TestServiceTakeoverGovernance:
         assert "<key>KeepAlive</key>" in plist
         assert "<true/>" in plist
 
+    def test_launchd_plist_parks_ex_config_instead_of_keepalive_loop(self, tmp_path, monkeypatch):
+        """Token-collision EX_CONFIG (78) must not KeepAlive-respawn on macOS.
+
+        systemd parks via RestartPreventExitStatus=78; launchd cannot gate on a
+        specific status. Unconditional KeepAlive=true turned that exit into a
+        30s crash loop (#89477). SuccessfulExit=false plus the stderr wrapper
+        mapping 78→0 is the launchd twin: a clean stop stays down, exit 75 and
+        crashes still relaunch.
+        """
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        parsed = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+        assert parsed["KeepAlive"] == {"SuccessfulExit": False}
+        assert parsed["RunAtLoad"] is True
+
     def test_systemd_unit_does_not_arm_takeover(self, tmp_path, monkeypatch):
         home = tmp_path / ".hermes"
         home.mkdir()

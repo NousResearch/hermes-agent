@@ -498,6 +498,63 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    @staticmethod
+    def _lazy_failure(message):
+        """faster-whisper's transcribe() returns a lazy generator: the decode — and the CUDA
+        dlopen-on-first-use — only fires while segments are iterated (#103793, #105295, #111929)."""
+        def segments():
+            raise RuntimeError(message)
+            yield  # pragma: no cover
+        return segments()
+
+    def test_iteration_time_cuda_dlopen_retries_on_cpu(self, tmp_path):
+        """A missing CUDA library raised while ITERATING segments must evict the cached model and
+        retry on CPU/int8, not surface as a hard failure (Windows: cublas64_12.dll)."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        info = MagicMock(language="en", duration=1.0)
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (
+            self._lazy_failure("Library cublas64_12.dll is not found or cannot be loaded"), info)
+        cpu_segment = MagicMock(text="hi", no_speech_prob=0.0, avg_logprob=0.0)
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], info)
+        mock_whisper_cls = MagicMock(side_effect=[cuda_model, cpu_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True, result.get("error")
+        assert result["transcript"] == "hi"
+        assert mock_whisper_cls.call_count == 2
+        retry_kwargs = mock_whisper_cls.call_args_list[1].kwargs
+        assert (retry_kwargs["device"], retry_kwargs["compute_type"]) == ("cpu", "int8")
+
+    def test_iteration_time_non_lib_error_surfaces_without_cpu_retry(self, tmp_path):
+        """A real runtime failure during iteration must NOT trigger the CPU retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (self._lazy_failure("CUDA out of memory"), MagicMock())
+        mock_whisper_cls = MagicMock(return_value=cuda_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "CUDA out of memory" in result["error"]
+        assert mock_whisper_cls.call_count == 1
+
 
 # ============================================================================
 # Model auto-correction

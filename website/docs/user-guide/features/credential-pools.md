@@ -213,6 +213,7 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 | Source | Example | Auto-seeded? |
 |--------|---------|-------------|
 | Environment variables | `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | Yes |
+| Numbered env siblings | `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, … | Yes (see below) |
 | OAuth tokens (auth.json) | Codex device code, Nous device code | Yes |
 | Claude Code credentials | `~/.claude/.credentials.json` | Yes (Anthropic) |
 | Hermes PKCE OAuth | `~/.hermes/auth.json` | Yes (Anthropic) |
@@ -220,6 +221,15 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 | Manual entries | Added via `hermes auth add` | Persisted in auth.json |
 
 Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
+
+### Several keys from the environment
+
+Want more than one key for a provider without storing any of them in `auth.json`? Number them. Next to `NVIDIA_API_KEY` set `NVIDIA_API_KEY_2`, `NVIDIA_API_KEY_3`, … in your shell, `.env`, or secret manager (Bitwarden Secrets, Vault, …) and each becomes its own pool entry on the next load — no command, no config. Discovery stops at the first missing number, so a stray `_5` with no `_4` is ignored. Combine with `credential_pool_strategies` to rotate them:
+
+```yaml
+credential_pool_strategies:
+  nvidia: round_robin
+```
 
 Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd references, and custom config values) are reference-only at the `auth.json` boundary. Hermes can use the resolved value in memory for the current run, but it persists only metadata such as the source ref, label, status, request counters, and a non-reversible fingerprint. Manual entries and Hermes-owned OAuth/device-code state keep the durable tokens they need to refresh.
 
@@ -286,6 +296,8 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
 ```
 
 The OpenRouter entry above was borrowed from an external source, so the raw key is not stored in `auth.json`. The manual Anthropic entry was intentionally added to Hermes' credential store, so its token remains persistable.
+
+An `env:` row is re-hydrated from the environment on every load, and the variable name does not have to be one Hermes declares for the provider: numbered siblings (`OPENROUTER_API_KEY_2`, see [Auto-Discovery](#auto-discovery)) appear here automatically, and a hand-written row pointing at any other variable is filled the same way, without the secret ever being written to `auth.json`.
 
 Strategies are stored in `config.yaml` (not `auth.json`):
 

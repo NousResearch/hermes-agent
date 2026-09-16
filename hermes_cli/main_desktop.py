@@ -191,6 +191,28 @@ def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
     return unpacked
 
 
+def _rename_with_retry(src: Path, dst: Path, *, attempts: int = 5, delay: float = 1.0) -> None:
+    """``os.rename`` with bounded retry/backoff (#69179 follow-up: a single transient
+    ``Access is denied`` from a Windows file lock — Defender real-time scan, indexer,
+    a Desktop child process holding a DLL under ``win-unpacked`` — used to fail the
+    whole swap after a successful pack). Only errno-class transient errors are worth
+    retrying; exhausting the attempts re-raises the last OSError for the caller's
+    rollback path."""
+    last_exc: Optional[OSError] = None
+    for attempt in range(attempts):
+        try:
+            os.rename(src, dst)
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                # Retry window also covers a process that grabbed the tree between
+                # _stop_desktop_processes_locking_build and the rename.
+                _time_mod.sleep(delay * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
+
+
 def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[Path]:
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises."""
@@ -211,12 +233,12 @@ def _swap_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Optional[P
             stopped = _stop_desktop_processes_locking_build(desktop_dir)
             if stopped:
                 logger.info("stopped desktop processes before staged app promotion: %s", stopped)
-            os.rename(live_root, previous)
+            _rename_with_retry(live_root, previous)
         try:
-            os.rename(staged_root, live_root)
+            _rename_with_retry(staged_root, live_root)
         except OSError:
             if moved_aside:
-                os.rename(previous, live_root)  # restore; live app back as it was
+                _rename_with_retry(previous, live_root)  # restore; live app back as it was
             raise
         if moved_aside:
             shutil.rmtree(previous, ignore_errors=True)

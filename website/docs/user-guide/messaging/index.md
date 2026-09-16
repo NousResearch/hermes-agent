@@ -140,6 +140,7 @@ Supported tokens:
 - `SILENT`
 - `NO_REPLY`
 - `NO REPLY`
+- `[静默]` / `静默` and `[沉默]` / `沉默` — the Chinese renderings a model produces when it translates the sentinel instead of emitting it literally
 
 Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
 
@@ -175,6 +176,13 @@ hermes gateway stop         # Stop the default service
 hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
+
+### Stack dump on demand (`SIGUSR2`)
+
+On Linux and macOS, `kill -USR2 <gateway pid>` appends a dump of every thread's
+stack to `~/.hermes/logs/gateway_faulthandler.log` and the gateway keeps
+running — use it to see what a stalled or misbehaving gateway is doing without
+restarting it.
 
 ### Optional Linux event-loop watchdog
 
@@ -529,6 +537,8 @@ You can also set this via environment variable:
 ```bash
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
+
+With `terminal(background=true, notify_on_complete=true)` the finished process starts a new agent turn and the agent reports the result itself, so no separate status line is sent. The exception is a process that finishes while the turn that launched it is still running: the completion is queued as the agent's next turn and you get the one-line `concise` status right away (unless the mode is `off`, or `error` with a zero exit code), instead of silence until that turn ends.
 
 ### Use Cases
 

@@ -25,7 +25,9 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.error_classifier import (FailoverReason, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
+from agent.error_classifier import (
+    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
+from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.fast_mode import effective_request_overrides
@@ -224,9 +226,28 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
     response: Any = None) -> ProviderStreamError:
     """Preserve plain-text SSE data rejected inside the OpenAI SDK: on a non-JSON
     ``event: error`` the SDK raises from ``sse.json()`` before yielding a chunk,
-    but ``JSONDecodeError.doc`` still carries the provider's original message."""
+    but ``JSONDecodeError.doc`` still carries the provider's original message.
+
+    An EMPTY ``doc`` is the other case: the frame carried no payload at all
+    (``data:`` / ``event: ping`` / ``id:`` alone — legal SSE keepalives and no-ops),
+    which the SDK's ``json.loads`` rejects the same way. A gateway that is degrading
+    answers EVERY streaming request with such frames, so this is not the provider's
+    malformed payload and must not be reported as one: it gets its own code and
+    the stream helper recovers by retrying without streaming."""
     from agent.redact import redact_sensitive_text
     raw_text = str(getattr(error, "doc", "") or "").strip()
+    headers = getattr(response, "headers", None) if response is not None else None
+    if not raw_text:
+        return ProviderStreamError(
+            status_code=None,
+            body=_provider_error_body(
+                {"code": PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE,
+                    "message": "Provider stream returned an empty SSE data frame (keepalive with no payload)."},
+                None,
+            ),
+            raw_text="",
+            headers=headers,
+        )
     safe_text = redact_sensitive_text(_sanitize_surrogates(raw_text), force=True)
     safe_text = safe_text[:_PROVIDER_STREAM_ERROR_TEXT_LIMIT]
     return ProviderStreamError(
@@ -237,8 +258,16 @@ def _provider_stream_error_from_json_decode_error(error: json.JSONDecodeError, *
             None,
         ),
         raw_text=safe_text,
-        headers=getattr(response, "headers", None) if response is not None else None,
+        headers=headers,
     )
+
+
+def _is_provider_stream_empty_frame_error(exc: BaseException) -> bool:
+    """True for the translated contentless-SSE-frame error. Re-streaming cannot help
+    (a degraded gateway answers every stream that way), so the caller must change channel."""
+    body = getattr(exc, "body", None)
+    error_obj = body.get("error") if isinstance(body, dict) else None
+    return isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
 
 
 def _iter_provider_stream_chunks(stream, *, response: Any = None):
@@ -706,7 +735,12 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         if not callable(getattr(_completions, "prepare", None)):
             api_kwargs.pop("_moa_prepared_request", None)
         return agent.client.chat.completions.create(**api_kwargs)
-    return make_client("chat_completion_request").chat.completions.create(**api_kwargs)
+    request_client = make_client("chat_completion_request")
+    # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
+    # request transform. No-op unless this really is the OpenAI SDK, so the
+    # MoA facade above and the suite's stand-in clients are unaffected.
+    api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
+    return request_client.chat.completions.create(**api_kwargs)
 
 
 def should_use_direct_api_call(agent) -> bool:
@@ -2107,7 +2141,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        from agent.turn_failure_copy import site_copy
+        final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)
@@ -2513,8 +2548,31 @@ class _StreamingCall(StreamingWaitMonitor):
         self.managed_stream_holder = {"stream": None}
         # Per-attempt: single-writer token, request-local client, raw HTTP response (chat wire).
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        # The route ``api_kwargs`` was assembled for; a retry must not replay it on another one.
+        self._request_route = self._live_route()
 
     # ── shared small helpers ────────────────────────────────────────────
+
+    def _live_route(self) -> tuple:
+        agent = self.agent
+        return tuple(str(getattr(agent, attr, "") or "") for attr in ("model", "provider", "base_url", "api_mode"))
+
+    def _route_switched_under_request(self) -> bool:
+        """True once ``/model`` (``switch_model``) re-pointed the agent while this request was in
+        flight. The captured payload names the OLD model and is shaped for the OLD provider, but
+        every (re)open builds its client from the LIVE agent, so a retry would send a foreign model
+        slug to the new base_url (404 + a rate-limit hold, #112121). The turn loop rebuilds the
+        request for the current route on its own next attempt, so hand the error back to it.
+        """
+        live = self._live_route()
+        if live == self._request_route:
+            return False
+        logger.warning(
+            "Stream retry skipped: model/provider switched mid-request (%s via %s -> %s via %s); "
+            "handing back to the turn loop to rebuild the request for the current route.",
+            self._request_route[0], self._request_route[1] or self._request_route[2], live[0], live[1] or live[2],
+        )
+        return True
 
     @staticmethod
     def _quiet(fn, *args) -> None:
@@ -2678,6 +2736,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
         self.last_chunk_time["t"] = time.time()
         self.agent._touch_activity("waiting for provider response (streaming)")
+        # #93650: as above — the streaming path carries the same bulk
+        # messages/tools payload and pays the same client-side walk.
+        stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -2728,6 +2789,10 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        # OpenAI structured refusal (``delta.refusal``): the explanation streams here and
+        # ``delta.content`` stays empty, so an un-accumulated refusal looks like an empty
+        # stream and burns the empty-response retries (the non-streaming fix is #46013).
+        refusal_parts: list[str] = []
         reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
@@ -2812,6 +2877,13 @@ class _StreamingCall(StreamingWaitMonitor):
                 rd_delta = delta.model_extra.get("reasoning_details")
             for rd in rd_delta if isinstance(rd_delta, (list, tuple)) else ():
                 append_streamed_reasoning_detail(reasoning_details, rd)
+            # Not routed to the live display: the transport promotes a sole-payload
+            # refusal to content + ``content_filter`` and the loop surfaces it terminally.
+            delta_refusal = getattr(delta, "refusal", None)
+            if delta_refusal is None and isinstance(getattr(delta, "model_extra", None), dict):
+                delta_refusal = delta.model_extra.get("refusal")
+            if isinstance(delta_refusal, str) and delta_refusal:
+                refusal_parts.append(delta_refusal)
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
@@ -2847,7 +2919,8 @@ class _StreamingCall(StreamingWaitMonitor):
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
-            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details)
+            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
+            refusal_parts=refusal_parts)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -2896,7 +2969,8 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
+        refusal_parts=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -2905,7 +2979,7 @@ class _StreamingCall(StreamingWaitMonitor):
         full_reasoning = "".join(reasoning_parts) or None
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
-        if finish_reason is None and not content_parts and not reasoning_parts and not tool_calls_acc:
+        if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason (possible upstream error or malformed SSE response).")
         if has_truncated_tool_args and finish_reason is None:
@@ -2932,7 +3006,9 @@ class _StreamingCall(StreamingWaitMonitor):
         if provider_stream_error is not None:
             raise provider_stream_error
         flush_pending()
-        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
+        message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning,
+            # ``normalize_response`` reads ``message.refusal`` — same contract as the non-streaming object.
+            refusal="".join(refusal_parts or ()) or None)
         if reasoning_details:
             # Only when present: _build_assistant_message's passthrough persists them
             # for replay, and non-reasoning providers keep the attribute absent.
@@ -3066,8 +3142,24 @@ class _StreamingCall(StreamingWaitMonitor):
         self.clients.close_once(reason)
 
     def _maybe_disable_streaming(self, e) -> None:
-        """Flip to non-streaming when the provider rejects streaming outright or
-        AnthropicBedrock IAM lacks InvokeModelWithResponseStream."""
+        """Flip to non-streaming for failures streaming itself cannot survive, or that
+        re-streaming can only repeat: the provider rejecting streams outright,
+        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, or a gateway answering
+        with contentless SSE keepalive frames (a degraded gateway answers every
+        streaming request that way, so the retry must change channel to make progress)."""
+        if _is_provider_stream_empty_frame_error(e):
+            self.agent._disable_streaming = True
+            logger.warning(
+                "Provider stream returned an empty SSE frame (keepalive, no payload) before any "
+                "delta — switching %s/%s to non-streaming for this session.",
+                self.agent.provider or "unknown", self.agent.model or "unknown")
+            # Durable channel, not _buffer_status: this recovery is expected to SUCCEED, and
+            # buffered retry chatter is dropped on successful recovery. Fires at most once per
+            # session (streaming is off from here on).
+            self.agent._emit_warning(
+                "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
+                "without streaming (streaming stays off for this session).")
+            return
         _err_lower = str(e).lower()
         _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
         _is_bedrock_stream_denied = False
@@ -3185,6 +3277,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 except Exception as e:
                     self._close_managed_stream()
                     if not self._handle_stream_error(e, _stream_attempt, _max_stream_retries):
+                        return
+                    if self._route_switched_under_request():
+                        self.result["error"] = e
                         return
         except InterruptedError as e:
             # Fast pre-retry interrupt surfaces through the normal result channel.

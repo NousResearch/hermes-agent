@@ -12,6 +12,7 @@ from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
@@ -347,6 +348,7 @@ def _append_file_mutation_footer(agent, final_response, logger):
         # Empty/interrupted turns already have other surface text that shouldn't be augmented.
         _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
         if _failed and agent._file_mutation_verifier_enabled():
+            _failed = agent._file_mutations_still_failed(_failed)
             footer = agent._format_file_mutation_failure_footer(_failed)
             if footer:
                 final_response = final_response.rstrip() + "\n\n" + footer
@@ -377,6 +379,7 @@ def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_v
             _explanation = agent._format_turn_completion_explanation(
                 _turn_exit_reason, getattr(agent, "_last_persistence_error_cause", None),
                 db_path=getattr(getattr(agent, "_session_db", None), "db_path", None),
+                model=str(getattr(agent, "model", "") or ""),
             )
             if _explanation:
                 # Replace the bare sentinel; keep a partial fragment and append why.
@@ -451,9 +454,21 @@ def finalize_turn(
         logger=logger,
     )
 
+    # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
+    # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
+    # ``turn_exit_reason`` collapsed to code="unknown", retryable=True on every surface.
+    # Advisory verdicts (``fails_turn=False``) only add the code: ``failed``/``completed`` keep
+    # the loop's values so cron, kanban and transcript persistence behave as before.
+    _exit_failure = None if interrupted else exit_reason_failure(_turn_exit_reason)
+    if _exit_failure is not None and _exit_failure.fails_turn:
+        failed = True
+
+    # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
+    # interrupted turn; the gateway stream gate and the API run status rely on that contract.
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
@@ -578,6 +593,10 @@ def finalize_turn(
         )
         _cause = getattr(agent, "_last_persistence_error_cause", None)
         result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")
+    elif _exit_failure is not None:
+        if failed:
+            result["error"] = final_response or str(_turn_exit_reason)
+        stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

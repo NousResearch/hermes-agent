@@ -650,7 +650,8 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
     )
 
     assert response["error"]["code"] == 4130
-    assert "safe resume limit is 20000" in response["error"]["message"]
+    assert "limit 20000" in response["error"]["message"]
+    assert "hermes sessions export" in response["error"]["message"]
 
 
 def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, monkeypatch):
@@ -1356,7 +1357,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))

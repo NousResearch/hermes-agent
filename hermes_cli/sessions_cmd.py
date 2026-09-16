@@ -14,6 +14,7 @@ import sys
 from functools import partial
 from pathlib import Path
 
+from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
 
 
@@ -45,7 +46,7 @@ def _confirm_prompt(prompt: str) -> bool:
 
 
 def _not_found(session_id) -> int:
-    print(f"Session '{session_id}' not found.")
+    print(f"No session '{session_id}'. Run: hermes sessions list to find the id.")
     return 1
 
 
@@ -55,7 +56,7 @@ def _print_dry_run_preview(candidates, filters) -> None:
     for row in candidates[:100]:
         print(f"  {row.get('id')}  {row.get('source', '')}")
     if len(candidates) > 100:
-        print(f"  ... {len(candidates) - 100} more")
+        print_truncated(len(candidates) - 100)
 
 
 _FILTER_ARGS = (
@@ -262,7 +263,14 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
+    # page was cut without a second COUNT query (``--limit 0`` is ``LIMIT 0``: no rows, no probe).
+    limit = args.limit
+    sessions = db.list_sessions_rich(
+        source=args.source, exclude_sources=_default_exclude(args), limit=limit + 1 if limit > 0 else limit,
+    )
+    truncated = limit > 0 and len(sessions) > limit
+    sessions = sessions[:limit] if truncated else sessions
 
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
@@ -300,6 +308,8 @@ def _cmd_list(db, args):
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))
+    if truncated:
+        print_truncated(None, f"use --limit {limit * 2} to see more")
 
 
 # -- export -----------------------------------------------------------------
@@ -593,7 +603,7 @@ def _prune_never_active_keyed(db, args):
         print(f"  {s['id']}  {format_epoch(s.get('started_at')):<17} {(s.get('source') or '-'):<10} "
               f"{s.get('session_key') or '-'}")
     if len(candidates) > len(shown):
-        print(f"  … {len(candidates) - len(shown)} more")
+        print_truncated(len(candidates) - len(shown))
     if args.dry_run:
         print("Dry run — nothing deleted.")
         return
@@ -674,7 +684,7 @@ def _cmd_prune_or_archive(db, args, action):
             print(f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "
                   f"{s['message_count']:>4} msgs  {(s.get('title') or '')[:36]}")
         if len(candidates) > len(shown):
-            print(f"  … and {len(candidates) - len(shown)} more")
+            print_truncated(len(candidates) - len(shown))
         if args.dry_run:
             print(f"Dry run — nothing {'deleted' if prune else 'archived'}.")
             return
@@ -988,7 +998,9 @@ def cmd_sessions(args, sessions_parser=None):
         # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
         if observational and not _default_db_path().exists():
             return _print_empty_store(action, args)
-        print(f"Error: Could not open session database: {e}")
+        print("Could not open your session history database. "
+              "Run: hermes sessions repair to fix it (a backup is made first).")
+        print(f"Details: {e}")
         return 1
     try:
         handler = _DB_HANDLERS.get(action)

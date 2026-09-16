@@ -15,6 +15,10 @@ if TYPE_CHECKING:
     from tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
 
+# Authorization servers that advertise ``authorization_response_iss_parameter_supported`` and then
+# omit ``iss`` from the redirect (#111135). Exact issuer match, nothing else is relaxed.
+_ISS_OMITTING_ISSUERS = frozenset({"https://api.figma.com"})
+
 
 
 class _RefreshCompletedByPeer(Exception):
@@ -49,7 +53,28 @@ class HermesProviderMixin:
             raise OAuthNonInteractiveError(
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
+        self._tolerate_missing_iss_for_known_server()
         return await super()._perform_authorization()
+
+    def _tolerate_missing_iss_for_known_server(self) -> None:
+        """Figma advertises ``authorization_response_iss_parameter_supported`` and then omits ``iss``
+        from the redirect, so the SDK's RFC 9207 check rejects every valid code (#111135). For that
+        one issuer only, fill a missing ``iss`` with the discovered issuer and warn; a present-but-
+        different ``iss`` still fails the SDK check, and every other server keeps the strict rule."""
+        issuer = _metadata_issuer(self.context)
+        if issuer not in _ISS_OMITTING_ISSUERS:
+            return
+        inner = self.context.callback_handler
+
+        async def _fill_iss():
+            result = await inner()
+            if getattr(result, "iss", None) is None and getattr(result, "code", None):
+                self._hermes_logger.warning(
+                    "MCP OAuth: %s omitted the iss parameter it advertises; accepting the redirect for that issuer only", issuer)
+                result = result.model_copy(update={"iss": str(self.context.oauth_metadata.issuer)})
+            return result
+
+        self.context.callback_handler = _fill_iss
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""

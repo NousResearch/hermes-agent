@@ -101,7 +101,7 @@ def _fd_soft_limit() -> Optional[int]:
         return None
     try:
         soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    except (OSError, ValueError):
+    except (AttributeError, OSError, ValueError):
         return None
     if soft in (resource.RLIM_INFINITY, -1):
         return None

@@ -1,7 +1,8 @@
-"""fetch-plugin-stars.py: the daily GitHub-stars cache behind catalog ranking.
+"""fetch-plugin-stars.py: plugin-catalog star counts, GitHub consulted only from the scheduled run.
 
-The contract under test is rate-limit discipline, not the numbers: a fresh cache must never
-reach GitHub, and a rate-limited probe must keep the previous counts rather than zeroing them.
+The contract under test is rate-limit discipline, not the numbers: a deploy (no ``--probe``)
+must never reach GitHub, the scheduled probe must be ONE request for every repo, and a failed
+probe must keep the previous counts rather than zeroing them.
 """
 
 from __future__ import annotations
@@ -9,7 +10,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import urllib.error
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -38,38 +38,43 @@ def _catalog(tmp_path: Path, *repos: str) -> Path:
     return cat
 
 
-def test_fresh_cache_is_reused_without_any_github_call(mod, tmp_path, monkeypatch):
+def test_deploy_reuses_the_cache_without_any_github_call(mod, tmp_path, monkeypatch):
     cat = _catalog(tmp_path, "https://github.com/a/one")
     out = tmp_path / "plugin-stars.json"
-    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-    out.write_text(json.dumps({"fetched_at": recent, "stars": {"a/one": 7}}), encoding="utf-8")
+    out.write_text(json.dumps({"fetched_at": "2026-01-01T00:00:00+00:00", "stars": {"a/one": 7}}), encoding="utf-8")
 
     def boom(*a, **k):
-        raise AssertionError("GitHub must not be called while the cache is fresh")
+        raise AssertionError("GitHub must not be called without --probe")
+    monkeypatch.setattr(mod, "_graphql", boom)
     monkeypatch.setattr(mod, "_http_json", boom)
 
-    assert mod.main(catalog_dir=cat, output=out, max_age_hours=24, live_url=None) == 0
+    assert mod.main(catalog_dir=cat, output=out, probe=False, live_url=None) == 0
     assert json.loads(out.read_text())["stars"] == {"a/one": 7}
 
 
-def test_stale_cache_probes_and_rate_limit_keeps_previous_counts(mod, tmp_path, monkeypatch):
+def test_probe_is_one_graphql_request_and_a_failure_keeps_previous_counts(mod, tmp_path, monkeypatch):
     cat = _catalog(tmp_path, "https://github.com/a/one", "https://github.com/b/two", "https://gitlab.com/c/three")
     out = tmp_path / "plugin-stars.json"
-    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
-    out.write_text(json.dumps({"fetched_at": old, "stars": {"a/one": 7, "b/two": 9}}), encoding="utf-8")
-
+    out.write_text(json.dumps({"fetched_at": "2026-01-01T00:00:00+00:00", "stars": {"a/one": 7, "b/two": 9}}),
+                   encoding="utf-8")
     calls: list[str] = []
 
-    def fake(url, headers, timeout=15.0):
-        calls.append(url)
-        if url.endswith("/repos/a/one"):
-            return {"stargazers_count": 42}
-        raise urllib.error.HTTPError(url, 403, "rate limited", hdrs=None, fp=None)
-    monkeypatch.setattr(mod, "_http_json", fake)
+    def one_request(query, token):
+        calls.append(query)
+        # b/two errored (renamed repo): its node is null, previous count must survive.
+        return {"data": {"r0": {"stargazerCount": 42}, "r1": None},
+                "errors": [{"message": "Could not resolve to a Repository"}]}
+    monkeypatch.setattr(mod, "_graphql", one_request)
 
-    assert mod.main(catalog_dir=cat, output=out, max_age_hours=24, live_url=None) == 0
+    assert mod.main(catalog_dir=cat, output=out, probe=True, live_url=None, token="t") == 0
     data = json.loads(out.read_text())
-    # a/one refreshed; b/two kept its old count instead of dropping to 0; gitlab never probed.
     assert data["stars"] == {"a/one": 42, "b/two": 9}
-    assert calls == ["https://api.github.com/repos/a/one", "https://api.github.com/repos/b/two"]
-    assert data["fetched_at"] > old
+    assert len(calls) == 1 and "gitlab" not in calls[0] and 'owner: "a"' in calls[0] and 'owner: "b"' in calls[0]
+    assert data["fetched_at"] > "2026-01-01"
+
+    # A rate-limited / failed probe keeps everything as it was.
+    def limited(query, token):
+        raise urllib.error.HTTPError("u", 403, "rate limited", hdrs=None, fp=None)
+    monkeypatch.setattr(mod, "_graphql", limited)
+    assert mod.main(catalog_dir=cat, output=out, probe=True, live_url=None, token="t") == 0
+    assert json.loads(out.read_text())["stars"] == {"a/one": 42, "b/two": 9}

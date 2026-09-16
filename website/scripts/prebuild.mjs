@@ -148,9 +148,9 @@ runPython(llmsScript, "generate-llms-txt.py");
 //    renders an empty state if the generator can't run.
 runPython(cronBlueprintsScript, "extract-automation-blueprints.py");
 
-// 4a) plugin-stars.json — GitHub star counts for catalog ranking. Reuses the live
-//     site's daily cache (one CDN GET); only probes the API when that is >24h old,
-//     and never fails the build (no token / offline → whatever is cached or nothing).
+// 4a) plugin-stars.json — GitHub star counts for catalog ranking. Reuse-only here
+//     (live site copy via one CDN GET, else on-disk, else empty); GitHub itself is
+//     probed only by the scheduled skills-index workflow. Never fails the build.
 runPython(pluginStarsScript, "fetch-plugin-stars.py");
 
 // 4) plugins.json + plugins-meta.json — Plugin Catalog page. The script itself

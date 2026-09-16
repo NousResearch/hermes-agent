@@ -20,6 +20,7 @@ import { AlertCircle, ChevronDown } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import { answerApproval } from '@/store/prompts'
 import {
@@ -137,7 +138,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed, { action: reconnectAction() })
 
         return
       }

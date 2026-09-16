@@ -80,8 +80,13 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     file_path = function_args.get("path", "")
     if not file_path:
         return
+    from agent.file_safety import is_nt_namespace_path
     from tools.file_tools_paths import _resolve_path_for_task
 
+    # Resolving an NT-namespace path is itself the NTLM-leak trigger; leave the
+    # tool's raw-string guard to refuse it without a checkpoint stat.
+    if is_nt_namespace_path(file_path):
+        return
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     agent._checkpoint_mgr.ensure_checkpoint(
         agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path)), f"before {function_name}",
@@ -998,7 +1003,9 @@ def _commit_tool_result(
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
         if not blocked:
             try:
-                agent._record_file_mutation_result(function_name, function_args, function_result, is_error)
+                agent._record_file_mutation_result(
+                    function_name, function_args, function_result, is_error, task_id=effective_task_id,
+                )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
         if agent.verbose_logging:
@@ -1214,9 +1221,12 @@ class _ConcurrentBatch:
             ref.emit_post(agent, result, duration_ms=int(duration * 1000))
         is_error, _ = _detect_tool_failure(ref.name, result)
         if is_error:
-            logger.info("tool %s failed (%.2fs): %s", ref.name, duration, result[:200])
+            logger.info("tool %s failed (%.2fs): %s", ref.name, duration, str(result)[:200])
         else:
-            logger.info("tool %s completed (%.2fs, %d chars)", ref.name, duration, len(result))
+            result_chars = len(result) if isinstance(result, str) else len(str(result))
+            logger.info(
+                "tool %s completed (%.2fs, %d chars)", ref.name, duration, result_chars
+            )
         return _ToolOutcome(ref, result, duration, is_error, blocked)
 
     def run_worker(self, index: int, start_order: int) -> None:

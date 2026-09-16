@@ -39,7 +39,7 @@ def snapshot_completed_turn(messages, *, session_id, user_content, assistant_con
            (not isinstance(m["content"], str) or len(m["content"]) > 64000)
            for m in turn):
         return None
-    keys = ("id", "_row_id", "_db_persisted", "role", "content", "tool_name",
+    keys = ("id", "_row_id", "_db_persisted", "role", "content", "timestamp", "tool_name",
             "tool_call_id", "tool_calls", "session_id", "scope", "source_id", "source_event_id")
     selected = [{k: m[k] for k in keys if k in m} for m in turn]
     # Streaming encoding bounds the copy, including nested tool-call arguments.

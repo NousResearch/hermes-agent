@@ -246,6 +246,7 @@ def _is_external_process_provider(provider: str) -> bool:
 def _resolve_external_process_runtime(provider: str, requested_provider: str) -> Dict[str, Any]:
     rp = _rp()
     creds = rp.resolve_external_process_provider_credentials(provider)
+    acp_cwd = str(rp._get_model_config().get("acp_cwd") or "").strip() or None
     return rp._runtime(provider, "chat_completions", creds.get("base_url", "").rstrip("/"), creds.get("api_key", ""),
-                       command=creds.get("command", ""), args=list(creds.get("args") or []),
+                       command=creds.get("command", ""), args=list(creds.get("args") or []), acp_cwd=acp_cwd,
                        source=creds.get("source", "process"), requested_provider=requested_provider)

@@ -2262,6 +2262,7 @@ def _runtime_agent_kwargs(runtime: dict) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "acp_cwd": runtime.get("acp_cwd"),
         "credential_pool": runtime.get("credential_pool"),
         "request_overrides": runtime.get("request_overrides")}
 

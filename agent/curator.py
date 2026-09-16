@@ -1028,7 +1028,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         agent_kwargs: Dict[str, Any] = {}
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
-            agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+            agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []), acp_cwd=rp.get("acp_cwd"))
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),

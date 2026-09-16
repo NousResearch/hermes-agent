@@ -77,6 +77,7 @@ model:
   #
   # Can also be overridden for a single invocation with the --provider flag.
   provider: "auto"
+  # acp_cwd: "/remote/workspace"  # ACP session directory on the server, not the local launcher cwd.
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env

@@ -178,6 +178,7 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    *, override_acp_cwd: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -221,6 +222,7 @@ def _build_child_agent(
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_acp_command=override_acp_command,
         override_acp_args=override_acp_args,
+        override_acp_cwd=override_acp_cwd,
         routing_cfg=routing_cfg,
     )
     if override_request_overrides is not None:
@@ -374,6 +376,7 @@ def _build_children(
         "override_request_overrides": creds.get("request_overrides"),
         "override_acp_command": creds.get("command"),
         "override_acp_args": creds.get("args"),
+        "override_acp_cwd": creds.get("acp_cwd"),
         "routing_cfg": routing_cfg,
     }
     children = []

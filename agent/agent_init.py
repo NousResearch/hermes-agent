@@ -800,6 +800,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     if agent.provider == "copilot-acp":
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
+        client_kwargs["acp_cwd"] = agent.acp_cwd
     # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless
     # placeholder): send an empty Authorization header to override the SDK's "Bearer <key>".
     with suppress(Exception):
@@ -932,6 +933,13 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             raise
 
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
+    if agent.provider == "copilot-acp":
+        # Routing supplies defaults, but must not replace the caller's cwd.
+        if agent.acp_cwd is not None:
+            client_kwargs["acp_cwd"] = agent.acp_cwd
+        agent.acp_command = client_kwargs.get("command")
+        agent.acp_args = list(client_kwargs.get("args") or [])
+        agent.acp_cwd = client_kwargs.get("acp_cwd")
     _apply_openai_header_policy(agent, client_kwargs)
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
@@ -1011,6 +1019,10 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
     )
     if headers:
         kwargs["default_headers"] = dict(headers)
+    # Router-created ACP clients must retain their transport when rebuilt.
+    process_kwargs = getattr(client, "_hermes_external_process_kwargs", None)
+    if isinstance(process_kwargs, dict):
+        kwargs.update(process_kwargs)
     return kwargs
 
 
@@ -2208,6 +2220,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    *, acp_cwd: str = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
@@ -2259,6 +2272,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
+    agent.acp_cwd = acp_cwd
     _resolve_api_mode(agent, api_mode, provider_name, base_url)
     _finalize_routing(agent, api_mode, credential_pool)
 

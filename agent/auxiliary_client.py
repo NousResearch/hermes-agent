@@ -4942,15 +4942,18 @@ def _resolve_external_process_branch(req: _ResolveRequest, creds: Dict[str, Any]
         if not api_key or not base_url:
             logger.warning("resolve_provider_client: %s requested but external process credentials are incomplete", provider)
             return None, None
+        process_kwargs = {
+            "command": str(creds.get("command", "")).strip() or None,
+            "args": list(creds.get("args") or []), "acp_cwd": creds.get("acp_cwd"),
+        }
         try:
-            client = _extproc_profile.create_client(
-                api_key=api_key, base_url=base_url,
-                command=str(creds.get("command", "")).strip() or None, args=list(creds.get("args") or []))
+            client = _extproc_profile.create_client(api_key=api_key, base_url=base_url, **process_kwargs)
         except Exception:
             logger.warning("resolve_provider_client: profile %r failed to create an external-process client",
                            provider, exc_info=True)
             client = None
         if client is not None:
+            client._hermes_external_process_kwargs = process_kwargs
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return _route_client(req, client, final_model)
     _log_once_debug(_LOGGED_UNSUPPORTED_EXTPROC_KEYS, provider,
@@ -4965,7 +4968,6 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     try:
         from hermes_cli.auth import (
             PROVIDER_REGISTRY, resolve_api_key_provider_credentials,
-            resolve_external_process_provider_credentials,
         )
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
@@ -4979,7 +4981,8 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     if auth_type == "api_key":
         return _resolve_api_key_branch(req, pconfig, resolve_api_key_provider_credentials)
     if auth_type == "external_process":
-        return _resolve_external_process_branch(req, resolve_external_process_provider_credentials(provider))
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        return _resolve_external_process_branch(req, resolve_runtime_provider(requested=provider, target_model=req.model))
     if auth_type == "vertex":
         client, final_model = _build_vertex_client(provider, req.model)
     elif auth_type == "aws_sdk":

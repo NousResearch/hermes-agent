@@ -593,6 +593,7 @@ class TestRunJobSessionPersistence:
                      "base_url": "https://example.invalid/v1",
                      "provider": "openrouter",
                      "api_mode": "chat_completions",
+                     "acp_cwd": "/remote/workspace",
                  },
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -610,6 +611,7 @@ class TestRunJobSessionPersistence:
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["session_db"] is fake_db
         assert kwargs["platform"] == "cron"
+        assert kwargs["acp_cwd"] == "/remote/workspace"
         assert kwargs["session_id"].startswith("cron_test-job_")
         original_session_id = kwargs["session_id"]
         fake_db.get_compression_tip.assert_called_once_with(original_session_id)

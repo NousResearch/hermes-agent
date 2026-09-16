@@ -2741,6 +2741,7 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
+  # acp_cwd: "/remote/workspace"  # Remote ACP session directory; inherits model.acp_cwd when unset.
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -2777,7 +2778,9 @@ delegation:
 ```
 **Wire protocol (`api_mode`):** Hermes auto-detects the wire protocol from `delegation.base_url` (e.g. paths ending in `/anthropic` → `anthropic_messages`; Codex / native Anthropic / Kimi-coding hostnames keep their existing detection). For endpoints the heuristic can't classify — for example Azure AI Foundry, MiniMax, Zhipu GLM, or LiteLLM proxies fronting an Anthropic-shaped backend — set `delegation.api_mode` explicitly to one of `chat_completions`, `codex_responses`, or `anthropic_messages`. Leave it empty (the default) to keep auto-detection.
 
-The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
+**ACP working directory (`acp_cwd`):** Set `model.acp_cwd` for the primary ACP session. Children inherit it; `delegation.acp_cwd` overrides it. The path belongs to the ACP server and need not exist on the local host when using SSH. The launcher still runs in Hermes' local working directory. Configure this non-secret setting in `config.yaml`, not an environment variable.
+
+The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported, including `copilot-acp`. When a provider is set, the system automatically resolves the correct base URL, API key, API mode, and ACP process settings — no manual credential wiring needed.
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 

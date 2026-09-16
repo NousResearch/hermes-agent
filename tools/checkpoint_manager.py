@@ -69,17 +69,17 @@ _STORE_GIT_CONFIG = (("user.email", "hermes@local"), ("user.name", "Hermes Check
                      ("commit.gpgsign", "false"), ("tag.gpgSign", "false"), ("gc.auto", "0"))
 _PROJECT_MARKERS = {".git", "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
 
-CONTAINER_CHECKPOINT_UNAVAILABLE = (
-    "Checkpoints and rollback are unavailable for container terminal backends because "
-    "container paths cannot be mapped safely to the host checkpoint store."
-)
-
-
 def checkpoint_unavailable_reason(task_id: str = "default") -> Optional[str]:
     """Explain why host-side checkpoints are unsafe for this task, if applicable."""
-    from tools.file_tools_paths import _uses_container_paths
+    from tools.file_tools_paths import container_backend_for_task
 
-    return CONTAINER_CHECKPOINT_UNAVAILABLE if _uses_container_paths(task_id or "default") else None
+    backend = container_backend_for_task(task_id or "default")
+    if backend is None:
+        return None
+    return (
+        f"Checkpoints and rollback are unavailable for terminal.backend={backend} because "
+        "container paths cannot be mapped safely to the host checkpoint store."
+    )
 
 _SHORTSTAT_FIELDS = (("files_changed", r'(\d+) file'), ("insertions", r'(\d+) insertion'),
                      ("deletions", r'(\d+) deletion'))

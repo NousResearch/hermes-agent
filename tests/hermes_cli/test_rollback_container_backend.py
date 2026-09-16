@@ -20,4 +20,4 @@ def test_rollback_refuses_container_session_before_store_access(monkeypatch, cap
     cli._handle_rollback_command("/rollback")
 
     output = capsys.readouterr().out
-    assert "unavailable for container terminal backends" in output
+    assert "unavailable for terminal.backend=docker" in output

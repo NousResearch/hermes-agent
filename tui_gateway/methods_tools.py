@@ -916,7 +916,13 @@ def _(rid, params: dict) -> dict:
 # ─── Insights / rollback / browser / config ──────────────────────────────────
 def _rollback_unavailable_reason(session) -> str | None:
     checkpoint_manager = _tools_mod("tools.checkpoint_manager")
-    return checkpoint_manager.checkpoint_unavailable_reason(session.get("session_key", "") or "default")
+    task_id = session.get("session_key", "") or "default"
+    tokens = _set_session_context(task_id, cwd=_session_cwd(session))
+    try:
+        with _session_profile_runtime_scope(session):
+            return checkpoint_manager.checkpoint_unavailable_reason(task_id)
+    finally:
+        _clear_session_context(tokens)
 
 
 @_scoped_rpc("insights.get", 5017)

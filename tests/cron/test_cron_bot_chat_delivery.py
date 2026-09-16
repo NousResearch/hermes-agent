@@ -169,18 +169,37 @@ def test_deliver_failure_reports_both_streams_labeled():
     assert "stdout: banner out" in err
 
 
-def test_deliver_failure_stdout_only_when_stderr_empty():
+def test_deliver_failure_banner_only_stdout_names_exit_code_not_banner():
     """The reported shape: empty stderr, stdout holding only the resume
-    banner — the recorded error must still carry it (#104056)."""
-    banner = 'Resumed session 20260905_121420_8084c7 "Bot Chat" (1 user message, 1 total messages)'
+    banner — the recorded error must say what happened (exit code, banner-only
+    stdout) instead of echoing the banner as if it were a reason (#104056)."""
+    banner = ('↻ Resumed session 20260905_121420_8084c7 "Bot Chat" (1 user message, 1 total messages)'
+              '\n\nsession_id: 20260905_121420_8084c7')
     with mock.patch.object(
         sched.subprocess, "run",
         return_value=_completed(returncode=1, stdout=banner, stderr=""),
     ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
-    assert "stdout: " + banner in err
+    assert "exit code 1" in err
+    assert "stdout was only the resume banner" in err
+    assert "Resumed session" not in err
     assert "stderr:" not in err
+
+
+def test_deliver_failure_persisted_stdout_tail_is_short_and_redacted():
+    """``last_delivery_error`` lands in jobs.json / the ledger: the model's
+    answer on stdout is capped to a short tail and secrets are scrubbed."""
+    answer = "x" * 5000 + "\nToken: sk-ant-api03-" + "A" * 80 + " done"
+    with mock.patch.object(
+        sched.subprocess, "run",
+        return_value=_completed(returncode=1, stdout=answer, stderr="boom-err"),
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+    assert err is not None
+    stdout_part = err.split("stdout: ", 1)[1]
+    assert len(stdout_part) <= 200
+    assert "sk-ant-api03-" + "A" * 80 not in err
 
 
 def test_deliver_timeout_returns_error_string():

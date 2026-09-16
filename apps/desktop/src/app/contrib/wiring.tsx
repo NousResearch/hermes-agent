@@ -142,6 +142,7 @@ import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  TITLEBAR_HEIGHT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
@@ -1289,6 +1290,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         className="contents"
         style={
           {
+            '--titlebar-height': `${TITLEBAR_HEIGHT}px`,
             '--titlebar-controls-left': `${controlsPos.left}px`,
             '--titlebar-controls-top': `${controlsPos.top}px`,
             '--titlebar-controls-width': leftToolsWidth,

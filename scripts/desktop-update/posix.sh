@@ -37,6 +37,7 @@ set -u
 
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
+RELEASE_TAG="" RELEASE_COMMIT=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
@@ -45,6 +46,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
+    --release) RELEASE_TAG="$2"; shift 2 ;;
+    --release-commit) RELEASE_COMMIT="$2"; shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
@@ -771,9 +774,28 @@ if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; 
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH --branch $BRANCH"
+# Stable channel: the immutable release pair the desktop check verified. The
+# updater fails closed when the tag no longer resolves to that SHA; a release
+# target is never swapped for a branch. Legacy installs whose hermes predates
+# --release must NOT silently fall back to main — refuse explicitly.
+TARGET_ARGS=()
+if [ -n "$RELEASE_TAG" ]; then
+  if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--release'; then
+    TARGET_ARGS=(--release "$RELEASE_TAG")
+    if [ -n "$RELEASE_COMMIT" ]; then
+      TARGET_ARGS+=(--release-commit "$RELEASE_COMMIT")
+    fi
+  else
+    log "installed hermes predates --release; refusing release-target update instead of falling back to a branch"
+    FINAL_CODE=3 FINAL_MSG="Update aborted: this checkout's hermes CLI predates release-channel updates. Update the CLI once manually (hermes update --release $RELEASE_TAG), then retry from the app."
+    exit 3
+  fi
+else
+  TARGET_ARGS=(--branch "$BRANCH")
+fi
+log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH ${TARGET_ARGS[*]}"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
@@ -795,7 +817,7 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi

@@ -2327,6 +2327,44 @@ def _update_preflight_handled(args) -> bool:
         sys.exit(2)
 
     if getattr(args, "check", False):
+        from hermes_cli.update_cmd_release import (
+            _configured_release_request,
+            _resolve_release_request,
+            _resolve_requested_channel,
+        )
+
+        # Mutual-exclusion and hand-off validation run before any check so the
+        # errors surface regardless of channel (mirrors the apply path).
+        if _resolve_release_request(args) is not None and getattr(args, "branch", None):
+            print("✗ --release and --branch are mutually exclusive.")
+            sys.exit(1)
+        if getattr(args, "release_commit", None) and _resolve_release_request(args) is None:
+            print("✗ --release-commit requires --release.")
+            sys.exit(1)
+        requested_channel = _resolve_requested_channel(args)
+        if requested_channel is not None and getattr(args, "branch", None):
+            print("✗ --channel and --branch are mutually exclusive.")
+            sys.exit(1)
+
+        # An explicit --channel on --check persists the same record the apply path
+        # and the Desktop selector write, then the check answers for that channel.
+        if requested_channel is not None:
+            from hermes_cli.update_channel import write_channel_record
+
+            try:
+                record = write_channel_record(requested_channel)
+            except (OSError, ValueError) as exc:
+                print(f"✗ Could not persist the update channel ({exc}).")
+                sys.exit(1)
+            print(f"✓ Update channel set to {record['channel']} (persisted for this installation).")
+
+        release_request = _configured_release_request(args)
+        if release_request is not None:
+            from hermes_cli.update_cmd import _cmd_update_check_release
+
+            _cmd_update_check_release(release_request)
+            return True
+
         # --check honors --branch so its answer matches what update would pull.
         branch = _resolve_update_branch(args)
         from hermes_cli.update_cmd import _cmd_update_check

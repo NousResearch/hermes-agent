@@ -30,6 +30,12 @@ def git_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(banner, "_resolve_repo_dir", lambda: repo_dir)
     monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda root: "git")
     monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: repo_dir)
+    # These tests pin the branch-mode (beta) passive check: give the install a
+    # beta channel record so the stable path doesn't intercept.
+    from hermes_cli import update_channel
+
+    monkeypatch.setattr(update_channel, "get_default_hermes_root", lambda: tmp_path)
+    update_channel.write_channel_record("beta", tmp_path)
     return repo_dir
 
 

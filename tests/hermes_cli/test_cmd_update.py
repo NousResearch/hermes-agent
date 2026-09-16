@@ -11,6 +11,25 @@ from hermes_cli.main import cmd_update, PROJECT_ROOT
 from hermes_cli import main_web_build
 from hermes_cli import main_install_repair
 from hermes_cli import update_cmd
+import pytest
+
+from hermes_cli import update_channel
+
+pytestmark = pytest.mark.stable_channel_default
+
+
+@pytest.fixture
+def beta_channel_record(tmp_path, monkeypatch):
+    """Pin the branch (beta) pipeline for branch-flow tests.
+
+    The stable channel is the default when no record exists; these tests
+    exercise the branch machinery, so they need the beta record present.
+    """
+    record_root = tmp_path / "hermes-root"
+    record_root.mkdir()
+    monkeypatch.setattr(update_channel, "get_default_hermes_root", lambda: record_root)
+    update_channel.write_channel_record("beta", record_root)
+    return record_root
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -264,7 +283,13 @@ class TestUpdateManagedPythonEnvIsolation:
 
 
 class TestCmdUpdateBranchFallback:
-    """cmd_update falls back to main when current branch has no remote counterpart."""
+    """cmd_update branch fallback when remote branch doesn't exist."""
+
+    @pytest.fixture(autouse=True)
+    def _beta_pipeline(self, beta_channel_record):
+        """These tests pin the historical branch behaviour; the stable channel is
+        the new default, so give them the beta record explicitly."""
+        return beta_channel_record
 
 
 
@@ -557,6 +582,12 @@ class TestCmdUpdateMigrationPrompt:
     yes looked like a no-op.
     """
 
+    @pytest.fixture(autouse=True)
+    def _beta_pipeline(self, beta_channel_record):
+        """Branch-pipeline tests pin the historical branch behaviour; the stable
+        channel is the new default, so give them the beta record explicitly."""
+        return beta_channel_record
+
     def test_version_bump_only_applies_silently_without_prompt(
         self, mock_args, capsys
     ):
@@ -709,6 +740,12 @@ class TestCmdUpdateProfileSkillSync:
     from the seed_profile_skills loop, leaving it on stale skill content.
     """
 
+    @pytest.fixture(autouse=True)
+    def _beta_pipeline(self, beta_channel_record):
+        """Branch-pipeline tests pin the historical branch behaviour; the stable
+        channel is the new default, so give them the beta record explicitly."""
+        return beta_channel_record
+
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_active_profile_included_in_skill_sync(
@@ -783,6 +820,12 @@ class TestCmdUpdateBranchFlag:
     The CLI default stays 'main'; --branch lets callers pick a different
     target without monkey-patching the implementation.
     """
+
+    @pytest.fixture(autouse=True)
+    def _beta_pipeline(self, beta_channel_record):
+        """Branch-pipeline tests pin the historical branch behaviour; the stable
+        channel is the new default, so give them the beta record explicitly."""
+        return beta_channel_record
 
     def _branch_side_effect(self, current_branch, target_branch, *, checkout_fails=False, track_fails=False, commit_count="0"):
         """Mock side-effect that knows about checkout/track behavior.
@@ -874,6 +917,12 @@ class TestCmdUpdateCheckBranchFlag:
     friendlier behavior: detect-the-missing-ref before rev-list, exit 1
     with a clear message.
     """
+
+    @pytest.fixture(autouse=True)
+    def _beta_pipeline(self, beta_channel_record):
+        """Branch-mode checks need the beta record: with no record the stable
+        channel is the default and --check resolves official releases instead."""
+        return beta_channel_record
 
     def _check_side_effect(
         self,
@@ -1015,6 +1064,251 @@ class TestCmdUpdateZipBranchRefusal:
         assert "Downloading latest version" not in out
 
 
+class TestResolveReleaseRequest:
+    """``--release`` parsing: absent vs. bare vs. explicit tag."""
+
+    def test_absent_returns_none(self):
+        from hermes_cli.update_cmd_release import _resolve_release_request
+
+        assert _resolve_release_request(SimpleNamespace(release=None)) is None
+
+    def test_bare_flag_means_latest(self):
+        from hermes_cli.update_cmd_release import RELEASE_LATEST, _resolve_release_request
+
+        assert _resolve_release_request(SimpleNamespace(release="latest")) == RELEASE_LATEST
+
+    def test_blank_collapses_to_latest(self):
+        from hermes_cli.update_cmd_release import RELEASE_LATEST, _resolve_release_request
+
+        assert _resolve_release_request(SimpleNamespace(release="   ")) == RELEASE_LATEST
+
+    def test_explicit_tag_preserved(self):
+        from hermes_cli.update_cmd_release import _resolve_release_request
+
+        assert _resolve_release_request(SimpleNamespace(release="v2026.5.29")) == "v2026.5.29"
+
+
+class TestCmdUpdateRelease:
+    """``hermes update --release [TAG]`` pins to a tagged release.
+
+    Covers the issue #34514 asks: pin to a specific tag, land on a detached
+    HEAD (don't force the pin back to main), and report "already on" when the
+    requested release is already installed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _published_github_releases(self, monkeypatch):
+        def resolve(requested_tag=None):
+            tag = requested_tag or "v2026.5.29"
+            if not tag.startswith("v2026."):
+                return None, f"Official release tag '{tag}' not found."
+            return tag, None
+
+        monkeypatch.setattr("hermes_cli.stable_update.resolve_published_release_tag", resolve)
+
+    def _release_side_effect(
+        self,
+        *,
+        current_branch="HEAD",
+        latest_tag="v2026.5.29",
+        requested_tag_exists=True,
+        head_equals_target=False,
+    ):
+        target_sha = "b" * 40
+        head_sha = target_sha if head_equals_target else "a" * 40
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "ls-remote --tags" in joined:
+                refs = [
+                    f"{target_sha}\trefs/tags/{latest_tag}",
+                    f"{'c' * 40}\trefs/tags/v2026.5.28",
+                ]
+                if requested_tag_exists:
+                    refs.append(f"{target_sha}\trefs/tags/v2026.5.7")
+                return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(refs) + "\n", stderr="")
+
+            if "fetch --quiet --no-tags" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{current_branch}\n", stderr="")
+
+            if "describe" in joined and "--exact-match" in joined:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0 if head_equals_target else 1,
+                    stdout=f"{latest_tag}\n" if head_equals_target else "",
+                    stderr="",
+                )
+
+            if "symbolic-ref" in joined:
+                return subprocess.CompletedProcess(
+                    cmd,
+                    1 if current_branch == "HEAD" else 0,
+                    stdout="" if current_branch == "HEAD" else f"{current_branch}\n",
+                    stderr="",
+                )
+
+            if "rev-parse" in joined and cmd[-1] == "FETCH_HEAD^{commit}":
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{target_sha}\n", stderr="")
+
+            if "rev-parse" in joined and cmd[-1] == "HEAD^{commit}":
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{head_sha}\n", stderr="")
+
+            if "merge-base" in joined and "--is-ancestor" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        return side_effect
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("hermes_cli.stable_update.resolve_commit", return_value="a" * 40)
+    @patch("hermes_cli.stable_update.resolve_official_release")
+    @patch("subprocess.run")
+    def test_release_check_uses_official_release_not_origin_tags(
+        self, mock_run, mock_resolve_release, _mock_resolve_commit, _mock_method, capsys
+    ):
+        mock_resolve_release.return_value = {
+            "tag": "v2026.5.29",
+            "commit": "b" * 40,
+            "error": None,
+        }
+
+        cmd_update(SimpleNamespace(check=True, release="latest", branch=None, release_commit=None))
+
+        mock_resolve_release.assert_called_once_with(PROJECT_ROOT, requested_tag=None)
+        mock_run.assert_not_called()
+        out = capsys.readouterr().out
+        assert "official GitHub Releases" in out
+        assert "Release update available: v2026.5.29" in out
+
+    @patch("hermes_cli.config.detect_install_method", return_value="git")
+    @patch("hermes_cli.stable_update.resolve_official_release")
+    def test_release_check_fails_closed_for_unpublished_tag(self, mock_resolve_release, _mock_method, capsys):
+        mock_resolve_release.return_value = {
+            "tag": "v2026.5.27",
+            "commit": None,
+            "error": "Official release tag 'v2026.5.27' not found.",
+        }
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_update(SimpleNamespace(check=True, release="v2026.5.27", branch=None, release_commit=None))
+
+        assert exc_info.value.code == 1
+        mock_resolve_release.assert_called_once_with(PROJECT_ROOT, requested_tag="v2026.5.27")
+        assert "Official release tag 'v2026.5.27' not found" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_latest_checks_out_newest_tag_detached(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            current_branch="HEAD", latest_tag="v2026.5.29", head_equals_target=False
+        )
+
+        cmd_update(SimpleNamespace(release="latest"))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        # Detached checkout of the resolved tag — a real pin, not a branch move.
+        assert any(f"checkout --detach {'b' * 40}" in c for c in commands), commands
+        # Never pulls a branch and never force-switches a detached HEAD to main.
+        assert not any("pull --ff-only" in c for c in commands), commands
+        assert not any("checkout main" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_specific_tag_is_pinned(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            current_branch="main", requested_tag_exists=True, head_equals_target=False
+        )
+
+        cmd_update(SimpleNamespace(release="v2026.5.7"))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any(f"checkout --detach {'b' * 40}" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_commit_guard_accepts_the_checked_target(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            current_branch="main", requested_tag_exists=True, head_equals_target=False
+        )
+
+        cmd_update(SimpleNamespace(release="v2026.5.7", release_commit="b" * 40))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any(f"checkout --detach {'b' * 40}" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_commit_guard_rejects_a_moved_tag_before_checkout(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            current_branch="main", requested_tag_exists=True, head_equals_target=False
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release="v2026.5.7", release_commit="c" * 40))
+
+        assert exc.value.code == 1
+        assert "no longer resolves to the checked commit" in capsys.readouterr().out
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("checkout --detach" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_commit_guard_rejects_invalid_sha(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect()
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release="v2026.5.7", release_commit="not-a-sha"))
+
+        assert exc.value.code == 1
+        assert "full 40-character Git commit SHA" in capsys.readouterr().out
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("checkout --detach" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_already_installed_short_circuits(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(
+            requested_tag_exists=True, head_equals_target=True
+        )
+
+        cmd_update(SimpleNamespace(release="v2026.5.29"))
+
+        out = capsys.readouterr().out
+        assert "Already on release v2026.5.29" in out
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert not any("checkout --detach" in c for c in commands), commands
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_release_unknown_tag_exits_cleanly(self, mock_run, _which, capsys):
+        mock_run.side_effect = self._release_side_effect(requested_tag_exists=False)
+
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release="v9999.1.1"))
+        assert exc.value.code == 1
+
+        out = capsys.readouterr().out
+        assert "v9999.1.1" in out
+        assert "not found" in out
+
+    def test_release_and_branch_are_mutually_exclusive(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release="latest", branch="main"))
+        assert exc.value.code == 1
+        assert "mutually exclusive" in capsys.readouterr().out
+
+    def test_release_commit_requires_release(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cmd_update(SimpleNamespace(release=None, release_commit="b" * 40))
+        assert exc.value.code == 1
+        assert "requires --release" in capsys.readouterr().out
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 
@@ -1047,6 +1341,12 @@ termux = ["rich>=14"]
 class TestNodeRuntimeNpmResolution:
     """Regression tests for #30271 — WSL must not run Windows npm against the
     Linux checkout, and a failed Node refresh must not report success."""
+
+    @pytest.fixture(autouse=True)
+    def _beta_pipeline(self, beta_channel_record):
+        """Branch-pipeline tests pin the historical branch behaviour; the stable
+        channel is the new default, so give them the beta record explicitly."""
+        return beta_channel_record
 
 
 

@@ -285,6 +285,8 @@ async def check_hermes_update(force: bool = False):
 
     # banner.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
+    # Channel-aware: the install-scoped record decides stable (official releases) vs
+    # beta (main); the passive check never falls back to main on the stable channel.
     try:
         from hermes_cli.banner import check_for_updates, upstream_commits_behind
 
@@ -292,6 +294,9 @@ async def check_hermes_update(force: bool = False):
             with contextlib.suppress(OSError):
                 (get_hermes_home() / ".update_check").unlink()
         behind = await asyncio.to_thread(check_for_updates)
+        from hermes_cli.update_channel import read_update_channel
+
+        payload["channel"] = await asyncio.to_thread(read_update_channel)
     except Exception:
         _log.exception("Update check failed")
         behind = None

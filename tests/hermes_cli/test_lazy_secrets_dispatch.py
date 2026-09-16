@@ -168,7 +168,21 @@ class TestUpdatePathE2E:
         """
         script = """
 import sys
+import tempfile
 from unittest.mock import patch
+
+# The crypto-laziness invariant under test belongs to the branch check path;
+# with no channel record the stable default dispatches to the release check
+# instead. Pin the beta channel record for this subprocess so the patched
+# branch handler is the one main() dispatches to.
+from hermes_cli import update_channel
+
+_record_root = tempfile.mkdtemp(prefix="hermes-crypto-probe-")
+patch(
+    "hermes_cli.update_channel.get_default_hermes_root",
+    lambda: __import__("pathlib").Path(_record_root),
+).start()
+update_channel.write_channel_record("beta", __import__("pathlib").Path(_record_root))
 
 crypto_seen_at_dispatch = []
 

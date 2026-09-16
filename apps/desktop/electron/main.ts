@@ -408,6 +408,11 @@ import {
   windowOpacityOptions
 } from './translucency'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
+import {
+  fetchOfficialGithubReleases,
+  parseRemoteReleaseTags,
+  resolveDesktopReleaseStatus
+} from './update-releases'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -451,6 +456,12 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
+import {
+  readUpdateChannel,
+  updateChannelRecordPath,
+  writeUpdateChannel,
+  type HermesUpdateChannel
+} from './update-channel-record'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
@@ -3173,6 +3184,7 @@ async function resolveHealedBranch(updateRoot, branch) {
 async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
+  const channel = readUpdateChannel(HERMES_HOME)
   const gitDir = path.join(updateRoot, '.git')
 
   if (!directoryExists(gitDir)) {
@@ -3183,7 +3195,8 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
         "This copy of Hermes can't update itself from inside the app. Download the latest version from the Hermes website, " +
         `or reinstall Hermes to enable in-app updates. Details: ${updateRoot} has no version-control metadata.`,
       hermesRoot: updateRoot,
-      branch
+      branch,
+      channel
     }
   }
 
@@ -3199,20 +3212,27 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
   const cached = readUpdateCheckCache()
   const now = Date.now()
 
-  if (!force && cacheIsFresh(cached, { branch, currentSha, now })) {
+  if (!force && cacheIsFresh(cached, { branch, channel, currentSha, now })) {
     return { ...cached.status, dirty: dirtyStr.length > 0, currentBranch }
   }
 
-  branch = await resolveHealedBranch(updateRoot, branch)
-  const slug = githubRepoSlug(originUrl)
+  // Stable channel: resolve official releases, never a branch tip.
+  let status
+  if (channel === 'stable') {
+    status = await checkUpdatesViaReleases({ updateRoot, currentSha })
+  } else {
+    branch = await resolveHealedBranch(updateRoot, branch)
+    const slug = githubRepoSlug(originUrl)
 
-  const status = slug
-    ? await checkUpdatesViaApi({ slug, branch, currentSha })
-    : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
+    status = slug
+      ? await checkUpdatesViaApi({ slug, branch, currentSha })
+      : await checkUpdatesViaLsRemote({ updateRoot, branch, currentSha })
+  }
 
   const result = {
     supported: true,
-    branch,
+    channel,
+    branch: channel === 'stable' ? null : branch,
     currentBranch,
     currentSha,
     dirty: dirtyStr.length > 0,
@@ -3221,9 +3241,71 @@ async function checkUpdates({ force = false }: { force?: boolean } = {}) {
     ...status
   }
 
-  writeUpdateCheckCache({ fetchedAt: now, currentSha, branch, status: result })
+  writeUpdateCheckCache({ fetchedAt: now, currentSha, branch, channel, status: result })
 
   return result
+}
+
+// Stable-channel check: the published official releases (draft/prerelease
+// filtered) cross-referenced with the exact remote tag SHAs — never main.
+async function checkUpdatesViaReleases({ updateRoot, currentSha }: { updateRoot: string; currentSha: string }) {
+  const [releaseRecords, remoteTagsResult] = await Promise.all([
+    fetchOfficialGithubReleases(),
+    runGit(
+      ['ls-remote', '--tags', OFFICIAL_REPO_HTTPS_URL],
+      { cwd: updateRoot }
+    )
+  ])
+
+  if (remoteTagsResult.code !== 0) {
+    return { error: 'fetch-failed', message: firstLine(remoteTagsResult.stderr) || 'git ls-remote failed.' }
+  }
+
+  try {
+    const status = resolveDesktopReleaseStatus({
+      currentSha,
+      releaseRecords,
+      remoteTags: parseRemoteReleaseTags(remoteTagsResult.stdout)
+    })
+
+    return {
+      behind: status.behind,
+      updateAvailable: status.behind > 0,
+      targetSha: status.targetSha,
+      targetRelease: status.targetRelease,
+      currentRelease: status.currentRelease,
+      releases: status.releases,
+      commits: []
+    }
+  } catch (error) {
+    return { error: 'fetch-failed', message: error?.message || String(error) }
+  }
+}
+
+// Resolve the exact (tag, sha) pair a stable apply must hand off: the newest
+// published official release cross-checked against the remote tag SHA. Null on
+// any failure — the caller refuses the update rather than guessing main.
+async function resolveStableUpdateTarget(updateRoot: string) {
+  try {
+    const [releaseRecords, remoteTagsResult] = await Promise.all([
+      fetchOfficialGithubReleases(),
+      runGit(['ls-remote', '--tags', OFFICIAL_REPO_HTTPS_URL], { cwd: updateRoot })
+    ])
+
+    if (remoteTagsResult.code !== 0) {
+      return null
+    }
+
+    const status = resolveDesktopReleaseStatus({
+      currentSha: '',
+      releaseRecords,
+      remoteTags: parseRemoteReleaseTags(remoteTagsResult.stdout)
+    })
+
+    return status.targetSha ? { tag: status.targetRelease, sha: status.targetSha } : null
+  } catch {
+    return null
+  }
 }
 
 function readUpdateCheckCache() {
@@ -4070,8 +4152,31 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
     const updateRoot = resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
-    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = ['--update', '--branch', branch]
+    // Channel-aware target: stable hands off the exact immutable release pair
+    // the check verified (--release/--release-commit); beta hands off the
+    // branch. A stable apply MUST NOT silently bootstrap or pull main.
+    const channel = readUpdateChannel(HERMES_HOME)
+    let updaterArgs: string[]
+
+    if (channel === 'stable') {
+      const stableTarget = await resolveStableUpdateTarget(updateRoot)
+
+      if (!stableTarget) {
+        const message =
+          'Update aborted: could not resolve the current official release ' +
+          '(network or release lookup failed). The checkout was not changed; ' +
+          'try again in a moment.'
+
+        emitUpdateProgress({ stage: 'error', message, percent: null })
+        return { ok: false, error: message }
+      }
+
+      updaterArgs = ['--update', '--release', stableTarget.tag, '--release-commit', stableTarget.sha]
+    } else {
+      const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+      updaterArgs = ['--update', '--branch', branch]
+    }
+
     const targetApp = IS_MAC ? runningAppBundle() : null
 
     if (targetApp) {
@@ -4203,6 +4308,19 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
     let child
 
+    // Channel-aware hand-off target: stable threads the immutable release
+    // pair; beta threads the branch. Both scripts accept the release args.
+    const releaseIdx = updaterArgs.indexOf('--release')
+    const handoffRelease =
+      releaseIdx !== -1
+        ? {
+            tag: updaterArgs[releaseIdx + 1],
+            commit: updaterArgs[updaterArgs.indexOf('--release-commit') + 1]
+          }
+        : null
+    const handoffBranch =
+      releaseIdx === -1 ? updaterArgs[updaterArgs.indexOf('--branch') + 1] || DEFAULT_UPDATE_BRANCH : ''
+
     if (scriptHandoff) {
       const updateStartedAt = Math.floor(Date.now() / 1000)
 
@@ -4213,16 +4331,26 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
       // pid — the script claims the update marker itself with its own $PID
       // as its first action, and a relaunched Desktop parks on that.
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
+      const handoffScriptArgs = [
         '-InstallRoot',
         updateRoot,
-        '-Branch',
-        branch,
         '-DesktopPid',
         String(process.pid),
         '-RelaunchExe',
         process.execPath
-      ])
+      ]
+
+      if (handoffRelease) {
+        handoffScriptArgs.push('-ReleaseTag', handoffRelease.tag)
+
+        if (handoffRelease.commit) {
+          handoffScriptArgs.push('-ReleaseCommit', handoffRelease.commit)
+        }
+      } else {
+        handoffScriptArgs.splice(2, 0, '-Branch', handoffBranch)
+      }
+
+      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, handoffScriptArgs)
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: HERMES_HOME,
@@ -4248,7 +4376,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       }
 
       rememberLog(
-        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
+        `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (${handoffRelease ? `release ${handoffRelease.tag}` : `branch ${handoffBranch}`}); exiting desktop to release venv shim`
       )
     } else {
       child = spawnUpdaterProcess(updater, updaterArgs, {
@@ -4364,6 +4492,26 @@ async function handOffWindowsBootstrapRecovery(reason) {
   }
 
   const updateRoot = resolveUpdateRoot()
+
+  // Stable channel: recovery must not silently bootstrap/repair onto main.
+  // Resolve the exact release target; when it cannot be verified (offline,
+  // no release, moved tag), fail closed instead of degrading to a branch.
+  const recoveryChannel = readUpdateChannel(HERMES_HOME)
+  let recoveryRelease: { tag: string; sha: string } | null = null
+
+  if (recoveryChannel === 'stable') {
+    recoveryRelease = directoryExists(path.join(updateRoot, '.git'))
+      ? await resolveStableUpdateTarget(updateRoot)
+      : null
+
+    if (!recoveryRelease) {
+      rememberLog(
+        '[bootstrap] stable-channel recovery could not verify an official release target; failing closed (no main bootstrap)'
+      )
+      return false
+    }
+  }
+
   const { branch: configuredBranch } = readDesktopUpdateConfig()
 
   const branch = directoryExists(path.join(updateRoot, '.git'))
@@ -4380,14 +4528,33 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // marker-only install through --update dead-ends at "Could not find the hermes
   // CLI" instead of rebuilding the runtime, so only a runnable pair gets the
   // gentle update path. Partial or missing runtimes go through full repair.
-  const updaterArgs = chooseUpdaterArgs(
-    {
-      hasBootstrapMarker: fileExists(path.join(updateRoot, '.hermes-bootstrap-complete')),
-      hasVenvHermes: fileExists(venvHermes),
-      hasVenvPython: fileExists(venvPython)
-    },
-    branch
-  )
+  // Stable channel: when a runnable pair exists, hand off the verified release
+  // pair instead of a branch; without a runnable pair, fail closed (a --repair
+  // on a branch would silently recover main).
+  let updaterArgs: string[] | null
+
+  if (recoveryRelease) {
+    const haveRuntime = fileExists(venvHermes) && fileExists(venvPython)
+    updaterArgs = haveRuntime
+      ? ['--update', '--release', recoveryRelease.tag, '--release-commit', recoveryRelease.sha]
+      : null
+  } else {
+    updaterArgs = chooseUpdaterArgs(
+      {
+        hasBootstrapMarker: fileExists(path.join(updateRoot, '.hermes-bootstrap-complete')),
+        hasVenvHermes: fileExists(venvHermes),
+        hasVenvPython: fileExists(venvPython)
+      },
+      branch
+    )
+  }
+
+  if (!updaterArgs) {
+    rememberLog(
+      '[bootstrap] stable-channel recovery has no runnable venv for a release update; failing closed (no branch repair)'
+    )
+    return false
+  }
 
   await releaseBackendLockForUpdate(updateRoot)
 
@@ -4579,22 +4746,52 @@ async function applyUpdatesPosixHandoff(opts: any) {
   // ── Pre-flight state.db integrity guard (#68474) ──
   preflightStateDb(HERMES_HOME, rememberLog)
 
+  // Channel-aware target: stable threads the immutable release pair the
+  // check verified; beta branch-pins as before (never silently main).
+  const channel = readUpdateChannel(HERMES_HOME)
+  let releaseTarget: { tag: string; sha: string } | null = null
+
+  if (channel === 'stable') {
+    releaseTarget = await resolveStableUpdateTarget(updateRoot)
+
+    if (!releaseTarget) {
+      const message =
+        'Update aborted: could not resolve the current official release ' +
+        '(network or release lookup failed). The checkout was not changed; ' +
+        'try again in a moment.'
+
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+
+      return { ok: false, error: message }
+    }
+  }
+
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).
   let branch = 'main'
 
-  try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
+  if (!releaseTarget) {
+    try {
+      const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+      const current = (head.stdout || '').trim()
 
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branch = await resolveHealedBranch(updateRoot, current)
+      if (head.code === 0 && current && current !== 'HEAD') {
+        branch = await resolveHealedBranch(updateRoot, current)
+      }
+    } catch {
+      // best effort
     }
-  } catch {
-    // best effort
   }
 
-  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  const args = [...handoff.args, '--install-root', updateRoot]
+
+  if (releaseTarget) {
+    args.push('--release', releaseTarget.tag, '--release-commit', releaseTarget.sha)
+  } else {
+    args.push('--branch', branch)
+  }
+
+  args.push('--desktop-pid', String(process.pid))
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the
@@ -17689,6 +17886,23 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   writeDesktopUpdateConfig({ branch })
 
   return { branch }
+})
+
+// Channel selector (About popup, "Stable" / "Beta (main)"): persists ONLY the
+// install-scoped update-channel.json record shared with the CLI updater.
+// It never applies/rebuilds/restarts anything — applying is the separate,
+// explicit Update action, which revalidates the exact target at hand-off.
+ipcMain.handle('hermes:updates:track:get', async () => {
+  const channel = readUpdateChannel(HERMES_HOME)
+
+  return { channel, recordPath: updateChannelRecordPath(HERMES_HOME) }
+})
+
+ipcMain.handle('hermes:updates:track:set', async (_event, track) => {
+  const channel: HermesUpdateChannel = track === 'beta' ? 'beta' : 'stable'
+  writeUpdateChannel(HERMES_HOME, channel)
+
+  return { channel, recordPath: updateChannelRecordPath(HERMES_HOME) }
 })
 
 // Resolve the canonical Hermes version (the one `release.py` bumps in

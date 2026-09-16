@@ -1422,6 +1422,10 @@ export interface BackendUpdateCheckResponse {
   can_apply: boolean
   update_command: string | null
   message: string | null
+  /** The backend installation's update channel ('stable' | 'beta'); absent on
+   *  older backends. Local selection never writes the remote's record — this
+   *  only reports what the backend's own shared-root policy resolved. */
+  channel?: 'stable' | 'beta'
   commits?: BackendUpdateCommit[]
 }
 

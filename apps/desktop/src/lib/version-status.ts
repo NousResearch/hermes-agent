@@ -17,6 +17,8 @@ export interface VersionStatusCopy {
   clientLabel: (version: string) => string
   commit: (sha: string) => string
   commitsBehind: (count: number, branch: string) => string
+  release: (tag: string) => string
+  releasesBehind: (count: number) => string
   desktopVersion: (version: string) => string
   restart: string
   unknown: string
@@ -31,6 +33,8 @@ export interface VersionStatusInput {
   applyMessage?: string
   behind?: number
   branch?: string
+  currentRelease?: null | string
+  distanceUnit?: 'commits' | 'releases'
   copy: VersionStatusCopy
   /** Remote mode: the client is one of two versions on screen, so it says so. */
   remote: boolean
@@ -61,6 +65,8 @@ export function resolveVersionStatus({
   behind = 0,
   branch,
   copy,
+  currentRelease = null,
+  distanceUnit = 'commits',
   remote,
   restarting,
   sha = null,
@@ -92,17 +98,22 @@ export function resolveVersionStatus({
 
   const tooltip = [
     busy && (applyMessage || copy.updateInProgress),
-    !busy && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
+    !busy &&
+      behind > 0 &&
+      (distanceUnit === 'releases'
+        ? copy.releasesBehind(behind)
+        : copy.commitsBehind(behind, (client ? branch : 'main') || '...')),
     !busy && behind <= 0 && available && copy.update,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
+    client && currentRelease && copy.release(currentRelease),
     client && branch && copy.branch(branch)
   ]
     .filter(Boolean)
     .join(' · ')
 
   return {
-    detail: client && version && sha && !busy && !remote ? sha : undefined,
+    detail: client && !busy && !remote ? currentRelease || (version && sha ? sha : undefined) : undefined,
     hasUpdate: !busy && available,
     label: busy ? `${base} · ${restarting ? copy.restart : copy.update}` : `${base}${hint}`,
     tooltip: tooltip || undefined,

@@ -268,6 +268,8 @@ export interface Translations {
     backendOutOfDateMessage: string
     installMethodUnsupportedTitle: string
     updateHermes: string
+    releaseReadyTitle: string
+    releaseReadyMessage: (tag: string) => string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     updateReadyMessageUnknown: string
@@ -791,13 +793,25 @@ export interface Translations {
       cantUpdate: string
       cantReach: string
       tapCheck: string
+      releaseUpdateReady: (tag: string) => string
       updateReady: (count: number) => string
       updateReadyUnknown: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
       automaticUpdatesDesc: string
+      fastTrack: string
+      fastTrackDesc: string
+      releaseTrackHint: (version: string) => string
+      unknownVersion: string
       branchCommit: (branch: string, commit: string) => string
+      channel: string
+      channelDesc: string
+      channelStable: string
+      channelStableDesc: string
+      channelBeta: string
+      channelBetaDesc: string
+      channelPersistOnlyNote: string
       never: string
       justNow: string
       minAgo: (count: number) => string
@@ -2782,6 +2796,9 @@ export interface Translations {
     latestBody: string
     latestBodyBackend: string
     allSetTitle: string
+    releaseReadyTitle: string
+    releaseReadyBody: (tag: string) => string
+    releaseNotesUnavailable: string
     availableTitle: string
     availableBody: string
     availableTitleBackend: string
@@ -3137,6 +3154,8 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releasesBehind: (count: number) => string
+      release: (tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

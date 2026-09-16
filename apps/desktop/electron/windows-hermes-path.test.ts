@@ -19,9 +19,11 @@ import { test } from 'vitest'
 
 import {
   buildPathExtCandidates,
+  chooseReleaseUpdaterArgs,
   chooseUpdaterArgs,
   getVenvSitePackagesEntries,
-  resolveVenvHermesCommand
+  resolveVenvHermesCommand,
+  shouldRecoverReleaseTrack
 } from './windows-hermes-path'
 
 test('buildPathExtCandidates: Windows tries PATHEXT extensions before the empty extension', () => {
@@ -82,6 +84,41 @@ test('chooseUpdaterArgs: passes the branch through unchanged in both modes', () 
     chooseUpdaterArgs({ hasBootstrapMarker: false, hasVenvHermes: false, hasVenvPython: false }, 'release/1.2'),
     ['--repair', '--branch', 'release/1.2']
   )
+})
+
+test('shouldRecoverReleaseTrack: fresh inferred release permits initial branch bootstrap', () => {
+  assert.equal(shouldRecoverReleaseTrack('release', 'default'), false)
+})
+
+test('shouldRecoverReleaseTrack: established release resumes exact releases', () => {
+  assert.equal(shouldRecoverReleaseTrack('release', 'established'), true)
+})
+
+test('shouldRecoverReleaseTrack: explicit release fails closed even without an install', () => {
+  assert.equal(shouldRecoverReleaseTrack('release', 'explicit'), true)
+})
+
+test('shouldRecoverReleaseTrack: main track always uses branch recovery', () => {
+  assert.equal(shouldRecoverReleaseTrack('main', 'explicit'), false)
+})
+
+test('chooseReleaseUpdaterArgs: preserves an exact release tag and SHA', () => {
+  const sha = '0123456789abcdef0123456789abcdef01234567'
+
+  assert.deepEqual(chooseReleaseUpdaterArgs(true, 'v2026.7.20', sha), [
+    '--update',
+    '--release',
+    'v2026.7.20',
+    '--release-commit',
+    sha
+  ])
+})
+
+test('chooseReleaseUpdaterArgs: fails closed without an install or valid SHA', () => {
+  const sha = '0123456789abcdef0123456789abcdef01234567'
+
+  assert.equal(chooseReleaseUpdaterArgs(false, 'v2026.7.20', sha), null)
+  assert.equal(chooseReleaseUpdaterArgs(true, 'v2026.7.20', 'too-short'), null)
 })
 
 function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>[2]> = {}) {

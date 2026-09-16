@@ -17,8 +17,13 @@ def test_format_banner_version_label_on_upstream_main():
     assert "local" not in value
 
 
-def test_get_git_banner_state_reads_origin_and_head(tmp_path):
-    from hermes_cli import banner
+def test_get_git_banner_state_reads_origin_and_head(tmp_path, monkeypatch):
+    from hermes_cli import banner, update_channel
+
+    record_root = tmp_path / "hermes-root"
+    record_root.mkdir()
+    monkeypatch.setattr(update_channel, "get_default_hermes_root", lambda: record_root)
+    update_channel.write_channel_record("beta", record_root)
 
     repo_dir = tmp_path / "repo"
     (repo_dir / ".git").mkdir(parents=True)
@@ -38,7 +43,28 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         state = banner.get_git_banner_state(repo_dir)
 
-    assert state == {"upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
+    assert state == {"mode": "branch", "upstream": "b2f477a3", "local": "af8aad31", "ahead": 3}
+
+
+def test_format_banner_version_label_stable_tag_mode():
+    from hermes_cli import banner
+
+    with patch.object(
+        banner,
+        "get_git_banner_state",
+        return_value={
+            "mode": "stable-tags",
+            "stable_tag": "v2026.5.16",
+            "current_tag": "v2026.5.16",
+            "local": "a91a57fa",
+            "up_to_date": True,
+        },
+    ):
+        value = banner.format_banner_version_label()
+
+    assert value.endswith("· stable v2026.5.16")
+    assert "origin/main" not in value
+    assert "upstream" not in value
 
 
 def test_check_via_local_git_ssh_fastpath_ahead_not_behind(tmp_path):

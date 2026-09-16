@@ -604,7 +604,7 @@ plugins = ["**/plugin.yaml", "**/plugin.yml"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "integration: marks tests requiring external services (API keys, Modal, etc)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
     "real_retry_backoff: opt out of the tests/agent autouse stub that zeroes jittered_backoff",
@@ -614,6 +614,7 @@ markers = [
     "linux_only: exercises Linux-specific behaviour; skipped on other hosts",
     "macos_only: exercises macOS-specific behaviour; skipped on other hosts",
     "windows_only: exercises native-Windows behaviour; skipped on other hosts",
+    "stable_channel_default: exercises the stable-by-default channel (no beta pin from the hermes_cli conftest)",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"

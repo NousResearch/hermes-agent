@@ -44,6 +44,8 @@
 param(
     [string]$InstallRoot,
     [string]$Branch = "main",
+    [string]$ReleaseTag = "",
+    [string]$ReleaseCommit = "",
     [int]$DesktopPid = 0,
     [string]$RelaunchExe = "",
     [switch]$NoUi,
@@ -1584,13 +1586,31 @@ try {
         Write-HandoffLog $finalMsg
         exit $finalCode
     }
-    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force", "--branch", $Branch)
+    # Stable channel: the immutable release pair the desktop check verified.
+    # A release target is never swapped for a branch, and a legacy CLI without
+    # --release support refuses instead of silently pulling main.
+    $updateArgs = @("-m", "hermes_cli.main", "update", "--yes", "--gateway", "--force")
+    $updateHelp = ""
+    if ($ReleaseTag) {
+        $updateArgs += @("--release", $ReleaseTag)
+        if ($ReleaseCommit) {
+            $updateArgs += @("--release-commit", $ReleaseCommit)
+        }
+    } else {
+        $updateArgs += @("--branch", $Branch)
+    }
     # --keep-stash: never re-apply local source edits after the update (they
     # stay parked in git stash). Probe --help first: the flag ships with newer
     # backends and an unknown flag would abort argparse with exit 2, which
     # collides with the "close all Hermes windows" sentinel.
     try {
         $updateHelp = & $pythonExe -m hermes_cli.main update --help 2>$null | Out-String
+        if ($ReleaseTag -and $updateHelp -notmatch "--release") {
+            $finalCode = 3
+            $finalMsg = "Update aborted: this checkout's hermes CLI predates release-channel updates. Update the CLI once manually, then retry from the app."
+            Write-HandoffLog $finalMsg
+            exit $finalCode
+        }
         if ($updateHelp -match "--keep-stash") {
             $updateArgs += "--keep-stash"
         } else {

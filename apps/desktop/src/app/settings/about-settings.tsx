@@ -19,6 +19,7 @@ import {
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+import { ChannelSelector } from './channel-selector'
 import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
@@ -221,6 +222,8 @@ export function AboutSettings() {
             </Button>
           </div>
         </div>
+
+        <ChannelSelector a={a} />
 
         <ListRow
           description={a.automaticUpdatesDesc}

@@ -43,11 +43,36 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "updated code. Used by the desktop updater so local source edits "
             "never silently ride along across updates.")
     update_parser.add_argument(
+        "--channel", default=None, metavar="stable|beta", choices=["stable", "beta"],
+        help="Select the update channel for this installation and PERSIST it in "
+             "update-channel.json at the Hermes root (the same record the Desktop "
+             "selector writes), then continue this run on that channel. 'stable' "
+             "tracks published official releases only (fail-closed, never main); "
+             "'beta' tracks the moving main branch. Absent: the persisted record "
+             "decides, defaulting to stable.",
+    )
+    update_parser.add_argument(
+        "--release", default=None, metavar="TAG",
+        help="Update to a published official release tag instead of a branch. Bare "
+             "--release (or --release latest) resolves the newest published "
+             "non-draft/non-prerelease GitHub release; --release <tag> pins that "
+             "exact release. Combined with --release-commit, the tag must still "
+             "resolve to that exact SHA or the update fails closed. Does not "
+             "change the persisted channel.",
+    )
+    update_parser.add_argument(
+        "--release-commit", default=None, metavar="SHA",
+        help="With --release: pin the exact 40-character commit SHA the release "
+             "tag must resolve to (immutable target hand-off; a moved tag aborts "
+             "the update with the checkout unchanged).",
+    )
+    update_parser.add_argument(
         "--branch", default=None, metavar="NAME",
         help="Update against this branch instead of the default (main). "
             "If the local checkout is on a different branch, hermes will "
             "switch to the requested branch first (auto-stashing any "
-            "uncommitted changes).")
+            "uncommitted changes). One-shot developer override: it does NOT "
+            "change the persisted channel record.")
     update_parser.add_argument(
         "--switch-branch", action="store_true", default=False,
         help="With updates.parked_branch_strategy: update_in_place configured, "

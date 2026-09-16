@@ -325,11 +325,32 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
     };
 
-    let update_branch = update_branch_from_args(std::env::args().skip(1))
-        .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
-        .unwrap_or_else(|| "main".to_string());
+    let process_args: Vec<String> = std::env::args().skip(1).collect();
+    let update_release_target = update_release_target_from_args(&process_args).map_err(|msg| {
+        emit(
+            &app,
+            BootstrapEvent::Failed {
+                stage: None,
+                error: msg.to_string(),
+            },
+        );
+        anyhow!(msg)
+    })?;
+    let (update_release, update_release_commit) = match update_release_target {
+        Some((release, commit)) => (Some(release), Some(commit)),
+        None => (None, None),
+    };
+    let update_branch = if update_release.is_none() {
+        Some(
+            update_branch_from_args(&process_args)
+                .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
+                .unwrap_or_else(|| "main".to_string()),
+        )
+    } else {
+        None
+    };
     let target_app = if cfg!(target_os = "macos") {
-        target_app_from_args(std::env::args().skip(1))
+        target_app_from_args(&process_args)
     } else {
         None
     };
@@ -387,11 +408,15 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // reports "already up to date" against the wrong branch. The desktop
     // detected the update against this same branch, so we must update against
     // it too.
+    let update_target = update_release
+        .as_ref()
+        .map(|release| format!("release {release}"))
+        .unwrap_or_else(|| format!("branch {}", update_branch.as_deref().unwrap_or("main")));
     emit_log(
         &app,
         Some("update"),
         LogStream::Stdout,
-        &format!("[update] updating against branch {update_branch}"),
+        &format!("[update] updating against {update_target}"),
     );
     let child_env = update_child_env(&install_root);
     let mut update_args: Vec<String> =
@@ -411,8 +436,17 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // install half-updated. If that guard fires, it exits 2 and the match arm
     // below surfaces the correct "close all Hermes windows" message.
     update_args.push("--force".into());
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
+    if let Some(release) = update_release {
+        update_args.push("--release".into());
+        update_args.push(release);
+        if let Some(commit) = update_release_commit {
+            update_args.push("--release-commit".into());
+            update_args.push(commit);
+        }
+    } else {
+        update_args.push("--branch".into());
+        update_args.push(update_branch.unwrap_or_else(|| "main".to_string()));
+    }
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
@@ -1087,6 +1121,51 @@ where
         .filter(|s| !s.is_empty())
 }
 
+fn update_release_from_args<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    arg_value_from_args(args, "--release")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn update_release_commit_from_args<I, S>(args: I) -> Option<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    arg_value_from_args(args, "--release-commit")
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn update_release_target_from_args<I, S>(args: I) -> Result<Option<(String, String)>, &'static str>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+    let release = update_release_from_args(&args);
+    let commit = update_release_commit_from_args(&args);
+    let has_release_arg = args
+        .iter()
+        .any(|arg| arg == "--release" || arg.starts_with("--release="));
+    let has_commit_arg = args
+        .iter()
+        .any(|arg| arg == "--release-commit" || arg.starts_with("--release-commit="));
+
+    if !has_release_arg && !has_commit_arg {
+        return Ok(None);
+    }
+    match (release, commit) {
+        (Some(release), Some(commit)) => Ok(Some((release, commit))),
+        (None, _) => Err("--release must include a valid release tag"),
+        (Some(_), None) => Err("--release-commit must be a full 40-character Git commit SHA"),
+    }
+}
+
 fn target_app_from_args<I, S>(args: I) -> Option<PathBuf>
 where
     I: IntoIterator<Item = S>,
@@ -1758,6 +1837,51 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    #[test]
+    fn parses_release_target_and_requires_a_full_commit_sha() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            update_release_from_args(["--update", "--release", "v2026.7.20"]),
+            Some("v2026.7.20".to_string())
+        );
+        assert_eq!(
+            update_release_commit_from_args(["--release-commit", sha]),
+            Some(sha.to_string())
+        );
+        assert_eq!(
+            update_release_commit_from_args(["--release-commit=too-short"]),
+            None
+        );
+        assert_eq!(
+            update_release_target_from_args([
+                "--update",
+                "--release",
+                "v2026.7.20",
+                "--release-commit",
+                sha,
+            ]),
+            Ok(Some(("v2026.7.20".to_string(), sha.to_string())))
+        );
+        assert!(
+            update_release_target_from_args(["--update", "--release", "v2026.7.20"])
+                .is_err()
+        );
+        assert!(
+            update_release_target_from_args([
+                "--update",
+                "--release",
+                "v2026.7.20",
+                "--release-commit=too-short",
+            ])
+            .is_err()
+        );
+        assert!(
+            update_release_target_from_args(["--update", "--release-commit", sha]).is_err()
+        );
+        assert!(update_release_target_from_args(["--update", "--release"]).is_err());
+        assert!(update_release_target_from_args(["--update", "--release-commit"]).is_err());
     }
 
     #[test]

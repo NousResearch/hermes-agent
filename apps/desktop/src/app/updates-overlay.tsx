@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import {
@@ -262,6 +263,40 @@ function IdleView({
         icon={<BrandMark className="size-12" />}
         title={u.allSetTitle}
       />
+    )
+  }
+
+  if (status.track === 'release') {
+    const release = status.releases?.find(candidate => candidate.tag === status.targetRelease)
+    const releaseTitle = release?.name || status.targetRelease || u.releaseReadyTitle
+
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <BrandMark className="size-16" />
+          <DialogTitle className="text-center text-xl">{releaseTitle}</DialogTitle>
+          <DialogDescription className="text-center text-sm">
+            {u.releaseReadyBody(status.targetRelease ?? '')}
+          </DialogDescription>
+        </div>
+
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-border/70 bg-muted/20 p-3">
+          {release?.body ? (
+            <CompactMarkdown text={release.body} />
+          ) : (
+            <p className="text-xs text-muted-foreground">{u.releaseNotesUnavailable}</p>
+          )}
+        </div>
+
+        <div className="grid gap-2">
+          <Button className="font-semibold" onClick={onInstall} size="lg">
+            {u.updateNow}
+          </Button>
+          <Button className="font-medium" onClick={onLater} type="button" variant="text">
+            {u.maybeLater}
+          </Button>
+        </div>
+      </div>
     )
   }
 

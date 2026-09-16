@@ -83,6 +83,38 @@ export function chooseUpdaterArgs(signals: BootstrapRecoverySignals, branch: str
 }
 
 /**
+ * A default Release Track stays on resumable branch bootstrap until the
+ * bootstrap-complete marker promotes it to established. Established and
+ * explicit selections must never silently degrade to branch recovery.
+ */
+export function shouldRecoverReleaseTrack(
+  track: 'release' | 'main',
+  trackSource: 'default' | 'established' | 'explicit' | 'migration'
+): boolean {
+  return track === 'release' && trackSource !== 'default'
+}
+
+/**
+ * Build a release-track recovery handoff without silently degrading to a
+ * branch repair. Release updates need an existing CLI plus the exact tag/SHA
+ * pair checked by Electron; otherwise the caller must fail closed.
+ */
+export function chooseReleaseUpdaterArgs(
+  haveRealInstall: boolean,
+  release: string,
+  commit: string
+): string[] | null {
+  const tag = release.trim()
+  const sha = commit.trim().toLowerCase()
+
+  if (!haveRealInstall || !tag || !/^[0-9a-f]{40}$/.test(sha)) {
+    return null
+  }
+
+  return ['--update', '--release', tag, '--release-commit', sha]
+}
+
+/**
  * Resolve the site-packages directory entries for a Python venv.
  *
  * On Windows, venv layout is `<venvRoot>/Lib/site-packages`.

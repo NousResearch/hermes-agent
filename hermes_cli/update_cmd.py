@@ -19,6 +19,11 @@ from pathlib import Path
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli.update_cmd_common import _best_effort
 from hermes_constants import get_default_hermes_root, venv_python_path
+from hermes_cli.update_cmd_release import (
+    RELEASE_LATEST, _configured_release_request, _resolve_release_request,
+    _resolve_requested_channel, resolve_official_release_target,
+    validate_release_commit,
+)
 
 # Re-exports: every split-module name stays reachable (and monkeypatchable) as update_cmd.<name>.
 from hermes_cli.update_abort_recovery import (  # noqa: F401
@@ -478,6 +483,47 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         raise
     finally:
         proc.stdout.close()
+
+
+def _cmd_update_check_release(release_request: str):
+    """``hermes update --check`` on the stable channel: resolve the published official
+    release (never origin/main) and report whether it is installed. Fails closed."""
+    from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
+
+    refusal = evaluate_update_admission(_m().PROJECT_ROOT)
+    if refusal is not None:
+        print(refusal.message)
+        record_refusal_receipt(refusal)
+        sys.exit(2)
+
+    git_dir = _m().PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        print("✗ Not a git repository — cannot check for updates.")
+        sys.exit(1)
+
+    print("→ Checking official GitHub Releases...")
+    from hermes_cli.stable_update import resolve_commit, resolve_official_release
+
+    requested_tag = None if release_request == RELEASE_LATEST else release_request
+    release = resolve_official_release(_m().PROJECT_ROOT, requested_tag=requested_tag)
+    target_tag = release.get("tag")
+    target_commit = release.get("commit")
+    error = release.get("error")
+    if error or not target_tag or not target_commit:
+        print(f"✗ {error or 'Could not resolve an official published release.'}")
+        sys.exit(1)
+
+    head = resolve_commit(_m().PROJECT_ROOT, "HEAD")
+    if not head:
+        print("✗ Could not resolve the installed Hermes commit.")
+        sys.exit(1)
+    if head == target_commit:
+        print(f"✓ Already on release {target_tag}.")
+        return
+
+    from hermes_cli.config import recommended_update_command
+    print(f"⚕ Release update available: {target_tag}.")
+    print(f"  Run '{recommended_update_command()} --release {target_tag}' to install.")
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
@@ -1146,6 +1192,61 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
     return _git_run(git_cmd, ["rev-parse", "--abbrev-ref", "HEAD"], check=check).stdout.strip()
 
 
+def _apply_release_update(
+    git_cmd, target_tag: str, target_commit: str, opts, *,
+    gateway_mode: bool, desktop_dir, had_desktop_app_before_update: bool,
+    pre_update_snapshot_id, _pre_update_plan, _windows_gateway_resume) -> None:
+    """Stable-channel apply: detached checkout at the verified release SHA, then the
+    shared post-update phases (deps/node/web/desktop, maintenance, fleet restart).
+
+    The resolved ``(tag, commit)`` pair was verified against the official repo by
+    ``resolve_official_release`` (fetch + FETCH_HEAD identity check) BEFORE any
+    checkout mutation.  HEAD detaches at the commit — a real transition that leaves
+    the ``main`` branch ref untouched (beta return simply checks out main again).
+    """
+    print(f"→ Pinning to release {target_tag}...")
+    pre_pull_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
+    auto_stash_ref = _m()._stash_local_changes_if_needed(git_cmd, _m().PROJECT_ROOT)
+    update_succeeded = False
+    try:
+        checkout_result = _git_run(git_cmd, ["checkout", "--detach", target_commit])
+        if checkout_result.returncode != 0:
+            print(f"✗ Failed to check out release {target_tag}.")
+            if checkout_result.stderr.strip():
+                print(f"  {checkout_result.stderr.strip().splitlines()[0]}")
+            print(f"  Try manually: git fetch origin --tags && git checkout --detach {target_commit}")
+            sys.exit(1)
+        _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha)
+        update_succeeded = True
+    finally:
+        if auto_stash_ref is not None:
+            if not update_succeeded:
+                print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
+                print("  Restore manually with: git stash apply")
+            elif opts.discard_local_changes:
+                _m()._discard_stashed_changes(git_cmd, _m().PROJECT_ROOT, auto_stash_ref)
+            elif opts.keep_stash:
+                _m()._park_stashed_changes(auto_stash_ref)
+            else:
+                _m()._restore_stashed_changes(
+                    git_cmd, _m().PROJECT_ROOT, auto_stash_ref,
+                    prompt_user=not opts.assume_yes and (
+                        gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())),
+                    input_fn=opts.gw_input_fn)
+
+    _apply_pulled_update(
+        git_cmd, "main", pre_pull_sha,
+        _CheckoutPlan(
+            auto_stash_ref=None, commit_count=1, in_place_update=False,
+            parked_branch_switched=False, prompt_for_restore=False,
+            switch_block_reason=None, upstream_checked=True),
+        opts, gateway_mode=gateway_mode, is_fork=False, desktop_dir=desktop_dir,
+        had_desktop_app_before_update=had_desktop_app_before_update,
+        pre_update_snapshot_id=pre_update_snapshot_id,
+        _pre_update_plan=_pre_update_plan,
+        _windows_gateway_resume=_windows_gateway_resume)
+
+
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool) -> None:
     """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
@@ -1317,6 +1418,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
+    if getattr(args, "release_commit", None) and getattr(args, "release", None) is None:
+        print("✗ --release-commit requires --release.")
+        sys.exit(1)
+    if _resolve_release_request(args) is not None and getattr(args, "branch", None):
+        print("✗ --release and --branch are mutually exclusive.")
+        sys.exit(1)
+    if _resolve_requested_channel(args) is not None and getattr(args, "branch", None):
+        print("✗ --channel and --branch are mutually exclusive.")
+        sys.exit(1)
+
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 
@@ -1357,7 +1468,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 
+    # Explicit --channel persists the install-scoped record (same one the Desktop
+    # selector writes) BEFORE any target resolution, so this run and every later
+    # consumer agree. A persistence failure must fail the update loudly rather
+    # than silently run on the old channel.
+    requested_channel = _resolve_requested_channel(args)
+    if requested_channel is not None:
+        from hermes_cli.update_channel import write_channel_record
+        try:
+            record = write_channel_record(requested_channel)
+        except (OSError, ValueError) as exc:
+            print(f"✗ Could not persist the update channel ({exc}).")
+            sys.exit(1)
+        print(f"✓ Update channel set to {record['channel']} (persisted for this installation).")
+
     if use_zip_update:
+        release_request = _resolve_release_request(args)
+        if release_request is not None:
+            # The static branch archive cannot honor an immutable release target;
+            # refusing is the fail-closed contract (root decision 6).
+            print("✗ --release is not supported on the Windows ZIP-fallback update path.")
+            print("  This path runs when git file I/O is broken on the system. Resolve the")
+            print("  git-side breakage (typically an antivirus or NTFS filter holding files")
+            print("  open) and rerun `hermes update --release`.")
         try:
             desktop_build_ok = _update_via_zip(
                 args, had_desktop_app_before_update=had_desktop_app_before_update)
@@ -1368,6 +1501,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
         return
 
     try:
+        # Channel-aware target selection. An explicit --release wins; otherwise the
+        # persisted record decides (missing = stable); --branch is the developer
+        # one-shot override. Stable resolves and verifies the immutable official
+        # release BEFORE touching the checkout — no fetch of origin, no main fallback.
+        release_request = _configured_release_request(args)
+        if release_request is not None:
+            print("→ Resolving official release...")
+            try:
+                target_tag, target_commit = resolve_official_release_target(
+                    _m().PROJECT_ROOT, release_request,
+                    expected_commit=getattr(args, "release_commit", None))
+            except ValueError as exc:
+                print(f"✗ {exc}")
+                print("  The checkout was not changed. Check for updates again before applying.")
+                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                sys.exit(1)
+            head_sha = None
+            with suppress(Exception):
+                from hermes_cli.stable_update import resolve_commit
+                head_sha = resolve_commit(_m().PROJECT_ROOT, "HEAD")
+            if head_sha and head_sha == target_commit:
+                print(f"✓ Already on release {target_tag}.")
+                _invalidate_update_cache()
+                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+                return
+            _apply_release_update(
+                git_cmd, target_tag, target_commit, opts, gateway_mode=gateway_mode,
+                desktop_dir=desktop_dir,
+                had_desktop_app_before_update=had_desktop_app_before_update,
+                pre_update_snapshot_id=pre_update_snapshot_id,
+                _pre_update_plan=_pre_update_plan,
+                _windows_gateway_resume=_windows_gateway_resume)
+            return
+
         # Scoped fetch: a bare `git fetch origin` pulls thousands of branches and can stall.
         branch = _m()._resolve_update_branch(args)
 

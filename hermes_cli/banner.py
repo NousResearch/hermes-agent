@@ -402,24 +402,47 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
         return None
     # Cache is invalidated when the embedded rev OR installed version changed since the last check.
     # For a git checkout the local HEAD is part of the key too: `hermes update` moves HEAD, and a
-    # stale "3 behind" must not survive the update it just prompted.
+    # stale "3 behind" must not survive the update it just prompted. The channel is part of the
+    # key as well: switching stable<->beta with HEAD unchanged changes the target, and a stale
+    # cached answer for the other channel must not survive the switch.
+    from hermes_cli.update_channel import read_update_channel as _read_channel
+    channel = _quiet(lambda: _read_channel()) or "stable"
     now = time.time()
     repo_dir = None if embedded_rev else _resolve_repo_dir()
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     cached = _read_json(cache_file)
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
-            and cached.get("head") == head_rev:
+            and cached.get("head") == head_rev \
+            and cached.get("channel", "beta") == channel:
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
         if now - cached.get("ts", 0) < ttl:
             return cached.get("behind")
-    if embedded_rev:
+    if channel == "stable":
+        # Stable channel: compare HEAD against the published official release (never main).
+        from hermes_cli.stable_update import official_release_status
+
+        def _stable_check():
+            status = official_release_status(repo_dir) if repo_dir is not None else \
+                official_release_status(Path.cwd(), current_sha=embedded_rev)
+            if status.get("error"):
+                return None
+            if status.get("up_to_date"):
+                return 0
+            behind_count = status.get("releases_behind")
+            return behind_count if behind_count is not None else UPDATE_AVAILABLE_NO_COUNT
+
+        behind = _quiet(_stable_check)
+        global _last_target_rev
+        _last_target_rev = None
+    elif embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
         # No checkout and no embedded revision — status can't be determined.
         behind = _check_via_local_git(repo_dir) if repo_dir is not None else None
     _quiet(lambda: cache_file.write_text(
         json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION,
-                    "head": head_rev or embedded_rev, "target": _last_target_rev}),
+                    "head": head_rev or embedded_rev, "target": _last_target_rev,
+                    "channel": channel}),
         encoding="utf-8"))
     return behind
 
@@ -460,12 +483,43 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
+    # Stable channel: report the exact release pin, never origin/main distance.
+    from hermes_cli.update_channel import read_update_channel
+
+    if read_update_channel() == "stable":
+        return _stable_banner_state(repo_dir)
     upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
         return _baked_banner_state()
     ahead = _git_count(["rev-list", "--count", "origin/main..HEAD"], cwd=repo_dir) or 0
-    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+    return {"mode": "branch", "upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+
+
+def _stable_banner_state(repo_dir: Path) -> Optional[dict]:
+    """Banner state against the local release pin (no network, no origin refs).
+
+    Uses the newest local ``v20*`` tag and the tag HEAD sits on.  The banner is
+    passive; ``hermes update --check`` owns the network resolution against the
+    published official release.
+    """
+    from hermes_cli.stable_update import exact_head_tag, list_stable_tags, resolve_commit
+
+    tags = list_stable_tags(repo_dir)
+    head_tag = exact_head_tag(repo_dir)
+    head = resolve_commit(repo_dir, "HEAD")
+    if not tags or not head:
+        return None
+    latest = tags[0]
+    target_commit = resolve_commit(repo_dir, latest)
+    state = {
+        "mode": "stable-tags",
+        "stable_tag": latest,
+        "current_tag": head_tag,
+        "local": (head or "")[:8],
+        "up_to_date": bool(target_commit and head == target_commit),
+    }
+    return state
 
 
 _RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
@@ -489,6 +543,9 @@ def format_banner_version_label() -> str:
     state = get_git_banner_state()
     if not state:
         return base
+    if state.get("mode") == "stable-tags":
+        tag = state.get("current_tag") or state.get("stable_tag")
+        return f"{base} · stable {tag}" if tag else base
     upstream, local = state["upstream"], state["local"]
     ahead = int(state.get("ahead") or 0)
     if ahead <= 0 or upstream == local:

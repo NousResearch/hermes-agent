@@ -25,6 +25,8 @@ export interface CachedUpdateCheck {
   fetchedAt: number
   currentSha: string
   branch: string
+  /** Channel of the cached answer; absent (legacy caches) reads as 'stable'. */
+  channel?: 'stable' | 'beta'
   status: Record<string, unknown> & { error?: string }
 }
 
@@ -46,15 +48,25 @@ export function compareApiUrl(slug: string, currentSha: string, targetSha: strin
 
 /**
  * Whether a cached result still answers a passive check. The cache is keyed on
- * the local HEAD and branch: applying an update or switching branches changes
- * HEAD and invalidates it immediately, so a 24h TTL never shows a stale
- * "update available" after the user just updated.
+ * the local HEAD, branch, and channel: applying an update or switching branches
+ * changes HEAD and invalidates it immediately, and switching stable<->beta with
+ * HEAD unchanged must invalidate too (the target changed), so a 24h TTL never
+ * shows the other channel's stale answer.
  */
 export function cacheIsFresh(
   cached: CachedUpdateCheck | null | undefined,
-  { branch, currentSha, now }: { branch: string; currentSha: string; now: number }
+  {
+    branch,
+    channel,
+    currentSha,
+    now
+  }: { branch: string; channel?: 'stable' | 'beta'; currentSha: string; now: number }
 ): boolean {
   if (!cached || cached.branch !== branch || cached.currentSha !== currentSha) {
+    return false
+  }
+
+  if ((cached.channel || 'beta') !== (channel || 'beta')) {
     return false
   }
 

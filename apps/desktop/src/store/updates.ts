@@ -384,11 +384,14 @@ function isRemoteMode(): boolean {
 
 function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateStatus {
   const behind = res.behind ?? 0
+  const channel = res.channel
 
   return {
     supported: res.can_apply,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
+    channel,
+    track: channel === 'beta' ? 'main' : channel ? 'release' : undefined,
     behind: behind > 0 ? behind : 0,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,
@@ -448,7 +451,12 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   $updateChecking.set(true)
 
   try {
-    const status = await bridge.check({ force })
+    const raw = await bridge.check({ force })
+    // Normalize the channel onto the legacy salvage field the overlay reads.
+    const status: DesktopUpdateStatus = {
+      ...raw,
+      track: raw.channel === 'beta' ? 'main' : raw.channel ? 'release' : raw.track
+    }
     $updateStatus.set(status)
     maybeNotifyUpdateAvailable(status, 'client')
     void refreshDesktopVersion()
@@ -460,6 +468,8 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
     const fallback: DesktopUpdateStatus = {
       supported: previous?.supported ?? true,
       branch: previous?.branch,
+      channel: previous?.channel,
+      track: previous?.track,
       error: 'check-failed',
       message: error instanceof Error ? error.message : String(error),
       fetchedAt: Date.now()

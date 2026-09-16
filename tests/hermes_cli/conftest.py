@@ -131,3 +131,31 @@ def _reset_prompt_toolkit_output_cache():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse=True)
+def _pin_beta_channel_for_branch_pipeline_tests(tmp_path_factory, monkeypatch, request):
+    """Default the update channel to beta for tests that exercise the branch
+    (main-tracking) update pipeline.
+
+    The stable channel is the production default when no record exists, so a
+    bare ``cmd_update`` under test would resolve official releases and fail
+    closed (no network). Nearly every pre-existing updater test pins the
+    historical branch behaviour. Tests that exercise the stable default mark
+    ``@pytest.mark.stable_channel_default`` — the pin is skipped and no record
+    exists, exactly the production stable-by-default state.
+
+    The record lives in its OWN temp dir, never the test's ``tmp_path``: many
+    updater tests build a git worktree inside ``tmp_path`` and assert on its
+    cleanliness (e.g. the ZIP overlay guard's real-git checks).
+    """
+    if request.node.get_closest_marker("stable_channel_default"):
+        yield
+        return
+
+    from hermes_cli import update_channel
+
+    record_root = tmp_path_factory.mktemp("channel-record-root")
+    monkeypatch.setattr(update_channel, "get_default_hermes_root", lambda: record_root)
+    update_channel.write_channel_record("beta", record_root)
+    yield

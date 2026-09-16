@@ -101,6 +101,14 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_upgrade_pip_before_lazy_refresh", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda *a, **kw: True)
+    # These tests exercise the branch pipeline; the stable channel is the
+    # default with no record, so pin the beta record explicitly.
+    from hermes_cli import update_channel
+
+    record_root = tmp_path / "channel-root"
+    record_root.mkdir()
+    monkeypatch.setattr(update_channel, "get_default_hermes_root", lambda: record_root)
+    update_channel.write_channel_record("beta", record_root)
 
 
 

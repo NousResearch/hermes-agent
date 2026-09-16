@@ -128,3 +128,22 @@ def test_policy_change_settles_diagnostic_without_waiting_for_cli_owner(tmp_path
     finally:
         lease.release()
         db.close()
+
+
+def test_live_receipt_outcome_survives_later_suppression(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="chat", source="tui")
+    db.set_session_title("chat", "Bot Chat")
+    lease, refusal = try_acquire_active_session(session_id="chat", surface="desktop", config={}, registry_home=tmp_path,
+        metadata={"bot_live_delivery_consumer": True, "live_session_id": "live"})
+    assert refusal is None
+    job = {"id": "failure", "execution_id": "run"}
+    try:
+        assert "queued" in delivery._deliver_to_bot_chat(job, "diagnostic", "", for_failure=True)
+        (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+        assert "queued" in delivery._deliver_to_bot_chat(job, "diagnostic", "", for_failure=True)
+        assert not job.get("_notification_all_targets_suppressed")
+    finally:
+        lease.release()
+        db.close()

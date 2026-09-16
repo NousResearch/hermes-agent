@@ -673,6 +673,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
 
     job_id = job.get("id", "?")
     profile_label = profile or "(own)"
+    job.pop("_notification_all_targets_suppressed", None)
     message = (
         f'[Cronjob "{job.get("name", job_id)}" output — scheduled job, not the user. '
         f"Review it, act on anything that needs action, and summarize "
@@ -686,9 +687,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         for_failure = for_failure or bool((deferred or {}).get("for_failure"))
         from gateway.warning_notifications import warning_notifications_enabled
         from hermes_cli.config_effective import load_user_config_effective
-        if for_failure and not warning_notifications_enabled("tui", load_user_config_effective(home / "config.yaml")):
-            job["_notification_all_targets_suppressed"] = True
-            return None
+        suppress_notification = for_failure and not warning_notifications_enabled("tui", load_user_config_effective(home / "config.yaml"))
         if deferred is not None and not (home / "state.db").is_file():
             return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
@@ -706,6 +705,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
+        if receipt is None and suppress_notification:
+            job["_notification_all_targets_suppressed"] = True
+            return None
         if receipt is None and not deferred:
             from cron.bot_chat_delivery import defer, read_pending
             from tools.bot_live_delivery import find_canonical_owner

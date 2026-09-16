@@ -731,6 +731,7 @@ def bridge_tool_schemas(
                             "type": "string",
                             "description": "Exact tool name (as returned by tool_search).",
                         },
+                        "full": {"type": "boolean", "description": "Explicitly reload the complete schema."},
                     },
                     "required": ["name"],
                 },
@@ -946,6 +947,20 @@ def dispatch_tool_describe(args: Dict[str, Any],
     for td in deferrable:
         fn = td.get("function") or {}
         if fn.get("name") == name:
+            from gateway.session_context import get_session_env
+            if get_session_env("HERMES_SESSION_SOURCE", "") == "desktop":
+                from workstation.reference_plane import schema_projection
+                from workstation.artifacts import ArtifactStore
+                from tools.registry import registry
+                from hermes_constants import hermes_home_key
+                session = get_session_env("HERMES_SESSION_ID", "")
+                if session:
+                    import hashlib
+                    scope = hashlib.sha256(session.encode()).hexdigest()
+                    projection = schema_projection(ArtifactStore(), f"schemas_{scope}", fn,
+                        f"{hermes_home_key()}:{registry._generation}", full=args.get("full") is True)
+                    if projection["cache_hit"] and not args.get("full"):
+                        return json.dumps(projection, ensure_ascii=False)
             return json.dumps({
                 "name": name,
                 "description": fn.get("description", ""),

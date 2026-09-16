@@ -635,11 +635,21 @@ class ModelRouter:
         risk: float,
         max_cost_usd: float | None = None,
         max_latency_ms: float | None = None,
+        constraints: dict[str, Any] | None = None,
     ) -> RouteDecision:
-        considered = [candidate.model_id for candidate in self.candidates]
+        from workstation.routing import ConstraintViolation, require_allowed_route
+        permitted = []
+        for candidate in self.candidates:
+            try:
+                route = "openai_api" if candidate.provider == "openai" else candidate.provider
+                require_allowed_route(route, constraints or {})
+            except ConstraintViolation:
+                continue
+            permitted.append(candidate)
+        considered = [candidate.model_id for candidate in permitted]
         eligible = [
             candidate
-            for candidate in self.candidates
+            for candidate in permitted
             if candidate.available
             and (max_cost_usd is None or candidate.cost_usd <= max_cost_usd)
             and (max_latency_ms is None or candidate.latency_ms <= max_latency_ms)

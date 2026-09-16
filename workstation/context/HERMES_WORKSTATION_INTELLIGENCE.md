@@ -1,5 +1,30 @@
 # Inteligência Centralizada — Hermes Workstation (Hermes Work)
 
+## Execução durável e economia de contexto — 2026-09-16
+
+O Task Compiler classifica planos estruturados e `work_execute`, capability de
+sessão em `desktop_ui`, conecta o agente ao DurableBatchRunner existente. Pedidos
+repetitivos quantificados exigem compilação antes de mutações avulsas; uma segunda
+tentativa sem plano resulta em halt. O modelo decide uma vez; o runtime processa
+WorkItems, valida, persiste checkpoints/evidências e retorna somente refs, ledger
+e exceções limitadas. Um teste de conversa com provider fake prova 100 operações
+com duas chamadas ao provider, sem LLM entre itens.
+
+O Context State Ledger vem da Kanban DB canônica, não do transcript ou reasoning.
+Read Cache usa hash após leitura autorizada e detecta alterações com mtime restaurado;
+Schema Cache preserva HW-011 e projeta schemas repetidos por ref em sessões Desktop.
+Browser Transactions preservam uma BrowserTask; Prompt Queue espera conclusão com
+deadline/polls limitados, captura evidência e só então avança. Constraints estruturadas
+do usuário não podem ser ampliadas pelo plano. O Circuit Breaker detecta ciclos 2–4.
+Blobs duráveis ficam por hash/ref; mensagens multimodais legadas permanecem intactas.
+Token_count reportado pelo provider chega ao flush da SessionDB; ausência fica null.
+
+Contratos, limites de recuperação de mutações incertas, métricas e detalhes do
+Reference-First Boundary estão em `../ARCHITECTURE.md`, seção Durable execution
+routing. Não se reivindica geração automática de digest visual, eliminação de todo
+I/O de leitura, cobertura de aplicações reais de browser ou economia de tokens
+medida com provider pago. A arquitetura não adiciona stores paralelas.
+
 Este documento atua como a **base de conhecimento canônica e fonte única da verdade (inteligência centralizada)** sobre o funcionamento, a arquitetura de baixo nível, os contratos de persistência e a integração do **Hermes Workstation (Hermes Work)** nesta branch/fork downstream do repositório Hermes Agent.
 
 Qualquer desenvolvedor ou agente de IA que for trabalhar neste domínio **DEVE** ler este documento para se situar sobre os conceitos, invariantes arquiteturais, armadilhas conhecidas e restrições estabelecidas antes de modificar qualquer código em `apps/desktop/`, `workstation/`, `tools/browser_workstation.py` ou superfícies de integração associadas.

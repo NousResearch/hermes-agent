@@ -2,6 +2,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Mapping
+
+
+class ConstraintViolation(RuntimeError):
+    pass
+
+
+def require_allowed_route(route: str, constraints: Mapping[str, Any]) -> None:
+    """Prune prohibited routes before dispatch, discovery, or credential probes."""
+    def matches(pattern: str) -> bool:
+        return route == pattern or route.startswith(pattern + ".")
+    forbidden = constraints.get("forbidden_routes", [])
+    allowed = constraints.get("allowed_routes")
+    for patterns in (forbidden, allowed):
+        if patterns is not None and (not isinstance(patterns, list) or len(patterns) > 64
+                or any(not isinstance(p, str) or not p or len(p) > 256 for p in patterns)):
+            raise ConstraintViolation("Invalid bounded route constraints")
+    if any(matches(p) for p in forbidden) or (
+        allowed is not None and not any(matches(p) for p in allowed)
+    ):
+        raise ConstraintViolation(f"Route forbidden by task constraints: {route}")
 
 
 class BrowserBackend(str, Enum):

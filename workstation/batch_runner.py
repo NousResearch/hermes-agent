@@ -61,7 +61,13 @@ class BatchSummary:
             "retry_success": self.retry_success_count,
             "failed": self.failed_count,
             "suspect": self.suspect_count,
-            "anomalies": self.anomalies,
+            "anomalies": [{"item_id": a["item_id"], "status": a["status"],
+                           "reason": str(a.get("reason", ""))[:240],
+                           "raw_ref": a.get("raw_ref"), "norm_ref": a.get("norm_ref")}
+                          for a in self.anomalies[:10]],
+            "needs_reasoning": len(self.anomalies),
+            "completed": self.success_count + self.retry_success_count,
+            "status": "needs_reasoning" if self.anomalies else "completed",
             "duration_seconds": round(self.duration_seconds, 2),
             "summary_artifact_ref": self.summary_artifact_ref,
         }
@@ -94,6 +100,8 @@ class DurableBatchRunner:
         validator_fn: Optional[Callable[[Any, Dict[str, Any]], Dict[str, Any]]] = None,
         checkpoint_every: int = 1,
         session_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        stop_on_exception: bool = False,
     ) -> BatchSummary:
         """Run batch processing with per-item atomic persistence and validation."""
         start_time = time.monotonic()
@@ -105,6 +113,7 @@ class DurableBatchRunner:
                 items=items,
                 session_id=session_id,
                 max_retries=self.max_retries,
+                metadata=metadata,
             )
 
         work_items = self.store.get_work_items(plan.id)
@@ -120,6 +129,17 @@ class DurableBatchRunner:
                 success_count += 1
                 continue
 
+            if item.status in {WorkItemStatus.FAILED, WorkItemStatus.BLOCKED, WorkItemStatus.CANCELLED,
+                               WorkItemStatus.WAITING_FOR_USER} or item.validation_result.get("suspect"):
+                failed_count += item.status == WorkItemStatus.FAILED
+                suspect_count += item.status != WorkItemStatus.FAILED
+                anomalies.append({"item_id": item.id, "index": item.item_index,
+                                  "reason": item.last_error or item.validation_result.get("reason", "Review required"),
+                                  "status": item.status.value, "raw_ref": item.raw_output_ref})
+                if stop_on_exception:
+                    break
+                continue
+
             item_start = time.monotonic()
             item_success = False
 
@@ -129,7 +149,22 @@ class DurableBatchRunner:
                     self.store.update_item_checkpoint(item.id, "ready", "ok")
 
                     # Worker execution (DOM extraction, API fetch, etc.)
-                    raw_data = worker_fn(item.input_payload, item)
+                    current = self.store.get_item(item.id)
+                    if current.raw_output_ref:
+                        captured = self.artifacts.read(current.raw_output_ref)
+                        descriptor = self.artifacts.read_json(current.raw_output_ref + ".meta.json")
+                        output_type = descriptor.get("summary", {}).get("output_type")
+                        if output_type == "str":
+                            raw_data = captured
+                        elif output_type == "bytes":
+                            raw_data = self.artifacts.resolve_ref(current.raw_output_ref).read_bytes()
+                        else:
+                            try:
+                                raw_data = json.loads(captured)
+                            except ValueError:
+                                raw_data = captured
+                    else:
+                        raw_data = worker_fn(item.input_payload, item)
 
                     # Persist raw output to Data Plane
                     raw_ref = self.artifacts.store(
@@ -137,6 +172,7 @@ class DurableBatchRunner:
                         name=f"raw_item_{item.item_index:04d}.json",
                         content=raw_data,
                         schema="raw_batch_capture",
+                        summary={"output_type": type(raw_data).__name__},
                     )
                     self.store.mark_item_captured(item.id, raw_ref.ref)
 
@@ -148,13 +184,14 @@ class DurableBatchRunner:
                         schema="normalized_batch_output",
                     )
                     self.store.mark_item_persisted(item.id, norm_ref.ref)
+                    self.store.record_evidence(item.id, norm_ref.ref)
 
                     # Validation
                     validation: Dict[str, Any] = {"valid": True, "suspect": False}
                     if validator_fn is not None:
                         validation = validator_fn(raw_data, item.input_payload)
 
-                    is_valid = validation.get("valid", True)
+                    is_valid = validation.get("valid") is True
                     is_suspect = validation.get("suspect", False)
                     self.store.mark_item_validated(item.id, validation)
 
@@ -183,6 +220,9 @@ class DurableBatchRunner:
                         item_success = False
                         break
 
+                except InterruptedError:
+                    self.store.update_plan_state(plan.id, "interrupted")
+                    raise
                 except Exception as exc:
                     can_retry = attempt <= self.max_retries
                     self.store.fail_item(item.id, str(exc), can_retry=can_retry)
@@ -198,6 +238,9 @@ class DurableBatchRunner:
                             "status": "failed",
                         })
                         break
+
+            if anomalies and stop_on_exception:
+                break
 
         total_duration = time.monotonic() - start_time
         summary = BatchSummary(
@@ -216,8 +259,13 @@ class DurableBatchRunner:
         summary_ref = self.artifacts.store(
             task_id=self.task_id,
             name="batch_summary.json",
-            content=summary.to_dict(),
+            content={**summary.to_dict(), "anomalies": anomalies,
+                     "results": [{"item_id": i.id, "status": i.status.value,
+                                  "raw_ref": i.raw_output_ref, "result_ref": i.normalized_output_ref,
+                                  "evidence_refs": i.evidence_refs}
+                                 for i in self.store.get_work_items(plan.id)]},
             schema="batch_run_summary",
         )
         summary.summary_artifact_ref = summary_ref.ref
+        self.store.update_plan_state(plan.id, "needs_reasoning" if anomalies else "completed")
         return summary

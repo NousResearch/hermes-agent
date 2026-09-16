@@ -137,5 +137,11 @@ def run_benchmark(item_count: int = 86, suspect_count: int = 2) -> Dict[str, Any
 
 
 if __name__ == "__main__":
-    res = run_benchmark(86, 2)
+    if "--durable-regression" in sys.argv:
+        import tempfile
+        from workstation.benchmarks.durable_execution import run
+        with tempfile.TemporaryDirectory() as root:
+            res = run(Path(root))
+    else:
+        res = run_benchmark(86, 2)
     print(json.dumps(res, indent=2, ensure_ascii=False))

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -339,6 +340,7 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
+        self._call_history = deque(maxlen=64)
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
@@ -372,6 +374,15 @@ class ToolCallGuardrailController:
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    def mark_verified_progress(self) -> None:
+        """A committed runtime checkpoint starts a new no-progress experiment."""
+        self._exact_failure_counts.clear()
+        self._same_tool_failure_counts.clear()
+        self._no_progress.clear()
+        self._call_history.clear()
+        self._identical_streak_sig = None
+        self._identical_streak_count = 0
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
@@ -435,6 +446,8 @@ class ToolCallGuardrailController:
         result: str | None,
         *,
         failed: bool | None = None,
+        expected_delta: Any = None,
+        actual_delta: bool | None = None,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
@@ -449,7 +462,8 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
-            if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
+            if (self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after
+                    and tool_name not in {"terminal", "execute_code", "process", "browser_navigate", "web_extract"}):
                 decision = ToolGuardrailDecision(
                     action="halt",
                     code="same_tool_failure_halt",
@@ -492,6 +506,14 @@ class ToolCallGuardrailController:
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
+
+        # Port the upstream progress reset without treating a successful read as a mutation.
+        # Callers with a verifier can supply explicit actual_delta in result metadata.
+        if ((actual_delta is None and file_mutation_result_landed(tool_name, result))
+                or actual_delta is True
+                or (tool_name in {"browser_click", "browser_type", "browser_press", "browser_navigate"}
+                    and actual_delta is not False)):
+            self.mark_verified_progress()
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
@@ -607,6 +629,30 @@ class ToolCallGuardrailController:
             )
 
         stub = None
+        if is_plain_str:
+            self._call_history.append((signature, result_hash, is_stall_guard_repeatable(tool_name)))
+        else:
+            self._call_history.clear()
+        history = list(self._call_history)
+        for period in range(2, 5):
+            laps = 1
+            while len(history) >= (laps + 1) * period and all(
+                history[-(laps + 1) * period + i][:2] == history[-period + i][:2]
+                for i in range(period)
+            ):
+                laps += 1
+            if laps >= 3 and not all(h[2] for h in history[-period:]):
+                notice = f"[hermes note: identical cycle of period {period}, {laps} laps. Replan; no progress.]"
+                if self.config.hard_stop_enabled and laps >= self.config.no_progress_block_after:
+                    self._halt_decision = ToolGuardrailDecision(
+                        action="halt", code="identical_cycle_halt", message=notice,
+                        tool_name=tool_name, count=laps, signature=signature)
+                break
+        if (self.config.hard_stop_enabled and not is_stall_guard_repeatable(tool_name)
+                and count >= self.config.no_progress_block_after):
+            self._halt_decision = ToolGuardrailDecision(
+                action="halt", code="identical_call_streak_halt", message=notice or "Repeated identical call",
+                tool_name=tool_name, count=count, signature=signature)
         if (
             is_plain_str
             and count >= 2

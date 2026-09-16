@@ -1,5 +1,38 @@
 # Hermes Workstation upstream delta
 
+## HW-020 — Durable execution boundary (2026-09-16)
+
+Audited fork base: `3344e67fb67a3f9d2e89fa08707325807449d9b8`.
+Restricted upstream comparison: `4e9d3c713a` (fetched upstream/main).
+No merge/rebase or wholesale file replacement was performed.
+
+Maintained core seams: `agent/conversation_loop.py` detects conservative repetitive
+requests and records provider-reported usage for assistant persistence;
+`run_agent.py` requires compiled mutations when the session has work_execute,
+binds the existing scoped dispatcher, attaches trusted KanbanRun refs and forwards
+token_count on flush. `agent/tool_executor.py` preserves pre-spill verifier input
+and prevents private WorkItem messages from becoming unpaired transcript rows.
+`toolsets.py`/`tools/workstation_work.py` add a session-selected desktop_ui capability,
+never a new core tool. `tools/file_tools.py` adds hash/ref projection only for durable
+reads, preserving legacy behavior/security/read stamps. `tools/tool_search.py` adds
+Desktop session/profile/schema-addressed descriptions and explicit full reload.
+`tools/browser_workstation.py` enforces constrained/durable internal routes before
+probes or fallback.
+
+Carefully adapted upstream guardrail behavior in `agent/tool_guardrails.py`:
+period-2–4 identical cycles, identical-call halts, failure-tolerant distinct shell
+commands and progress reset. Downstream tool names and poller exemptions remain.
+`agent/agent_init.py` defaults unattended platforms to hard stops, respecting explicit
+configuration and attended CLI/TUI/Desktop/subagent behavior. Verified checkpoint
+progress is an explicit runtime signal; arbitrary result text cannot assert it.
+
+Compressor comparison found substantial upstream refactoring; the fork's trusted
+operational-ref boundary was preserved and reused. Storage comparison showed that
+the scoped content-addressed downstream spillover extensions would disappear with
+wholesale upstream replacement, so they were preserved. SessionDB already accounts
+canonical provider usage: the missing per-message token_count came from the flush
+payload, not a need to replace SessionDB. No new session/board/browser database.
+
 Base: `NousResearch/hermes-agent@057dcdf236f8a6a26721c10fcc6ccb72726e272a`
 
 | ID     | Area                                            | Downstream change                                                                                                                                                                                                                                                                                                    | Why core-level                                                                                                                                                                                                                   | Upstream candidate |

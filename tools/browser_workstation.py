@@ -557,6 +557,16 @@ def workstation_routed_browser_handler(
     run_id: Optional[str] = None,
 ) -> Any:
     """Route one ``browser_*`` call to internal Chromium or the legacy lane."""
+    from workstation.task_compiler import active_constraints, durable_execution_active
+    from workstation.routing import require_allowed_route
+    constraints = active_constraints()
+    durable = durable_execution_active()
+    if durable or constraints:
+        # A compiled browser transaction owns the internal BrowserTask route.
+        # Enforce before any controller probe or fallback discovery.
+        require_allowed_route("native_browser", constraints)
+        if not workstation_browser_enabled():
+            raise WorkstationBrowserUnavailable("Compiled browser transaction requires internal BrowserTask")
     if not workstation_browser_enabled():
         return fallback()
 
@@ -576,7 +586,7 @@ def workstation_routed_browser_handler(
     available = workstation_controller_available(force=bound)
 
     if not available:
-        if bound or not workstation_routing_enabled():
+        if durable or constraints or bound or not workstation_routing_enabled():
             raise WorkstationBrowserUnavailable(
                 "Hermes Workstation Browser controller is unavailable. "
                 "Hermes Workstation is configured to fail closed and never fall back to external legacy browser processes. "

@@ -1,5 +1,24 @@
 # Hermes Workstation foundation patch manifest
 
+## HW-020 — Durable execution patch surface
+
+Task Compiler and Durable Execution Routing reuse WorkPlan/WorkItem, canonical
+Kanban DB and DurableBatchRunner. Reference-First Boundary and Context State Ledger
+preserve artifacts/checkpoints/verification independently of narrative compaction.
+Read Cache adds content-hash projections for authorized durable reads; Schema Cache
+extends Desktop deferred descriptions while preserving HW-011. The restricted
+No-Progress Circuit Breaker port preserves downstream tool names. Browser
+Transactions and bounded Prompt Queue reuse the original BrowserTask. Constraint
+Routing persists explicit routes and rejects unsafe/unknown provider exclusions.
+Blob refs preserve original bytes; Telemetry is local and absent usage remains null.
+
+Core seams and restricted upstream audit are documented in UPSTREAM_DELTA.md HW-020.
+Behavior contracts: `test_task_compiler.py`, `test_reference_plane.py`,
+`test_durable_agent_integration.py`; synthetic regression entry point:
+`python -m workstation.benchmarks.benchmark_execution_paradigm --durable-regression`.
+Live browser adapters, automatic visual digests and paid-provider measurements
+remain separate evidence boundaries.
+
 **Workstation version:** `0.1.0-dev.1`  
 **Expected Hermes base:** `057dcdf236f8a6a26721c10fcc6ccb72726e272a`  
 **Target:** Windows 11 first; portable architecture for Linux/macOS.

@@ -1798,6 +1798,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
+        from workstation.task_compiler import durable_execution_active
+        _durable_read = durable_execution_active()
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -1813,7 +1815,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if cached_mtime is not None and not _durable_read:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1915,6 +1917,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         if result.content:
             result.content = redact_sensitive_text(result.content, file_read=True)
             result_dict["content"] = result.content
+
+        if _durable_read and not result_dict.get("error"):
+            file_state.record_read(task_id, resolved_str,
+                                   partial=(offset > 1) or bool(result_dict.get("truncated")))
+            from workstation.reference_plane import ReadCache
+            from workstation.artifacts import ArtifactStore
+            projection = ReadCache(ArtifactStore(), task_id).project(
+                {"path": resolved_str, "offset": offset, "limit": limit}, result_dict)
+            # A fresh authorized read determines the content hash, including
+            # same-size edits with restored mtime. Never trust stat alone.
+            if projection["cache_hit"]:
+                return json.dumps(projection, ensure_ascii=False)
+            return json.dumps(result_dict, ensure_ascii=False)
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.

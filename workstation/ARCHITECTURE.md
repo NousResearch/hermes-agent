@@ -1,5 +1,75 @@
 # Hermes Workstation Architecture
 
+## Durable execution routing
+
+Task Compiler (`task_compiler.py`) classifies structured work as interactive,
+deterministic single/batch, browser transaction, prompt queue or reasoning exception.
+The session-selected `desktop_ui` capability `work_execute` is outside the core
+toolset. Quantified repetitive requests cannot execute isolated mutations: the
+agent demands compilation and halts after a repeated uncompiled mutation attempt.
+Read-only planning, schema discovery and clarification remain available.
+
+The planner supplies one stable operation_key, structured items and verified steps.
+An items_ref dataset can replace the entire inline record list.
+Arguments bind through `$item.field`. DurableBatchRunner creates/reuses WorkPlan
+and WorkItems in the canonical Kanban DB. Each step uses the existing sequential
+agent dispatcher with scope, deferred-tool validation, middleware and approvals.
+Private item messages do not become transcript turns; the outer assistant/tool
+pair retains normal SessionDB persistence. A provider-free conversation test proves
+100 executions with two provider boundaries, with zero model calls inside the runner.
+
+Step intent precedes execution; committed verification refs precede advancement.
+Completed items/steps are skipped after restart. Captured output resumes persistence
+and validation without rerunning its worker. Uncertain interrupted mutations and
+invalid results escalate; only read failures have automatic retries. Existing
+failed, blocked, cancelled and suspect work is not silently replayed.
+
+Reference-First Boundary: tool outputs go into ArtifactStore before model projection.
+SUMMARY is the default; FULL explicitly returns item result records containing
+source refs. The manifest contains all item result/evidence handles; model exceptions
+are bounded. Verifiers consume content before legacy spillover. `reference_plane.py`
+deduplicates outputs by hash and stores data-URI blobs as recoverable MIME/hash/refs.
+Legacy multimodal messages remain compatible. No visual digest is fabricated;
+automatic visual-digest generation/pixel reinjection is not implemented here.
+
+Context State Ledger: `DurableTaskStore.operational_ledger()` derives objective ref,
+phase, constraints, counts, artifact refs, blockers and next action from canonical
+DB rows. It contains no historical reasoning and requires no transcript. Runtime
+KanbanRun handles use the existing trusted operational-reference envelope through
+compaction, reconnect and model changes.
+
+Constraint Routing checks routes before dispatch/browser probes and persists the
+constraints in plan metadata. Explicit JSON user constraints cannot be broadened
+by compiled constraints. Unknown provider routes fail closed when exclusions cannot
+be proved. The existing ModelRouter can prune provider candidates before scoring.
+
+Read Cache performs authorized fresh durable reads, then returns hash/ref/cache_hit
+for unchanged content. Same-size/restored-mtime edits invalidate it; sections are
+retrievable. Existing file-state stamps remain intact. This avoids repeated context,
+not all file I/O. Schema Cache extends Desktop deferred tool_describe with session,
+profile and schema fingerprints; repeats return hash/ref/capabilities, full=true
+reloads. Existing registry-generation caching and HW-011 remain authoritative.
+
+Browser Transactions preserve the original BrowserTask ID and use internal browser
+actions; controller loss never creates a fallback browser. Prompt Queue uses a
+bounded read-only completion wait (deadline/polls/interval), captures artifacts and
+advances only after verification. Browser/queue exceptions stop advancement. These
+are generic step primitives, with no site-specific adapter or second browser store.
+
+No-Progress Circuit Breaker ports restricted upstream period-2–4 cycles, identical
+call halts, failure-tolerant shell paths, progress resets and unattended default hard
+stops. Interactive defaults/poller exemptions remain. Verified runtime checkpoints
+reset progress counters; arbitrary tool text cannot claim actual_delta authority.
+
+Telemetry is local: dispatch/input/output bytes, latency, cache counts, verified
+checkpoint transitions, replans, completed items and internal LLM interventions.
+Executor usage is unknown unless the provider reported the compile-request usage;
+token-per-transition then has explicit compile_request scope, excluding final response
+usage, which remains in SessionDB. Unknown token counts are not invented. Existing provider
+session accounting remains intact. Assistant flushes now preserve reported token_count
+and canonical usage buckets in display metadata; absent usage stays null. No outbound
+telemetry or wholesale compressor/SessionDB upstream refactor was introduced.
+
 ## Product boundary
 
 ```text

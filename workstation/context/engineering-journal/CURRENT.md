@@ -1,5 +1,52 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-050 — Durable execution routing / reference boundary (2026-09-16)
+
+Audit base: `3344e67fb67a3f9d2e89fa08707325807449d9b8`, equal to fetched
+`origin/main`; restricted upstream comparison: `4e9d3c713a`.
+Pre-existing Desktop main/launcher/branding-test edits and `.workstation-audit/`
+are excluded from this change.
+
+Hypothesis: existing DurableBatchRunner executes without a model, but has no
+scoped agent compilation entry point and retries can reissue captured work.
+Confirming contracts: 100 operations through AIAgent's real sequential
+executor, one consolidated tool result, no provider calls, restart after 37
+completed items, step checkpoint preservation and verifier failure escalation.
+
+Initial focused run: 16 passed. Sandbox execution initially failed in pytest
+temporary-directory setup with WinError 5; native access plus an isolated
+HERMES_HOME resolved that environment boundary. Expanded run: 31 passed,
+two failures: new telemetry test had not attached SessionDB (fixture corrected);
+existing relay/checkpoint test expects POSIX `/approved/path` on Windows, while
+the unchanged checkpoint resolver returns `C:\\approved\\path`.
+
+Final acceptance: 344 passed, 2 skipped across Workstation, guardrails,
+operational-reference compaction and browser schema capability tests. The full
+conversation fake provider made two API calls for 100 underlying operations.
+Read invalidation covers same size/restored mtime; resume by plan_id recovers
+the objective and constraints without the transcript. Compileall, diff checks,
+core integration anchors, dependency lock and license checks passed.
+
+Synthetic production-compiler benchmark: modeled planner boundaries 100 -> 2;
+inline bytes 6,002,400 -> 2,783; 99 completed and one reasoning exception;
+201 physical tool calls, 197 cache hits and 74 checkpoint steps skipped.
+Restart after 37 completed items replayed zero completed items. The sampled
+artifact footprint is 296,290 bytes. These are structural counters, not paid
+token savings. A soak run observed 23 journal events against 24 expected; the
+final complete rerun passed, and no worker/soak implementation was changed.
+No live browser, provider token savings or clean-machine release result is
+claimed by these tests. Visual digests can be referenced when supplied;
+automatic pixel reinjection remains outside this implementation.
+
+Additional legacy check: 113 passed, 5 skipped, 12 failed across file tools,
+read guards, staleness and tool discovery. All 12 failing cases also failed
+with the original HEAD file_tools module loaded from a separate audit file;
+they concern POSIX path expectations, platform-specific device guards and
+legacy error assertions. That isolated baseline loader had three additional
+fixture failures, so it is evidence of reproduction, not a clean baseline
+suite claim. The legacy tests and platform resolver were left unchanged.
+Separate tool-search/context-provider/staleness rerun: 43 passed.
+
 Last updated: 2026-09-15
 Active track: Workstation Knowledge Subsystem (Hermes Vault) & V3 Hardening
 Repository: `kevynlucasprofissional-stack/hermes-agent`

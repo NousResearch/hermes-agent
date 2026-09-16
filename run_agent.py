@@ -2354,6 +2354,7 @@ class AIAgent:
                     "tool_calls": tool_calls_data,
                     "tool_call_id": msg.get("tool_call_id"),
                     "finish_reason": msg.get("finish_reason"),
+                    "token_count": msg.get("_hermes_token_count"),
                     # Reasoning/codex fields are role-gated (assistant-only)
                     # inside _insert_message_rows — pass through untouched.
                     "reasoning": msg.get("reasoning"),
@@ -7870,7 +7871,14 @@ class AIAgent:
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_assistant_message``."""
         from agent.chat_completion_helpers import build_assistant_message
-        return build_assistant_message(self, assistant_message, finish_reason)
+        message = build_assistant_message(self, assistant_message, finish_reason)
+        usage = getattr(self, "_current_provider_usage", None)
+        if usage is not None:
+            message["_hermes_token_count"] = usage["total_tokens"]
+            metadata = dict(message.get("display_metadata") or {})
+            metadata["provider_usage"] = usage
+            message["display_metadata"] = metadata
+        return message
 
     def _needs_thinking_reasoning_pad(self) -> bool:
         """Return True when the active provider enforces reasoning_content echo-back.
@@ -8366,6 +8374,8 @@ class AIAgent:
             self._set_tool_guardrail_halt(decision)
         if stall_notice:
             function_result = (function_result or "") + "\n\n" + stall_notice
+        if self._tool_guardrails.halt_decision is not None:
+            self._set_tool_guardrail_halt(self._tool_guardrails.halt_decision)
         return function_result
 
     def _stall_guards_enabled(self) -> bool:
@@ -8388,9 +8398,55 @@ class AIAgent:
         while side-effect ordering is preserved.
         """
         tool_calls = assistant_message.tool_calls
+        from workstation.task_compiler import requires_compilation
+        if requires_compilation(self, tool_calls):
+            from agent.tool_dispatch_helpers import make_tool_result_message
+            self._work_compile_replans = getattr(self, "_work_compile_replans", 0) + 1
+            if self._work_compile_replans >= 2:
+                self._set_tool_guardrail_halt(ToolGuardrailDecision(
+                    action="halt", code="durable_compile_failed",
+                    message="Repetitive work could not be compiled safely; clarify or repair the plan.",
+                    count=self._work_compile_replans))
+            for call in tool_calls:
+                messages.append(make_tool_result_message(call.function.name, json.dumps({
+                    "status": "replan", "code": "durable_compile_required",
+                    "summary": "This quantified repetitive request requires work_execute. Compile items and verified steps once; individual mutations have not executed."
+                }), call.id, effect_disposition="none"))
+            return
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
+        from workstation.task_compiler import execution_context
+        from types import SimpleNamespace
+
+        def _durable_dispatch(name, args, task_id, call_id):
+            if self._interrupt_requested or getattr(self, "_tool_guardrail_halt_decision", None):
+                raise InterruptedError("Durable work interrupted")
+            if name not in self.valid_tool_names:
+                from tools.tool_search import scoped_deferrable_names
+                scoped = scoped_deferrable_names(get_tool_definitions(
+                    enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,
+                    quiet_mode=True, skip_tool_search_assembly=True))
+                if "tool_call" not in self.valid_tool_names or name not in scoped:
+                    raise ValueError(f"Tool outside session scope: {name}")
+                args = {"name": name, "arguments": args}
+                name = "tool_call"
+            call = SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(
+                name=name, arguments=json.dumps(args)))
+            item_messages = []
+            from agent.tool_executor import execute_tool_calls_sequential
+            execute_tool_calls_sequential(self, SimpleNamespace(tool_calls=[call]), item_messages, task_id, finalize=False)
+            results = [m for m in item_messages if m.get("role") == "tool"]
+            if not results:
+                raise RuntimeError("Scoped dispatcher produced no tool result")
+            from workstation.task_compiler import take_raw_result
+            return take_raw_result(call_id, results[-1]["content"])
+
+        _work_context = execution_context(_durable_dispatch, self._conversation_root_id() or self.session_id or "",
+                                         self._tool_guardrails.mark_verified_progress,
+                                         getattr(self, "_work_user_constraints", {}),
+                                         getattr(self, "_current_provider_usage", None))
+        _work_context.__enter__()
         try:
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(
@@ -8418,6 +8474,14 @@ class AIAgent:
                 segments=segments,
             )
         finally:
+            from workstation.task_compiler import operational_references
+            refs = operational_references()
+            if refs:
+                for message in reversed(messages):
+                    if message.get("role") == "tool":
+                        message["_hermes_operational_refs"] = refs
+                        break
+            _work_context.__exit__(None, None, None)
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:

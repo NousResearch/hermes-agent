@@ -1889,6 +1889,10 @@ def run_conversation(
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
     # ── Per-turn setup (the prologue) ──
+    from workstation.task_compiler import batch_intent, user_constraints
+    agent._work_batch_candidate = batch_intent(user_message)
+    agent._work_compile_replans = 0
+    agent._work_user_constraints = user_constraints(user_message)
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-
     # build, preflight compression, the ``pre_llm_call`` plugin hook,
@@ -4108,6 +4112,7 @@ def run_conversation(
                         }
                 
                 # Track actual token usage from response for context management
+                agent._current_provider_usage = None
                 if hasattr(response, 'usage') and response.usage:
                     canonical_usage = normalize_usage(
                         response.usage,
@@ -4169,6 +4174,7 @@ def run_conversation(
                         "cache_write_tokens": canonical_usage.cache_write_tokens,
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
+                    agent._current_provider_usage = dict(usage_dict)
                     # Capture the boundary latch before update_from_response()
                     # consumes it. Only a real provider prompt count for the
                     # request immediately following a completed compaction can

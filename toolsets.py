@@ -293,6 +293,7 @@ TOOLSETS = {
             "read_window_below",
             "focus_pane", "react_to_message",
             "setup_mcp", "tour",
+            "work_execute",
         ],
         "includes": []
     },

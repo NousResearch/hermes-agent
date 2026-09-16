@@ -1,0 +1,21 @@
+{
+  "items": 100,
+  "baseline": {
+    "planner_interventions": 100,
+    "inline_bytes": 6002400
+  },
+  "durable": {
+    "planner_interventions": 2,
+    "runtime_llm_calls": 0,
+    "completed": 99,
+    "exceptions": 1,
+    "inline_bytes": 2783,
+    "artifact_bytes": 296290,
+    "bytes_avoided": 5999617,
+    "tool_calls": 201,
+    "duplicate_calls_blocked": 74,
+    "cache_hits": 197,
+    "replans": 1,
+    "restart_completed_items_replayed": 0
+  }
+}

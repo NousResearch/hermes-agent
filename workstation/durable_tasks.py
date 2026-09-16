@@ -704,3 +704,38 @@ class DurableTaskStore:
                 "failed": summary.get("failed", 0),
             },
         }
+
+    def update_plan_state(self, plan_id: str, status: str) -> None:
+        with self._lock, self.get_connection() as conn:
+            conn.execute("UPDATE work_plans SET status=?, updated_at=?, completed_at=? WHERE id=?",
+                         (status, _utc_now(), _utc_now() if status == "completed" else None, plan_id))
+
+    def record_evidence(self, item_id: str, ref: str) -> None:
+        with self._lock, self.get_connection() as conn:
+            conn.execute("UPDATE work_items SET evidence_refs=? WHERE id=?",
+                         (json.dumps([{"artifact_ref": ref}]), item_id))
+
+    def operational_ledger(self, task_id: str) -> Dict[str, Any]:
+        """Rebuild operational truth from the canonical DB, never from reasoning."""
+        plan = self.get_plan(task_id)
+        if plan is None:
+            return {"task_id": task_id, "found": False}
+        items = self.get_work_items(plan.id)
+        completed = sum(i.status == WorkItemStatus.COMPLETED for i in items)
+        exceptions = [i for i in items if i.status in {
+            WorkItemStatus.FAILED, WorkItemStatus.BLOCKED, WorkItemStatus.WAITING_FOR_USER
+        } or i.validation_result.get("suspect")]
+        return {
+            "task_id": plan.task_id, "plan_id": plan.id, "phase": plan.status,
+            "objective_ref": plan.metadata.get("objective_ref"),
+            "constraints": plan.metadata.get("constraints", {}),
+            "artifacts": [i.normalized_output_ref for i in items if i.normalized_output_ref][:8],
+            "artifact_count": sum(bool(i.normalized_output_ref) for i in items),
+            "completed": completed,
+            "pending": sum(not i.is_terminal and i not in exceptions for i in items),
+            "failed": sum(i.status == WorkItemStatus.FAILED for i in items),
+            "blockers": [{"item_id": i.id, "status": i.status.value} for i in exceptions[:10]],
+            "blocker_count": len(exceptions),
+            "next_action": "review_exceptions" if exceptions else (
+                "finish" if completed == len(items) else "continue_plan"),
+        }

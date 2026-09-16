@@ -230,6 +230,12 @@ def _flush_session_db_after_tool_progress(
     Flush the already-appended assistant/tool messages immediately so the
     transcript survives destructive-but-valid tool calls.
     """
+    from workstation.task_compiler import durable_execution_active
+    if durable_execution_active():
+        # Private item messages are not independent conversational turns.
+        # The runner owns persistence/checkpoints; the outer tool result is
+        # flushed normally after the runtime boundary exits.
+        return True
     try:
         persisted = agent._flush_messages_to_session_db(messages) is not False
         if not persisted:
@@ -1824,6 +1830,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
+        from workstation.task_compiler import capture_raw_result
+        capture_raw_result(tool_call_id, function_result)
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=name,
@@ -2747,6 +2755,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
+        from workstation.task_compiler import capture_raw_result
+        capture_raw_result(tool_call_id, function_result)
         function_result = maybe_persist_tool_result(
             content=function_result,
             tool_name=function_name,

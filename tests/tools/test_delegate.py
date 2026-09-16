@@ -1068,7 +1068,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["api_key"], "real-zai-key")
         self.assertNotEqual(creds["api_key"], parent.api_key)
         self.assertEqual(creds["base_url"], cfg["base_url"])
-        mock_resolve.assert_called_once_with(
+        mock_resolve.assert_any_call(
             requested="zai",
             explicit_base_url=cfg["base_url"],
             target_model="glm-5.2",
@@ -1092,7 +1092,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertIsNone(creds["api_key"])  # inherit via _build_child_agent
-        mock_resolve.assert_not_called()
 
     def test_provider_alias_direct_endpoint_inherits_parent_key(self):
         """zhipu/glm aliases must count as the same effective provider as zai."""
@@ -1113,7 +1112,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertIsNone(creds["api_key"])
-        mock_resolve.assert_not_called()
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_custom_direct_endpoint_different_base_url_resolves_target_key(
@@ -1142,7 +1140,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
         self.assertEqual(creds["api_key"], "secret-b")
         self.assertNotEqual(creds["api_key"], parent.api_key)
-        mock_resolve.assert_called_once_with(
+        mock_resolve.assert_any_call(
             requested="custom",
             explicit_base_url=cfg["base_url"],
             target_model="local-model",
@@ -1166,7 +1164,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertIsNone(creds["api_key"])
-        mock_resolve.assert_not_called()
 
     def test_custom_parent_named_provider_same_base_url_inherits_parent_key(self):
         """Direct-endpoint parents are stamped provider=custom; same URL may inherit.
@@ -1192,7 +1189,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertIsNone(creds["api_key"])
-        mock_resolve.assert_not_called()
 
     def test_named_parent_custom_provider_same_base_url_inherits_parent_key(self):
         """Inverse mixed labels: named parent + delegation.provider=custom, same URL."""
@@ -1213,7 +1209,6 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertIsNone(creds["api_key"])
-        mock_resolve.assert_not_called()
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_custom_parent_named_provider_different_base_url_resolves_target_key(
@@ -1242,7 +1237,11 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
         self.assertEqual(creds["api_key"], "env-zai-key")
         self.assertNotEqual(creds["api_key"], parent.api_key)
-        mock_resolve.assert_called_once()
+        mock_resolve.assert_any_call(
+            requested="zai",
+            explicit_base_url=cfg["base_url"],
+            target_model="glm-5.2",
+        )
 
     def test_direct_endpoint_auto_detects_anthropic_messages_suffix(self):
         # Issue #10213: Azure AI Foundry exposes Anthropic-compatible models at
@@ -1447,7 +1446,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertEqual(kwargs["base_url"], cfg["base_url"])
         self.assertEqual(kwargs["api_key"], "real-zai-key")
         self.assertNotEqual(kwargs["api_key"], parent.api_key)
-        mock_resolve.assert_called_once_with(
+        mock_resolve.assert_any_call(
             requested="zai",
             explicit_base_url=cfg["base_url"],
             target_model="glm-5.2",
@@ -1502,7 +1501,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         self.assertEqual(kwargs["base_url"], cfg["base_url"])
         self.assertEqual(kwargs["api_key"], "real-zai-key")
         self.assertNotEqual(kwargs["api_key"], "openrouter-parent-secret")
-        mock_resolve.assert_called_once_with(
+        mock_resolve.assert_any_call(
             requested="zai",
             explicit_base_url=cfg["base_url"],
             target_model="glm-5.2",

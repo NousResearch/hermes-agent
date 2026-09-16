@@ -302,6 +302,8 @@ class WeComMediaMixin:
         if prepared["rejected"]:
             if self.warning_notifications_enabled():
                 await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}", reply_to=reply_to)
+            elif caption:
+                await self._send_followup_markdown(chat_id, caption, reply_to=reply_to)
             return SendResult(success=False, error=prepared["reject_reason"])
         reply_req_id = self._cached_reply_req_id(chat_id, reply_to)
         # Active/expired stream owns the req_id (passive replyMedia is never acked): go proactive.

@@ -1510,15 +1510,17 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Post the ``/setup-files`` notice (plus host path) when native delivery is
         unavailable. Always returns ``success=False``."""
         lines = [caption] if caption else []
-        lines.extend([
-            f"⚠️ No he podido adjuntar **{filename}**.",
-            "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
-            "Es un consentimiento único que se hace desde este chat.",
-            "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
-            f"Mientras tanto el archivo está en el host: `{path}`",
-        ])
+        if self.warning_notifications_enabled():
+            lines.extend([
+                f"⚠️ No he podido adjuntar **{filename}**.",
+                "Google Chat sólo permite adjuntar archivos cuando el bot tiene permiso explícito tuyo (OAuth de usuario). "
+                "Es un consentimiento único que se hace desde este chat.",
+                "**Para activarlo:** envía `/setup-files` y sigue las instrucciones.",
+                f"Mientras tanto el archivo está en el host: `{path}`",
+            ])
         try:
-            await self._create_message(chat_id, _thread_body("\n".join(lines), thread_id))
+            if lines:
+                await self._create_message(chat_id, _thread_body("\n".join(lines), thread_id))
         except Exception:
             logger.debug("[GoogleChat] attachment fallback notice send failed", exc_info=True)
         return SendResult(

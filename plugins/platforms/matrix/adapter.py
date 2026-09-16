@@ -1479,6 +1479,10 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
             fallback = ("I couldn't download and upload the image to Matrix. "
                         "The source URL was not shown because it may contain private tokens.")
+            if not self.warning_notifications_enabled():
+                if caption:
+                    await self.send(chat_id, caption, reply_to, metadata=metadata)
+                return SendResult(success=False, error=fallback)
             return await self.send(chat_id, f"{caption}\n{fallback}" if caption else fallback, reply_to)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 

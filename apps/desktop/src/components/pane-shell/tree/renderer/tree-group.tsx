@@ -48,6 +48,7 @@ import type { DropPosition, GroupNode } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
+  $mainTileZoneCount,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -258,6 +259,9 @@ export function TreeGroup({
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
+  // A count that moves only when a main zone appears or goes — NOT the tree
+  // itself (see the note above `targetPane` on why zones never subscribe to it).
+  const mainTileZoneCount = useStore($mainTileZoneCount)
   const workspaceMode = useStore($workspaceMode)
   const workspaceOwnerKey = useStore($workspaceOwnerKey)
   const newSessionTabAction = useStore($newSessionTabAction)
@@ -342,7 +346,8 @@ export function TreeGroup({
     isCollapsePane,
     mode: node.tabStrip,
     paneFor,
-    shown
+    shown,
+    siblingMainZone: mainTileZoneCount > (shown.some(id => paneChrome(paneFor(id)).placement === 'main') ? 1 : 0)
   })
 
   // A group collapses ALONG its parent split's axis. In a row that means the

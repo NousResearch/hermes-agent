@@ -806,6 +806,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
 ) -> None:
@@ -838,6 +839,8 @@ def write_runtime_status(
         ("active_work", active_work, lambda v: list(v) if v else None),
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
+        # Why an unset-default (multiplex on) gateway is serving one profile; None clears it.
+        ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
         ("session_store", session_store, _coerce_session_store),
     ))
     if platform is not _UNSET:

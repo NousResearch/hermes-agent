@@ -1232,7 +1232,7 @@ display:
 示例页脚：
 
 ```
-⚠️ File-mutation verifier: 3 file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.
+⚠️ File-mutation verifier: 3 file edit(s) FAILED this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm what actually landed.
   • concepts/automatic-organization.md — [patch] Could not find match for old_string
   • concepts/lora.md — [patch] Could not find match for old_string
   • concepts/rag-pipeline.md — [patch] Could not find match for old_string

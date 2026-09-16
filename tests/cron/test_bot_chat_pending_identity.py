@@ -37,7 +37,6 @@ def test_deferred_destination_does_not_follow_root_changes(tmp_path, monkeypatch
     monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda _: other)
     run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
     monkeypatch.setattr(delivery.subprocess, "run", run)
-    monkeypatch.setattr(delivery.shutil, "which", lambda _: "/bin/hermes")
     if recipient == "desktop":
         lease, refusal = try_acquire_active_session(
             session_id="chat", surface="desktop", config={}, registry_home=home,

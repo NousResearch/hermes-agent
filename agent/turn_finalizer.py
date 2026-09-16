@@ -12,6 +12,7 @@ from contextlib import suppress
 from typing import Any, Callable, List, Optional, Tuple
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.turn_failure_copy import exit_reason_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
@@ -155,8 +156,14 @@ def _resolve_budget_fallback(
             final_response = agent._handle_max_iterations(messages, api_call_count)
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
-    # was eligible, so the dispatcher learns the worker could not complete.
-    _kanban_task = os.environ.get("HERMES_KANBAN_TASK") if budget_exhausted else None
+    # was eligible, so the dispatcher learns the worker could not complete. Only the
+    # dispatcher-owned worker owns the task: an in-process delegate_task child or cron run
+    # inherits ``HERMES_KANBAN_TASK`` via os.environ but exhausting ITS budget must not
+    # close the parent's run and release its claim (#112817).
+    _kanban_task = (
+        os.environ.get("HERMES_KANBAN_TASK")
+        if budget_exhausted and is_dispatcher_owned_worker_context() else None
+    )
     # If running as a kanban worker, signal the dispatcher that the worker could not complete (rather than
     # treating it as a protocol violation). This applies whether the user-facing fallback came from the
     # summary call or an explicitly pending continuation; both exhausted the task budget and must advance
@@ -348,6 +355,7 @@ def _append_file_mutation_footer(agent, final_response, logger):
         # Empty/interrupted turns already have other surface text that shouldn't be augmented.
         _failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
         if _failed and agent._file_mutation_verifier_enabled():
+            _failed = agent._file_mutations_still_failed(_failed)
             footer = agent._format_file_mutation_failure_footer(_failed)
             if footer:
                 final_response = final_response.rstrip() + "\n\n" + footer
@@ -462,9 +470,12 @@ def finalize_turn(
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
 
+    # Sibling producers (``turn_recovery``, ``codex_runtime``) return ``completed=False`` for an
+    # interrupted turn; the gateway stream gate and the API run status rely on that contract.
     completed = (
         final_response is not None
         and not failed
+        and not interrupted
         and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
     )
 
@@ -583,9 +594,13 @@ def finalize_turn(
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.
     if failed and str(_turn_exit_reason) == "session_persistence_failed":
+        from hermes_constants import profile_cli_selector
+
+        # Never rebind final_response here: the memory sync and the background-review gate
+        # below must still see an empty response on a persistence-failed turn.
         result["error"] = final_response or (
             "session storage could not be written — check the state database "
-            "health (`hermes doctor`), then send your message again"
+            f"health (`hermes {profile_cli_selector()}doctor`), then send your message again"
         )
         _cause = getattr(agent, "_last_persistence_error_cause", None)
         result["failure_reason"] = "session_persistence_failed:" + (_cause or "unknown")

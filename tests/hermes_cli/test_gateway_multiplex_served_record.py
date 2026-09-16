@@ -72,6 +72,53 @@ def test_probe_survives_a_missing_default_pid_file(served_root):
     assert named_profile_served_by_running_multiplexer("coder") is True
 
 
+def test_setup_wizard_skips_service_install_for_profile_served_by_multiplexer(
+    served_root, monkeypatch, capsys,
+):
+    """Gateway setup must not create a standalone service for an already served profile."""
+    import hermes_cli.gateway as gw
+
+    calls: list[str] = []
+    monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gw, "_is_service_running", lambda: False)
+    monkeypatch.setattr(gw, "_service_backend", lambda: "systemd")
+    monkeypatch.setattr(gw, "prompt_yes_no", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        gw, "install_linux_gateway_from_setup", lambda **kwargs: calls.append("install"),
+    )
+    monkeypatch.setattr(
+        gw, "_setup_service_action", lambda *args, **kwargs: calls.append("start"),
+    )
+
+    gw._wizard_post_setup()
+
+    assert calls == []
+    assert "already served by the default multiplexer" in capsys.readouterr().out
+
+
+def test_setup_gateway_service_step_skips_install_for_served_profile(served_root, monkeypatch, capsys):
+    """``hermes -p <profile> setup gateway`` (and ``hermes setup`` / ``hermes import``) reach the service
+    step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist,
+    while a profile the live record does not list is still installed (#111958)."""
+    import hermes_cli.gateway as gw
+
+    calls: list[str] = []
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gw, "_is_service_running", lambda: False)
+    monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gw, "has_conflicting_systemd_units", lambda: False)
+    monkeypatch.setattr(gw, "systemd_install", lambda **kwargs: calls.append("install"))
+    monkeypatch.setattr(gw, "systemd_start", lambda *args, **kwargs: calls.append("start"))
+
+    assert gw.ensure_gateway_service(context="setup") is True
+    assert calls == []
+    assert "already served by the default multiplexer" in capsys.readouterr().out
+
+    monkeypatch.setenv("HERMES_HOME", str(served_root / "profiles" / "other"))  # not in the live record
+    assert gw.ensure_gateway_service(context="setup") is True
+    assert calls == ["install", "start"]
+
+
 def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_root):
     """A stale default record whose PID now belongs to an unrelated process (start time differs, command
     line is not a gateway's) must not make its ``served_profiles`` authoritative: bare PID existence

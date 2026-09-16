@@ -443,6 +443,35 @@ class TestReportDatabaseJournalModes:
         assert db.read_bytes() == db_bytes
 
 
+class TestConfiguredDeleteNeverApplied:
+    """#111729: a database still in WAL while ``database.journal_mode: delete`` is configured is a
+    WARNING naming the unapplied setting (the runtime never live-downgrades and logs that once per
+    process), not the informational line a healthy WAL database gets; a configured ``wal`` is unchanged."""
+
+    @pytest.mark.parametrize("version, exposed", [((3, 51, 3), False), (VULNERABLE, True)])
+    def test_wal_db_under_configured_delete_warns(self, tmp_path, capsys, monkeypatch, version, exposed):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "delete")
+
+        doctor_platform._report_database_journal_modes(tmp_path, version)
+
+        out = capsys.readouterr().out
+        assert "state.db is in WAL mode" in out and "despite database.journal_mode=delete" in out
+        assert "never live-downgraded" in out and "PRAGMA journal_mode=DELETE" in out
+        assert "state.db: WAL journal mode" not in out
+        assert ("To clear the exposure:" in out) is exposed
+
+    def test_configured_wal_keeps_the_informational_line(self, tmp_path, capsys, monkeypatch):
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        monkeypatch.setattr("hermes_state_wal.resolve_journal_mode", lambda: "wal")
+
+        doctor_platform._report_database_journal_modes(tmp_path, (3, 51, 3))
+
+        out = capsys.readouterr().out
+        assert "state.db: WAL journal mode" in out
+        assert "despite" not in out
+
+
 class TestSizeAndRepairHint:
     def test_exposed_databases_report_size_and_repair_hint(self, tmp_path, capsys):
         db = tmp_path / "state.db"

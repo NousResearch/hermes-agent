@@ -2,13 +2,6 @@ import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
   catalog: {
-    installTitle: (name: string) => `تثبيت «${name}»؟`,
-    installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
-    installTo: 'التثبيت في',
-    thisComputer: 'هذا الكمبيوتر',
-    installing: 'جارٍ التثبيت…',
-    installComplete: (name: string) => `تم تثبيت «${name}»`,
-    destinationChanged: 'تغيرت وجهة التثبيت. أغلق هذا الحوار وافتح رابط التثبيت مجددًا.',
     browse: 'تصفح',
     installed: 'المثبتة',
     searchSkills: 'البحث في المهارات',

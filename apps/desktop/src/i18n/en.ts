@@ -4,13 +4,6 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   catalog: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
     browse: 'Browse',
     installed: 'Installed',
     searchSkills: 'Search skills',

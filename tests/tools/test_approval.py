@@ -1161,6 +1161,22 @@ class TestLaunchctlGatewayLifecycle:
         assert dangerous is True, cmd
         assert "launchd" in desc.lower()
 
+    def test_launchctl_pattern_anchored_against_catastrophic_backtracking(self):
+        r"""Unanchored lookaheads like `(?=[\s\S]*launchctl...)` cause O(N^2)
+        character scanning across every position on non-matching commands (e.g.,
+        large multi-KB scripts or heredocs). Anchoring with \A ensures O(N)
+        evaluation."""
+        import time
+        from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED
+        pattern = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if "launchd service" in d)
+        assert pattern.pattern.startswith(r"\A")
+
+        sample = "x" * 50000
+        t0 = time.perf_counter()
+        pattern.search(sample)
+        elapsed = time.perf_counter() - t0
+        assert elapsed < 0.05, f"Pattern search took too long: {elapsed:.3f}s"
+
 
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy

@@ -31,7 +31,9 @@ def _approved(capability, action, args):
     try:
         from tools.approval import request_tool_approval
         result = request_tool_approval(f"microsoft365_{capability}", f"Microsoft 365 {action}: external side effect", rule_key=f"microsoft365.{capability}.{action}")
-        return bool(result.get("approved")) if isinstance(result, dict) else result in {"once", "session", "always", "smart_approve"}
+        # Approval decisions belong to Hermes' host gate. Only its documented
+        # result shape is trusted; plugin-local strings cannot approve writes.
+        return isinstance(result, dict) and result.get("approved") is True
     except Exception:
         return False
 

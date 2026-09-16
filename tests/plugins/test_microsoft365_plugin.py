@@ -21,7 +21,34 @@ def test_permission_mapping_is_least_privilege_for_every_operation():
     for service, ops in EXPECTED.items():
         assert set(ops) == set(OPERATION_PERMISSIONS[service])
     settings = Microsoft365Settings.from_mapping({"capabilities":{"outlook":{"send":True},"onedrive":{"upload_files":True}}})
-    assert required_permissions(settings) == {"Mail.Send", "Files.ReadWrite"}
+    assert required_permissions(settings) == {"Mail.Send", "Files.ReadWrite.All"}
+
+
+def test_application_permission_mode_does_not_claim_delegated_only_permissions():
+    from plugins.microsoft365.backend import (
+        APPLICATION_PERMISSION_MODE, Microsoft365Settings, OPERATION_PERMISSIONS,
+        required_permissions, unsupported_operations,
+    )
+    assert APPLICATION_PERMISSION_MODE == "application"
+    settings = Microsoft365Settings.from_mapping({"capabilities": {
+        "outlook": {"search": True, "send": True},
+        "onedrive": {"upload_files": True},
+        "teams": {"send_messages": True},
+        "planner": {"create_tasks": True},
+    }})
+    assert required_permissions(settings) == {
+        "Mail.Read", "Mail.Send", "Files.ReadWrite.All", "Tasks.ReadWrite.All",
+    }
+    assert "ChatMessage.Send" not in required_permissions(settings)
+    assert "Tasks.ReadWrite" not in required_permissions(settings)
+    assert unsupported_operations(settings) == ["teams.send_messages"]
+    assert OPERATION_PERMISSIONS["teams"]["send_messages"] == set()
+
+
+def test_approval_result_must_be_host_owned_approved_dict(monkeypatch):
+    from plugins.microsoft365 import tools
+    monkeypatch.setattr("tools.approval.request_tool_approval", lambda *a, **k: "always")
+    assert tools._approved("outlook", "send", {}) is False
 
 def test_schema_advertises_writes_and_confirmation_contract():
     from plugins.microsoft365.tools import schema

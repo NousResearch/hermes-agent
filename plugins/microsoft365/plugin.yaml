@@ -11,15 +11,15 @@ provides_tools:
 config_schema:
   tenant_id: {type: str, required: true, description: "Microsoft Entra tenant ID"}
   client_id: {type: str, required: true, description: "Microsoft Entra application/client ID"}
-  client_secret: {type: str, required: true, secret: true, description: "Microsoft Entra application secret"}
-  user_id: {type: str, default: me, description: "Graph user ID for user resources"}
+  client_secret: {type: str, required: true, secret: true, description: "Microsoft Entra application secret for client-credentials (app-only) Graph auth"}
+  user_id: {type: str, default: me, description: "Target Graph user ID for app-only user resources; configure an actual ID, not /me"}
   capabilities:
     type: dict
-    description: "Operation-level flags; service=true enables every operation for compatibility."
+    description: "Operation-level flags; service=true enables every operation for compatibility. Permissions are Microsoft Graph application roles, not delegated scopes."
     properties:
-      outlook: {type: dict, description: "search, read, create_draft, send; Mail.Read/Mail.ReadWrite/Mail.Send"}
-      sharepoint: {type: dict, description: "search, read, download_files, upload_files; Sites.Read.All/Files.Read.All/Files.ReadWrite.All"}
-      onedrive: {type: dict, description: "search, read, download_files, upload_files; Files.Read/Files.ReadWrite"}
-      calendar: {type: dict, description: "search, create_events, update_events; Calendars.Read/Calendars.ReadWrite"}
-      teams: {type: dict, description: "list_teams, list_channels, search_messages, send_messages; Team.ReadBasic.All/Channel.ReadBasic.All/Chat.Read/ChatMessage.Send"}
-      planner: {type: dict, description: "list_task_lists, search, read, create_tasks, update_tasks (Microsoft To Do); Tasks.Read/Tasks.ReadWrite"}
+      outlook: {type: dict, description: "search, read, create_draft, send; application roles Mail.Read/Mail.ReadWrite/Mail.Send"}
+      sharepoint: {type: dict, description: "search, read, download_files, upload_files; application roles Sites.Read.All/Files.Read.All/Files.ReadWrite.All"}
+      onedrive: {type: dict, description: "search, read, download_files, upload_files; application roles Files.Read.All/Files.ReadWrite.All"}
+      calendar: {type: dict, description: "search, create_events, update_events; application roles Calendars.Read/Calendars.ReadWrite"}
+      teams: {type: dict, description: "list_teams, list_channels, search_messages, send_messages; application roles Team.ReadBasic.All/Channel.ReadBasic.All/Chat.Read.All/ChannelMessage.Read.All; send_messages has no app-only role"}
+      planner: {type: dict, description: "list_task_lists, search, read, create_tasks, update_tasks (Microsoft To Do); application roles Tasks.Read.All/Tasks.ReadWrite.All"}

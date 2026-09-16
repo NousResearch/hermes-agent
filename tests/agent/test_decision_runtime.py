@@ -20,7 +20,6 @@ from agent.decision_provider import (
 )
 from agent.decision_registry import _reset_for_tests
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from tools.registry import registry as tool_registry
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +72,7 @@ def _context(tmp_path: Path):
 def test_plugin_facade_preserves_typed_probabilities_and_explicit_state_boundary(tmp_path):
     manager, ctx = _context(tmp_path)
     provider = _FixtureProvider()
-    tools_before = set(tool_registry.merged(scope=manager.scope_key))
+    tools_before = set(manager._plugin_tool_names)
     prompts_before = dict(manager._system_prompt_sections)
     handle = ctx.register_decision_provider(provider)
     caller_state = {"request": "private raw input", "nested": {"candidate": "alpha"}}
@@ -96,7 +95,7 @@ def test_plugin_facade_preserves_typed_probabilities_and_explicit_state_boundary
     assert provider.requests[0].state == caller_state
     provider.requests[0].state["nested"]["candidate"] = "mutated"
     assert caller_state["nested"]["candidate"] == "alpha"
-    assert set(tool_registry.merged(scope=manager.scope_key)) == tools_before
+    assert manager._plugin_tool_names == tools_before
     assert manager._system_prompt_sections == prompts_before
 
     event = json.loads((tmp_path / "logs" / "decisions.jsonl").read_text(encoding="utf-8"))

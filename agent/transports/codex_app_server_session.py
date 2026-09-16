@@ -21,6 +21,7 @@ from agent.codex_responses_adapter import _format_responses_error
 from agent.redact import redact_sensitive_text
 from agent.transports.codex_app_server import CodexAppServerClient, CodexAppServerError
 from agent.transports.codex_event_projector import CodexEventProjector, ProjectionResult
+from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -569,7 +570,7 @@ class CodexAppServerSession:
     def _respond_elicitation(self, params: dict) -> dict:
         """MCP elicitation: auto-accept our own hermes-tools server (opted in by enabling the runtime;
         exposes nothing codex's shell can't do); decline others so the user opts in via codex's own flow."""
-        action = "accept" if (params.get("serverName") or "") == "hermes-tools" else "decline"
+        action = "accept" if (params.get("serverName") or "") == HERMES_TOOLS_MCP_SERVER_NAME else "decline"
         return {"action": action, "content": None, "_meta": None}
 
     _SERVER_REQUEST_HANDLERS: dict[str, Callable[..., dict]] = {

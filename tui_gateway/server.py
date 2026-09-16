@@ -39,7 +39,8 @@ from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
-    AGENT_STILL_STARTING, agent_init_failed_message, busy_message, resume_failed_message, turn_error_text)
+    AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
+    resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -960,13 +961,11 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
 
 def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
     """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
-    launch profile: unscoped in a single-profile process, its own frozen-env scope once multiplexing is
-    active (a hosted-room turn for a default member otherwise died at build with ``UnscopedSecretError``
-    because the launch profile was treated as "no scope"). Fail-open per scope (the build must not die on
+    launch profile: its own launch-env secret scope (live env while single-profile, frozen once
+    multiplexing is active — a hosted-room turn for a default member otherwise died at build with
+    ``UnscopedSecretError`` because the launch profile was treated as "no scope"). Fail-open per scope (the build must not die on
     a scope helper); the terminal installer itself fails closed (malformed policy → refusal scope) so
     _make_agent's terminal probing / cwd hints resolve the routed profile."""
-    if not profile_home and not _launch_profile_scope_needed():
-        return None
     scopes = _TurnScopes()
     with contextlib.suppress(Exception):
         return _profile_runtime_scope_tokens(profile_home)
@@ -989,7 +988,7 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     runtime identity (like the eager resume's overrides splat) so the build can't drop the provider. No
     stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
-          "platform_override": _session_source(current)}
+          "platform_override": _session_source(current), "cwd_override": _session_cwd(current)}
     if resume_sid := current.get("resume_session_id"):
         kw["session_id"] = resume_sid
     resume_overrides = current.get("resume_runtime_overrides")
@@ -1048,6 +1047,8 @@ def _attach_built_agent(current: dict, agent) -> None:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     current["agent"] = agent
+    # A workspace move can land while construction is still in flight.
+    _register_session_cwd(current)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
@@ -1109,14 +1110,20 @@ def _start_agent_build(sid: str, session: dict) -> None:
         with _sessions_lock:
             current = _sessions.get(sid)
         if current is None:
+            # Closed/reaped before the build started: nothing will ever attach an agent to this
+            # record, yet ``agent_ready`` must be set so a prompt waiting on it fails instead of hanging.
+            session["agent_error"] = AGENT_BUILD_ABANDONED
             ready.set()
             return
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
         try:
             if not _await_resume_history(sid, current):
+                # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
+                # why — a turn admitted against this record refuses with the real reason (#111531).
+                current["agent_error"] = AGENT_BUILD_ABANDONED
                 return
-            tokens = _set_session_context(key)
+            tokens = _set_session_context(key, cwd=_session_cwd(current))
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —
             # DEDICATED and ours until _transfer_db_to_agent in the finally; FAIL CLOSED rather than
             # binding the launch DB and bleeding rows into the wrong state.db.
@@ -2330,7 +2337,7 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2367,6 +2374,7 @@ def _make_agent(
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
         provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+        cwd=cwd_override,
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),

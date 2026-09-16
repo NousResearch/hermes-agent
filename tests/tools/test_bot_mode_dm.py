@@ -976,3 +976,48 @@ def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_pat
     assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
     assert not intent.exists()
     assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
+
+
+def test_pending_approval_spawn_names_the_approval_and_reclaims_the_dm_file(tmp_path, monkeypatch):
+    """terminal_tool's approval gate answers pending_approval with an EMPTY error and no session_id;
+    a local delivery must say the runner needs approval (nothing was sent), not blame the spawn."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 runner", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._spawn_delivery("unused", "@researcher", dm_file=str(dm_file),
+                                                    task_id=None, agent=None))
+
+    assert "approval" in result["error"] and "nothing was sent" in result["error"]
+    assert "no process id" not in result["error"]
+    assert not dm_file.exists()
+
+
+def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monkeypatch):
+    """The relay envelope is queued before the reply waiter spawns and the Desktop drains it on its
+    own: a waiter that cannot start is a lost wake-up, not a failed delivery (a hard error makes the
+    sender resend and deliver twice)."""
+    from tools import bot_relay
+
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "default").mkdir(parents=True)
+    bot_relay.write_remote_roster(root, [{"profile": "researcher", "handle": "researcher",
+                                          "connection_id": "laptop-1", "connection_label": "laptop"}])
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 waiter", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._try_relay_delivery(root, "researcher", "hello", "default",
+                                                        task_id=None, agent=None))
+
+    assert result["status"] == "queued"
+    assert "error" not in result
+    assert "Do NOT resend" in result["detail"]
+    assert "approval" in result["notification_error"]
+    assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"

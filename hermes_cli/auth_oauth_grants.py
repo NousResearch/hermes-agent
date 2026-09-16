@@ -207,7 +207,8 @@ def _persist_oauth_heal_clean_mark(provider_id: str, fingerprint: tuple) -> None
         if marks.get(provider_id) == new_mark:
             return  # already recorded; skip the rewrite
         marks[provider_id] = new_mark
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         # 0o600 like the MCP schema cache: this names credential-store paths.
         atomic_json_write(path, marks, mode=0o600)
     except Exception:

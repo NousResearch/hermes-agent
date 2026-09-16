@@ -991,9 +991,13 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
-  const route = await gatewayForProfile(profile, true)
+  // A user-initiated Settings-scoped RPC (the Vault tab's "Applies to" pick)
+  // dials `foreground` so a cold profile spawn is not queued behind background
+  // work (#111651); ambient callers keep the background default.
+  const route = await gatewayForProfile(profile, true, spawnPriority)
 
   try {
     if (!route.gateway) {

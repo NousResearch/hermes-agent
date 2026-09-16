@@ -147,6 +147,13 @@ default home's `gateway_state.json`), so it stays correct when the multiplexer w
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
 environment, or when profiles were added after the gateway started.
 
+The setup flows follow the same rule: `hermes -p coder setup gateway`, `hermes -p coder setup`,
+`hermes -p coder gateway setup` and `hermes -p coder import` configure the profile's bots but
+skip the "install the gateway background service" step for a served profile, printing
+*"Profile 'coder' is already served by the default multiplexer"* instead of registering a
+stray unit or plist that could only sit dead. Add the bot token and the running multiplexer
+picks it up.
+
 The multiplexer is the single inbound process; a second profile gateway would
 double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
 `install` and `restart`) only if you deliberately want a separate process for that
@@ -441,6 +448,8 @@ profile and never shares with the default or any sibling:
 | MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
 | MCP connections in the Desktop/dashboard backend and the per-profile cron ticker | Keyed per served profile even with `gateway.multiplex_profiles` off — same rule as the multiplexer | A same-named `mcp_servers` entry with other credentials is its own connection; a served profile never calls a server as another profile |
 | Dashboard actions (`hermes -p <name> …` spawned by the Desktop/dashboard) | A scrubbed child env pinned to that profile's `HERMES_HOME` | The child loads its own `.env`; the dashboard profile's tokens and ports are not inherited |
+| Every child that acts for a served profile (slash worker, Bot Chat delivery, A2A forward, `key_cmd` helper, browser driver) | That profile's own `.env` + secret sources over a credential-scrubbed base — with or without `gateway.multiplex_profiles` (the Desktop/dashboard `?profile=` route counts) | Absent from the child — a key that reached the launch process only through systemd / Compose / the shell is never inherited by another profile's child |
+| The launch (default) profile's own credentials in a `hermes serve` / dashboard process that also serves another profile | Its `.env` + secret sources over the process env **frozen the moment the first other profile is served**; not re-read afterwards | A credential rotated only in the process env (`systemctl set-environment`, a refreshed `op run` wrapper that did not re-exec) is not picked up until the process restarts — put rotating keys in `.env` or a secret source, or restart after rotating |
 | Cron `.env` tuning (`HERMES_CRON_TIMEOUT`, `HERMES_MODEL` fallback, `HERMES_CRON_MAX_PARALLEL`, prefill file), worker / Bot Chat child env | The profile's own `.env`; children never inherit the default profile's `.env` settings or bridged `TERMINAL_*` policy | Cron defaults / model refusal, exactly as a standalone `hermes -p <name> gateway run` |
 | Kanban workers and notifications for a profile's tasks | The assignee's `.env` + `config.yaml` (toolset pin, terminal backend, media policy, display language) | — |
 | `/loop` ticks, `background_process_notifications` gate, `notice_delivery`, background-process checkpoint recovery | The owning profile's `state.db` / `config.yaml` / `processes.json` | — |
@@ -462,8 +471,10 @@ turn, the cron ticker or log routing.
 
 The served set controls `/p/<profile>/` API and webhook prefixes, runtime
 status, profile-route eligibility, and which profiles the in-process cron
-scheduler ticks (the Desktop backend's ticker enumerates the same set and stands
-down for any profile a running multiplexer or its own gateway already serves). A
+scheduler ticks (the Desktop backend's ticker re-enumerates the same set on
+every cycle — a profile created or deleted while Desktop runs joins or leaves
+the ticked set without a restart — and stands down for any profile a running
+multiplexer or its own gateway already serves). A
 multiplexer started as `hermes -p <name> gateway run` always ticks its own
 profile's cron store as well.
 
@@ -845,7 +856,7 @@ A standalone secondary behind any of these boundaries stops the automatic path:
 |---|---|
 | different service manager or scope | default on user systemd, a secondary on **system** systemd (or launchd), or the default detached with a service-managed secondary |
 | more than one installed unit on a profile | a user **and** a system unit for the same profile (the explicit command removes both) |
-| different UNIX user | a system unit with its own `User=`, or a live gateway owned by another uid; a system unit whose `User=` this host cannot resolve counts as unknown, never as "same user" |
+| different UNIX user | a system unit with its own `User=`, or a live gateway owned by another uid; a system unit whose `User=` this host cannot resolve — on the secondary **or** on the default — counts as unknown, never as "same user" |
 | `HERMES_HOME` outside `<default home>/profiles/` | a unit pinning `HERMES_HOME=/opt/hermes/profiles/emma` |
 
 In that case `hermes update` prints the boundary it found plus
@@ -948,13 +959,17 @@ previous value, restarts the default gateway, and reinstalls/starts every
 recorded per-profile service (a system unit comes back with the `User=` it had).
 The manifest is removed once everything is back.
 
-The forward migration is transactional in the same way: if bringing the default
-gateway up fails after the per-profile gateways were removed (for example a
-system unit that has to run as root), `--multiplex` rolls back through the
-manifest on the spot so no profile is left without a gateway. Should the
-process die between flipping the flag and starting the default, the next
-`hermes gateway migrate --multiplex` sees the manifest with no live gateway and
-resumes from it instead of reporting "already multiplexed".
+The forward migration is transactional in the same way. Failures it can see
+coming from the plan (a system unit that would have to run as root without a
+recorded `User=`, a config file it cannot rewrite) are refused before any
+per-profile gateway is stopped. Anything that fails after the manifest is
+written — the flag write, a later secondary's stop or unit removal, the
+default's install or start — rolls back through the manifest on the spot, so no
+profile is left without a gateway. Should the process die anywhere in that
+window, the next `hermes gateway migrate --multiplex` sees the flag on, the
+manifest, and no live multiplexer serving the migrated profiles (an installed
+but stopped default unit does not count) and resumes from the manifest instead
+of reporting "already multiplexed".
 If no manifest exists (you enabled multiplexing by hand), leave multiplex mode
 with `hermes config set gateway.multiplex_profiles false && hermes gateway restart`
 and reinstall the per-profile services you want.

@@ -210,11 +210,14 @@ _CRON_HINT = (
 
 
 def _build_job_prompt(
-    job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None) -> str:
+    job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
+    runtime_data_prompt: Optional[str] = None,
+) -> str:
     """Build the effective prompt for a cron job, optionally loading skills first.
     ``prerun_script``: cached ``(success, stdout)`` from a script the caller already ran (wake-gate
-    check) — skips re-execution. ``extra_prompt``: per-run ``## Run Context`` for this fire only,
-    never persisted to the job.
+    check) — skips re-execution. ``extra_prompt``: user-authored per-run ``## Run Context`` for this
+    fire only, never persisted to the job. ``runtime_data_prompt`` is operator-configured runtime
+    data (such as monitor output) and is scanned as injected data rather than user input.
 
     When provided, the script is not re-executed and the cached result is used for prompt injection. When
     omitted, the script (if any) runs inline as before. extra_prompt: Optional per-run context (from
@@ -227,6 +230,9 @@ def _build_job_prompt(
     # Runtime DATA (script stdout, upstream output) legitimately quotes command-shape strings, so it
     # must not be scanned with the strict user-prompt set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+    if runtime_data_prompt:
+        prompt = f"{prompt}\n\n## Run Context\n{runtime_data_prompt}"
+        has_injected_data = True
 
     script_path = job.get("script")
     if script_path:

@@ -53,6 +53,27 @@ const TOOL_PREVIEW_MAX = 96
 
 export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
 
+// A turn prunes display rows, not child identities. Keep retired IDs with the
+// session's current list so late starts/rosters cannot recreate completed work.
+// Clearing the session (or resetting the store) releases this history too.
+const retiredSubagents = new WeakMap<SubagentProgress[], Set<string>>()
+
+function setSessionSubagents(sid: string, previous: SubagentProgress[], next: SubagentProgress[]) {
+  const retired = retiredSubagents.get(previous) ?? new Set<string>()
+
+  for (const item of previous) {
+    if (TERMINAL.has(item.status)) {
+      retired.add(item.id)
+    }
+  }
+
+  if (retired.size) {
+    retiredSubagents.set(next, retired)
+  }
+
+  $subagentsBySession.set({ ...$subagentsBySession.get(), [sid]: next })
+}
+
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
@@ -222,7 +243,7 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
   for (const payload of children) {
     const id = str(payload.subagent_id)
 
-    if (!id) {
+    if (!id || retiredSubagents.get(previous)?.has(id)) {
       continue
     }
 
@@ -251,7 +272,7 @@ export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload
   }
 
   if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
-    $subagentsBySession.set({ ...map, [sid]: next })
+    setSessionSubagents(sid, previous, next)
   }
 }
 
@@ -292,7 +313,7 @@ export function pruneFinishedSessionSubagents(sid: string) {
     return
   }
 
-  $subagentsBySession.set({ ...map, [sid]: next })
+  setSessionSubagents(sid, list, next)
 }
 
 export function pruneDelegateFallbackSubagents(sid: string) {
@@ -309,7 +330,7 @@ export function pruneDelegateFallbackSubagents(sid: string) {
     return
   }
 
-  $subagentsBySession.set({ ...map, [sid]: next })
+  setSessionSubagents(sid, list, next)
 }
 
 export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
@@ -318,7 +339,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const id = idOf(payload)
   const idx = list.findIndex(item => item.id === id)
 
-  if (idx < 0 && !createIfMissing) {
+  if (retiredSubagents.get(list)?.has(id) || (idx < 0 && !createIfMissing)) {
     return
   }
 
@@ -331,7 +352,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const next = toProgress(payload, prev, eventType)
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
-  $subagentsBySession.set({ ...map, [sid]: nextList })
+  setSessionSubagents(sid, list, nextList)
 }
 
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {

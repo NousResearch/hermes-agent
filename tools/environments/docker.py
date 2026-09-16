@@ -29,10 +29,11 @@ from tools.terminal_tool_config import (
 )
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
-    _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
+    _EGRESS_LABEL_KEY, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
     check_forward_env_collisions, merge_egress_env,
 )
+from tools.environments.egress_common import critical_egress_env_names
 from tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
 from tools.environments.path_utils import sanitize_task_id_for_path
@@ -789,7 +790,7 @@ class DockerEnvironment(BaseEnvironment):
         egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
         egress_label = _egress_reuse_fingerprint(egress_volume_args, egress_env_overrides, egress_host_args)
         enforce_egress = _egress_enforce_on_docker() if egress_env_overrides else True
-        critical_egress_names = _critical_egress_env_names(egress_env_overrides)
+        critical_egress_names = critical_egress_env_names(egress_env_overrides)
         if egress_env_overrides:
             check_forward_env_collisions(self._forward_env, critical_egress_names, enforce_egress)
             check_docker_env_collisions(self._env, egress_env_overrides, enforce_egress)

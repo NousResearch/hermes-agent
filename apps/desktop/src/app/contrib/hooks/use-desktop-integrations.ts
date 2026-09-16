@@ -3,9 +3,11 @@ import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
+import { isPointerInsideBounds, routeNativeSwipe } from '@/app/chat/sidebar/sidebar-native-swipe'
 import { openSession } from '@/app/open-session'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
+import { triggerHaptic } from '@/lib/haptics'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
@@ -17,6 +19,7 @@ import {
   respondToApprovalAction
 } from '@/store/native-notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { cycleProfile } from '@/store/profile'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $selectedStoredSessionId,
@@ -361,10 +364,9 @@ export function useDesktopIntegrations({
     return () => unsubscribe?.()
   }, [navigate])
 
-  // Native browser gestures (⌘R, a mouse's back/forward buttons, a trackpad
-  // swipe) that landed on the app's own chrome rather than inside a page — main
-  // answers those against the focused guest and never asks. Only ⌘R has an
-  // app-level meaning to fall back to; an unfocused swipe is a no-op.
+  // Native browser gestures (⌘R and a mouse's back/forward buttons) that
+  // landed on the app's own chrome rather than inside a page. Only ⌘R has an
+  // app-level meaning to fall back to.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
       if (!commandFocusedPreview(command) && command === 'reload') {
@@ -373,6 +375,48 @@ export function useDesktopIntegrations({
     })
 
     return () => unsubscribe?.()
+  }, [])
+
+  // Full macOS trackpad swipes are native BrowserWindow events, not DOM wheel
+  // events. Cache pointer geometry because Chromium can leave :hover stale
+  // after the profile switch re-renders content beneath a stationary cursor.
+  // Elsewhere, the focused browser preview keeps its back/forward behavior.
+  useEffect(() => {
+    let pointer: { clientX: number; clientY: number } | null = null
+
+    const onPointerMove = (event: PointerEvent) => {
+      pointer = { clientX: event.clientX, clientY: event.clientY }
+    }
+
+    const onPointerLeave = () => {
+      pointer = null
+    }
+
+    window.addEventListener('pointermove', onPointerMove, { passive: true })
+    document.addEventListener('pointerleave', onPointerLeave)
+
+    const unsubscribe = window.hermesDesktop?.onNativeSwipe?.(direction => {
+      const sidebar = document.querySelector<HTMLElement>('[data-tour="sessions-sidebar"]')
+
+      const sidebarHovered = Boolean(
+        sidebar &&
+        (pointer ? isPointerInsideBounds(pointer, sidebar.getBoundingClientRect()) : sidebar.matches(':hover'))
+      )
+
+      routeNativeSwipe(direction, sidebarHovered, {
+        cycleProfile: step => {
+          cycleProfile(step)
+          triggerHaptic('selection')
+        },
+        navigatePreview: command => void commandFocusedPreview(command)
+      })
+    })
+
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      document.removeEventListener('pointerleave', onPointerLeave)
+      unsubscribe?.()
+    }
   }, [])
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.

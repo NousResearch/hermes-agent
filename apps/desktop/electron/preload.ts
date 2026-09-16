@@ -422,6 +422,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:preview-nav', listener)
   },
+  onNativeSwipe: callback => {
+    const listener = (_event, direction) => callback(direction)
+    ipcRenderer.on('hermes:native-swipe', listener)
+
+    return () => ipcRenderer.removeListener('hermes:native-swipe', listener)
+  },
   onOpenFolderRequested: callback => {
     const listener = () => callback()
     ipcRenderer.on('hermes:open-folder-requested', listener)

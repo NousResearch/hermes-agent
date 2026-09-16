@@ -2414,7 +2414,31 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
             _complete_job_record(job)
             return
 
-    job["next_run_at"] = compute_next_run(job["schedule"], now)
+    next_run = compute_next_run(job["schedule"], now)
+    if kind == "interval" and next_run is not None:
+        # Interval schedules are FIXED-RATE: the slot is armed at FIRE time (scheduler.tick ->
+        # advance_next_runs before dispatch; claim_job_for_fire for external fires), so a run's
+        # wall time must not be added to every period. Recomputing here from the FINISH instant
+        # did exactly that — measured on the 15m executor slot: 928s median inter-fire gap =
+        # 900s interval + ~28s run, i.e. ~70 ticks/day instead of 96. Keep the armed slot while
+        # it is still ahead of us (that value IS start + interval) and never push it later;
+        # recompute from `now` only once it has elapsed (a run that overran its interval, or a
+        # record with no armed slot), where the due scan's catch-up window still bounds how
+        # many missed slots actually re-run.
+        #
+        # The unreachable-retry ladder (cron/unreachable_retry.py) owns next_run_at whenever it
+        # is engaged, so its earlier value is never the schedule's armed slot: recompute the
+        # natural occurrence and let plan_retry() decide afterwards. (Late import — this module
+        # is imported by that one.)
+        from cron.unreachable_retry import STATE_KEY as _RETRY_STATE_KEY
+
+        armed = _parse_aware(job.get("next_run_at"))
+        finished = _parse_aware(now)
+        armed_next = _parse_aware(next_run)
+        if (job.get(_RETRY_STATE_KEY) is None and armed is not None and finished is not None
+                and armed_next is not None and finished < armed < armed_next):
+            next_run = job["next_run_at"]
+    job["next_run_at"] = next_run
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"

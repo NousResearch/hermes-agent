@@ -1292,6 +1292,25 @@ def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapp
         print("  ⚠ Gateway is running — it will be stopped.")
 
 
+class ProfileIdentitySettlementPending(RuntimeError):
+    """The profile's directory was deleted, but its durable session/routing identity was not
+    settled (``hermes_cli.profile_identity.purge_profile_identity`` returned False).
+
+    Subclasses ``RuntimeError`` so delete-failure handling that treats the error as fatal (the
+    CLI's ``hermes profile delete``) keeps working unchanged; surfaces that can report a partial
+    success (the dashboard's ``DELETE /api/profiles/{name}``) catch this type — it carries the
+    profile, its now-removed path, and the retry command — instead of matching on the message.
+    """
+
+    def __init__(self, profile: str, path: Path):
+        self.profile = profile
+        self.path = path
+        self.retry_command = f"hermes profile purge-identity {profile}"
+        super().__init__(
+            f"Profile '{profile}' was deleted, but its session/routing identity settlement is "
+            f"still pending — run: {self.retry_command}")
+
+
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service (service disabled first
     to prevent auto-restart, gateway stopped if running)."""
@@ -1376,11 +1395,10 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     print(f"\nProfile '{canon}' deleted.")
     if not identity_settled:
         # Filesystem work and runtime teardown are done; the durable identity is not. Report the
-        # partial settlement as a failure (same shape as the rmtree error above) instead of a clean
-        # success, and name the retry.
-        raise RuntimeError(
-            f"Profile '{canon}' was deleted, but its session/routing identity settlement is still "
-            f"pending — run: hermes profile purge-identity {canon}")
+        # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
+        # instead of a clean success; the type carries the path and the retry for surfaces that
+        # can report a partial success.
+        raise ProfileIdentitySettlementPending(canon, profile_dir)
     return profile_dir
 
 

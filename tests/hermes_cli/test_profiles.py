@@ -448,6 +448,7 @@ class TestDeleteProfile:
         success: the identity settlement is reported as pending, with the retry named.
         """
         from hermes_state import SessionDB
+        from hermes_cli.profiles import ProfileIdentitySettlementPending
 
         tmp_path = profile_env
         create_profile("gone", no_alias=True)
@@ -461,8 +462,16 @@ class TestDeleteProfile:
 
         with patch("hermes_cli.profiles._cleanup_gateway_service"), \
              patch("hermes_cli.profiles._live_default_multiplexer", return_value=True):
-            with pytest.raises(RuntimeError, match="identity settlement is still pending"):
+            with pytest.raises(ProfileIdentitySettlementPending,
+                               match="identity settlement is still pending") as ei:
                 delete_profile("gone", yes=True)
+
+        # Typed partial success: the filesystem delete completed, the identity did not, and the
+        # payload carries what a surfacing caller needs to report it and retry.
+        assert ei.value.profile == "gone"
+        assert ei.value.retry_command == "hermes profile purge-identity gone"
+        assert not ei.value.path.exists()
+        assert isinstance(ei.value, RuntimeError)  # the CLI handler catches RuntimeError
 
         assert "hermes profile purge-identity gone" in capsys.readouterr().err
         check = SessionDB(tmp_path / ".hermes" / "state.db")

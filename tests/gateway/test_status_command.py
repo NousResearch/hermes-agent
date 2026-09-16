@@ -1,7 +1,11 @@
 from hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
+import asyncio
 from datetime import datetime
+import json
+from pathlib import Path
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -316,8 +320,8 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
 
 @pytest.mark.asyncio
 async def test_status_command_default_route_keeps_runtime_endpoint_and_context_pin():
-    """No /model switch and no resident agent (first /status after a restart): the winner is the
-    persisted route or the SessionDB row, which carry no endpoint of their own. The window must then
+    """No /model switch and no resident agent (first /status after a restart): when the winning
+    persisted route or SessionDB row carries no endpoint of its own, the window must
     be resolved against the default runtime route (custom base_url + key, ``model.context_length``
     pin intact) exactly as /context does, not against an empty endpoint that drops the pin."""
     config = {"model": {"default": "my-local-model", "provider": "custom",
@@ -353,6 +357,157 @@ async def test_status_command_default_route_keeps_runtime_endpoint_and_context_p
         kwargs = lookup.call_args.kwargs
         assert (kwargs["base_url"], kwargs["api_key"], kwargs["config_context_length"]) == (
             runtime["base_url"], runtime["api_key"], 32_768)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route_source", ["recent_usage", "session_row"])
+async def test_status_command_preserves_persisted_endpoint_in_source_profile(
+    tmp_path, monkeypatch, route_source,
+):
+    """A persisted endpoint must keep its own capacity and never receive the default route's key."""
+    from hermes_constants import get_hermes_home
+
+    root = tmp_path / ".hermes"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    endpoint_a, endpoint_b = "https://a.example/v1", "https://b.example/v1"
+    default_runtime = MagicMock(return_value={
+        "provider": "custom:proxy", "base_url": endpoint_a, "api_key": "key-only-for-a",
+    })
+    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", default_runtime)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *_: "custom:proxy")
+    lookup = MagicMock(side_effect=lambda _model, **kw: kw["config_context_length"] or 8_192)
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lookup)
+
+    # Real profile/config readers must still resolve current and legacy provider pins.
+    for profile, capacity in (("current", 65_536), ("legacy", 98_304), ("current", 65_536)):
+        home = root / "profiles" / profile
+        home.mkdir(parents=True, exist_ok=True)
+        config: dict = {"model": {"default": "proxy-model", "provider": "custom:proxy",
+                                  "base_url": endpoint_a, "context_length": 32_768}}
+        if profile == "current":
+            config["providers"] = {"proxy": {"api": endpoint_b, "context_length": capacity}}
+        else:
+            config["custom_providers"] = [
+                {"name": "proxy", "base_url": endpoint_b, "context_length": capacity}]
+        (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
+        event = _make_event("/status")
+        event.source.profile = profile
+        entry = SessionEntry(
+            session_key=build_session_key(event.source), session_id=f"sess-{profile}",
+            created_at=datetime.now(), updated_at=datetime.now(),
+            platform=Platform.TELEGRAM, chat_type="dm", last_prompt_tokens=9_000,
+        )
+        runner = _make_runner(entry)
+        runner.config.multiplex_profiles = True
+        db = SessionDB(db_path=home / "state.db")
+        runner._session_db = AsyncSessionDB(db)
+        try:
+            db.create_session(entry.session_id, "telegram", model="proxy-model")
+            db.update_token_counts(
+                entry.session_id, model="proxy-model", billing_provider="custom:proxy",
+                billing_base_url=endpoint_b, input_tokens=1_000, api_call_count=1,
+                absolute=route_source == "session_row",
+            )
+            recent_route = db.get_recent_session_model_route(entry.session_id)
+            if route_source == "recent_usage":
+                assert recent_route is not None
+                assert recent_route["billing_base_url"] == endpoint_b
+                # The older session summary must not replace the winning usage endpoint.
+                db.update_session_billing_route(
+                    entry.session_id, provider="custom:proxy", base_url=endpoint_a)
+            else:
+                assert recent_route is None
+                session_row = db.get_session(entry.session_id)
+                assert session_row is not None
+                assert session_row["billing_base_url"] == endpoint_b
+
+            result = await runner._handle_status_command(event)
+
+            assert "**Model:** `proxy-model` (custom:proxy)" in result
+            assert f"/ {capacity:,} (" in result
+            assert "32,768" not in result
+            kwargs = lookup.call_args.kwargs
+            assert (kwargs["base_url"], kwargs["api_key"], kwargs["provider"]) == (
+                endpoint_b, "", "custom:proxy")
+            assert kwargs["config_context_length"] == capacity
+            default_runtime.assert_not_called()
+            assert get_hermes_home() == root
+        finally:
+            db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome, capacity", [
+    pytest.param("timeout", None, id="timeout"),
+    pytest.param("cancel", None, id="cancellation"),
+    pytest.param("return", True, id="boolean"),
+    pytest.param("return", "65536", id="numeric-string"),
+    pytest.param("return", 65_536.5, id="float"),
+    pytest.param("return", -1, id="negative"),
+    pytest.param("return", 0, id="zero"),
+    pytest.param("return", None, id="missing"),
+    pytest.param("return", 65_536, id="positive-integer"),
+])
+async def test_status_command_optional_context_preserves_response(
+    tmp_path, monkeypatch, outcome, capacity,
+):
+    """Optional metadata cannot stall /status or turn invalid capacity into a fake limit."""
+    runner = _runner_with_session_override(
+        {"model": "proxy-model", "provider": "custom:proxy", "base_url": "https://b.example/v1"},
+        last_prompt_tokens=4_321,
+    )
+    runner._session_db._db.get_session.return_value = {"input_tokens": 1_000, "output_tokens": 250}
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *_: "custom:proxy")
+    started = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def metadata_lookup(*_args, **_kwargs):
+        loop.call_soon_threadsafe(started.set)
+        try:
+            if outcome in {"timeout", "cancel"}:
+                release.wait(10)
+            return capacity
+        finally:
+            finished.set()
+
+    monkeypatch.setattr("agent.model_metadata.get_model_context_length", metadata_lookup)
+    deadlines = []
+
+    async def observe_deadline(awaitable, timeout):
+        deadlines.append(timeout)
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+
+    # Observe only this module's time boundary; the real resolver, worker and cancellation run.
+    monkeypatch.setattr("gateway.slash_commands_status.asyncio", SimpleNamespace(
+        to_thread=asyncio.to_thread, wait_for=observe_deadline,
+    ))
+    task = asyncio.create_task(runner._handle_status_command(_make_event("/status")))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=6)
+        if outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return
+        result = await asyncio.wait_for(task, timeout=6)
+        if outcome == "timeout":
+            assert deadlines == [3.0]
+        assert "**Lifetime tokens billed:** 1,250" in result
+        if type(capacity) is int and capacity > 0:
+            assert f"4,321 / {capacity:,}" in result
+        else:
+            assert "**Context:** ~4,321 tokens" in result
+            assert "4,321 /" not in result
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 6)
 
 
 @pytest.mark.asyncio

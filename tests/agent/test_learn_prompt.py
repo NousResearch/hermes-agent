@@ -105,7 +105,7 @@ class TestBuildLearnPrompt:
         assert "First check the available skills" in prompt
         assert "If one exists, load it with `skill_view`" in prompt
         assert "Only when no matching skill exists" in prompt
-        assert 'action="create"' in prompt
+        assert "operations=[{name, create: {content, category}}]" in prompt
 
 
 class TestLearnRegistryWiring:

@@ -225,7 +225,17 @@ def _resolve_hermes_bin_for_desktop_entry(
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
     if primary and rerouted is not None:
-        return rerouted or primary
+        # A PATH hit INSIDE this checkout is the same launch-context artifact as a
+        # checkout-internal argv[0]: the desktop-update hand-off spawns the updater with
+        # <checkout>/venv/bin at the front of PATH, so the reroute resolves the venv console
+        # script. Persisting it makes the next DE-launched context write the durable wrapper
+        # back — the entry flips on every update cycle, and the flip-back write can land inside
+        # gnome-shell's STARTING window (#112795). Fall through to the durable-wrapper probe
+        # exactly as a PATH miss does.
+        if not rerouted or not _inside_checkout(
+            rerouted, checkout_root, original_argv0
+        ):
+            return rerouted or primary
 
     # argv[0] was checkout-internal AND PATH had no `hermes` — common in stripped systemd user
     # sessions and autostart relaunches. Probe the installer's known wrapper locations; each

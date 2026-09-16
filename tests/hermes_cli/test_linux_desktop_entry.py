@@ -879,6 +879,55 @@ def test_wrapper_ownership_accepts_shim_via_symlinked_home(tmp_path, monkeypatch
     ) == str(shim)
 
 
+def test_exec_never_persists_a_checkout_internal_path_hit(tmp_path, monkeypatch):
+    """A PATH hit inside the checkout must not be persisted (#112795).
+
+    The desktop-update hand-off spawns the updater with <checkout>/venv/bin at
+    the front of PATH, so the reroute (argv[0] hidden, PATH-only) resolves the
+    venv console script — a checkout-internal artifact exactly like a
+    checkout-internal argv[0]. Persisting it flips the entry's Exec form every
+    update cycle: the update writes the venv form, the next DE-launched context
+    writes the durable wrapper back — inside gnome-shell's STARTING window,
+    which aborts the session. The rerouted hit must fall through to the
+    durable-wrapper probe exactly as a PATH miss does.
+    """
+    checkout = tmp_path / "hermes-agent"
+    venv_bin = checkout / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    repo_script = checkout / "hermes"
+    repo_script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    venv_hermes = venv_bin / "hermes"
+    venv_hermes.write_text(
+        f"#!{venv_bin}/python\nimport hermes_cli\n", encoding="utf-8"
+    )
+    shim = tmp_path / ".local" / "bin" / "hermes"
+    shim.parent.mkdir(parents=True)
+    shim.write_text(
+        f'#!/bin/bash\nexec {venv_bin}/python {checkout}/hermes "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", [str(repo_script), "desktop"])
+
+    resolve_calls = []
+
+    def fake_resolve():
+        # argv[0] drives the primary; the reroute hides argv[0] and hits PATH,
+        # which the desktop-update hand-off fronts with <checkout>/venv/bin.
+        resolve_calls.append(sys.argv[0])
+        if sys.argv[0]:
+            return str(repo_script)
+        return str(venv_hermes)
+
+    resolved = lde._resolve_hermes_bin_for_desktop_entry(
+        resolve_fn=fake_resolve,
+        checkout_root=checkout,
+    )
+    assert resolved == str(shim)
+    assert resolve_calls == [str(repo_script), ""]
+
+
 def test_needs_interpreter_case_insensitive_match(tmp_path, monkeypatch):
     """Interpreter paths with uppercase must not flag own venv scripts.
 

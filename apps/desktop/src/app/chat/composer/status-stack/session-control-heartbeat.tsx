@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useState } from 'react'
 
+import { StatusControlRow } from '@/components/chat/status-control-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -188,11 +189,13 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
               icon={<Codicon className={iconClass} name="pulse" size="0.8rem" />}
               label={headerLabel}
             >
-              <div className="space-y-1 px-1 py-1 text-xs">
-                <div className="text-foreground/92 leading-relaxed break-words">{heartbeat.prompt}</div>
-                <div className="text-[0.7rem] text-muted-foreground/80">
-                  <span>{ctrl.heartbeatFiredCount(heartbeat.fire_count)}</span>
-                </div>
+              <div>
+                <StatusControlRow className="text-[0.73rem] leading-4 text-foreground/92 break-words" icon="bell">
+                  {heartbeat.prompt}
+                </StatusControlRow>
+                <StatusControlRow icon="history">
+                  {ctrl.heartbeatFiredCount(heartbeat.fire_count)}
+                </StatusControlRow>
               </div>
             </StatusSection>
           </div>

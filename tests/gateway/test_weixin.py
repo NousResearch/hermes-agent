@@ -322,6 +322,31 @@ class TestWeixinChunkDelivery:
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_bare_minus2_does_not_open_breaker_and_code_survives_in_error(self, send_message_mock, sleep_mock):
+        """iLink rejects a send with a bare ``{"ret": -2}`` — no errcode, no errmsg, so the "rate limited"
+        wording is Hermes' guess. One such response must not trip a 30s cooldown (it would kill the send and
+        the cron standalone fallback with it), and the code must survive into the raised error."""
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 0
+        adapter._rate_limit_circuit_window_seconds = 60
+        adapter._rate_limit_circuit_open_seconds = 60
+        assert adapter._rate_limit_circuit_threshold >= 2  # a lone opaque -2 is not a burst
+
+        send_message_mock.return_value = {"ret": weixin.RATE_LIMIT_ERRCODE}
+        failed = asyncio.run(adapter.send("wxid_test123", "first"))
+
+        assert failed.success is False
+        assert "ret=-2" in (failed.error or "")
+        assert adapter._rate_limit_cooldown_remaining() == 0.0
+
+        # The breaker stayed shut, so the next send reaches the network again and recovers.
+        send_message_mock.return_value = {"message_id": "ok"}
+        recovered = asyncio.run(adapter.send("wxid_test123", "second"))
+        assert recovered.success is True
+        assert adapter._rate_limit_events == []
+
 
 class TestWeixinOutboundMedia:
 

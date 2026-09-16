@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "Dal oluşturuldu ancak ona geçilemedi."
     branched_one:          "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
     branched_many:         "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
+    thread_create_failed:  "Dal için yeni ileti dizisi oluşturulamadı: {error}"
+    thread_switch_failed:  "İleti dizisi ve dal oturumu hazır, ancak bağlama başarısız oldu.\nİleti dizisi: {thread}\nDal: `{new}` — yeni dizide mesaj gönderin veya `/resume {new}` kullanın."
+    branched_thread_one:  "⑂ Yeni bir ileti dizisinde **{title}** dalına geçildi ({count} mesaj kopyalandı)\nİleti dizisi: {thread}\nOrijinal: `{parent}` (bu sohbet orada kalır)\nDal: `{new}`\nSonraki dalı burada tutmak için `/branch --here` kullanın."
+    branched_thread_many:  "⑂ Yeni bir ileti dizisinde **{title}** dalına geçildi ({count} mesaj kopyalandı)\nİleti dizisi: {thread}\nOrijinal: `{parent}` (bu sohbet orada kalır)\nDal: `{new}`\nSonraki dalı burada tutmak için `/branch --here` kullanın."
 
   commands:
     usage:                 "Kullanım: `/commands [page]`"

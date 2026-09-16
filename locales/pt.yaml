@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "Ramo criado, mas não foi possível mudar para ele."
     branched_one:          "⑂ Ramificado para **{title}** ({count} mensagem copiada)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
     branched_many:         "⑂ Ramificado para **{title}** ({count} mensagens copiadas)\nOriginal: `{parent}`\nRamo: `{new}`\nUsa `/resume` para voltar ao original."
+    thread_create_failed:  "Não foi possível criar um tópico para o ramo: {error}"
+    thread_switch_failed:  "Tópico criado e sessão do ramo pronta, mas a associação falhou.\nTópico: {thread}\nRamo: `{new}` — envia uma mensagem no novo tópico ou usa `/resume {new}`."
+    branched_thread_one:  "⑂ Ramificado para **{title}** num novo tópico ({count} mensagem copiada)\nTópico: {thread}\nOriginal: `{parent}` (esta conversa permanece nele)\nRamo: `{new}`\nUsa `/branch --here` para manter o próximo ramo aqui."
+    branched_thread_many:  "⑂ Ramificado para **{title}** num novo tópico ({count} mensagens copiadas)\nTópico: {thread}\nOriginal: `{parent}` (esta conversa permanece nele)\nRamo: `{new}`\nUsa `/branch --here` para manter o próximo ramo aqui."
 
   commands:
     usage:                 "Uso: `/commands [page]`"

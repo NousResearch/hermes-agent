@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "Rama creada pero no se pudo cambiar a ella."
     branched_one:          "⑂ Ramificado a **{title}** ({count} mensaje copiado)\nOriginal: `{parent}`\nRama: `{new}`\nUsa `/resume` para volver al original."
     branched_many:         "⑂ Ramificado a **{title}** ({count} mensajes copiados)\nOriginal: `{parent}`\nRama: `{new}`\nUsa `/resume` para volver al original."
+    thread_create_failed:  "No se pudo crear un hilo para la rama: {error}"
+    thread_switch_failed:  "El hilo y la sesión de la rama están listos, pero falló la vinculación.\nHilo: {thread}\nRama: `{new}` — prueba a escribir en el nuevo hilo o usa `/resume {new}`."
+    branched_thread_one:  "⑂ Ramificado a **{title}** en un hilo nuevo ({count} mensaje copiado)\nHilo: {thread}\nOriginal: `{parent}` (este chat permanece allí)\nRama: `{new}`\nUsa `/branch --here` para mantener la próxima rama aquí."
+    branched_thread_many:  "⑂ Ramificado a **{title}** en un hilo nuevo ({count} mensajes copiados)\nHilo: {thread}\nOriginal: `{parent}` (este chat permanece allí)\nRama: `{new}`\nUsa `/branch --here` para mantener la próxima rama aquí."
 
   commands:
     usage:                 "Uso: `/commands [page]`"

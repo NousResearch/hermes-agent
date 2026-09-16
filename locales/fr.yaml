@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "Branche créée mais impossible de basculer dessus."
     branched_one:          "⑂ Branche **{title}** créée ({count} message copié)\nOriginal : `{parent}`\nBranche : `{new}`\nUtilisez `/resume` pour revenir à l'original."
     branched_many:         "⑂ Branche **{title}** créée ({count} messages copiés)\nOriginal : `{parent}`\nBranche : `{new}`\nUtilisez `/resume` pour revenir à l'original."
+    thread_create_failed:  "Impossible de créer un fil pour la branche : {error}"
+    thread_switch_failed:  "Fil créé et session de branche prête, mais la liaison a échoué.\nFil : {thread}\nBranche : `{new}` — essayez d’écrire dans le nouveau fil ou utilisez `/resume {new}`."
+    branched_thread_one:  "⑂ Branche **{title}** créée dans un nouveau fil ({count} message copié)\nFil : {thread}\nOriginal : `{parent}` (ce chat y reste)\nBranche : `{new}`\nUtilisez `/branch --here` pour garder la prochaine branche ici."
+    branched_thread_many:  "⑂ Branche **{title}** créée dans un nouveau fil ({count} messages copiés)\nFil : {thread}\nOriginal : `{parent}` (ce chat y reste)\nBranche : `{new}`\nUtilisez `/branch --here` pour garder la prochaine branche ici."
 
   commands:
     usage:                 "Utilisation : `/commands [page]`"

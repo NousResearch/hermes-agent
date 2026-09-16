@@ -112,6 +112,22 @@ class TestBranchCommandCLI:
         title = session_db.get_session_title(cli_instance.session_id)
         assert title == "refactor approach"
 
+    def test_branch_here_flag_stripped_on_cli(self, cli_instance, session_db):
+        """CLI always branches in place; --here must not leak into the title."""
+        from cli import HermesCLI
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch --here alt path")
+
+        assert session_db.get_session_title(cli_instance.session_id) == "alt path"
+
+    def test_branch_here_without_dashes_remains_a_title(self, cli_instance, session_db):
+        """Bare ``here`` is a legitimate branch name, not a flag."""
+        from cli import HermesCLI
+
+        HermesCLI._handle_branch_command(cli_instance, "/branch here")
+
+        assert session_db.get_session_title(cli_instance.session_id) == "here"
+
 
 
     def test_branch_no_session_db(self, cli_instance):

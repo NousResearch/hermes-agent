@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "ブランチは作成されましたが、切り替えに失敗しました。"
     branched_one:          "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
     branched_many:         "⑂ **{title}** に分岐しました ({count} メッセージをコピー)\n元: `{parent}`\nブランチ: `{new}`\n元のセッションに戻るには `/resume` を使用してください。"
+    thread_create_failed:  "ブランチ用の新しいスレッドを作成できませんでした: {error}"
+    thread_switch_failed:  "スレッドとブランチセッションを作成しましたが、関連付けに失敗しました。\nスレッド: {thread}\nブランチ: `{new}` — 新しいスレッドに投稿するか `/resume {new}` を使用してください。"
+    branched_thread_one:  "⑂ 新しいスレッドで **{title}** に分岐しました ({count} メッセージをコピー)\nスレッド: {thread}\n元: `{parent}` (このチャットは元のままです)\nブランチ: `{new}`\n次のブランチをここに残すには `/branch --here` を使用してください。"
+    branched_thread_many:  "⑂ 新しいスレッドで **{title}** に分岐しました ({count} メッセージをコピー)\nスレッド: {thread}\n元: `{parent}` (このチャットは元のままです)\nブランチ: `{new}`\n次のブランチをここに残すには `/branch --here` を使用してください。"
 
   commands:
     usage:                 "使い方: `/commands [page]`"

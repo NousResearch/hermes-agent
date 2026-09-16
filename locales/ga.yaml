@@ -90,6 +90,10 @@ gateway:
     switch_failed:         "Cruthaíodh an brainse ach theip ar athrú chuige."
     branched_one:          "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
     branched_many:         "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
+    thread_create_failed:  "Níorbh fhéidir snáithe a chruthú don bhrainse: {error}"
+    thread_switch_failed:  "Cruthaíodh an snáithe agus tá seisiún an bhrainse réidh, ach theip ar an gceangal.\nSnáithe: {thread}\nBrainse: `{new}` — seol teachtaireacht sa snáithe nua nó úsáid `/resume {new}`."
+    branched_thread_one:  "⑂ Brainseáilte go **{title}** i snáithe nua ({count} teachtaireacht cóipeáilte)\nSnáithe: {thread}\nBunaidh: `{parent}` (fanann an comhrá seo air)\nBrainse: `{new}`\nÚsáid `/branch --here` chun an chéad bhrainse eile a choinneáil anseo."
+    branched_thread_many:  "⑂ Brainseáilte go **{title}** i snáithe nua ({count} teachtaireacht cóipeáilte)\nSnáithe: {thread}\nBunaidh: `{parent}` (fanann an comhrá seo air)\nBrainse: `{new}`\nÚsáid `/branch --here` chun an chéad bhrainse eile a choinneáil anseo."
 
   commands:
     usage:                 "Úsáid: `/commands [page]`"

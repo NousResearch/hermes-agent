@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "Verzweigung erstellt, aber Wechsel fehlgeschlagen."
     branched_one:          "⑂ Verzweigt zu **{title}** ({count} Nachricht kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
     branched_many:         "⑂ Verzweigt zu **{title}** ({count} Nachrichten kopiert)\nOriginal: `{parent}`\nZweig: `{new}`\nVerwenden Sie `/resume`, um zum Original zurückzukehren."
+    thread_create_failed:  "Thread für die Verzweigung konnte nicht erstellt werden: {error}"
+    thread_switch_failed:  "Thread erstellt und Zweigsitzung bereit, aber die Verknüpfung ist fehlgeschlagen.\nThread: {thread}\nZweig: `{new}` — schreiben Sie im neuen Thread oder verwenden Sie `/resume {new}`."
+    branched_thread_one:  "⑂ Zu **{title}** in einem neuen Thread verzweigt ({count} Nachricht kopiert)\nThread: {thread}\nOriginal: `{parent}` (dieser Chat bleibt dort)\nZweig: `{new}`\nMit `/branch --here` bleibt die nächste Verzweigung hier."
+    branched_thread_many:  "⑂ Zu **{title}** in einem neuen Thread verzweigt ({count} Nachrichten kopiert)\nThread: {thread}\nOriginal: `{parent}` (dieser Chat bleibt dort)\nZweig: `{new}`\nMit `/branch --here` bleibt die nächste Verzweigung hier."
 
   commands:
     usage:                 "Verwendung: `/commands [page]`"

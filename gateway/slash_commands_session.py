@@ -41,6 +41,66 @@ def _sattr(obj, name: str) -> str:
     return str(getattr(obj, name, "") or "")
 
 
+# /branch --here flag (first token). Default on Discord/Telegram/Slack is a new thread.
+_BRANCH_HERE_FLAGS = frozenset({"--here"})
+# Platforms that actually override create_handoff_thread (base always returns None).
+_BRANCH_THREAD_PLATFORMS = frozenset({Platform.DISCORD, Platform.TELEGRAM, Platform.SLACK})
+# Per-message / auto-thread fields that must NOT be carried onto the branch's thread source: they
+# describe the triggering message, and prospective_thread_id would poison build_session_key().
+_BRANCH_DEST_RESET = {"message_id": None, "prospective_thread_id": None,
+                      "auto_thread_created": False, "auto_thread_initial_name": None}
+
+
+def _parse_branch_command_args(raw: str) -> tuple[bool, str]:
+    """Parse ``/branch`` args into ``(stay_here, branch_name)``.
+
+    ``--here`` as the first token keeps the branch on the current surface; anything after it is the
+    optional title. Without a flag the whole string is the title, and on thread-capable platforms
+    the default is to open a new thread. Bare ``here`` stays a valid title."""
+    text = (raw or "").strip()
+    if not text:
+        return False, ""
+    parts = text.split(None, 1)
+    if parts[0].lower() in _BRANCH_HERE_FLAGS:
+        return True, (parts[1].strip() if len(parts) > 1 else "")
+    return False, text
+
+
+def _branch_thread_parent_id(source: SessionSource) -> Optional[str]:
+    """Parent channel/chat id that can host a new thread for this source, or None."""
+    if source.chat_type == "dm":
+        return None
+    if source.parent_chat_id:
+        return str(source.parent_chat_id)
+    # Discord inbound threads set chat_id == thread_id; without parent_chat_id there is no real
+    # text channel to hang a sibling thread from.
+    if source.thread_id and source.chat_id and str(source.chat_id) == str(source.thread_id):
+        return None
+    return str(source.chat_id) if source.chat_id else None
+
+
+def _branch_dest_source(source: SessionSource, *, parent_chat_id: str, new_thread_id: str,
+                        title: str) -> SessionSource:
+    """SessionSource for the new thread, matching each platform's INBOUND shape so the session key
+    equals the one later messages in that thread arrive on."""
+    if source.platform == Platform.DISCORD:
+        # Live Discord adapter: chat_id is the thread channel id itself.
+        return dataclasses.replace(
+            source, chat_id=str(new_thread_id), chat_name=title or source.chat_name,
+            chat_type="thread", thread_id=str(new_thread_id), parent_chat_id=str(parent_chat_id),
+            **_BRANCH_DEST_RESET)
+    # Slack / Telegram: keep the parent chat_id, carry the thread in thread_id.
+    chat_type = source.chat_type or "group"
+    return dataclasses.replace(
+        source, chat_id=str(parent_chat_id), chat_type="group" if chat_type == "thread" else chat_type,
+        thread_id=str(new_thread_id), **_BRANCH_DEST_RESET)
+
+
+def _format_branch_thread_ref(platform: Optional[Platform], thread_id: str) -> str:
+    """Human-facing thread pointer for branch replies."""
+    return f"<#{thread_id}>" if platform == Platform.DISCORD else f"`{thread_id}`"
+
+
 def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> list[str]:
     """Manual /compress confirmation lines, surfacing summariser/aux-model failures.
     ``_last_compress_aborted`` = no usable summary, messages unchanged.  Provider exception text is
@@ -987,7 +1047,11 @@ class GatewaySessionCommandsMixin:
     # ----------------------------------------------------------------------- /branch
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
-        """Handle /branch [name] — fork the current session into an independent copy."""
+        """Handle /branch [name | --here [name]] — fork the current session into an independent copy.
+
+        On Discord / Telegram / Slack the default opens a NEW sibling thread for the branch and
+        leaves this chat on the original session; ``--here`` keeps the branch on the current
+        surface. Other platforms and the CLI always branch in place."""
         import json as _json
         import uuid as _uuid
         from datetime import datetime as _dt
@@ -1004,11 +1068,32 @@ class GatewaySessionCommandsMixin:
         if not history:
             return t("gateway.branch.no_conversation")
         new_session_id = f"{_dt.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        branch_title = event.get_command_args().strip()
+        stay_here, branch_title = _parse_branch_command_args(event.get_command_args())
         if not branch_title:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
         parent_session_id = current_entry.session_id
+        # Prefer a sibling thread on capable platforms; soft-fall back to in-place when the adapter
+        # or a hostable parent channel is missing (DMs, orphan threads).
+        want_thread = not stay_here and source.platform in _BRANCH_THREAD_PLATFORMS
+        thread_adapter = self._delivery_adapter_for(source) if want_thread else None
+        thread_parent_id = _branch_thread_parent_id(source) if want_thread else None
+        if want_thread and not (callable(getattr(thread_adapter, "create_handoff_thread", None))
+                                and thread_parent_id):
+            logger.info("Branch: falling back to in-place (platform=%s parent=%s adapter=%s)",
+                        getattr(source.platform, "value", source.platform), thread_parent_id,
+                        bool(thread_adapter))
+            want_thread = False
+        # Create the platform thread BEFORE cloning so a failed create never orphans a branch.
+        new_thread_id = None
+        if want_thread:
+            try:
+                new_thread_id = await thread_adapter.create_handoff_thread(thread_parent_id, branch_title)
+            except Exception as exc:
+                logger.error("Branch: create_handoff_thread failed: %s", exc, exc_info=True)
+                return t("gateway.branch.thread_create_failed", error=exc)
+            if not new_thread_id:
+                return t("gateway.branch.thread_create_failed", error="adapter returned no thread id")
         # Full parent origin (same shape as the reset path in gateway/session.py); the live entry's
         # origin may hold richer metadata than the triggering event's source.
         # See #82633.
@@ -1018,15 +1103,23 @@ class GatewaySessionCommandsMixin:
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
+        dest_source = source
+        dest_key = session_key
+        if want_thread:
+            dest_source = _branch_dest_source(source, parent_chat_id=str(thread_parent_id),
+                                              new_thread_id=str(new_thread_id), title=branch_title)
+            dest_key = self._session_key_for_source(dest_source)
+            with contextlib.suppress(Exception):
+                _branch_origin_json = _json.dumps(dest_source.to_dict())
         try:
             await self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
-                parent_session_id=parent_session_id, user_id=source.user_id,
-                session_key=session_key, chat_id=source.chat_id, chat_type=source.chat_type,
-                thread_id=source.thread_id, origin_json=_branch_origin_json,
+                parent_session_id=parent_session_id, user_id=dest_source.user_id,
+                session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
+                thread_id=dest_source.thread_id, origin_json=_branch_origin_json,
                 display_name=current_entry.display_name)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
@@ -1041,11 +1134,44 @@ class GatewaySessionCommandsMixin:
                 new_session_id, [_branch_row(msg) for msg in history], chunk_rows=500)
         with contextlib.suppress(Exception):
             await self._session_db.set_session_title(new_session_id, branch_title)
+        msg_count = len([m for m in history if m.get("role") == "user"])
+        if want_thread:
+            return await self._bind_branch_to_new_thread(
+                source=source, dest_source=dest_source, dest_key=dest_key, adapter=thread_adapter,
+                new_thread_id=str(new_thread_id), branch_title=branch_title,
+                parent_session_id=parent_session_id, new_session_id=new_session_id,
+                msg_count=msg_count)
+        # In-place: switch the current session key onto the branch.
         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
         if not new_entry:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(session_key)
         self._evict_cached_agent(session_key)
-        msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    async def _bind_branch_to_new_thread(self, *, source: SessionSource, dest_source: SessionSource,
+                                         dest_key: str, adapter, new_thread_id: str,
+                                         branch_title: str, parent_session_id: str,
+                                         new_session_id: str, msg_count: int) -> str:
+        """Bind an already-cloned branch session to a pre-created platform thread, leaving the
+        origin session key pointing at ``parent_session_id``."""
+        await self.async_session_store.get_or_create_session(dest_source)
+        if not await self.async_session_store.switch_session(dest_key, new_session_id):
+            return t("gateway.branch.thread_switch_failed",
+                     thread=_format_branch_thread_ref(source.platform, new_thread_id),
+                     new=new_session_id)
+        self._clear_session_boundary_security_state(dest_key)
+        self._evict_cached_agent(dest_key)
+        with contextlib.suppress(Exception):
+            self._release_running_agent_state(dest_key)
+        # So follow-ups in the new thread don't require an @mention.
+        mark = getattr(getattr(adapter, "_threads", None), "mark", None)
+        if callable(mark):
+            with contextlib.suppress(Exception):
+                mark(str(new_thread_id))
+        key = ("gateway.branch.branched_thread_one" if msg_count == 1
+               else "gateway.branch.branched_thread_many")
+        return t(key, title=branch_title, count=msg_count,
+                 thread=_format_branch_thread_ref(source.platform, new_thread_id),
+                 parent=parent_session_id, new=new_session_id)

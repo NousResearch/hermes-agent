@@ -130,15 +130,15 @@ describe('MessagingView Teams Playground', () => {
         platform({
           playground: {
             enabled: true,
-            test_url: 'http://localhost:3979/hermes/teams-playground',
-            callback_url: 'http://localhost:3979/api/messages'
+            test_url: 'http://127.0.0.1:56150',
+            callback_url: 'http://127.0.0.1:3978/api/messages'
           }
         })
       ]
     })
     testTeamsPlayground.mockResolvedValue({ ok: true, message: 'Playground health check passed.' })
     await renderMessaging()
-    expect(await screen.findByText(/Test URL: http:\/\/localhost:3979/)).toBeTruthy()
+    expect(await screen.findByText(/Test URL: http:\/\/127\.0\.0\.1:56150/)).toBeTruthy()
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test local Playground' })))
     await waitFor(() => expect(testTeamsPlayground).toHaveBeenCalled())
     expect(screen.getByText('Playground health check passed.')).toBeTruthy()

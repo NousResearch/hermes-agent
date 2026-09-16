@@ -718,7 +718,7 @@ function PlatformDetail({
         <section>
           <SectionTitle>Local Teams Playground</SectionTitle>
           <p className="mt-1 text-sm text-muted-foreground">
-            Generic Bot Framework-compatible emulator seam; production Teams credentials are not used.
+            The Microsoft 365 Agents Playground is a local UI client. It sends Bot Framework activities to the configured bot endpoint; production Teams credentials are not used.
           </p>
           <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
             {platform.playground.test_url && <div>Test URL: {platform.playground.test_url}</div>}

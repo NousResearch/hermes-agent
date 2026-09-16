@@ -174,14 +174,14 @@ Open the printed link in your browser — it opens directly in the Teams client.
 
 ### Optional local homologation target
 
-Hermes includes a disabled-by-default local Playground seam for testing a near-Teams UI without changing the production Teams adapter. The repository does not verify a Microsoft 365 Agents Playground-specific protocol, so the contract is intentionally generic Bot Framework-compatible JSON: `GET /health` and `POST /api/messages` activity envelopes. Configure a local endpoint explicitly:
+Hermes includes a disabled-by-default local Playground seam for testing a near-Teams UI without changing the production Teams adapter. The Microsoft 365 Agents Playground is a local UI client, not the bot endpoint: it receives the Hermes webhook through `-e`, sends Bot Framework Activity envelopes to it, and uses the Activity's `serviceUrl` for callbacks. Configure the Hermes bot endpoint explicitly:
 
 ```bash
-TEAMS_PLAYGROUND_URL=http://localhost:3979
+TEAMS_PLAYGROUND_URL=http://127.0.0.1:3978/api/messages
 TEAMS_PLAYGROUND_ALLOW_PRIVATE=true
 ```
 
-The dashboard validates the endpoint before showing a test or callback URL. Loopback, private, and `.local`/`.lan`/`.internal` hosts require the explicit opt-in; public hosts, credentials, query strings, cloud metadata addresses, and non-HTTP schemes are rejected. Health checks use a short timeout, send no Teams credentials, and do not restart the gateway or mutate production Teams settings when they fail.
+The dashboard validates that endpoint before showing the local UI URL (`http://127.0.0.1:56150`) and the bot callback endpoint. The installed CLI command is `agentsplayground -e <endpoint> -c emulator --disable-telemetry`. Loopback, private, and `.local`/`.lan`/`.internal` hosts require explicit opt-in; public hosts, credentials, query strings, cloud metadata addresses, non-HTTP schemes, and paths other than `/api/messages` are rejected. The health check probes the local bridge (`/api/health`, falling back to `/health`), sends no Teams credentials, and does not restart the gateway or mutate production Teams settings when it fails.
 
 ### config.yaml
 

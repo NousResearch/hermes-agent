@@ -38,7 +38,7 @@ from hermes_cli.web_models import (
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 from plugins.platforms.teams.playground import (
-    PlaygroundConfig, PlaygroundValidationError, generated_callback_url,
+    PlaygroundConfig, PlaygroundValidationError, build_playground_command, generated_callback_url,
     generated_test_url, handshake as _playground_handshake,
 )
 
@@ -273,7 +273,7 @@ def _messaging_platform_payload(
     if platform_id == "teams":
         try:
             from plugins.platforms.teams.playground import (
-                PlaygroundConfig, PlaygroundValidationError, generated_callback_url, generated_test_url,
+                PlaygroundConfig, PlaygroundValidationError, build_playground_command, generated_callback_url, generated_test_url,
             )
             playground_config = PlaygroundConfig.from_extra({
                 "playground_url": env_value("TEAMS_PLAYGROUND_URL"),
@@ -281,6 +281,8 @@ def _messaging_platform_payload(
             })
             payload["playground"] = {
                 "enabled": playground_config.enabled,
+                "ui_url": playground_config.ui_url,
+                "command": build_playground_command(playground_config),
                 "test_url": generated_test_url(playground_config),
                 "callback_url": generated_callback_url(playground_config),
             }
@@ -819,10 +821,12 @@ def _playground_payload(profile: Optional[str] = None) -> dict[str, Any]:
     try:
         config = PlaygroundConfig.from_extra(extra)
     except PlaygroundValidationError:
-        return {"enabled": False, "base_url": None, "test_url": None, "callback_url": None}
+        return {"enabled": False, "app_endpoint": None, "ui_url": None, "test_url": None, "callback_url": None}
     return {
         "enabled": config.enabled,
-        "base_url": config.base_url,
+        "app_endpoint": config.app_endpoint,
+        "ui_url": config.ui_url,
+        "command": build_playground_command(config),
         "test_url": generated_test_url(config),
         "callback_url": generated_callback_url(config),
     }
@@ -831,7 +835,11 @@ def _playground_payload(profile: Optional[str] = None) -> dict[str, Any]:
 @router.post("/api/messaging/platforms/teams/playground/test")
 async def test_teams_playground(profile: Optional[str] = None):
     payload = _playground_payload(profile)
-    config = PlaygroundConfig(enabled=bool(payload["enabled"]), base_url=payload.get("base_url"), allow_private=True)
+    config = PlaygroundConfig(
+        enabled=bool(payload["enabled"]),
+        app_endpoint=payload.get("app_endpoint"),
+        allow_private=True,
+    )
     result = await _playground_handshake(config)
     return {
         "ok": result.ok,

@@ -19,6 +19,8 @@ def test_py_files_prunes_dependency_trees_before_descent(tmp_path, monkeypatch):
     mod = _load()
     (tmp_path / "package").mkdir()
     (tmp_path / "package" / "source.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "package" / "apps").mkdir()
+    (tmp_path / "package" / "apps" / "nested.py").write_text("VALUE = 3\n", encoding="utf-8")
     excluded = [
         tmp_path / ".venv",
         tmp_path / "venv",
@@ -41,6 +43,9 @@ def test_py_files_prunes_dependency_trees_before_descent(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "ROOT", tmp_path)
     monkeypatch.setattr(mod.os, "walk", tracking_walk)
 
-    assert list(mod._py_files()) == [tmp_path / "package" / "source.py"]
+    assert set(mod._py_files()) == {
+        tmp_path / "package" / "source.py",
+        tmp_path / "package" / "apps" / "nested.py",
+    }
     assert tmp_path in visited
     assert not set(excluded) & set(visited)

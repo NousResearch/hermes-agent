@@ -51,17 +51,46 @@ export function titlebarControlsYNudge({
 /** Right-cluster inset — WCO width when present; macOS fullscreen matches left edge inset. */
 export function titlebarToolsRightCss(
   nativeOverlayWidth: number,
-  { darwinMajor = 0, isFullscreen = false }: Pick<TitlebarChromeContext, 'darwinMajor' | 'isFullscreen'> = {}
+  { darwinMajor = 0, isFullscreen = false }: Pick<TitlebarChromeContext, 'darwinMajor' | 'isFullscreen'> = {},
+  extraWidth = 0
 ): string {
   if (nativeOverlayWidth > 0) {
-    return `${nativeOverlayWidth}px`
+    return `${nativeOverlayWidth + extraWidth}px`
   }
 
   if (isFullscreen && darwinMajor > 0) {
-    return `${TITLEBAR_EDGE_INSET}px`
+    return extraWidth > 0 ? `calc(${TITLEBAR_EDGE_INSET}px + ${extraWidth}px)` : `${TITLEBAR_EDGE_INSET}px`
   }
 
-  return '0.75rem'
+  return extraWidth > 0 ? `calc(0.75rem + ${extraWidth}px)` : '0.75rem'
+}
+
+/** Buttons Electron's window-controls overlay carries (min/max/close). */
+export const NATIVE_CAPTION_BUTTON_COUNT = 3
+
+// Third-party caption buttons (DisplayFusion, Actual Window Manager, AutoHotkey
+// hooks) are drawn into the same caption band but are NOT reported by Chromium's
+// window-controls overlay, so the app would otherwise lay its own right-hand
+// tools underneath them. On Windows such a button measures ~0.72 of a native
+// one; expressing it as a ratio of the MEASURED overlay keeps the reservation
+// right across DPI and UI scale without reading devicePixelRatio.
+export const TITLEBAR_EXTERNAL_BUTTON_RATIO = 0.72
+
+/** Fallback width (CSS px) per external button when the overlay is unavailable. */
+export const TITLEBAR_EXTERNAL_BUTTON_FALLBACK_WIDTH = 33
+
+/** Width (CSS px) to reserve for `count` third-party caption buttons. */
+export function titlebarExternalButtonsWidth(overlayWidth: number, count: number): number {
+  if (count <= 0) {
+    return 0
+  }
+
+  const perButton =
+    overlayWidth > 0
+      ? (overlayWidth / NATIVE_CAPTION_BUTTON_COUNT) * TITLEBAR_EXTERNAL_BUTTON_RATIO
+      : TITLEBAR_EXTERNAL_BUTTON_FALLBACK_WIDTH
+
+  return Math.round(perButton * count)
 }
 
 // Titlebar palette only. All sizing/radius/cursor/centering come from the
@@ -79,8 +108,21 @@ export function titlebarToolsWidthCss(toolCount: number): string {
   return `calc(${toolCount} * var(--titlebar-control-size))`
 }
 
+/**
+ * Left inset that clears the left-hand tool cluster, so header content (the
+ * session title) is never laid out underneath it. Only needed when no pane
+ * occupies the window's left edge — when one does, the cluster sits over that
+ * pane and the header needs nothing.
+ */
+export function titlebarContentInsetCss(controlsLeft: number, leftToolCount: number): string {
+  return `calc(${controlsLeft}px + ${titlebarToolsWidthCss(leftToolCount)} + 0.75rem)`
+}
+
+// pl-/pr- rather than px-/pr-: `px-` and `pr-` both declare padding-right, so
+// which one wins depends on generated-CSS order, not class order. The left
+// content inset and the right tool reservation must not compete.
 export const titlebarHeaderBaseClass =
-  'pointer-events-none relative z-3 flex h-(--titlebar-height) w-full min-w-0 shrink-0 items-center justify-start gap-3 overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-[max(0.75rem,var(--titlebar-content-inset,0rem))] pr-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,0px)+0.75rem)]'
+  'pointer-events-none relative z-3 flex h-(--titlebar-height) w-full min-w-0 shrink-0 items-center justify-start gap-3 overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) pl-[max(0.75rem,var(--titlebar-content-inset,0rem))] pr-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,0px)+0.75rem)]'
 
 // Title row inside the header — must stay in the flex truncate chain.
 export const titlebarHeaderTitleClass = 'min-w-0 flex-1 overflow-hidden'

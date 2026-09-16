@@ -5,6 +5,10 @@ import { cookieAppliesToHost, createGatewayWsCookieStore, type GatewayCookie } f
 const LEGACY = 'persist:hermes-oauth'
 const GATEWAY = 'https://gateway.example'
 const WS_URL = 'wss://gateway.example/api/ws?ticket=fresh'
+// One consumer stands in for "the caller that re-mints for this socket" wherever
+// a test is not about consumer identity itself. Sharing it keeps these calls
+// modelling ONE socket, so rotation still retires its own url.
+const CONSUMER = 'ws-url:default:w1:default'
 
 // A gateway behind a forward-auth proxy: the proxy's session cookie alongside
 // Hermes' own, as they sit in the OAuth partition's jar.
@@ -64,8 +68,8 @@ function cookieOn(store: ReturnType<typeof createGatewayWsCookieStore>, url: str
 describe('cookie ownership for sign-out', () => {
   it('matches the exact host and a cookie set on a parent domain', () => {
     expect(cookieAppliesToHost({ domain: 'gateway.example' }, 'gateway.example')).toBe(true)
-    // A forward-auth proxy commonly sets its session on the parent domain; an
-    // Electron {domain} filter would miss it and leave it in the jar.
+    // A forward-auth proxy commonly sets its session on the parent domain, and
+    // sign-out has to reach it or the session outlives the logout.
     expect(cookieAppliesToHost({ domain: '.example' }, 'gateway.example')).toBe(true)
     expect(cookieAppliesToHost({ domain: 'example' }, 'gateway.example')).toBe(true)
   })
@@ -90,7 +94,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('authorizes the exact freshly minted upgrade url', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
@@ -104,7 +108,7 @@ describe('gateway WebSocket cookie forwarding', () => {
       'https://gateway.example/api/ws': proxyJar
     })
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(readCookies).toHaveBeenCalledWith('https://gateway.example/api/ws', GATEWAY)
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
@@ -117,7 +121,7 @@ describe('gateway WebSocket cookie forwarding', () => {
       'https://prefix.example/hermes/api/ws': [{ name: 'prefix_proxy', value: 'prefix-value' }]
     })
 
-    await store.register(prefixWs, prefix)
+    await store.register(prefixWs, prefix, CONSUMER)
 
     expect(readCookies).toHaveBeenCalledWith('https://prefix.example/hermes/api/ws', prefix)
     expect(cookieOn(store, prefixWs)).toBe('prefix_proxy=prefix-value')
@@ -126,7 +130,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('asks for no path the upgrade does not target', async () => {
     const { readCookies, store } = createStore({ 'https://gateway.example/api/ws': proxyJar })
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     // An unrelated path's cookies are never requested, so they can never be
     // forwarded: selection is the cookie store's job, on this exact url.
@@ -137,13 +141,13 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('maps ws:// to http:// and falls back to the base url when unparseable', async () => {
     const insecure = createStore({ 'http://gateway.example/api/ws': [{ name: 'proxy_session', value: 'plain' }] })
 
-    await insecure.store.register('ws://gateway.example/api/ws?ticket=fresh', 'http://gateway.example')
+    await insecure.store.register('ws://gateway.example/api/ws?ticket=fresh', 'http://gateway.example', CONSUMER)
 
     expect(insecure.readCookies).toHaveBeenCalledWith('http://gateway.example/api/ws', 'http://gateway.example')
 
     const broken = createStore()
 
-    await broken.store.register('not a url', GATEWAY)
+    await broken.store.register('not a url', GATEWAY, CONSUMER)
 
     expect(broken.readCookies).toHaveBeenCalledWith(GATEWAY, GATEWAY)
   })
@@ -161,7 +165,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('forwards nothing on ordinary HTTP(S) requests under the gateway base', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     for (const url of [`${GATEWAY}/api/status`, `${GATEWAY}/api/ws`, `${GATEWAY}/`, `${GATEWAY}/api/agents?x=1`]) {
       expect(cookieOn(store, url, 'xhr')).toBeUndefined()
@@ -172,7 +176,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('forwards nothing on sibling paths, other origins, or unrelated sockets', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     for (const url of [
       'wss://gateway.example/api/ws/sibling?ticket=fresh',
@@ -189,7 +193,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('refuses a non-WebSocket resource type on the authorized url itself', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL, 'xhr')).toBeUndefined()
     expect(cookieOn(store, WS_URL, 'subFrame')).toBeUndefined()
@@ -202,8 +206,8 @@ describe('gateway WebSocket cookie forwarding', () => {
     const { store } = createStore()
     const stale = 'wss://gateway.example/api/ws?ticket=stale'
 
-    await store.register(stale, GATEWAY)
-    await store.register(WS_URL, GATEWAY)
+    await store.register(stale, GATEWAY, CONSUMER)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, stale)).toBeUndefined()
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
@@ -212,14 +216,14 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('expires an upgrade that never happens', async () => {
     const { advance, store } = createStore(undefined, { ttlMs: 60_000 })
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     advance(59_999)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
 
     // A fresh registration, so this measures the TTL rather than the
     // consumption the assertion above already performed.
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     advance(60_000)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
@@ -230,7 +234,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('consumes the authorization with the upgrade that uses it', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
     expect(cookieOn(store, WS_URL)).toBeUndefined()
@@ -239,7 +243,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('does not consume the authorization on a refused request', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL, 'xhr')).toBeUndefined()
     expect(cookieOn(store, `${GATEWAY}/api/status`)).toBeUndefined()
@@ -249,7 +253,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('drops authority on sign-out of that gateway', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     store.forget(GATEWAY)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
@@ -262,7 +266,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     const agentWs = 'wss://agent.hermes.example/api/ws?ticket=fresh'
     const { store } = createStore({ [agent]: proxyJar })
 
-    await store.register(agentWs, agent)
+    await store.register(agentWs, agent, CONSUMER)
     store.forget('https://portal.nousresearch.com')
 
     expect(cookieOn(store, agentWs)).toBeUndefined()
@@ -331,7 +335,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     partitionA = 'persist:dedicated-a'
 
     const secondDone = store.forget(a)
-    const pending = store.register(url, b)
+    const pending = store.register(url, b, CONSUMER)
 
     firstDone()
     secondDone()
@@ -348,12 +352,12 @@ describe('gateway WebSocket cookie forwarding', () => {
     const second = store.forget(GATEWAY)
 
     first()
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
 
     second()
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
@@ -369,8 +373,8 @@ describe('gateway WebSocket cookie forwarding', () => {
       { partitions: { [other]: 'persist:hermes-oauth-two' } }
     )
 
-    await store.register(WS_URL, GATEWAY)
-    await store.register(otherWs, other)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+    await store.register(otherWs, other, CONSUMER)
 
     store.forget('')
 
@@ -385,7 +389,7 @@ describe('gateway WebSocket cookie forwarding', () => {
       resolvePartition: () => LEGACY
     })
 
-    const pending = store.register(WS_URL, GATEWAY)
+    const pending = store.register(WS_URL, GATEWAY, CONSUMER)
     const done = store.forget('')
 
     done()
@@ -400,12 +404,12 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     const done = store.forget('')
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
 
     done()
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
@@ -421,38 +425,38 @@ describe('gateway WebSocket cookie forwarding', () => {
       { partitions: { [one]: 'persist:hermes-oauth-one', [two]: 'persist:hermes-oauth-two' } }
     )
 
-    await store.register(oneWs, one)
-    await store.register(twoWs, two)
+    await store.register(oneWs, one, CONSUMER)
+    await store.register(twoWs, two, CONSUMER)
 
     expect(cookieOn(store, oneWs)).toBe('session=one')
     expect(cookieOn(store, twoWs)).toBe('session=two')
 
     // Each upgrade consumed its authorization, so re-arm before asking what
     // sign-out takes away -- otherwise the assertions below hold vacuously.
-    await store.register(oneWs, one)
-    await store.register(twoWs, two)
+    await store.register(oneWs, one, CONSUMER)
+    await store.register(twoWs, two, CONSUMER)
     store.forget(one)
 
     expect(cookieOn(store, oneWs)).toBeUndefined()
     expect(cookieOn(store, twoWs)).toBe('session=two')
   })
 
-  // A shared remote serves one socket per profile at a single baseUrl, and a
-  // descriptor build mints alongside them. The gateway alone is therefore too
-  // coarse an owner: each consumer may only retire its own previous url.
+  // A shared remote serves one socket per profile at a single baseUrl, and each
+  // window mints its own. The gateway alone is therefore too coarse an owner:
+  // each consumer may only retire its own previous url.
   it('keeps several consumers of one gateway independent', async () => {
     const { store } = createStore()
     const primaryWs = 'wss://gateway.example/api/ws?ticket=primary'
     const pooledWs = 'wss://gateway.example/api/ws?ticket=pooled&profile=work'
-    const descriptorWs = 'wss://gateway.example/api/ws?ticket=descriptor'
+    const secondWindowWs = 'wss://gateway.example/api/ws?ticket=second-window'
 
     await store.register(primaryWs, GATEWAY, 'ws-url:')
     await store.register(pooledWs, GATEWAY, 'registry:cloud:work')
-    await store.register(descriptorWs, GATEWAY, 'descriptor:settings')
+    await store.register(secondWindowWs, GATEWAY, 'ws-url:default:w2:default')
 
     expect(cookieOn(store, primaryWs)).toBe(EXPECTED)
     expect(cookieOn(store, pooledWs)).toBe(EXPECTED)
-    expect(cookieOn(store, descriptorWs)).toBe(EXPECTED)
+    expect(cookieOn(store, secondWindowWs)).toBe(EXPECTED)
   })
 
   it("retires only the re-minting consumer's own previous url", async () => {
@@ -504,22 +508,22 @@ describe('gateway WebSocket cookie forwarding', () => {
       [b]: [{ name: 'proxy_session', value: 'b-value' }]
     })
 
-    await store.register(aWs, a)
-    await store.register(bWs, b)
+    await store.register(aWs, a, CONSUMER)
+    await store.register(bWs, b, CONSUMER)
 
     expect(cookieOn(store, aWs)).toBe('proxy_session=a-value')
     expect(cookieOn(store, bWs)).toBe('proxy_session=b-value')
 
-    await store.register(aWs, a)
-    await store.register(bWs, b)
+    await store.register(aWs, a, CONSUMER)
+    await store.register(bWs, b, CONSUMER)
 
     // A read that finds no jar for C must not revoke A either.
-    await store.register('wss://agent-c.example/api/ws?ticket=c', 'https://agent-c.example')
+    await store.register('wss://agent-c.example/api/ws?ticket=c', 'https://agent-c.example', CONSUMER)
 
     expect(cookieOn(store, aWs)).toBe('proxy_session=a-value')
 
     // Sign-out still empties the shared jar for both.
-    await store.register(aWs, a)
+    await store.register(aWs, a, CONSUMER)
     store.forget(a)
 
     expect(cookieOn(store, aWs)).toBeUndefined()
@@ -536,7 +540,7 @@ describe('gateway WebSocket cookie forwarding', () => {
       resolvePartition: () => LEGACY
     })
 
-    const pending = store.register(WS_URL, GATEWAY)
+    const pending = store.register(WS_URL, GATEWAY, CONSUMER)
 
     store.forget(GATEWAY)
     jar.resolve(proxyJar)
@@ -552,7 +556,7 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     const signOutDone = store.forget(GATEWAY)
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
 
@@ -570,7 +574,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     })
 
     const signOutDone = store.forget(GATEWAY)
-    const pending = store.register(WS_URL, GATEWAY)
+    const pending = store.register(WS_URL, GATEWAY, CONSUMER)
 
     signOutDone()
     jar.resolve(proxyJar)
@@ -583,7 +587,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     const { store } = createStore()
 
     store.forget(GATEWAY)()
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
@@ -596,12 +600,12 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     first()
     first()
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
 
     second()
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
@@ -616,9 +620,9 @@ describe('gateway WebSocket cookie forwarding', () => {
       resolvePartition: () => LEGACY
     })
 
-    const pending = store.register(stale, GATEWAY)
+    const pending = store.register(stale, GATEWAY, CONSUMER)
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     slow.resolve(proxyJar)
     await pending
 
@@ -637,9 +641,9 @@ describe('gateway WebSocket cookie forwarding', () => {
       onError
     })
 
-    const pending = store.register('wss://gateway.example/api/ws?ticket=stale', GATEWAY)
+    const pending = store.register('wss://gateway.example/api/ws?ticket=stale', GATEWAY, CONSUMER)
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     slow.reject(new Error('partition unavailable'))
     await pending
 
@@ -674,7 +678,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('preserves headers already merged for the request and appends to any Cookie', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     const merged = store.apply(
       { url: WS_URL, resourceType: 'webSocket' },
@@ -683,7 +687,7 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     expect(merged.requestHeaders).toEqual({ 'CF-Access-Client-Id': 'client-id', Cookie: EXPECTED })
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     const appended = store.apply(
       { url: WS_URL, resourceType: 'webSocket' },
@@ -697,7 +701,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('merges onto the headers the request already carries when the response has none', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     const merged = store.apply(
       { url: WS_URL, resourceType: 'webSocket', requestHeaders: { Origin: 'app://hermes' } },
@@ -710,7 +714,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('keeps other fields of the response it was handed', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     const merged = store.apply({ url: WS_URL, resourceType: 'webSocket' }, {
       cancel: false,
@@ -725,7 +729,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('forwards when Chromium reports no resource type at all', async () => {
     const { store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
 
     const merged = store.apply({ url: WS_URL }, {})
 
@@ -752,7 +756,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     // No ttlMs: the shipped default has to bound the authorization by itself.
     const { advance, store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     advance(10 * 60_000)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
@@ -762,11 +766,11 @@ describe('gateway WebSocket cookie forwarding', () => {
     const jars: Record<string, GatewayCookie[] | null> = { [GATEWAY]: [] }
     const { store } = createStore(jars)
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     expect(cookieOn(store, WS_URL)).toBeUndefined()
 
     jars[GATEWAY] = null
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     expect(cookieOn(store, WS_URL)).toBeUndefined()
   })
 
@@ -774,9 +778,9 @@ describe('gateway WebSocket cookie forwarding', () => {
     const jars: Record<string, GatewayCookie[] | null> = { [GATEWAY]: proxyJar }
     const { store } = createStore(jars)
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     jars[GATEWAY] = []
-    await store.register('wss://gateway.example/api/ws?ticket=next', GATEWAY)
+    await store.register('wss://gateway.example/api/ws?ticket=next', GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
     expect(cookieOn(store, 'wss://gateway.example/api/ws?ticket=next')).toBeUndefined()
@@ -799,8 +803,8 @@ describe('gateway WebSocket cookie forwarding', () => {
       onError
     })
 
-    await store.register(WS_URL, GATEWAY)
-    await store.register('wss://gateway.example/api/ws?ticket=next', GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+    await store.register('wss://gateway.example/api/ws?ticket=next', GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
     expect(cookieOn(store, 'wss://gateway.example/api/ws?ticket=next')).toBeUndefined()
@@ -813,11 +817,11 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('ignores a missing url or baseUrl instead of touching live authority', async () => {
     const { readCookies, store } = createStore()
 
-    await store.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY, CONSUMER)
     readCookies.mockClear()
 
-    await store.register('', GATEWAY)
-    await store.register(WS_URL, '')
+    await store.register('', GATEWAY, CONSUMER)
+    await store.register(WS_URL, '', CONSUMER)
 
     expect(readCookies).not.toHaveBeenCalled()
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)

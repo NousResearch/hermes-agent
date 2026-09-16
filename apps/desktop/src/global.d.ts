@@ -36,8 +36,9 @@ declare global {
       getGatewayWsUrlFor?: (payload: {
         connectionId?: null | string
         profile?: null | string
-        // Distinguishes independent sockets on one route (chat vs speech), so
-        // each keeps its own forwarded-cookie authorization.
+        // Distinguishes independent sockets on one route (chat, speech,
+        // secondary) so each keeps its own forwarded-cookie authorization, and
+        // marks a caller that rewrites the minted url before dialing it.
         purpose?: null | string
       }) => Promise<GatewayWsUrlResult>
       // Union agent roster across every registered connection.

@@ -38,15 +38,23 @@
 //   - consumed by the upgrade that uses it and additionally time-bounded, so
 //     an upgrade that never happens expires instead of lingering for the
 //     process lifetime, and bounded in count;
-//   - dropped per partition on sign-out, since one jar backs several urls (the
-//     portal and a Cloud agent share the legacy partition, so signing out of
-//     the portal must drop the agent's entry too).
+//   - dropped on sign-out by BOTH the partition and the base url. One jar
+//     backs several urls (the portal and a Cloud agent share the legacy
+//     partition, so signing out of the portal must drop the agent's entry
+//     too), and the partition a url resolves to is read from the live registry
+//     and can change while an entry is live, so the base url is what follows
+//     the gateway. A sign-out with no base url clears the whole jar and so
+//     revokes everything.
 //
 // Registration reads the jar asynchronously, so both of its exits are fenced
-// against work that overtook them: a per-partition logout epoch (a read that
-// resolves after sign-out must not republish the signed-out cookie — the jar
-// cleanup cannot retract this separate snapshot) and a per-owner generation (a
-// slow read must neither replace nor revoke a newer registration's entry).
+// against work that overtook them: a logout epoch per SCOPE — partition, base
+// url, and the blanket scope a whole-jar clear bumps — since a read that
+// resolves after sign-out must not republish the signed-out cookie (clearing
+// the jar cannot retract this separate snapshot), and a per-owner generation,
+// from a process-wide counter, since a slow read must neither replace nor
+// revoke a newer registration's entry. Each scope is released independently:
+// tying them together left one publishable at an epoch an in-window read had
+// already captured, merely because a sibling scope was still busy.
 //
 // Sign-out empties the jar asynchronously, so `forget` also opens a window,
 // closed by the callback it returns, during which no read may publish: one
@@ -123,8 +131,8 @@ export interface RemoteRequestResponse {
 }
 
 const DEFAULT_TTL_MS = 120_000
-// Live urls are one-per-gateway and short-lived; the cap is only a backstop
-// against a pathological number of distinct owners accumulating entries.
+// Live urls are one per consumer (gateway x window x purpose x route) and
+// short-lived; the cap is a backstop bounding how many can be live at once.
 const MAX_ENTRIES = 32
 // Owners are (gateway, consumer) pairs drawn from the user's own connections,
 // so this only stops the generation ledger growing for a process lifetime.
@@ -210,13 +218,15 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   // url previously registered by the SAME consumer of the same gateway, and
   // nothing else. `consumer` identifies the caller that will re-mint for this
   // socket; callers that omit it share one owner per gateway.
-  const register = async (wsUrl: string, baseUrl: string, consumer?: string) => {
+  const register = async (wsUrl: string, baseUrl: string, consumer: string) => {
     if (!wsUrl || !baseUrl) {
       return
     }
 
     // Namespaced by baseUrl so a consumer label can never span two gateways.
-    const owner = `${baseUrl}\n${consumer ?? ''}`
+    // `consumer` is required: defaulting it would silently put two independent
+    // sockets under one owner, and the second would retire the first.
+    const owner = `${baseUrl}\n${consumer}`
     const partition = dependencies.resolvePartition(baseUrl)
     const generation = ++sequence
     // EVERY_SCOPE last: a sign-out with no base url clears the whole jar, so

@@ -53,8 +53,9 @@ describe('resolveSpeakStreamUrl', () => {
     expect(url).toContain('wss://gateway.example')
     expect(url).toContain('/api/audio/speak-stream')
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'gw-tailscale', profile: 'research' })
-    // Speech mints under its own purpose so its forwarded-cookie authorization
-    // is independent of the chat socket on the same route.
+    // Speech mints under its own purpose: it rewrites the path before dialing,
+    // so the mint authorizes no cookie, and it must not retire the chat
+    // socket's authorization on the same route.
     expect(getGatewayWsUrlFor).toHaveBeenCalledWith({
       connectionId: 'gw-tailscale',
       profile: 'research',

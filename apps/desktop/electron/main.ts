@@ -7699,7 +7699,9 @@ async function clearOauthSession(baseUrl) {
     // sign-out meant to remove it, ready to be forwarded onto the next upgrade.
     // cookieAppliesToHost covers every path, and every cookie that applies to
     // this host including one set on a parent domain, while leaving other
-    // gateways in a shared jar alone (its comment records the measurements).
+    // gateways' own host cookies in a shared jar alone -- a cookie on a shared
+    // parent domain is one session, and goes with it. cookieAppliesToHost's
+    // comment records the measurements behind this.
     //
     // An empty base url means "clear everything" (the store's blanket revoke
     // mirrors it). A NON-empty url we cannot parse deletes nothing rather than
@@ -9283,10 +9285,10 @@ const gatewayWsCookieStore = createGatewayWsCookieStore({
       return null
     }
 
-    // A `persist:` jar hydrates lazily, so the first read on a fresh boot comes
-    // back empty for a signed-in user -- the same cold-start race
-    // hasOauthSessionCookie guards. Unwarmed, the upgrade went out
-    // unauthenticated on every cold start.
+    // A `persist:` jar hydrates lazily, so the first read on a fresh boot can
+    // come back empty for a signed-in user -- the same cold-start race
+    // hasOauthSessionCookie guards. Unwarmed, the upgrade could go out
+    // unauthenticated on a cold start.
     await warmOauthCookieStore(baseUrl)
 
     // Selected for the UPGRADE's url, not the gateway root: Chromium's cookie
@@ -9311,7 +9313,7 @@ const gatewayWsCookieStore = createGatewayWsCookieStore({
 // consumer registered before. `authorizeCookie` is false for a caller that
 // rewrites the minted url before dialing it, where the url we could authorize
 // is not the one that gets opened.
-async function rememberGatewayWsAuth(wsUrl, connection, consumer?: string, authorizeCookie = true) {
+async function rememberGatewayWsAuth(wsUrl, connection, consumer: string, authorizeCookie = true) {
   rememberRemoteWsHeaders(wsUrl, connection?.headers)
 
   if (authorizeCookie && connection?.authMode === 'oauth' && connection?.baseUrl) {

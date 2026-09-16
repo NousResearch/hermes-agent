@@ -102,9 +102,16 @@ export function applyRemoteRequestHeaders(
 // we could authorize is not the url that gets opened. Speech mints an
 // `/api/ws` ticket url and then rewrites the path to `/api/audio/speak-stream`
 // (appending its own `profile` param), so authorizing the minted url would
-// park a credential no upgrade can ever consume while the speech upgrade
-// still carries none. Forwarding onto that endpoint is deliberately out of
-// scope; the single-use ticket in its url is what authenticates it to Hermes.
+// park a credential no upgrade can ever consume while the speech upgrade still
+// carries none.
+//
+// KNOWN GAP, not a fix: behind a forward-auth proxy that speak-stream upgrade
+// is still rejected, exactly as it is today — the ticket in its url
+// authenticates it to Hermes, and the proxy rejects it before Hermes sees it.
+// Authorizing it needs the renderer's FINAL url bound at the mint boundary
+// (the rewrite happens after minting, and adds a query param), which is its
+// own change; this marks the mint as non-authorizing so it at least parks
+// nothing.
 const WS_PURPOSES_THAT_REWRITE_THE_URL = new Set(['speech'])
 
 // Renderer-supplied, so normalized once, here, before it can reach a map key

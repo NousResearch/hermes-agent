@@ -261,7 +261,10 @@ describe('registry gateway WebSocket headers', () => {
         }),
         mintTicket: async () => String(++minted),
         buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
-        rememberHeaders: (wsUrl, _headers, connection, consumer) => store.register(wsUrl, connection!.baseUrl, consumer)
+        // Mirrors main.ts's rememberGatewayWsAuth: a caller that rewrites the
+        // minted url before dialing authorizes no cookie for it.
+        rememberHeaders: (wsUrl, _headers, connection, consumer, authorizeCookie = true) =>
+          authorizeCookie ? store.register(wsUrl, connection!.baseUrl, consumer) : undefined
       })
 
       return {
@@ -309,13 +312,25 @@ describe('registry gateway WebSocket headers', () => {
       expect([cookieOn(windowA), cookieOn(windowB)]).toEqual([HEADER, HEADER])
     })
 
+    // Production passes authorizeCookie=false for speech (it rewrites the path
+    // before dialing), so what matters is that the speech mint leaves chat's
+    // pending authorization alone -- not that speech gets one of its own.
     it("does not let one window's speech mint retire its pending chat upgrade", async () => {
       const { cookieOn, handler } = composed()
 
       const chat = await handler(route, 'w1:default')
-      const speech = await handler({ ...route, purpose: 'speech' }, 'w1:speech')
+      const speech = await handler({ ...route, purpose: 'speech' }, 'w1:speech', false)
 
-      expect([cookieOn(chat), cookieOn(speech)]).toEqual([HEADER, HEADER])
+      expect([cookieOn(chat), cookieOn(speech)]).toEqual([HEADER, undefined])
+    })
+
+    it("does not let a window's secondary socket retire its primary's upgrade", async () => {
+      const { cookieOn, handler } = composed()
+
+      const primary = await handler(route, 'w1:default')
+      const secondary = await handler({ ...route, purpose: 'secondary' }, 'w1:secondary')
+
+      expect([cookieOn(primary), cookieOn(secondary)]).toEqual([HEADER, HEADER])
     })
 
     it("still retires the same consumer's own previous url on reconnect", async () => {

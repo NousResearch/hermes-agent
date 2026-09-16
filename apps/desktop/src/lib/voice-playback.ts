@@ -147,6 +147,8 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
     // Speech opens its OWN socket on the same route as chat, so it mints under
     // its own purpose: otherwise the two mints look like one consumer
     // reconnecting, and this one retires chat's pending upgrade authorization.
+    // The purpose also marks this mint as non-authorizing, because the url is
+    // rewritten below before it is dialed (see gateway-ws-cookie.ts).
     const wsDeps =
       connectionId && desktop.getGatewayWsUrlFor
         ? { getGatewayWsUrl: () => desktop.getGatewayWsUrlFor!({ connectionId, profile, purpose: 'speech' }) }

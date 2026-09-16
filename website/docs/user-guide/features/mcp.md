@@ -282,6 +282,17 @@ Refresh tokens are bound to the authorization server that granted them: Hermes r
 
 The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
 
+**Servers that publish no authorization-server metadata.** Discovery assumes the server's protected-resource metadata (RFC 9728) names its authorization server; when it doesn't, Hermes falls back to treating the resource host as the issuer, which breaks for split-origin setups (resource on `mcp.example.com`, authorization server on `auth.example.com`). Set `oauth.auth_server_metadata_url` to the authorization server's RFC 8414/OIDC discovery document and Hermes loads it at startup instead — the authorize URL and connect-time token refresh then target the real issuer:
+
+```yaml
+mcp_servers:
+  myserver:
+    url: "https://mcp.example.com/mcp"
+    auth: oauth
+    oauth:
+      auth_server_metadata_url: "https://auth.example.com/.well-known/oauth-authorization-server"
+```
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.

@@ -150,3 +150,65 @@ class TestManagerOAuthProviderMetadata:
         loaded = storage.load_oauth_metadata()
         assert loaded is not None
         assert str(loaded.token_endpoint) == "https://flow.example.com/token"
+
+
+# ---------------------------------------------------------------------------
+# oauth.auth_server_metadata_url — configured AS metadata discovery
+# ---------------------------------------------------------------------------
+
+
+class TestConfiguredAuthServerMetadataUrl:
+    """``oauth.auth_server_metadata_url`` short-circuits discovery for MCP servers that publish
+    no RFC 9728 protected-resource metadata: the configured RFC 8414/OIDC discovery document
+    seeds the context (issuer + endpoints) so authorization and connect-time refresh land on
+    the real authorization server instead of the resource host."""
+
+    def test_initialize_seeds_metadata_from_configured_url(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("seed-srv")
+        provider = _manager_provider_with_context(
+            storage, oauth_metadata=None, server_url="https://mcp.example.com/mcp")
+        provider._hermes_auth_server_metadata_url = (
+            "https://auth.example.com/.well-known/oauth-authorization-server")
+
+        asm = _make_metadata()  # issuer https://auth.example.com
+        fake_response = SimpleNamespace(status_code=200, headers={})
+        fake_response.aread = AsyncMock(return_value=asm.model_dump_json().encode())
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def send(self, request):
+                return fake_response
+
+        fake_httpx = SimpleNamespace(AsyncClient=_FakeClient)
+        with patch("tools.mcp_tool.sdk_httpx", return_value=fake_httpx):
+            asyncio.run(provider._initialize())
+
+        assert provider.context.oauth_metadata is not None
+        assert str(provider.context.oauth_metadata.issuer).rstrip("/") == "https://auth.example.com"
+        assert provider.context.auth_server_url == "https://auth.example.com"
+        loaded = storage.load_oauth_metadata()
+        assert loaded is not None
+        assert str(loaded.token_endpoint) == "https://auth.example.com/oauth/token"
+
+    def test_initialize_without_config_keeps_disk_restore_only(self, tmp_path, monkeypatch):
+        """No configured URL -> behavior unchanged (disk restore only, no fetch attempted)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("plain-srv")
+        storage.save_oauth_metadata(_make_metadata("https://disk.example.com/token"))
+        provider = _manager_provider_with_context(storage, oauth_metadata=None)
+        assert getattr(provider, "_hermes_auth_server_metadata_url", None) is None
+
+        asyncio.run(provider._initialize())
+
+        assert str(provider.context.oauth_metadata.token_endpoint) == "https://disk.example.com/token"

@@ -37,12 +37,16 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser",
+                 auth_server_metadata_url: str | None = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        # oauth.auth_server_metadata_url — RFC 8414/OIDC discovery document for MCP servers that publish
+        # no protected-resource metadata naming their authorization server; seeded in _initialize.
+        self._hermes_auth_server_metadata_url = auth_server_metadata_url
 
     async def _perform_authorization(self):
         info = self.context.client_info
@@ -274,7 +278,46 @@ class HermesProviderMixin:
             meta = storage.load_oauth_metadata()
             if meta is not None:
                 self.context.oauth_metadata = meta
+        await self._hermes_seed_configured_auth_server_metadata()
         enforce_refresh_token_issuer(self.context)
+
+    async def _hermes_seed_configured_auth_server_metadata(self) -> None:
+        """Pre-seed authorization-server metadata from ``oauth.auth_server_metadata_url``.
+
+        Some MCP servers publish no RFC 9728 protected-resource metadata naming their authorization
+        server; discovery then falls back to treating the resource host as the issuer and builds an
+        authorization URL that does not exist. A configured RFC 8414/OIDC discovery document
+        short-circuits that fallback so both the interactive login and connect-time refresh reach the
+        real token endpoint. Runs after the disk restore in ``_initialize``; a fetch or parse failure
+        logs and keeps the SDK's default discovery behavior (best effort, never fatal)."""
+        configured = getattr(self, "_hermes_auth_server_metadata_url", None)  # tests build via __new__
+        if not configured or self.context.oauth_metadata is not None:
+            return
+        from tools.mcp_tool import sdk_httpx
+        httpx = sdk_httpx()
+        if httpx is None:  # pragma: no cover — the SDK import would have failed earlier
+            return
+        from mcp.client.auth.utils import create_oauth_metadata_request, handle_auth_metadata_response
+        server_name = getattr(self, "_hermes_server_name", "mcp")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.send(create_oauth_metadata_request(configured))
+            ok, asm = await handle_auth_metadata_response(response)
+        except Exception as exc:
+            logger.warning("MCP OAuth '%s': auth_server_metadata_url %s unreachable (%s); falling back to "
+                           "standard discovery", server_name, configured, exc)
+            return
+        if not ok or asm is None:
+            logger.warning("MCP OAuth '%s': auth_server_metadata_url %s returned no usable metadata; "
+                           "falling back to standard discovery", server_name, configured)
+            return
+        from tools.mcp_oauth import HermesTokenStorage
+        self.context.oauth_metadata = asm
+        self.context.auth_server_url = str(asm.issuer)
+        if isinstance(self.context.storage, HermesTokenStorage):
+            self.context.storage.save_oauth_metadata(asm)
+        logger.debug("MCP OAuth '%s': seeded auth-server metadata from %s (issuer=%s)",
+                     server_name, configured, asm.issuer)
 
     async def _store_tokens(self, token_response) -> None:
         self.context.current_tokens = token_response
@@ -449,4 +492,5 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
         "oauth_flow": cfg.get("flow", "browser"),
+        "auth_server_metadata_url": cfg.get("auth_server_metadata_url"),
         **mo.cimd_provider_kwargs(cfg)}

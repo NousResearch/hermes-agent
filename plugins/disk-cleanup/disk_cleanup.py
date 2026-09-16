@@ -99,7 +99,7 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     # User-authored project trees — never sweep empty directories inside these (#75403).
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
     # named test_* or tmp_* (#75403, also #32164, #37721).
-    "patches", "projects", "skins", "themes", "contributors",
+    "patches", "projects", "scripts", "skins", "themes", "contributors",
     "profiles", "backups", "optional-skills"})
 
 @functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles

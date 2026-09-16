@@ -6,9 +6,14 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 
 import logging
 import json
+import hashlib
+import hmac
+import os
+import secrets
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
@@ -16,6 +21,7 @@ from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_constants import get_hermes_home
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -125,18 +131,113 @@ class SessionPortabilityMixin:
     """See module docstring — mixin for SessionDB (Port cluster)."""
 
     @staticmethod
+    def _redact_import_origin(origin):
+        """Project foreign provenance at the durable display boundary."""
+        from hermes_state_messages import _redact_durable_projection
+        return _redact_durable_projection(origin)
+
+    @staticmethod
+    def _foreign_import_identity_key_path() -> Path:
+        """Profile-private HMAC key; deliberately outside state.db and its WAL."""
+        return get_hermes_home() / ".foreign-import-identity.key"
+
+    @classmethod
+    def _foreign_import_identity_key(cls) -> bytes:
+        """Load or atomically mint the stable per-profile import identity key.
+
+        ``O_EXCL`` makes concurrent first opens converge on one random key.  The
+        file mode is intentionally set both at creation and afterwards: POSIX
+        umasks cannot broaden it, and the second call repairs a hand-altered
+        mode where the platform supports POSIX permissions.
+        """
+        path = cls._foreign_import_identity_key_path()
+        try:
+            key = path.read_bytes()
+        except FileNotFoundError:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            candidate = secrets.token_bytes(32)
+            temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+            try:
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(candidate)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    # A hard link publishes the fully-fsynced temporary file only if
+                    # the target does not yet exist; unlike replace(), it cannot
+                    # overwrite a competing process's key.
+                    os.link(temporary, path)
+                except FileExistsError:
+                    key = path.read_bytes()
+                else:
+                    key = candidate
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+        if len(key) != 32:
+            raise RuntimeError(f"invalid foreign import identity key at {path}")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            # Windows applies the profile directory's ACL instead; its POSIX mode
+            # bits are synthetic and cannot express a restrictive DACL.
+            pass
+        return key
+
+    @classmethod
+    def _foreign_import_identity_digest(cls, origin):
+        """Stable HMAC-SHA-256 of raw foreign identity, never its display projection.
+
+        Match the historical identity contract: a foreign id wins when present;
+        otherwise the tool/path pair identifies an import.  The digest is scoped
+        so it cannot be confused with hashes used for other session data.
+        """
+        foreign_id = origin.get("foreign_session_id")
+        identity = (
+            {"tool": origin["tool"], "foreign_session_id": foreign_id}
+            if foreign_id else {"tool": origin["tool"], "path": origin["path"]}
+        )
+        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        payload = f"hermes:foreign-import:v1:{canonical}".encode("utf-8")
+        return hmac.new(cls._foreign_import_identity_key(), payload, hashlib.sha256).hexdigest()
+
+    @classmethod
+    def _import_title_collision_suffix(cls, session_id: str) -> str:
+        """Profile-private deterministic title disambiguator, never a raw import ID.
+
+        This intentionally shares the import-identity key but has a distinct
+        domain tag, so a display suffix cannot be used as an identity digest.
+        Callers must let a key-loading failure fail closed rather than falling
+        back to an unkeyed hash or a raw session-id fragment.
+        """
+        payload = f"hermes:import-title-collision:v1:{session_id}".encode("utf-8")
+        return hmac.new(cls._foreign_import_identity_key(), payload, hashlib.sha256).hexdigest()[:12]
+
+    @staticmethod
     def _find_foreign_import_on_conn(conn, origin):
-        rows = conn.execute("SELECT id, origin_json FROM sessions WHERE source = ? AND origin_json IS NOT NULL",
-                            (origin["tool"],)).fetchall()
-        for row in rows:
-            imported = (safe_json_loads(row["origin_json"], default={}) or {}).get("imported_from", {})
-            if imported.get("tool") != origin["tool"]:
-                continue
-            foreign_id = origin.get("foreign_session_id")
-            if ((foreign_id and foreign_id == imported.get("foreign_session_id"))
-                    or (not foreign_id and imported.get("path") == origin["path"])):
-                return row["id"]
-        return None
+        digest = SessionPortabilityMixin._foreign_import_identity_digest(origin)
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE source = ? AND import_identity_digest = ? LIMIT 1",
+            (origin["tool"], digest),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def _unique_import_title(self, conn, title, session_id: str):
+        """Return a deterministic, redacted title free under the global title index."""
+        title = self.sanitize_durable_title(title)
+        if title is None or not conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
+            return title
+        suffix_id = self._import_title_collision_suffix(session_id)
+        attempt = 1
+        while True:
+            suffix = f" ({suffix_id})" if attempt == 1 else f" ({suffix_id} #{attempt})"
+            candidate = self.sanitize_title(title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix)
+            if not conn.execute("SELECT 1 FROM sessions WHERE title = ?", (candidate,)).fetchone():
+                return candidate
+            attempt += 1
 
     def find_foreign_import(self, origin):
         with self._read_ctx() as conn:
@@ -163,11 +264,13 @@ class SessionPortabilityMixin:
             # Titles are globally unique within a profile. Preserve a readable
             # title while giving unrelated conversations with the same text room.
             item = normalized[0]
-            if conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
-                item["session"]["title"] = f"{title} ({session_id[-12:]})"
+            item["session"]["title"] = self._unique_import_title(conn, title, session_id)
             self._import_session_row(conn, item["session"], item["messages"], session_id)
-            conn.execute("UPDATE sessions SET origin_json = ?, profile_name = ? WHERE id = ?",
-                         (json.dumps({"imported_from": origin}), profile, session_id))
+            conn.execute(
+                "UPDATE sessions SET origin_json = ?, import_identity_digest = ?, profile_name = ? WHERE id = ?",
+                (json.dumps({"imported_from": self._redact_import_origin(origin)}),
+                 self._foreign_import_identity_digest(origin), profile, session_id),
+            )
             return {"session_id": session_id, "already_imported": False}
 
         return self._execute_write(_do)
@@ -528,6 +631,7 @@ class SessionPortabilityMixin:
             **{col: self._coerce_or(raw.get(col), float, None) for col in _IMPORT_FLOAT_COLS},
             **{col: self._coerce_or(raw.get(col), int, 0) for col in _IMPORT_INT_COLS},
         }
+        params["title"] = self.sanitize_durable_title(raw.get("title"))
         conn.execute(_IMPORT_SESSION_INSERT_SQL, params)
         def _json_value(value: Any) -> Any:
             return safe_json_loads(value, default=value) if isinstance(value, str) else value
@@ -606,6 +710,7 @@ class SessionPortabilityMixin:
                 if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
                     skipped_ids.append(session_id)
                     continue
+                raw["title"] = self._unique_import_title(conn, raw.get("title"), session_id)
                 self._import_session_row(conn, raw, item["messages"], session_id)
                 parent_id = str(raw.get("parent_session_id") or "").strip()
                 if parent_id:

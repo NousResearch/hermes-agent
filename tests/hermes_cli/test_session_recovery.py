@@ -96,7 +96,6 @@ def _make_source(path: Path) -> dict[str, int]:
         # These are derived transition markers and must not reach the new DB.
         db.set_meta("fts_rebuild_high_water", "999")
         db.set_meta("fts_rebuild_progress", "500")
-        db.set_meta("fts_tool_full_content_high_water", "7")
     finally:
         db.close()
     return {"sessions": 3, "messages": 21}
@@ -740,23 +739,58 @@ def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
     ]
 
 
-def test_recovery_regenerates_rather_than_copies_derived_fts_meta(tmp_path: Path) -> None:
-    """Derived FTS markers (including the retired tool high-water key) never reach the new DB."""
+def test_recovery_redacts_legacy_canonical_rows_before_fts_rebuild(tmp_path: Path) -> None:
+    """Recovery must not reintroduce raw legacy text into rows, FTS, or file bytes."""
+    source = tmp_path / "legacy-raw.db"
+    output = tmp_path / "recovered.db"
+    secret = "«redacted:sk-recovery-durable-secret»"
+    _make_source(source)
+    with sqlite3.connect(str(source), isolation_level=None) as conn:
+        conn.execute("PRAGMA secure_delete=ON")
+        conn.execute("UPDATE messages SET content = ? WHERE id = 1", (secret,))
+        conn.execute("UPDATE sessions SET title = ?, origin_json = ? WHERE id = ?", (
+            secret, json.dumps({secret: {"credential": secret}}), "recovery-session-0",
+        ))
+        conn.execute("INSERT INTO system_prompts (hash, prompt) VALUES (?, ?)", ("legacy-raw-prompt", secret))
+        conn.execute(
+            "UPDATE sessions SET system_prompt_hash = ? WHERE id = ?",
+            ("legacy-raw-prompt", "recovery-session-0"),
+        )
 
-    source = tmp_path / "state.db"
+    report = recover_session_database(source, output, work_dir=tmp_path)
+
+    assert report["verified"] is True
+    with sqlite3.connect(str(output)) as conn:
+        canonical = conn.execute(
+            "SELECT m.content, s.title, s.origin_json, p.prompt "
+            "FROM messages AS m JOIN sessions AS s ON s.id = m.session_id "
+            "LEFT JOIN system_prompts AS p ON p.hash = s.system_prompt_hash WHERE m.id = 1"
+        ).fetchone()
+        assert canonical is not None
+        assert secret not in " ".join(str(value) for value in canonical)
+        for table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone() is not None:
+                assert conn.execute(
+                    f"SELECT 1 FROM {table} WHERE {table} MATCH ?", (f'\"{secret}\"',)
+                ).fetchone() is None
+    assert secret.encode("utf-8") not in output.read_bytes()
+
+
+def test_recovery_refuses_to_accept_output_when_physical_sanitation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.db"
     output = tmp_path / "recovered.db"
     _make_source(source)
 
-    report = recover_session_database(source, output, work_dir=tmp_path)
-    assert report["complete"] is True
-
-    conn = sqlite3.connect(str(output))
-    try:
-        keys = {row[0] for row in conn.execute("SELECT key FROM state_meta")}
-    finally:
-        conn.close()
-    assert "goal:recovery-session-0" in keys
-    assert not keys & {"fts_rebuild_high_water", "fts_rebuild_progress", "fts_tool_full_content_high_water"}
+    monkeypatch.setattr(
+        SessionDB, "_sanitize_v31_legacy_redaction_storage",
+        lambda self: (_ for _ in ()).throw(sqlite3.OperationalError("simulated sanitation failure")),
+    )
+    with pytest.raises(sqlite3.OperationalError, match="simulated sanitation failure"):
+        recover_session_database(source, output, work_dir=tmp_path)
 
 
 def test_recovery_without_delivery_ledger_is_not_lossy(tmp_path: Path) -> None:

@@ -2983,14 +2983,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # One BEGIN IMMEDIATE write: a concurrent same-id create blocks and sees the row.
             if conn.execute("SELECT id FROM sessions WHERE id = ?", (session_id,)).fetchone():
                 return None, "exists"
+            system_prompt_hash = db._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (
-                   id, source, model, model_config, system_prompt, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                   id, source, model, model_config, system_prompt, system_prompt_hash, started_at
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?)""",
                 (session_id, source, model_name, json.dumps(model_config) if model_config else None,
-                 system_prompt, time.time()))
+                 system_prompt_hash, time.time()))
             if title is not None:
-                clean_title = db.sanitize_title(str(title))
+                clean_title = db.sanitize_durable_title(str(title))
                 if clean_title:
                     conflict = conn.execute(
                         "SELECT id FROM sessions WHERE title = ? AND id != ?", (clean_title, session_id)).fetchone()
@@ -2998,6 +2999,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
                         return None, f"title:Title already in use by session {conflict['id']}"
                 conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
+            if system_prompt_hash is not None:
+                db._delete_unreferenced_system_prompts(conn)
             session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             return (dict(session_row) if session_row else {
                 "id": session_id, "source": source, "model": model_name, "title": title}), None

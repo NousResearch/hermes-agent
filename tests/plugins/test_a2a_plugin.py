@@ -217,6 +217,12 @@ class TestAudit:
         assert rec["peer"] == "peer-y"
         assert rec["task_id"] == "task-1"
 
+    def test_audit_redacts_durable_summary(self, monkeypatch, tmp_path):
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        security.audit("inbound", "peer-y", "task-1", f"summary {secret}")
+        assert secret not in (tmp_path / "a2a_audit.jsonl").read_text(encoding="utf-8")
+
 
 # --------------------------------------------------------------------------
 # Protocol v1.0 shapes
@@ -372,6 +378,15 @@ class TestV1Task:
 
 
 class TestPersistence:
+    def test_persisted_conversation_redacts_text_without_mutating_live_operand(self, monkeypatch, tmp_path):
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        text = f"live {secret}"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        protocol.persist_message("ctx-redacted", "user", text, "task-1")
+        assert text == f"live {secret}"
+        path = tmp_path / "a2a_conversations" / "ctx-redacted.jsonl"
+        assert secret not in path.read_text(encoding="utf-8")
+
     def test_persist_and_load(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         protocol.persist_message("ctx-abc", "user", "hello", "task-1")
@@ -1557,6 +1572,59 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+    def test_forwarded_context_id_redacts_secret_before_direct_sql(self, monkeypatch):
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        captured = []
+
+        def fake_state_db(profile, sql, params, message, commit=False):
+            captured.append((sql, params, commit))
+            if "WHERE title" in sql:
+                return ""
+            if "WHERE source = 'a2a'" in sql:
+                return "sess-1"
+            return ""
+
+        monkeypatch.setattr("plugins.platforms.a2a.adapter._state_db", fake_state_db)
+        monkeypatch.setattr(
+            "plugins.platforms.a2a.adapter.subprocess.run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="fake reply", stderr=""),
+        )
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "dev", "timeout": 5}}
+        }))
+        secret = "sk-abcdefghijklmnop"
+        reply, state = adapter._forward_to_profile(adapter._agents["dev"], "peer", f"ctx/{secret}", "hello")
+        reply2, state2 = adapter._forward_to_profile(adapter._agents["dev"], "peer", "ctx/unsafe value", "again")
+
+        assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
+        assert (reply2, state2) == ("fake reply", protocol.STATE_COMPLETED)
+        writes = [call for call in captured if "UPDATE sessions SET title" in call[0]]
+        assert len(writes) == 2
+        assert secret not in writes[0][1][0]
+        assert writes[0][2] is True
+        assert writes[1][1][0] == "a2a-dev-ctx-unsafe-value"
+        assert writes[1][2] is True
+
+    def test_forwarded_session_title_uses_durable_redaction_before_direct_sql(self, monkeypatch):
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        captured = {}
+        monkeypatch.setattr(
+            "plugins.platforms.a2a.adapter._state_db",
+            lambda profile, sql, params, message, commit=False: captured.update(
+                profile=profile, sql=sql, params=params, commit=commit,
+            ),
+        )
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        secret = "sk-proj-A2A-DURABLE-REDACTION-SECRET"
+        adapter._set_forwarded_session_title("default", "sess-1", secret)
+        assert "UPDATE sessions SET title" in captured["sql"]
+        assert secret not in captured["params"][0]
+        assert captured["commit"] is True
 
 
 # --------------------------------------------------------------------------

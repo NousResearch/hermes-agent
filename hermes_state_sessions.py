@@ -21,6 +21,7 @@ from hermes_state_common import (
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
+from hermes_state_messages import _redact_durable_projection
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -219,6 +220,25 @@ _UPSERT_KEEP_EXISTING_SQL = ",\n".join(
 )
 
 
+def _redact_origin_json(origin_json):
+    """Serialize an origin through the durable redaction boundary.
+
+    ``origin_json`` is a display/recovery projection.  Parse JSON before walking
+    it so sensitive dictionary keys cannot bypass the recursive redactor;
+    malformed input fails closed rather than becoming a raw durable string.
+    """
+    if origin_json is None:
+        return None
+    try:
+        parsed = json.loads(origin_json) if isinstance(origin_json, str) else origin_json
+    except (TypeError, ValueError):
+        parsed = "[REDACTED: invalid durable JSON projection]"
+    projected = _redact_durable_projection(parsed)
+    # Preserve formatting for already-safe operational origins; callers and
+    # SQL-trace compatibility historically retain their exact JSON string.
+    return origin_json if isinstance(origin_json, str) and projected == parsed else json.dumps(projected)
+
+
 def _inherit_col_sql(col: str, extra: str = "") -> str:
     """``col = COALESCE(sessions.col, (SELECT p.col FROM parent))`` (whitespace is part of the SQL text)."""
     pad = " " * (30 + len(col))
@@ -333,6 +353,7 @@ class SessionSessionsMixin:
         """
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
+        origin_json = _redact_origin_json(origin_json)
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
@@ -605,7 +626,7 @@ class SessionSessionsMixin:
             "last_activity_description = ?, last_activity_provenance = ? "
             "WHERE id = ? AND (last_activity_at IS NULL OR last_activity_at < ?)",
             (
-                when, bound_activity_description(description),
+                when, _redact_durable_projection(bound_activity_description(description)),
                 normalize_activity_provenance(provenance).value, session_id, when,
             ),
             patience_s=self._ACTIVITY_WRITE_PATIENCE_S,

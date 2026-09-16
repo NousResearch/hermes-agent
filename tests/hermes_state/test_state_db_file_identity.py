@@ -187,6 +187,25 @@ def test_divert_session_transcript_jsonl_appends(tmp_path, monkeypatch):
     assert divert_session_transcript_jsonl("sess-jsonl", []) is None
 
 
+def test_divert_session_transcript_jsonl_redacts_copy_without_mutating_operands(tmp_path, monkeypatch):
+    """State-DB recovery JSONL is durable, while retry/live operands remain exact."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    secret = "sk-abcdefghijklmnopqrstuvwxyz123456"
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{"function": {"arguments": {"api_key": secret}}}],
+        "api_content": {"nested_secret": secret},
+    }]
+
+    path = divert_session_transcript_jsonl("redacted-recovery", messages)
+
+    assert messages[0]["tool_calls"][0]["function"]["arguments"]["api_key"] == secret
+    assert messages[0]["api_content"]["nested_secret"] == secret
+    persisted = path.read_text(encoding="utf-8")
+    assert secret not in persisted
+    assert "tool_calls" in persisted and "api_content" in persisted
+
+
 def _stat_changed(path: Path, recorded) -> bool:
     st = os.stat(path)
     return (st.st_dev, st.st_ino) != recorded

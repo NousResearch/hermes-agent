@@ -1280,6 +1280,77 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     assert "base_url" not in captured
 
 
+def test_lmstudio_bare_providers_block_does_not_hide_live_catalog(monkeypatch):
+    """A `providers.lmstudio:` block that only tunes transport (e.g.
+    request_timeout_seconds, no base_url/models) must not shadow the live
+    LM Studio catalog with a single-model `user-config` row.
+
+    Regression for the bug where any `providers.lmstudio` key made section 3
+    (`_lap_user_provider_rows`) claim the "lmstudio" slug before its own
+    live probe could run — discovery_allowed was False with no configured
+    base_url, so the row collapsed to whatever single model was configured,
+    discarding the full catalog `_build_curated_lists` had already fetched.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    live_catalog = ["model-a", "model-b", "model-c"]
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_lmstudio_models",
+        lambda api_key=None, base_url=None, timeout=5.0: list(live_catalog),
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="lmstudio",
+        current_base_url="http://127.0.0.1:1234/v1",
+        current_model="model-a",
+        user_providers={"lmstudio": {"request_timeout_seconds": 86400, "stale_timeout_seconds": 86400}},
+    )
+
+    rows = [p for p in providers if p["slug"] == "lmstudio"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert sorted(row["models"]) == sorted(live_catalog)
+    assert row["total_models"] == len(live_catalog)
+    assert row["source"] == "built-in"
+
+
+def test_lmstudio_providers_block_with_explicit_endpoint_still_uses_section3(monkeypatch):
+    """When `providers.lmstudio` sets its own base_url, the user has
+    deliberately pointed the slug at a specific endpoint — the generic
+    custom-endpoint handling (section 3) remains the correct, unsurprising
+    behavior and must not be shadowed by the built-in live probe."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_lmstudio_models",
+        lambda api_key=None, base_url=None, timeout=5.0: ["should-not-be-used"],
+    )
+
+    def _fake_discover(*_a, **_kw):
+        return ["remote-model"], False
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._discover_endpoint_models", _fake_discover
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="lmstudio",
+        current_base_url="http://remote-box:1234/v1",
+        current_model="remote-model",
+        user_providers={"lmstudio": {"base_url": "http://remote-box:1234/v1", "discover_models": True}},
+    )
+
+    rows = [p for p in providers if p["slug"] == "lmstudio"]
+    assert len(rows) == 1
+    assert rows[0]["is_user_defined"] is True
+    assert rows[0]["models"] == ["remote-model"]
+
 
 
 

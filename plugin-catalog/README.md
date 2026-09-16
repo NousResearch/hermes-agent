@@ -39,6 +39,11 @@ meaningful:
    (tools, hooks, middleware, env vars) must match what the plugin actually
    registers at the pinned commit. Validation fails the entry otherwise —
    undeclared capability creep is treated as a security issue.
+7. **The install scanner runs at admission.** `hermes plugins validate` includes
+   the `security scan` check: `dangerous` fails the entry; `caution` findings
+   appear as warnings in the CI log and the reviewer reads them before merging.
+   In exchange, installs at the pinned SHA accept `caution` without a prompt
+   (`dangerous` still blocks). Review the warnings; do not merge past them.
 
 ## Entry schema
 

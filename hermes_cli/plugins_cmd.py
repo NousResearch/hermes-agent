@@ -125,11 +125,16 @@ def _scan_on_install_enabled() -> bool:
     return bool(_config_value("plugins", "scan_on_install", default=True))
 
 
-def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_decision_cb=None):
+def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_decision_cb=None,
+                      reviewed_pin: bool = False):
     """Scan *plugin_dir* and enforce the install policy.
 
     Verdicts: safe → proceed; caution → needs confirmation (``force=True`` or a truthy
     ``scan_decision_cb(result)``); dangerous → always blocked (:class:`PluginScanBlocked`).
+    *reviewed_pin* marks a tree checked out at a curated-catalog sha: that exact tree passed
+    the same scanner at admission with a human reading the caution findings, so caution is
+    accepted without a prompt (the Desktop has none). Dangerous still blocks — a signature
+    added after review is exactly the case the backstop exists for.
     Returns the ScanResult, or None when scanning is disabled.
     """
     if not _scan_on_install_enabled():
@@ -137,6 +142,8 @@ def _scan_plugin_tree(plugin_dir: Path, identifier: str, *, force: bool, scan_de
     from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
     result = scan_plugin(plugin_dir, source=identifier)
     allowed, reason = should_allow_plugin_install(result, force=force)
+    if allowed is None and reviewed_pin:
+        allowed, reason = True, "Caution verdict accepted: reviewed catalog pin"
 
     if allowed is None and scan_decision_cb is not None:
         try:
@@ -675,8 +682,12 @@ def _install_plugin_core(
     force: bool,
     ref: Optional[str] = None,
     scan_decision_cb=None,
+    reviewed_pin: Optional[str] = None,
 ) -> tuple[Path, dict, str]:
-    """Clone a Git plugin and atomically record its source and exact revision."""
+    """Clone a Git plugin and atomically record its source and exact revision.
+
+    *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
+    only when the checked-out revision is exactly that sha."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
@@ -708,7 +719,8 @@ def _install_plugin_core(
             raise PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
-        _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb)
+        _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
+                          reviewed_pin=bool(reviewed_pin) and installed_revision == reviewed_pin)
 
         if target.exists() and not force:
             raise PluginOperationError(

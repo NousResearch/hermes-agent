@@ -113,7 +113,8 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
     target, manifest, installed_name = _install_plugin_core(
-        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb)
+        entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
+        reviewed_pin=entry.sha)
     write_catalog_sidecar(target, entry)
     return target, manifest, installed_name
 

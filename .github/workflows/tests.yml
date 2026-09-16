@@ -21,8 +21,14 @@ jobs:
     # 96 cores clear the floor that the slowest single test file sets (about
     # 82s). A second slice divides work that is already at that floor, and
     # adds a second setup.
+    #
+    # 60 minutes: the suite measured 42k+ tests across ~4.2k files; on the
+    # shared self-hosted runner under concurrent campaign full_tests runs the
+    # wall clock reaches ~35-40 min, which silently hit the old 30-minute job
+    # timeout (job shows as 'cancelled' with no per-test failure). The
+    # per-file timeout (600s) bounds runaway files; this bounds the job.
     runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

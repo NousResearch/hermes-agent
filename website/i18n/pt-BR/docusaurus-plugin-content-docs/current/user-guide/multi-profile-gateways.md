@@ -26,10 +26,13 @@ online ao mesmo tempo. Motivos comuns:
 - Um agente de pesquisa + um de escrita + um bot acionado por cron — cada um com memória
   e skills isoladas
 
-Todo profile já recebe seu próprio LaunchAgent por plataforma
-(`ai.hermes.gateway-<name>.plist`) ou serviço systemd de usuário
-(`hermes-gateway-<name>.service`). Este guia adiciona os padrões para gerenciá-los
-coletivamente.
+Todo profile já recebe sua própria entrada de supervisor por plataforma:
+LaunchAgent (`ai.hermes.gateway-<name>.plist`), serviço systemd de usuário
+(`hermes-gateway-<name>.service`), serviço systemd de sistema instalado com
+`sudo hermes gateway install --system` (executado pelo usuário chamador via
+`User=`), tarefa agendada do Windows ou serviço s6/Docker. O Desktop também
+inicia seu próprio backend `hermes serve` por profile. Este guia adiciona os
+padrões para gerenciá-los coletivamente.
 
 ## Início rápido
 

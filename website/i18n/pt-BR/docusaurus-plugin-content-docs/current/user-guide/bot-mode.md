@@ -24,6 +24,13 @@ O roster mostra uma linha por profile de agente: avatar, preview da última mens
 
 :::note O Bot Chat canônico é um forever-chat
 Digitar `/new` (ou `/reset`) dentro do chat canônico de um Bot bifurcaria o relacionamento numa sessão scratch — a única coisa que o Bot Mode promete que nunca acontece. O composer redireciona para `/compact` em vez disso: contexto de trabalho fresco, mesma conversa. Sessões regulares no mesmo profile mantêm a liberdade total de `/new`.
+
+Arquivar um Bot Chat pela barra lateral o aposenta: no próximo clique no Bot,
+uma nova conversa será iniciada e se tornará o novo Bot Chat canônico. O chat
+aposentado permanece arquivado e oculto — o histórico é preservado no banco de
+dados, mas deixa de ser acessível pelo Bot ou pela visualização de arquivo. A
+varredura automática de arquivamento por inatividade (`sessions.auto_archive`)
+nunca aposenta um Bot Chat; somente um arquivamento explícito faz isso.
 :::
 
 

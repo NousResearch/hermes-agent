@@ -46,6 +46,17 @@ Parecem similares; não são a mesma primitiva.
 
 **Distinção em uma frase:** `delegate_task` é uma chamada de função; Kanban é uma fila de trabalho onde cada handoff é uma linha que qualquer profile (ou humano) pode ver e editar.
 
+:::caution Não vincule um cartão de suporte ao cartão que ele deve desbloquear
+Um worker bloqueado em `t_parent` que cria um cartão de suporte para a peça
+ausente **não deve** executar `kanban_link(t_parent, t_support)`: o vínculo faz
+do cartão de suporte um filho do cartão bloqueado, deixando-o condicionado ao
+próprio pai que deveria desbloquear. Nenhum dos dois será executado. Em vez
+disso, referencie o id do pai no corpo do cartão de suporte. `link`/`kanban_link`
+informam `gated: true` e registram um evento `dependency_wait` quando rebaixam
+um filho `ready`; assim o deadlock fica visível no quadro. Use
+`hermes kanban unlink <parent> <child>` para liberá-lo.
+:::
+
 **Use `delegate_task` quando** o agent parent precisa de uma resposta curta de reasoning antes de continuar, sem humanos envolvidos, e o resultado volta para o contexto do parent.
 
 **Use Kanban quando** o trabalho cruza fronteiras de agent, precisa sobreviver a restarts, pode precisar de input humano, pode ser assumido por um papel diferente, ou precisa ser descobível depois.

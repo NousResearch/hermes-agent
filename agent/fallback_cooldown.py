@@ -9,11 +9,19 @@ logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_FAILOVER_REASONS = frozenset({FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit})
 
+# Ceiling for a pool-declared reset horizon. One stale timestamp must not pin the agent
+# to fallback for weeks; Codex weekly walls report days, so 7d is generous.
+_POOL_RESET_COOLDOWN_CAP_S = 7 * 24 * 60 * 60
+
 
 def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | None:
     """Arm the primary's exponential cooldown (60s → 2m → ... → 4h cap) on CONSECUTIVE rate-limits;
     restore_primary_runtime resets the counter. Only when leaving the primary: chain-switching from
     an active fallback means the primary was not the 429 source, so its cooldown is left alone.
+    When the credential pool carries a provider-declared reset (e.g. Codex ``resets_at``) farther
+    out than the backoff step, arm that horizon instead (capped at 7d): the window is proven
+    empty, so re-probing on the backoff schedule just re-fails the primary and re-announces the
+    fallback every turn.
     Return the armed cooldown in seconds, or None when no cooldown was armed."""
     if reason not in _RATE_LIMIT_FAILOVER_REASONS:
         return None
@@ -24,6 +32,14 @@ def _arm_rate_limit_cooldown(agent, reason: "FailoverReason | None") -> int | No
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1
     backoff_seconds = min(60 * (2 ** backoff_count), 14400)
+    try:
+        pool_reset_at = getattr(agent._credential_pool, "next_available_at", lambda: None)()
+    except Exception:
+        pool_reset_at = None
+    if pool_reset_at is not None and pool_reset_at > time.time():
+        reset_seconds = min(int(pool_reset_at - time.time()) + 1, _POOL_RESET_COOLDOWN_CAP_S)
+        if reset_seconds > backoff_seconds:
+            backoff_seconds = reset_seconds
     agent._rate_limited_until = time.monotonic() + backoff_seconds
     logging.info("Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d)", backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1)
     return backoff_seconds

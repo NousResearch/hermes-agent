@@ -179,6 +179,9 @@ def _post_setup_camofox() -> None:
 
 
 _KITTENTTS_WHEEL_URL = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
+_LUXTTS_URL = "git+https://github.com/ysharma3501/LuxTTS.git@28ae6a61151684fffc9d1a7aa15eafa02286fe0b"
+_LINACODEC_URL = "git+https://github.com/ysharma3501/LinaCodec.git@c0ae7c7285e121475c27592cfbb600624b714290"
+_PIPER_PHONEMIZE_INDEX = "https://k2-fsa.github.io/icefall/piper_phonemize.html"
 
 # pip-only post-setup hooks: module (import probe), label, installing (progress line), args, manual
 # (fallback command), on_install (fresh-install notes), always. Also feeds _RESTORABLE_PYTHON_TOOL_DEPENDENCIES.
@@ -204,6 +207,12 @@ _PIP_POST_SETUP_HOOKS: dict = {
         always=("Default voice: en_US-lessac-medium (downloaded on first TTS call)",
                 "Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md",
                 "Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")),
+    "luxtts": _pip_hook(
+        "zipvoice", "LuxTTS", "Installing LuxTTS voice-cloning dependencies (model downloads on first use)...",
+        ["-U", _LINACODEC_URL, _LUXTTS_URL, "soundfile", "--find-links", _PIPER_PHONEMIZE_INDEX, "--quiet"],
+        f"uv pip install -U '{_LINACODEC_URL}' '{_LUXTTS_URL}' soundfile --find-links '{_PIPER_PHONEMIZE_INDEX}'",
+        always=("Set tts.luxtts.ref_audio to a recording you own or have permission to use.",
+                "Set tts.luxtts.consent_confirmed: true before synthesis; setup/doctor never load the model.")),
     "ddgs": _pip_hook(
         "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...", ["-U", "ddgs", "--quiet"],
         "uv pip install -U ddgs",

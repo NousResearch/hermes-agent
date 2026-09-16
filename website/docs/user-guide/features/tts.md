@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with eleven providers:
+Convert text to speech with twelve providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -29,6 +29,7 @@ Convert text to speech with eleven providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **LuxTTS** | Excellent voice cloning | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -44,7 +45,7 @@ Convert text to speech with eleven providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" | "luxtts" — or "nous" for the managed Tool Gateway
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -103,6 +104,17 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  luxtts:
+    model: YatharthS/LuxTTS
+    ref_audio: /absolute/path/to/consented-reference.wav
+    consent_confirmed: true       # required: you own the voice or have explicit permission
+    device: auto                  # auto prefers CUDA, then MPS, then CPU
+    threads: 2                    # CPU only
+    ref_duration: 5
+    num_steps: 4
+    t_shift: 0.9
+    speed: 1.0
+    return_smooth: false
 ```
 
 MiniMax TTS selects its region, endpoint, and credential together:
@@ -163,6 +175,7 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
 | Piper | 5000 |
+| LuxTTS | 2000 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 
@@ -196,6 +209,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **LuxTTS** outputs 48 kHz WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -208,7 +222,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, Piper, and LuxTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -256,9 +270,19 @@ tts:
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
 
+### LuxTTS (local 48 kHz voice cloning)
+
+LuxTTS clones a voice from a local 3–10 second WAV or MP3 recording. Install it through `hermes setup tts` (or **Hermes Tools → Text-to-Speech → LuxTTS**), then set `ref_audio` and `consent_confirmed: true`. Hermes refuses synthesis until consent is explicitly confirmed. Only use a voice you own or have permission to clone.
+
+The setup and `hermes doctor` checks only verify the installed module and configuration; they do not load weights, encode the reference, or start a worker. The model downloads on the first speech warm-up/use. `device: auto` selects CUDA, then Apple MPS, then CPU; an explicitly requested unavailable accelerator logs a warning and falls back to CPU.
+
+Hermes loads one LuxTTS model and encodes the reference once, then reuses both across sentences and turns while a speech-output lease is active. Releasing the final lease drops the model and accelerator cache. There is no resident subprocess.
+
+LuxTTS currently returns a complete waveform, so Hermes provides **sentence-level streaming**: each completed LLM sentence is synthesized at 48 kHz while the LLM continues generating and the prior sentence plays. Barge-in stops queued playback and prevents pending sentences from being delivered. This is not incremental PCM generation within a sentence.
+
 ### Warm-up and unload via speech toggles (local engines)
 
-Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
+Local engines (Piper, KittenTTS, LuxTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
 
 - **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
 - **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases.

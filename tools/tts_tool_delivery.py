@@ -54,7 +54,8 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
-    "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "piper": 5000,         # local VITS model, phoneme-based; practical cap
+    "luxtts": 2000,        # local voice-cloning model; sentence-sized inputs are best
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models

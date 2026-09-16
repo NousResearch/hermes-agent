@@ -237,8 +237,9 @@ class FanoutTransport:
                 return
 
     def write(self, obj: dict) -> bool:
-        # Freeze the queued frame so a caller cannot mutate it after admission.
-        encoded = json.dumps(obj, ensure_ascii=False)
+        # Freeze the queued frame so a caller cannot mutate it after admission. Same serialization
+        # guard as the single-peer transports: an unserializable frame reaches every peer as -32603.
+        encoded = serialize_frame(obj, "fanout", logger)
         size = len(encoded.encode("utf-8", errors="surrogatepass"))
         frame = json.loads(encoded)
         with self._lock:

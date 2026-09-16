@@ -73,17 +73,42 @@ test('mentions render as inline references and Reply-to seeds the composer', asy
   await groupComposer.press('Enter')
 
   // The sent user line: exactly the routed bot and the human token are refs.
-  const sent = page.getByText(/MENTION_RENDER check this/).filter({ visible: true }).first()
-  await expect(sent).toBeVisible()
+  // A bot created moments ago runs its intro turn in the background; when it
+  // lands, the roster fronts that bot's chat tab and yanks the center away
+  // from the room. Re-select the room and read the line from a room body.
+  const roomTab = page.getByRole('tab', { name: new RegExp(`${ROOM} Close`) })
+
+  const sent = page
+    .locator('[data-selectable-text="true"]')
+    .getByText(/MENTION_RENDER check this/)
+    .filter({ visible: true })
+    .first()
+
+  await expect(async () => {
+    if ((await roomTab.getAttribute('aria-selected')) !== 'true') {
+      await roomTab.click()
+    }
+
+    await expect(sent).toBeVisible({ timeout: 5_000 })
+  }).toPass({ timeout: 60_000 })
   await expect(sent.locator('.ref[data-ref="agent"]')).toHaveText('@programmer')
   await expect(sent.locator('.ref[data-ref="human"]')).toHaveText('@user')
-  await expect(sent.locator('.ref')).toHaveCount(2)
+  // Only the two mention refs carry `data-ref`; the e-mail address renders
+  // as the shell's ordinary (also `.ref`-styled) mailto link, not a mention.
+  await expect(sent.locator('.ref[data-ref]')).toHaveCount(2)
   await expect(sent).toContainText('@nobody')
 
   // The mock reply from programmer arrives; its hover action targets that bot.
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0, { timeout: 90_000 })
   const replyButton = page.getByRole('button', { name: 'Reply to Programmer' }).first()
-  await expect(replyButton).toBeAttached()
+
+  await expect(async () => {
+    if ((await roomTab.getAttribute('aria-selected')) !== 'true') {
+      await roomTab.click()
+    }
+
+    await expect(replyButton).toBeAttached({ timeout: 5_000 })
+  }).toPass({ timeout: 60_000 })
   await sent.hover()
   await page.screenshot({ path: `${SHOTS}/mention-refs.png` })
 

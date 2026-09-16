@@ -43,7 +43,9 @@ _INTERNAL_GATEWAY_TURN_RE = re.compile(
     r"\[CONTEXT SUMMARY\]:?|"
     r"\[PRIOR CONTEXT[^\]]*\]|"
     r"\[Your active task list was preserved across context compression\]|"
-    r"\[IMPORTANT: Background process \d+ matched watch pattern[^\n]*|"
+    r"\[IMPORTANT: Background process |"
+    r"\[IMPORTANT: \d+ background processes completed\.|"
+    r"\[IMPORTANT: Watch[- ]pattern|"
     r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
     r"A background subagent you dispatched earlier has finished\."
     r")",

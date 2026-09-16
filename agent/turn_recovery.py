@@ -76,12 +76,30 @@ def _failure_discriminators(api_error: Optional[Exception], classified: Any) -> 
         if not code and isinstance(body, dict):
             for payload in (body, _error_obj(body)):
                 top_type = payload.get("type") if isinstance(payload, dict) else None
-                if isinstance(top_type, str) and top_type.strip() and top_type.strip() != "error":
-                    code = top_type.strip()
+                if isinstance(top_type, str) and top_type and top_type != "error":
+                    code = top_type
                     break
+        raw_code_is_exact = False
+        for payload in (body, _error_obj(body)):
+            if not isinstance(payload, dict):
+                continue
+            candidates = (payload, payload.get("error"))
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                for field in ("code", "type", "error_code", "errorCode"):
+                    raw_value = candidate.get(field)
+                    if type(raw_value) is str and raw_value == code:
+                        raw_code_is_exact = True
+                        break
+                if raw_code_is_exact:
+                    break
+            if raw_code_is_exact:
+                break
         # Extraction is not validation: preserve unknown identifiers, but omit
-        # diagnostic prose and oversized values rather than rewriting them.
-        if isinstance(code, str) and _PROVIDER_CODE_PATTERN.fullmatch(code):
+        # diagnostic prose, normalized values, and oversized values rather than
+        # rewriting them.
+        if raw_code_is_exact and isinstance(code, str) and _PROVIDER_CODE_PATTERN.fullmatch(code):
             discriminators["failure_provider_code"] = code
     return discriminators
 

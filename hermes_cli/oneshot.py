@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ _USAGE_KEYS = (
 
 # Written only when non-None on a failed run — omitted entirely otherwise.
 _USAGE_FAILURE_DISCRIMINATOR_KEYS = ("failure_status_code", "failure_errno", "failure_provider_code")
+_USAGE_FAILURE_PROVIDER_CODE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -162,6 +164,10 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
             report["failure"] = failure
         for _key in _USAGE_FAILURE_DISCRIMINATOR_KEYS:
             _value = result.get(_key)
+            if _key == "failure_provider_code" and (
+                type(_value) is not str or not _USAGE_FAILURE_PROVIDER_CODE_PATTERN.fullmatch(_value)
+            ):
+                continue
             if _value is not None:
                 report[_key] = _value
         out = Path(path).expanduser()

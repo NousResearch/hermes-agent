@@ -130,6 +130,24 @@ class TestUsageFileFailureFacts:
         assert report["failure_provider_code"] == "usage_limit_reached"
         assert report["failure_status_code"] == 429
 
+    def test_provider_code_discriminator_omits_malformed_result_values(self, tmp_path):
+        """The writer is a final privacy boundary, not a blind result copier."""
+        for index, code in enumerate((
+            "invalid request\nSYNTHETIC-DIAGNOSTIC account@example.invalid",
+            " usage_limit_reached ",
+            "x" * 129,
+        )):
+            path = tmp_path / f"usage-{index}.json"
+            result = _result(
+                failed=True, completed=False,
+                failure_reason="billing", failure_retryable=False,
+                failure_provider_code=code,
+            )
+            _write_usage_file(str(path), result)
+            report = json.loads(path.read_text())
+            assert "failure_provider_code" not in report
+            assert code not in json.dumps(report)
+
     def test_distinct_quota_walls_differ_only_by_provider_code(self, tmp_path):
         """OpenAI insufficient_quota and the observed Anthropic usage_limit_reached
         produce the same reason+status tuple; the report must not collapse them."""

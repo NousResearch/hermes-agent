@@ -153,6 +153,28 @@ class TestFailureDiscriminators:
         assert "failure_provider_code" not in report
         assert code not in json.dumps(report)
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"error": {"code": " usage_limit_reached "}},
+            {"type": "\tusage_limit_reached\t"},
+        ],
+    )
+    def test_provider_code_does_not_normalize_whitespace_padded_value(self, tmp_path, body):
+        """Validation applies to the provider's original token, not a stripped copy."""
+        from hermes_cli.oneshot import _write_usage_file
+
+        result = _run_max_retries(
+            _BodyError("synthetic provider diagnostic", body=body),
+            _classified(FailoverReason.billing, 400, retryable=False),
+        )
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), result)
+        report = json.loads(path.read_text())
+
+        assert "failure_provider_code" not in result
+        assert "failure_provider_code" not in report
+
     @pytest.mark.parametrize("code", ["FutureProvider:v2.unknown-code_7", "x" * 128])
     def test_provider_code_preserves_valid_unknown_identifier(self, code):
         out = _failure_discriminators(

@@ -52,7 +52,6 @@ export async function readProcessCreatedAt(
     return null
   }
 }
-
 export type ProcessLiveness = 'live' | 'absent' | 'unknown'
 
 /**
@@ -381,4 +380,3 @@ buildProcessTreeSnapshotScript(rootPid)
     return createdAt == null ? [{ pid: rootPid }] : [{ pid: rootPid, createdAt }]
   }
 }
-

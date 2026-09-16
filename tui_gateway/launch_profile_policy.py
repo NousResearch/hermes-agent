@@ -20,11 +20,42 @@ from __future__ import annotations
 import contextlib
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from types import MappingProxyType
+from typing import Dict, Iterator, Mapping, Optional
 
 _lock = threading.Lock()
 _snapshot: Optional[Dict[str, str]] = None
+_snapshot_home: Optional[Path] = None
+
+
+@dataclass(frozen=True)
+class LaunchProfileAuthority:
+    """One observation of the launch environment and the home identity it owns."""
+
+    env: Mapping[str, str]
+    home: Path
+
+
+def capture_launch_authority() -> LaunchProfileAuthority:
+    """Freeze launch values and resolved home atomically; the first capture wins."""
+    global _snapshot, _snapshot_home
+    with _lock:
+        if _snapshot is None:
+            from hermes_constants import get_process_hermes_home
+
+            snapshot = dict(os.environ)
+            _snapshot = snapshot
+            try:
+                _snapshot_home = get_process_hermes_home(snapshot)
+            except ValueError:
+                # A deliberately stripped launch environment may omit every
+                # platform-home key. Resolve the native default now, before
+                # activation, and freeze it with the captured mapping.
+                _snapshot_home = get_process_hermes_home()
+        assert _snapshot_home is not None
+        return LaunchProfileAuthority(MappingProxyType(dict(_snapshot)), _snapshot_home)
 
 
 def capture_launch_env() -> Dict[str, str]:
@@ -33,18 +64,14 @@ def capture_launch_env() -> Dict[str, str]:
     Called at activation, immediately before the first secondary home is registered as
     served — the last moment ambient env is provably the launch profile's.
     """
-    global _snapshot
-    with _lock:
-        if _snapshot is None:
-            _snapshot = dict(os.environ)
-        return dict(_snapshot)
+    return dict(capture_launch_authority().env)
 
 
 def activate_multi_profile_hosting() -> None:
     """This process now hosts a profile home other than its launch home: freeze the launch env
     and make unscoped credential reads fail closed (``get_secret`` raises instead of borrowing)."""
     from agent.secret_scope import set_multiplex_active
-    capture_launch_env()
+    capture_launch_authority()
     set_multiplex_active(True)
 
 
@@ -52,8 +79,27 @@ def launch_env() -> Dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
     miss values the launch process still bridges at startup)."""
+    return dict(launch_authority().env)
+
+
+def launch_authority() -> LaunchProfileAuthority:
+    """Current launch authority, frozen under multiplex and live before activation."""
     from agent.secret_scope import is_multiplex_active
-    return capture_launch_env() if is_multiplex_active() else dict(os.environ)
+    if is_multiplex_active():
+        return capture_launch_authority()
+    from hermes_constants import get_process_hermes_home
+
+    env = dict(os.environ)
+    try:
+        home = get_process_hermes_home(env)
+    except ValueError:
+        home = get_process_hermes_home()
+    return LaunchProfileAuthority(MappingProxyType(env), home)
+
+
+def launch_home() -> Path:
+    """Resolved launch-profile home from the same observation as :func:`launch_env`."""
+    return launch_authority().home
 
 
 def launch_terminal_env() -> Dict[str, str]:

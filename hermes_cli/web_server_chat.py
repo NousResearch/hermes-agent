@@ -308,7 +308,11 @@ def _resolve_chat_argv(
     ``profile`` scopes the ENTIRE chat by pointing ``HERMES_HOME`` at the profile
     dir, the same propagation ``hermes -p <name>`` performs.
     """
-    from hermes_cli.web_server_profiles import _config_profile_scope, _resolve_profile_dir
+    from hermes_cli.web_server_profiles import (
+        _config_profile_scope,
+        _hermes_home_scope,
+        _resolve_profile_dir,
+    )
     from hermes_cli.web_server_sessions import _open_session_db_for_profile, _session_latest_descendant
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_tui_launch import _apply_tui_python_env, _make_tui_argv
@@ -327,23 +331,31 @@ def _resolve_chat_argv(
         hermes_subprocess_env,
         served_profile_child_env,
     )
-    from tui_gateway.launch_profile_policy import launch_env as authoritative_launch_env
+    from tui_gateway.launch_profile_policy import launch_authority
 
-    launch_base = authoritative_launch_env()
-    launch_env = build_subprocess_env(
-        base=launch_base, scrub_secrets=False, inherit_profile_home=True
-    )
     if profile_dir is None:
-        env = launch_env
+        authority = launch_authority()
+        env = None
     else:
+        # Entering the first routed scope freezes both launch values and launch-home
+        # identity before any secondary profile work can mutate process state.
         with _config_profile_scope(requested):
+            authority = launch_authority()
+            launch_base = dict(authority.env)
             env = served_profile_child_env(
                 base=hermes_subprocess_env(
                     base=launch_base, inherit_credentials=True
                 ),
                 target_home=profile_dir,
                 inherit_credentials=True,
+                launch_home=authority.home,
             )
+    launch_base = dict(authority.env)
+    launch_env = build_subprocess_env(
+        base=launch_base, scrub_secrets=False, inherit_profile_home=True
+    )
+    if env is None:
+        env = launch_env
     try:
         from hermes_cli.config import (
             TERMINAL_CONFIG_ENV_MAP, apply_terminal_config_to_env, read_raw_config,
@@ -355,20 +367,20 @@ def _resolve_chat_argv(
             # selected profile's explicit config override them as before. Values
             # loaded from the launch profile's .env are profile residue, not exports.
             from agent.secret_scope import load_env_file
-            from hermes_constants import get_process_hermes_home
 
-            raw_launch_terminal = read_raw_config().get("terminal")
+            with _hermes_home_scope(authority.home):
+                raw_launch_terminal = read_raw_config().get("terminal")
             launch_owned = terminal_config_owned_env_vars(raw_launch_terminal)
             if isinstance(raw_launch_terminal, dict) and "home_mode" in raw_launch_terminal:
                 launch_owned.add("TERMINAL_HOME_MODE")
-            launch_dotenv_owned = set(load_env_file(get_process_hermes_home() / ".env"))
+            launch_dotenv_owned = set(load_env_file(authority.home / ".env"))
             restorable_terminal = set(TERMINAL_CONFIG_ENV_MAP.values()) | {
                 "TERMINAL_HOME_MODE"
             }
             for env_var in restorable_terminal - launch_owned - launch_dotenv_owned:
                 if env_var in launch_env:
                     env[env_var] = launch_env[env_var]
-            with _config_profile_scope(requested):
+            with _config_profile_scope(requested, launch_home=authority.home):
                 raw_selected_terminal = read_raw_config().get("terminal")
                 if isinstance(raw_selected_terminal, dict) and "home_mode" in raw_selected_terminal:
                     selected_home_mode = raw_selected_terminal["home_mode"]
@@ -378,7 +390,12 @@ def _resolve_chat_argv(
                         env["TERMINAL_HOME_MODE"] = str(selected_home_mode)
                 apply_terminal_config_to_env(env=env)
         else:
-            apply_terminal_config_to_env(env=env)
+            # Current-profile config must follow the immutable launch-home owner,
+            # and resolve ${VAR} through its frozen launch secret scope, not later
+            # process-global mutations from routed work.
+            with _hermes_home_scope(authority.home):
+                with _config_profile_scope("current", launch_home=authority.home):
+                    apply_terminal_config_to_env(env=env)
     except Exception:
         _log.warning("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     if profile_dir is not None:
@@ -395,7 +412,7 @@ def _resolve_chat_argv(
         else:
             env.pop("HERMES_REAL_HOME", None)
             env.pop("HOME", None)
-        apply_subprocess_home_env(env)
+        apply_subprocess_home_env(env, allow_process_fallback=False)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
     # Mouse tracking would swallow wheel events the browser needs for

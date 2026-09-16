@@ -12,7 +12,7 @@ from contextlib import contextmanager, nullcontext
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
+from hermes_cli.config import DEFAULT_CONFIG
 from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 from hermes_cli.web_server_mcp import _normalize_mcp_server_create
@@ -47,14 +47,16 @@ def _hermes_home_scope(path) -> Any:
 
 
 def _is_other_profile(profile: Optional[str]) -> bool:
-    """True when ``profile`` names a profile other than this process's own."""
+    """True when ``profile`` names a profile other than this process's launch profile."""
     if _is_current_profile(profile):
         return False
     try:
         target = _resolve_profile_dir(profile.strip())
     except HTTPException:
         return True
-    return target.resolve() != get_process_hermes_home().resolve()
+    from tui_gateway.launch_profile_policy import launch_home
+
+    return target.resolve() != launch_home().resolve()
 
 
 def _approval_mode_of(config: Dict[str, Any]) -> str:
@@ -230,7 +232,9 @@ def _profile_scope(profile: Optional[str]):
 
 
 @contextmanager
-def _config_profile_scope(profile: Optional[str]):
+def _config_profile_scope(
+    profile: Optional[str], *, launch_home: "str | Path | None" = None
+):
     """Await-safe profile scope: the task-local HERMES_HOME contextvar PLUS the profile's secret
     scope, never the process-global skills-module attributes ``_profile_scope`` swaps (holding
     those across an ``await`` lets a concurrent request restore THIS request's dir on its
@@ -249,9 +253,13 @@ def _config_profile_scope(profile: Optional[str]):
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+    from tui_gateway.launch_profile_policy import (
+        activate_multi_profile_hosting,
+        launch_home as authoritative_launch_home,
+        launch_secret_scope,
+    )
 
-    process_home = get_process_hermes_home()
+    process_home = Path(launch_home) if launch_home is not None else authoritative_launch_home()
     if _is_current_profile(profile):
         profile_dir, scoped = None, None  # the dashboard's own profile: no home override
     else:

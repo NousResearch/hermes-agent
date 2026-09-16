@@ -11,10 +11,12 @@ See: https://github.com/NousResearch/hermes-agent/issues/29015
 """
 
 import os
+import sys
 import threading
 from pathlib import Path
 
 import hermes_constants
+import pytest
 
 
 
@@ -229,6 +231,61 @@ class TestSanitizeSubprocessEnvHomeInjection:
         result = _sanitize_subprocess_env(base_env)
 
         assert result["HOME"] == "/root"
+
+
+@pytest.mark.parametrize("builder_name", ["build", "hermes"])
+@pytest.mark.parametrize("empty_policy_keys", [False, True])
+def test_explicit_subprocess_base_never_reads_late_home_policy(
+    builder_name, empty_policy_keys, tmp_path, monkeypatch
+):
+    """A captured child base treats missing HOME-policy keys as authoritative absence."""
+    launch_home = tmp_path / "launch"
+    (launch_home / "home").mkdir(parents=True)
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    late_real_home = tmp_path / "secondary-poison"
+    late_real_home.mkdir()
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    monkeypatch.setenv("HERMES_REAL_HOME", str(late_real_home))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+    base = {
+        "HERMES_HOME": str(launch_home),
+        "HOME": str(real_home),
+        "PATH": "/usr/bin",
+    }
+    if empty_policy_keys:
+        base.update(HERMES_REAL_HOME="", TERMINAL_HOME_MODE="")
+
+    from tools.environments.local import build_subprocess_env, hermes_subprocess_env
+
+    if builder_name == "build":
+        result = build_subprocess_env(base=base, scrub_secrets=False)
+    else:
+        result = hermes_subprocess_env(base=base, inherit_credentials=True)
+
+    assert result["HERMES_REAL_HOME"] == str(real_home)
+    assert result["HOME"] == str(real_home)
+
+    # The canonical default launch home is part of the same snapshot authority:
+    # resolving it must not consult later HOME/LOCALAPPDATA process mutations.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert hermes_constants.get_process_hermes_home(
+        {"HOME": str(real_home)}
+    ) == real_home / ".hermes"
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert hermes_constants.get_process_hermes_home(
+        {"LOCALAPPDATA": str(real_home)}
+    ) == real_home / "hermes"
+    monkeypatch.setattr(Path, "home", lambda: late_real_home)
+    for platform, empty_snapshot in (
+        ("linux", {}),
+        ("linux", {"HOME": ""}),
+        ("win32", {}),
+        ("win32", {"LOCALAPPDATA": "", "USERPROFILE": "", "HOME": ""}),
+    ):
+        monkeypatch.setattr(sys, "platform", platform)
+        with pytest.raises(ValueError, match="platform home"):
+            hermes_constants.get_process_hermes_home(empty_snapshot)
 
 
 

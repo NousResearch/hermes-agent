@@ -920,20 +920,45 @@ class TestProfileScopedChatPty:
             "HERMES_TUI_GATEWAY_URL": None,
         }
 
+    @pytest.mark.parametrize("target_dotenv_exists", [True, False])
+    @pytest.mark.parametrize("explicit_launch_home", [True, False])
     def test_chat_argv_uses_frozen_launch_env_after_profile_activation(
-        self, isolated_profiles, monkeypatch
+        self, isolated_profiles, monkeypatch, target_dotenv_exists, explicit_launch_home
     ):
         from agent.secret_scope import set_multiplex_active
         from tui_gateway import launch_profile_policy
 
         launch_home = isolated_profiles["default"]
         worker_home = isolated_profiles["worker_beta"]
+        (launch_home / "config.yaml").write_text(
+            "terminal:\n  ssh_host: ${LAUNCH_HOST}\n", encoding="utf-8"
+        )
         next_worker_home = launch_home / "profiles" / "worker_gamma"
         next_worker_home.mkdir(parents=True)
-        (next_worker_home / "config.yaml").write_text("{}\n", encoding="utf-8")
-        (next_worker_home / ".env").write_text("", encoding="utf-8")
+        (next_worker_home / "home").mkdir()
+        (next_worker_home / "config.yaml").write_text(
+            "terminal:\n  ssh_user: target-config-poison\n", encoding="utf-8"
+        )
+        if target_dotenv_exists:
+            (next_worker_home / ".env").write_text("", encoding="utf-8")
+        real_home = launch_home / "real-home"
+        real_home.mkdir()
+        late_real_home = launch_home / "secondary-poison-home"
+        late_real_home.mkdir()
+        if not explicit_launch_home:
+            monkeypatch.setattr(
+                "hermes_constants._get_platform_default_hermes_home",
+                lambda env=None: launch_home,
+            )
+            monkeypatch.delenv("HERMES_HOME")
         monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
         set_multiplex_active(False)
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.delenv("TERMINAL_HOME_MODE", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "launch-only")
+        monkeypatch.setenv("LAUNCH_HOST", "launch-config")
         monkeypatch.setenv("TERMINAL_SSH_USER", "launch-operator")
         monkeypatch.setenv("UNRELATED_SETTING", "launch-global")
         monkeypatch.setattr(
@@ -945,15 +970,21 @@ class TestProfileScopedChatPty:
         _argv, _cwd, first_env = _web_server_chat._resolve_chat_argv(
             profile="worker_beta"
         )
+        monkeypatch.setenv("HERMES_HOME", str(next_worker_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(late_real_home))
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        monkeypatch.setenv("LAUNCH_HOST", "late-config-poison")
         monkeypatch.setenv("TERMINAL_SSH_USER", "secondary-poison")
         monkeypatch.setenv("UNRELATED_SETTING", "secondary-poison")
         _argv, _cwd, next_env = _web_server_chat._resolve_chat_argv(
             profile="worker_gamma"
         )
+        _argv, _cwd, current_env = _web_server_chat._resolve_chat_argv(profile="current")
 
         probe = (
             "import json,os; print(json.dumps({k: os.environ.get(k) for k in "
-            "('HERMES_HOME','TERMINAL_SSH_USER','UNRELATED_SETTING')}))"
+            "('HERMES_HOME','HOME','HERMES_REAL_HOME','OPENAI_API_KEY',"
+            "'TERMINAL_SSH_USER','TERMINAL_SSH_HOST','UNRELATED_SETTING')}))"
         )
 
         def observe(env):
@@ -969,12 +1000,29 @@ class TestProfileScopedChatPty:
 
         assert observe(first_env) == {
             "HERMES_HOME": str(worker_home),
+            "HOME": str(real_home),
+            "HERMES_REAL_HOME": str(real_home),
+            "OPENAI_API_KEY": None,
             "TERMINAL_SSH_USER": "launch-operator",
+            "TERMINAL_SSH_HOST": None,
             "UNRELATED_SETTING": "launch-global",
         }
         assert observe(next_env) == {
             "HERMES_HOME": str(next_worker_home),
+            "HOME": str(real_home),
+            "HERMES_REAL_HOME": str(real_home),
+            "OPENAI_API_KEY": None,
+            "TERMINAL_SSH_USER": "target-config-poison",
+            "TERMINAL_SSH_HOST": None,
+            "UNRELATED_SETTING": "launch-global",
+        }
+        assert observe(current_env) == {
+            "HERMES_HOME": str(launch_home) if explicit_launch_home else None,
+            "HOME": str(real_home),
+            "HERMES_REAL_HOME": str(real_home),
+            "OPENAI_API_KEY": "launch-only",
             "TERMINAL_SSH_USER": "launch-operator",
+            "TERMINAL_SSH_HOST": "launch-config",
             "UNRELATED_SETTING": "launch-global",
         }
 

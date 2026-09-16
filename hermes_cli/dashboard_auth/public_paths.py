@@ -3,7 +3,12 @@
 ``dashboard_auth.middleware.gated_auth_middleware`` (OAuth cookie) — so the lists cannot drift
 again (a drift once 401'd ``/api/status`` and broke the portal's cookie-less liveness probe).
 Keep minimal: every entry must be safe for external uptime probes, the pre-login SPA, and anyone
-who ``curl``s the hostname; otherwise gate it and bootstrap after login."""
+who ``curl``s the hostname; otherwise gate it and bootstrap after login.
+
+``LOOPBACK_BOOTSTRAP_API_PATHS`` is a *separate* allowlist used only by the
+loopback ``_SESSION_TOKEN`` middleware. Those routes never bypass the OAuth
+gate — a public dashboard must not mint a WebSocket credential for an
+unauthenticated remote caller."""
 from __future__ import annotations
 
 PUBLIC_API_PATHS: frozenset[str] = frozenset({
@@ -25,3 +30,9 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # carries its own short-lived NAS-minted JWT (purpose=cron_fire), which the
     # handler verifies — the JWT, not this allowlist, is the security boundary.
     "/api/cron/fire"})
+
+
+# Loopback token-middleware only. Not imported by the OAuth gate.
+LOOPBACK_BOOTSTRAP_API_PATHS: frozenset[str] = frozenset({
+    "/api/session-attach",
+})

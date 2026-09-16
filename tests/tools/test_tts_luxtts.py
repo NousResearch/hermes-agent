@@ -1,5 +1,6 @@
 """LuxTTS provider contracts: one resident runtime and 48 kHz sentence streaming."""
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -59,6 +60,48 @@ def test_warm_and_repeated_sentences_share_model_and_encoded_prompt(monkeypatch,
     assert first.shape == second.shape == (3,)
     assert tts_tool_lifecycle.release_tts_provider("luxtts") == {"released": 1}
     assert tts_tool_local._luxtts_runtime_cache == {}
+
+
+def test_public_tool_speed_overrides_luxtts_config_without_mutation(monkeypatch, tmp_path):
+    ref_audio = tmp_path / "voice.wav"
+    ref_audio.write_bytes(b"RIFF-test")
+    received_speeds = []
+
+    class FakeLuxTTS:
+        def __init__(self, model, **kwargs):
+            pass
+
+        def encode_prompt(self, path, **kwargs):
+            return "encoded-prompt"
+
+        def generate_speech(self, text, prompt, **kwargs):
+            received_speeds.append(kwargs["speed"])
+            return np.array([0.0], dtype=np.float32)
+
+    config = _config(ref_audio, speed=1.0)
+    original_config = {**config, "luxtts": dict(config["luxtts"])}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: config)
+    monkeypatch.setattr(tts_tool, "_import_luxtts", lambda: FakeLuxTTS)
+    monkeypatch.setattr(tts_tool, "_import_torch", lambda: SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+    ))
+
+    def generate(text, output_path, effective_config):
+        tts_tool_local._generate_luxtts_waveform(text, effective_config)
+        with open(output_path, "wb") as output:
+            output.write(b"RIFF-test")
+
+    monkeypatch.setattr(tts_tool, "_generate_luxtts", generate)
+    tts_tool_local._luxtts_runtime_cache.clear()
+
+    result = json.loads(tts_tool.text_to_speech_tool(
+        "Requested speed.", output_path=str(tmp_path / "speech.wav"),
+        provider="luxtts", speed=2.0))
+
+    assert result["success"] is True
+    assert received_speeds == [2.0]
+    assert config == original_config
 
 
 def test_streamer_requires_consent_and_emits_48khz_int16_pcm(monkeypatch, tmp_path):

@@ -262,9 +262,13 @@ def _finalize_voice_delivery(
 def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], provider: Optional[str]):
     """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
     resolve the provider name."""
+    resolved_provider = provider.lower().strip() if provider else _get_provider(tts_config)
     if speed is not None:
-        tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    return tts_config, provider.lower().strip() if provider else _get_provider(tts_config)
+        call_speed = max(0.25, min(4.0, float(speed)))
+        tts_config = {**tts_config, "speed": call_speed}
+        if resolved_provider == "luxtts":
+            tts_config["luxtts"] = {**(tts_config.get("luxtts") or {}), "speed": call_speed}
+    return tts_config, resolved_provider
 
 
 def _session_platform() -> tuple:

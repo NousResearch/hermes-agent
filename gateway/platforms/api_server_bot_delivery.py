@@ -68,6 +68,66 @@ def delivery_run_kwargs(record: dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _canonical_bot_chat_tip(home: Path) -> str:
+    """Current compression tip of the lane's canonical ``Bot Chat`` session.
+
+    A peer DM is always addressed to the target lane's Bot Chat, so its current
+    compression tip is the lane's live (or default) delivery session. Resolved
+    fresh from ``state.db`` because a sender may have resolved the tip before the
+    Bot Chat compressed again, leaving its pinned session a dead parent.
+    """
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+    state = Path(home).resolve() / "state.db"
+    if not state.is_file():
+        return ""
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=state, read_only=True)
+    except Exception:
+        return ""
+    try:
+        row = db.get_session_by_title(BOT_CHAT_TITLE)
+        if not row:
+            return ""
+        return str(db.get_compression_tip(row["id"]) or "")
+    except Exception:
+        return ""
+    finally:
+        db.close()
+
+
+def resolve_delivery_session(
+    home: Path,
+    record: dict[str, Any],
+    *,
+    tip_fn: Any = None,
+) -> str:
+    """Resolve the session a drained record's turn should run in (DoD #2).
+
+    A record pins ``target_session_id`` as the sender resolved it at admit time.
+    A lane that has since compressed its Bot Chat leaves that pinned session a
+    dead parent with no live owner; running the turn there dead-letters the
+    delivery. Resolve forward to the lane's current Bot Chat tip (its live, or
+    default, session) when the pinned session is not that tip, and keep the
+    pinned session otherwise (including when no tip can be proven -- degrade,
+    never drop the delivery).
+    """
+    pinned = str(record.get("target_session_id") or "")
+    if not pinned:
+        return ""
+    get_tip = _canonical_bot_chat_tip if tip_fn is None else tip_fn
+    try:
+        tip = str(get_tip(home) or "")
+    except Exception:
+        tip = ""
+    if not tip or tip == pinned:
+        return pinned
+    log_delivery_event("resessioned", record, from_session=pinned, to_session=tip)
+    return tip
+
+
 def _failure_reason(error: str) -> str:
     """Classify a turn failure with the fork's shared reason table."""
     try:
@@ -110,10 +170,15 @@ async def run_record(
     slot (``status: queued``, so the caller keeps its receipt).
     """
     delivery_id = str(record.get("delivery_id"))
-    session_id = str(record.get("target_session_id") or "")
     if ctx is None:
+        # Drained records may pin a dead session: the sender resolved the Bot Chat
+        # tip before it compressed again. Deliver into the lane's live (or default)
+        # session instead of dead-lettering the turn forever (DoD #2).
+        session_id = resolve_delivery_session(home, record)
         kwargs = delivery_run_kwargs(record)
+        kwargs["session_id"] = session_id
     else:
+        session_id = str(record.get("target_session_id") or "")
         kwargs = dict(ctx.get("run_kwargs") or {})
         kwargs["session_id"] = session_id
     history = await adapter._conversation_history_for_session(session_id)

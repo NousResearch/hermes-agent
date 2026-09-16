@@ -270,16 +270,42 @@ def test_settle_failed_carries_error_and_reason(tmp_path):
 
 
 # ---------------------------------------------------------------- expiry + sweep
-def test_sweep_expires_over_age_records(tmp_path):
+def test_sweep_never_expires_a_never_attempted_record(tmp_path):
+    """An over-age record never offered to a turn is held for the drain, not reaped."""
     old = time.time_ns() - int(2 * 3600 * 1e9)
     _admit(tmp_path, 1, now_ns=old)
+    assert q.sweep_delivery_queue(tmp_path) == 0
+    record = q.read_record(tmp_path, _did(1))
+    assert record["status"] == "queued"
+    assert record["attempts"] == 0
+    assert _queued_path(tmp_path, 1).exists()
+
+
+def test_sweep_expires_an_attempted_record_past_ttl(tmp_path):
+    """Only after a real attempt does TTL expiry apply."""
+    old = time.time_ns() - int(2 * 3600 * 1e9)
+    _admit(tmp_path, 1, now_ns=old)
+    q.claim_next(tmp_path, target_profile="bravo", lease_ok=True)
+    q.requeue(tmp_path, _did(1))
+    assert q.read_record(tmp_path, _did(1))["attempts"] == 1
     assert q.sweep_delivery_queue(tmp_path) == 1
     record = q.read_record(tmp_path, _did(1))
     assert record["status"] == "expired"
     assert record["reason"] == q.REASON_QUEUED_EXPIRED
     assert record["status_detail"] == "queued 1800s without a free turn slot; not delivered"
     assert _settled_path(tmp_path, 1).exists()
-    assert q.sweep_delivery_queue(tmp_path) == 0
+
+
+def test_sweep_keeps_an_attempted_record_while_slot_held(tmp_path):
+    """An attempted over-age record is still held while its slot is busy."""
+    old = time.time_ns() - int(2 * 3600 * 1e9)
+    _admit(tmp_path, 1, now_ns=old)
+    q.claim_next(tmp_path, target_profile="bravo", lease_ok=True)
+    q.requeue(tmp_path, _did(1))
+    assert q.sweep_delivery_queue(tmp_path, slot_held_fn=lambda h, p: True) == 0
+    record = q.read_record(tmp_path, _did(1))
+    assert record["status"] == "queued"
+    assert record["attempts"] == 1
 
 
 def test_sweep_leaves_fresh_records_alone(tmp_path):
@@ -400,6 +426,8 @@ def test_build_envelope_delivered(tmp_path):
 def test_build_envelope_expired_and_unknown(tmp_path):
     old = time.time_ns() - int(2 * 3600 * 1e9)
     _admit(tmp_path, 1, now_ns=old)
+    q.claim_next(tmp_path, target_profile="bravo", lease_ok=True)
+    q.requeue(tmp_path, _did(1))
     q.sweep_delivery_queue(tmp_path)
     env = q.build_envelope(q.read_record(tmp_path, _did(1)))
     assert env["result"] == "failed"

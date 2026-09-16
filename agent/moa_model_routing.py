@@ -337,15 +337,31 @@ def resolve_moa_slot_route_pinned(
 
 
 def _forget_cohort(execution_id: str, *, hermes_home: Optional[str] = None) -> None:
-    """Test/cleanup helper: drop a pinned cohort so a NEW attempt (never the same execution_id)
-    can resolve fresh. Production code never calls this for a live execution_id -- restarting a
-    failed cohort means a new attempt with a new execution_id, per design §6. Scoped to the
-    SAME origin home a pinning call would have used, so forgetting one profile's entry never
-    touches another profile's pinned cohort under a colliding execution_id."""
+    """Turn-end cleanup: drop a pinned cohort AND its per-slot cache entries so a NEW
+    attempt (never the same execution_id) can resolve fresh. Production code never calls
+    this for a live execution_id -- restarting a failed cohort means a new attempt with a
+    new execution_id, per design §6. Scoped to the SAME origin home a pinning call would
+    have used, so forgetting one profile's entry never touches another profile's pinned
+    cohort under a colliding execution_id.
+
+    Also evicts every ``__slots__`` entry keyed to this ``(execution_id, home)`` -- the
+    cohort cache and the per-slot cache (``resolve_moa_slot_route_pinned``'s backing store)
+    are two separate dicts under the same lock, and the real turn-end hook
+    (``agent.agent_runtime_helpers.note_turn_persisted``) only ever calls this one function.
+    Popping only the cohort key left every slot resolution
+    (``(execution_id, slot_id, home)`` for ``reference-0``, ``reference-1``, ...,
+    ``aggregator``) permanently cached in ``__slots__`` with nothing to ever remove them --
+    a real per-turn memory leak across every finished MoA run in a long-lived process, since
+    a turn's execution_id is never reused (design §6: a new attempt always mints a new one).
+    """
     home = _origin_home_key(hermes_home)
     key = (execution_id, home)
     with _cohort_cache_lock:
         _cohort_cache.pop(key, None)
+        per_slot = _cohort_cache.get("__slots__")
+        if per_slot:
+            for slot_key in [k for k in per_slot if k[0] == execution_id and k[2] == home]:
+                per_slot.pop(slot_key, None)
 
 
 def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:

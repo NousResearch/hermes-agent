@@ -202,3 +202,66 @@ def test_concurrent_profiles_same_execution_id_no_race(two_profiles):
     finally:
         _forget_cohort(same_execution_id, hermes_home=home_a)
         _forget_cohort(same_execution_id, hermes_home=home_b)
+
+
+def test_forget_cohort_evicts_slot_cache_entries(two_profiles):
+    """Turn-end cleanup (``agent.agent_runtime_helpers.note_turn_persisted``) calls
+    ``_forget_cohort(turn_id)`` exactly once at the end of every turn. It must evict not
+    only the joint cohort cache entry but every per-slot entry it seeded
+    (``resolve_moa_slot_route_pinned``'s ``__slots__`` backing dict) -- otherwise every
+    finished MoA run leaves its slot resolutions permanently cached (a real per-turn memory
+    leak, since a turn's execution_id is never reused)."""
+    from agent.moa_model_routing import _cohort_cache, _forget_cohort, resolve_moa_cohort_pinned
+
+    execution_id = "exec-turn-end-cleanup"
+    reference_slots = [_slot("moareference")]
+    aggregator = _slot("moaaggregator")
+    home_a = two_profiles["A"]["hermes_home"]
+
+    resolve_moa_cohort_pinned(
+        reference_slots, aggregator, execution_id=execution_id, hermes_home=home_a,
+    )
+    home_key = os.path.realpath(home_a)
+    per_slot = _cohort_cache.get("__slots__", {})
+    seeded_keys = [k for k in per_slot if k[0] == execution_id and k[2] == home_key]
+    assert seeded_keys, "cohort resolution must seed the per-slot cache"
+
+    _forget_cohort(execution_id, hermes_home=home_a)
+
+    assert (execution_id, home_key) not in _cohort_cache
+    per_slot_after = _cohort_cache.get("__slots__", {})
+    assert not [k for k in per_slot_after if k[0] == execution_id and k[2] == home_key], (
+        "_forget_cohort must evict every per-slot entry it seeded for this "
+        "(execution_id, origin_home), not just the joint cohort entry"
+    )
+
+
+def test_forget_cohort_scoped_slot_eviction_does_not_touch_other_execution(two_profiles):
+    """Ending one turn's (execution_id A) cohort must never evict a DIFFERENT still-live
+    turn's (execution_id B) per-slot cache entries under the same profile."""
+    from agent.moa_model_routing import _cohort_cache, _forget_cohort, resolve_moa_cohort_pinned
+
+    reference_slots = [_slot("moareference")]
+    aggregator = _slot("moaaggregator")
+    home_a = two_profiles["A"]["hermes_home"]
+    home_key = os.path.realpath(home_a)
+
+    resolve_moa_cohort_pinned(
+        reference_slots, aggregator, execution_id="turn-ending", hermes_home=home_a,
+    )
+    resolve_moa_cohort_pinned(
+        reference_slots, aggregator, execution_id="turn-still-live", hermes_home=home_a,
+    )
+
+    try:
+        _forget_cohort("turn-ending", hermes_home=home_a)
+
+        per_slot = _cohort_cache.get("__slots__", {})
+        assert [k for k in per_slot if k[0] == "turn-still-live" and k[2] == home_key], (
+            "a different, still-live turn's per-slot cache entries must survive "
+            "another turn's end-of-turn cleanup"
+        )
+        assert not [k for k in per_slot if k[0] == "turn-ending" and k[2] == home_key]
+    finally:
+        _forget_cohort("turn-still-live", hermes_home=home_a)
+

@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS route_revocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     policy_id TEXT NOT NULL,
     route_id TEXT,
-    generation INTEGER NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'revoke',
     reason TEXT NOT NULL,
     approval_ref TEXT NOT NULL,
     created_at INTEGER NOT NULL
@@ -217,6 +217,28 @@ def get_receipt_created_at(hermes_home, receipt_id: str) -> Optional[int]:
     return int(row["created_at"]) if row is not None else None
 
 
+def _record_revocation_event(
+    hermes_home, policy_id: str, *, route_id: Optional[str], event_type: str,
+    reason: str, approval_ref: str,
+) -> dict:
+    if not approval_ref or not str(approval_ref).strip():
+        raise RoutingBlocked("schema_invalid", f"approval_ref is required to {event_type} a route")
+    if not reason or not str(reason).strip():
+        raise RoutingBlocked("schema_invalid", f"reason is required to {event_type} a route")
+    now = int(time.time())
+    with transaction(_connect(hermes_home)) as conn:
+        cur = conn.execute(
+            "INSERT INTO route_revocations (policy_id, route_id, event_type, reason, approval_ref, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (policy_id, route_id, event_type, reason, approval_ref, now),
+        )
+        event_id = cur.lastrowid
+    return {
+        "id": event_id, "policy_id": policy_id, "route_id": route_id, "event_type": event_type,
+        "reason": reason, "approval_ref": approval_ref, "created_at": now,
+    }
+
+
 def revoke_route(
     hermes_home, policy_id: str, *, route_id: Optional[str] = None,
     reason: str, approval_ref: str,
@@ -233,49 +255,89 @@ def revoke_route(
     only that route, leaving receipts pinned to other routes of the same
     policy unaffected.
 
+    This is DURABLE authorization state, not a timestamp-scoped event: once
+    recorded, it blocks every receipt referencing this route/policy --
+    already-receipted in-flight runs AND any future receipt persisted after
+    the revocation -- until an explicit, separately-auditable
+    ``readmit_route`` call records readmission. A routine ``publish_policy``/
+    ``activate_policy`` can never clear it, and a new receipt minted after
+    the revocation gets no fresh grace period merely by being new (the bug
+    this closes: a receipt timestamped after the revocation is not itself
+    proof of authorization).
+
     Never substitutes another route: a revoked attempt is blocked and the
     caller must not reroute it (§12: "it never substitutes another model").
-    Returns the persisted revocation record including a monotonic
-    ``generation`` (the autoincrement row id) for audit/CLI display.
+    Returns the persisted event record including a monotonic ``id`` (the
+    autoincrement row id, used for ordering, never wall-clock time) for
+    audit/CLI display.
     """
-    if not approval_ref or not str(approval_ref).strip():
-        raise RoutingBlocked("schema_invalid", "approval_ref is required to revoke a route")
-    if not reason or not str(reason).strip():
-        raise RoutingBlocked("schema_invalid", "reason is required to revoke a route")
-    now = int(time.time())
-    with transaction(_connect(hermes_home)) as conn:
-        cur = conn.execute(
-            "INSERT INTO route_revocations (policy_id, route_id, generation, reason, approval_ref, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (policy_id, route_id, now, reason, approval_ref, now),
-        )
-        revocation_id = cur.lastrowid
-    return {
-        "id": revocation_id, "policy_id": policy_id, "route_id": route_id,
-        "reason": reason, "approval_ref": approval_ref, "created_at": now,
-    }
+    return _record_revocation_event(
+        hermes_home, policy_id, route_id=route_id, event_type="revoke",
+        reason=reason, approval_ref=approval_ref,
+    )
 
 
-def find_active_revocation(
-    hermes_home, policy_id: str, route_id: str, *, since_ts: int,
-) -> Optional[dict]:
-    """The most recent EMERGENCY revocation covering ``route_id`` of ``policy_id``
-    issued at or after ``since_ts`` (a receipt's ``created_at``), or ``None``.
+def readmit_route(
+    hermes_home, policy_id: str, *, route_id: Optional[str] = None,
+    reason: str, approval_ref: str,
+) -> dict:
+    """Explicit, auditable READMISSION of a previously emergency-revoked route
+    (or whole policy) -- design §12/root-AGENTS binding: "Route/policy-wide
+    revocations and explicit re-admission must be well-scoped".
 
-    Matches a revocation whose ``route_id`` is either the exact route or
-    ``NULL`` (whole-policy revocation). A revocation issued BEFORE the
-    receipt was persisted does not apply to it -- an operator revoking an
-    old route and later re-publishing/re-activating a policy that
-    legitimately reintroduces it must not permanently poison new receipts.
+    The ONLY way to clear a durable ``revoke_route`` block. Never implied by
+    ``publish_policy``/``activate_policy``, never automatic/time-based expiry.
+    ``is_route_revoked`` resolves current state as whichever applicable event
+    -- route-specific or whole-policy -- is most recent by monotonic id, so a
+    route-specific readmission clears a route-specific revocation, and also
+    clears an earlier whole-policy revocation for that one route (a targeted
+    readmission is itself the well-scoped act; a fresh whole-policy
+    revocation recorded after it still wins because it is the newer event).
+    """
+    return _record_revocation_event(
+        hermes_home, policy_id, route_id=route_id, event_type="readmit",
+        reason=reason, approval_ref=approval_ref,
+    )
+
+
+def is_route_revoked(hermes_home, policy_id: str, route_id: str) -> Optional[dict]:
+    """Current durable authorization state for ``route_id`` of ``policy_id``:
+    the revocation event record if the route is CURRENTLY revoked, else
+    ``None``.
+
+    Resolves state from monotonic event ORDER (autoincrement row id), never
+    wall-clock ``created_at`` -- two events recorded in the same second (or
+    across a clock skew/restart) are still ordered correctly, and a route's
+    state is durable authorization state rather than something computed
+    relative to any particular receipt's timestamp. Considers every event
+    whose ``route_id`` is either the exact route or ``NULL`` (whole-policy);
+    whichever single event (route-specific or whole-policy) is most recent
+    by id determines the CURRENT state -- a revoke with no later readmit
+    (route-specific or whole-policy) blocks; a readmit with no later revoke
+    does not. This applies uniformly to every receipt referencing this
+    route regardless of when that receipt itself was persisted: revocation
+    is state about the ROUTE, not an event scoped to any one receipt's
+    creation time (the parent-reproduced bypass: a receipt minted after the
+    revocation must not silently inherit an implicit clean slate).
     """
     with transaction(_connect(hermes_home)) as conn:
         row = conn.execute(
-            "SELECT id, policy_id, route_id, reason, approval_ref, created_at "
+            "SELECT id, policy_id, route_id, event_type, reason, approval_ref, created_at "
             "FROM route_revocations WHERE policy_id=? AND (route_id=? OR route_id IS NULL) "
-            "AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1",
-            (policy_id, route_id, since_ts),
+            "ORDER BY id DESC LIMIT 1",
+            (policy_id, route_id),
         ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None or row["event_type"] != "revoke":
+        return None
+    return dict(row)
+
+
+def find_active_revocation(hermes_home, policy_id: str, route_id: str) -> Optional[dict]:
+    """Back-compat alias for ``is_route_revoked`` (same durable-state contract,
+    no ``since_ts``/receipt-timestamp parameter -- revocation is authorization
+    state about the route, not something scoped to when any one receipt was
+    persisted)."""
+    return is_route_revoked(hermes_home, policy_id, route_id)
 
 
 def append_outcome(hermes_home, receipt_id: str, kind: str, payload: dict) -> None:

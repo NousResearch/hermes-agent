@@ -107,6 +107,19 @@ _ROUTING_SPECS = [
     ], help="Emergency: explicitly revoke a route (or whole policy) for ALREADY-receipted, "
             "in-flight attempts -- distinct from publish/activate, which only affect new "
             "attempts"),
+    _cmd("readmit", [
+        _arg("policy_id"),
+        _arg("--route-id", help="Readmit only this route; omit to readmit the whole "
+             "policy (clears a prior whole-policy revocation)"),
+        _arg("--reason", required=True,
+             help="Human-readable reason this route/policy is being explicitly readmitted "
+                  "(required, never inferred/automatic)"),
+        _arg("--approval-ref", required=True,
+             help="Human-readable record of who/what approved this readmission"),
+        _json_flag(),
+    ], help="Explicitly clear a prior emergency revocation for a route (or whole policy) -- "
+            "the ONLY way to lift a revoke_route block; never implied by publish/activate "
+            "and never automatic/time-based"),
     _cmd("show", [
         _arg("policy_id", nargs="?", default="kanban-default"),
         _json_flag(),

@@ -122,6 +122,99 @@ def test_explicit_emergency_revocation_blocks_the_next_request(tmp_path):
     assert reason == "stale_or_revoked_decision"
 
 
+def test_revocation_durably_blocks_a_receipt_persisted_after_it(tmp_path):
+    """Parent-reproduced bypass: a NEW receipt persisted (same policy/route) AFTER an
+    explicit emergency revocation, without any republish/reapproval, must ALSO be blocked --
+    revocation is durable authorization state about the route, not something a fresh receipt
+    timestamp can silently escape (root AGENTS.md / task: "durable authorization state
+    rather than receipt timestamps")."""
+    from agent.model_selection_store import persist_receipt, revoke_route
+
+    receipt_old, policy, _ = _receipted(tmp_path)
+
+    revoke_route(
+        tmp_path, "kanban-default", route_id=policy["routes"][0]["route_id"],
+        reason="probe", approval_ref="operator:test",
+    )
+
+    # A NEW attempt/receipt for the SAME still-active policy/route, minted strictly AFTER
+    # the revocation -- no republish, no reactivate, no readmission.
+    decision_new = select(_requirements("new-attempt"), policy, {}, now=10_000_000)
+    receipt_new = persist_receipt(tmp_path, decision_new)
+
+    from agent.managed_route_runtime import enforce_worker_route
+    from agent.model_selection_types import RoutingBlocked
+
+    with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
+        enforce_worker_route(
+            tmp_path, receipt_new,
+            actual_provider=policy["routes"][0]["provider"],
+            actual_model=policy["routes"][0]["model"],
+            actual_endpoint=policy["routes"][0]["endpoint"], actual_reasoning="high",
+        )
+
+
+def test_same_second_revocation_still_blocks_a_receipt_from_the_same_second(tmp_path, monkeypatch):
+    """Same-second/clock-skew must not authorize a revived route: ordering must use the
+    monotonic revocation-event id, never wall-clock seconds where a revoke and a later
+    receipt can share `created_at`."""
+    import agent.model_selection_store as store
+
+    receipt_old, policy, _ = _receipted(tmp_path)
+
+    frozen = [12345]
+    monkeypatch.setattr(store.time, "time", lambda: frozen[0])
+
+    store.revoke_route(
+        tmp_path, "kanban-default", route_id=policy["routes"][0]["route_id"],
+        reason="incident-same-second", approval_ref="operator:test",
+    )
+    decision_new = select(_requirements("new-attempt-same-second"), policy, {}, now=frozen[0])
+    receipt_new = store.persist_receipt(tmp_path, decision_new)
+
+    from agent.managed_route_runtime import enforce_worker_route
+    from agent.model_selection_types import RoutingBlocked
+
+    with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
+        enforce_worker_route(
+            tmp_path, receipt_new,
+            actual_provider=policy["routes"][0]["provider"],
+            actual_model=policy["routes"][0]["model"],
+            actual_endpoint=policy["routes"][0]["endpoint"], actual_reasoning="high",
+        )
+
+
+def test_explicit_readmit_restores_new_attempts_but_not_automatically(tmp_path):
+    """Only an explicit `readmit_route` call clears a durable revocation -- a fresh receipt
+    alone (proven blocked above) never does. After readmission, a NEW attempt's receipt is
+    accepted again."""
+    from agent.model_selection_store import is_route_revoked, persist_receipt, readmit_route, revoke_route
+
+    receipt_old, policy, _ = _receipted(tmp_path)
+    route_id = policy["routes"][0]["route_id"]
+
+    revoke_route(tmp_path, "kanban-default", route_id=route_id, reason="incident", approval_ref="operator:test")
+    assert is_route_revoked(tmp_path, "kanban-default", route_id) is not None
+
+    readmit_route(
+        tmp_path, "kanban-default", route_id=route_id,
+        reason="incident resolved", approval_ref="operator:readmit",
+    )
+    assert is_route_revoked(tmp_path, "kanban-default", route_id) is None
+
+    decision_new = select(_requirements("post-readmit-attempt"), policy, {}, now=10_000_001)
+    receipt_new = persist_receipt(tmp_path, decision_new)
+
+    from agent.managed_route_runtime import enforce_worker_route
+
+    enforce_worker_route(
+        tmp_path, receipt_new,
+        actual_provider=policy["routes"][0]["provider"],
+        actual_model=policy["routes"][0]["model"],
+        actual_endpoint=policy["routes"][0]["endpoint"], actual_reasoning="high",
+    )  # must not raise
+
+
 def test_client_rebuild_diverging_from_receipt_blocks(tmp_path):
     """A mid-turn client rebuild/rotation that ends up on a DIFFERENT model than
     the receipted route must be caught here, not silently sent."""

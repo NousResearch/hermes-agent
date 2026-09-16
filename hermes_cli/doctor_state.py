@@ -298,24 +298,27 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
     with warn_on_error(""):
         size = wal_size()
         if size > 50 * 1024 * 1024:  # 50 MB
-            check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
-            if not should_fix:
-                return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
             # Checkpoint-lock premise (#40177, #103339): a bare connect runs WAL recovery and the checkpoint
             # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.
             # Holder scan first (any other process holding the DB, or an unknown, fails closed), then run the
             # checkpoint on the exclusive repair guard so an opener arriving in between is refused, not joined.
             from hermes_state_holders import live_writer_holds_db
             from hermes_state_repair import _connect_repair_durable, _exclusive_repair_db_guard
+            # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
+            # writer as fact.
+            held = live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable)
             _SKIP = ("Large WAL file — cannot prove state.db is quiet (stop the profile's gateway first, then "
                      "re-run 'hermes doctor --fix' to checkpoint)")
-            if live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
-                # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
-                # writer as fact.
-                check_warn("WAL checkpoint skipped: cannot prove state.db is quiet",
-                           "(another process holds it, or it is unreadable — stop the profile's gateway "
-                           "and re-run 'hermes doctor --fix')")
+            if held:
+                # A large WAL is normal while Desktop or the gateway is running; a bare "run --fix" here sent
+                # users straight into the second-writer trap (#110054).
+                check_warn(f"WAL file is large ({size // (1024*1024)} MB)",
+                           "(normal while Desktop or the gateway is running — only checkpoint with them stopped)")
                 return f.issues.append(_SKIP)
+            check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
+            if not should_fix:
+                return f.issues.append(
+                    "Large WAL file — stop the profile's gateway, then run 'hermes doctor --fix' to checkpoint")
             with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
                 if guard is None:
                     check_warn("WAL checkpoint skipped: could not take exclusive ownership of state.db",

@@ -64,3 +64,40 @@ def test_session_count_reads_a_home_with_uri_reserved_characters(tmp_path):
     conn.commit()
     conn.close()
     assert _session_count(db) == 2
+
+
+def _large_wal_db(tmp_path):
+    db = tmp_path / "state.db"
+    setup = sqlite3.connect(str(db))
+    setup.execute("CREATE TABLE t(x)")
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("INSERT INTO t VALUES (1)")
+    setup.commit()
+    setup.close()
+    with open(Path(f"{db}-wal"), "ab") as handle:
+        handle.truncate(51 * 1024 * 1024)
+    return db
+
+
+def test_large_wal_warning_under_a_live_writer_never_suggests_a_bare_fix(tmp_path, monkeypatch, capsys):
+    """`hermes doctor` (no --fix) on a large WAL while Desktop/gateway hold the DB must say it is normal and
+    order "stop" before any `--fix` — the bare "run 'hermes doctor --fix'" nudge is how users became the
+    second writer (#110054)."""
+    import hermes_state_holders
+
+    monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *a, **k: True)
+    finding = Finding()
+    _state_db_wal(finding, False, _large_wal_db(tmp_path))
+    assert len(finding.issues) == 1 and not finding.fixed
+    assert "normal while Desktop or the gateway is running" in capsys.readouterr().out
+    assert finding.issues[0].index("stop the profile's gateway") < finding.issues[0].index("hermes doctor --fix")
+
+
+def test_large_wal_warning_without_a_holder_still_orders_stop_before_fix(tmp_path, monkeypatch):
+    import hermes_state_holders
+
+    monkeypatch.setattr(hermes_state_holders, "live_writer_holds_db", lambda *a, **k: False)
+    finding = Finding()
+    _state_db_wal(finding, False, _large_wal_db(tmp_path))
+    assert len(finding.issues) == 1 and not finding.fixed
+    assert finding.issues[0].index("stop the profile's gateway") < finding.issues[0].index("hermes doctor --fix")

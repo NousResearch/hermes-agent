@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,6 +176,125 @@ def test_restore_active_tool_dependencies_uses_static_allowlist(monkeypatch):
     assert calls == [(["uv", "pip", "install", "langfuse", "--quiet"], env)]
 
 
+def test_restore_active_tool_dependencies_injects_lock_constraint(monkeypatch, tmp_path):
+    """#109826: the update flow hands the uv.lock constraint file down so the
+    tools restore resolves against locked versions instead of newest."""
+    calls = []
+    monkeypatch.setattr(
+        m,
+        "_run_package_only_install",
+        lambda cmd, *, env=None: calls.append(list(cmd)),
+    )
+    monkeypatch.setattr(
+        hermes_cli_main_install_repair,
+        "_run_package_only_install",
+        lambda cmd, *, env=None: calls.append(list(cmd)),
+    )
+
+    cfile = tmp_path / "lock-constraints.txt"
+    cfile.write_text("tokenizers==0.22.2\n", encoding="utf-8")
+    m._restore_active_tool_dependencies(
+        ["langfuse"],
+        ["uv", "pip"],
+        env={"VIRTUAL_ENV": "/tmp/venv"},
+        constraints=cfile,
+    )
+
+    assert calls == [
+        ["uv", "pip", "install", "--constraint", str(cfile), "langfuse", "--quiet"]
+    ]
+
+
+class TestLockConstraintsFromUvLock:
+    """#109826: uv.lock → pip --constraint translation for the post-update refreshes."""
+
+    @staticmethod
+    def _write_lock(root: Path, body: str) -> None:
+        root.joinpath("uv.lock").write_text(textwrap.dedent(body), encoding="utf-8")
+
+    def test_pins_single_version_packages_and_skips_marker_forks(self, tmp_path):
+        from hermes_cli import update_cmd_deps
+
+        self._write_lock(
+            tmp_path,
+            """\
+            [[package]]
+            name = "tokenizers"
+            version = "0.22.2"
+
+            [[package]]
+            name = "scipy"
+            version = "1.17.1"
+
+            [[package]]
+            name = "scipy"
+            version = "1.18.0"
+            """,
+        )
+        cfile = update_cmd_deps._lock_constraints_file_from_uv_lock(tmp_path)
+        assert cfile is not None
+        lines = cfile.read_text(encoding="utf-8").splitlines()
+        # The lock fork of scipy across resolution markers must not become two
+        # contradictory pins — it is dropped entirely.
+        assert lines == ["tokenizers==0.22.2"]
+        cfile.unlink()
+
+    def test_entries_without_a_version_are_skipped(self, tmp_path):
+        from hermes_cli import update_cmd_deps
+
+        self._write_lock(
+            tmp_path,
+            """\
+            [[package]]
+            name = "sdist-only"
+
+            [[package]]
+            name = "tokenizers"
+            version = "0.22.2"
+            """,
+        )
+        cfile = update_cmd_deps._lock_constraints_file_from_uv_lock(tmp_path)
+        assert cfile is not None
+        assert cfile.read_text(encoding="utf-8").splitlines() == ["tokenizers==0.22.2"]
+        cfile.unlink()
+
+    def test_missing_or_broken_lock_returns_none(self, tmp_path):
+        from hermes_cli import update_cmd_deps
+
+        assert update_cmd_deps._lock_constraints_file_from_uv_lock(tmp_path) is None
+        tmp_path.joinpath("uv.lock").write_text("not [valid toml", encoding="utf-8")
+        assert update_cmd_deps._lock_constraints_file_from_uv_lock(tmp_path) is None
+
+    def test_pinned_lazy_refresh_exports_env_and_cleans_up(self, tmp_path, monkeypatch):
+        from tools import lazy_deps
+        from hermes_cli import update_cmd_deps
+
+        self._write_lock(
+            tmp_path,
+            """\
+            [[package]]
+            name = "tokenizers"
+            version = "0.22.2"
+            """,
+        )
+        monkeypatch.delenv(lazy_deps._LOCK_CONSTRAINTS_ENV, raising=False)
+        with update_cmd_deps._pinned_lazy_refresh(tmp_path) as cfile:
+            assert cfile is not None and cfile.is_file()
+            assert os.environ[lazy_deps._LOCK_CONSTRAINTS_ENV] == str(cfile)
+        # Exit restores the pre-existing env and removes the temp file.
+        assert lazy_deps._LOCK_CONSTRAINTS_ENV not in os.environ
+        assert not cfile.exists()
+
+    def test_pinned_lazy_refresh_without_lock_yields_none_and_leaves_env_alone(self, tmp_path, monkeypatch):
+        from tools import lazy_deps
+        from hermes_cli import update_cmd_deps
+
+        monkeypatch.delenv(lazy_deps._LOCK_CONSTRAINTS_ENV, raising=False)
+        with update_cmd_deps._pinned_lazy_refresh(tmp_path) as cfile:
+            assert cfile is None
+            assert lazy_deps._LOCK_CONSTRAINTS_ENV not in os.environ
+
+
 def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
     tmp_path, monkeypatch
 ):
@@ -201,7 +321,7 @@ def test_cmd_update_captures_and_propagates_pre_rebuild_snapshot(
         refresh_calls.append((prefix, env, features))
         return True
 
-    def fake_restore(dependencies, prefix, *, env=None):
+    def fake_restore(dependencies, prefix, *, env=None, constraints=None):
         restore_calls.append((dependencies, prefix, env))
         raise RestoreReached
 

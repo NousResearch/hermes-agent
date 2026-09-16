@@ -212,8 +212,72 @@ def _module_importable_in(target_python, module_name: str, env) -> bool:
         return False
 
 
+def _lock_constraints_file_from_uv_lock(root) -> Path | None:
+    """Translate the just-pulled ``uv.lock`` into a pip ``--constraint`` file (``pkg==ver`` lines).
+
+    The update's lazy/tool/memory refreshes install by fresh resolve (#109826); left unconstrained
+    they upgrade shared transitive deps to whatever is newest, breaking already-installed packages
+    whose tighter caps the resolver never sees (mem0 + transformers + tokenizers). Packages the lock
+    forks across resolution markers (scipy) appear under several versions and are skipped — a
+    self-contradictory pin set would fail every install. None on any parse failure: the update then
+    runs unconstrained, exactly as before this guard existed.
+    """
+    try:
+        import tempfile
+        import tomllib
+
+        data = tomllib.loads((Path(root) / "uv.lock").read_text(encoding="utf-8"))
+        entries = [p for p in data.get("package", []) if isinstance(p, dict) and p.get("name") and p.get("version")]
+        counts: dict[str, int] = {}
+        for p in entries:
+            counts[str(p["name"]).lower()] = counts.get(str(p["name"]).lower(), 0) + 1
+        pins = [f"{p['name']}=={p['version']}" for p in entries if counts[str(p["name"]).lower()] == 1]
+        if not pins:
+            return None
+        fd, path = tempfile.mkstemp(prefix="hermes-lock-constraints-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(pins) + "\n")
+        return Path(path)
+    except Exception as exc:
+        logger.debug("Could not build uv.lock constraints file: %s", exc)
+        return None
+
+
+def _pinned_lazy_refresh(root):
+    """Context manager pinning the post-update lazy/tool/memory refreshes to ``uv.lock``.
+
+    Yields the constraint file (or None) and exports it through ``HERMES_LAZY_LOCK_CONSTRAINTS``
+    so both venv-scoped install tiers of ``tools.lazy_deps._venv_pip_install`` pick it up; the
+    yielded path is also the ``--constraint`` argument for the ``hermes tools`` restore, whose
+    command line is assembled here rather than through ``_venv_pip_install``. Restores/clears the
+    env var and unlinks the temp file on exit.
+    """
+    from contextlib import contextmanager
+    from tools.lazy_deps import _LOCK_CONSTRAINTS_ENV
+
+    @contextmanager
+    def _ctx():
+        cfile = _lock_constraints_file_from_uv_lock(root)
+        saved = os.environ.get(_LOCK_CONSTRAINTS_ENV)
+        if cfile is not None:
+            os.environ[_LOCK_CONSTRAINTS_ENV] = str(cfile)
+        try:
+            yield cfile
+        finally:
+            if saved is None:
+                os.environ.pop(_LOCK_CONSTRAINTS_ENV, None)
+            else:
+                os.environ[_LOCK_CONSTRAINTS_ENV] = saved
+            if cfile is not None:
+                with suppress(OSError):
+                    cfile.unlink()
+
+    return _ctx()
+
+
 def _restore_active_tool_dependencies(
-    dependencies: list[str], install_cmd_prefix: list[str], *, env: dict[str, str] | None = None
+    dependencies: list[str], install_cmd_prefix: list[str], *, env: dict[str, str] | None = None,
+    constraints: Path | None = None
 ) -> None:
     """Restore allowlisted ``hermes tools`` dependencies (from a pre-rebuild probe) into a rebuilt
     venv. Never raises: a failed optional tool must not block the update, but must be reported."""
@@ -239,6 +303,7 @@ def _restore_active_tool_dependencies(
     if not missing:
         return
 
+    pin_args = ["--constraint", str(constraints)] if constraints is not None else []
     print()
     print(f"→ Restoring {len(missing)} Hermes Tools dependency set(s)...")
     restored: list[str] = []
@@ -246,7 +311,7 @@ def _restore_active_tool_dependencies(
     for name, install_args in missing:
         try:
             _m()._run_package_only_install(
-                install_cmd_prefix + ["install", *install_args, "--quiet"], env=env)
+                install_cmd_prefix + ["install", *pin_args, *install_args, "--quiet"], env=env)
             restored.append(name)
         except Exception as exc:
             # Best-effort: surface failures without aborting the update.
@@ -1035,18 +1100,22 @@ def _sync_python_dependencies_after_pull(
     _write_lazy_refresh_incomplete_marker()
     _m()._upgrade_pip_before_lazy_refresh(install_prefix, env=lazy_env)
 
-    # Clear the lazy marker only when refresh/repair is confirmed healthy.
-    if _m()._refresh_active_lazy_features(install_prefix, env=lazy_env, features=active_lazy_features):
-        _m()._clear_lazy_refresh_incomplete_marker()
-    else:
-        print(
-            "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
-            "to finish import-based venv repair.")
+    # The refreshes below install by fresh resolve; pin them to the just-pulled uv.lock so
+    # shared transitive deps don't drift past caps already-installed packages rely on (#109826).
+    with _m()._pinned_lazy_refresh(_m().PROJECT_ROOT) as lock_constraints:
+        # Clear the lazy marker only when refresh/repair is confirmed healthy.
+        if _m()._refresh_active_lazy_features(install_prefix, env=lazy_env, features=active_lazy_features):
+            _m()._clear_lazy_refresh_incomplete_marker()
+        else:
+            print(
+                "  ⚠ Lazy-refresh recovery incomplete — run `hermes` again "
+                "to finish import-based venv repair.")
 
-    _m()._restore_active_tool_dependencies(active_tool_dependencies, install_prefix, env=lazy_env)
+        _m()._restore_active_tool_dependencies(
+            active_tool_dependencies, install_prefix, env=lazy_env, constraints=lock_constraints)
 
-    # Heal memory-provider bridge packages last — the steps above may have stripped them.
-    _m()._refresh_active_memory_provider_dependencies()
+        # Heal memory-provider bridge packages last — the steps above may have stripped them.
+        _m()._refresh_active_memory_provider_dependencies()
 
     # Remaining import failures are real breakage. Warn only — never roll back: `cannot import
     # name X` is also the stale-bytecode signature, which self-heals next launch.

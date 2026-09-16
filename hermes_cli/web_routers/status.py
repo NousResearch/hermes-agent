@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness)
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_constants import get_process_hermes_home, profile_name_for_home
@@ -268,11 +268,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
-            # ``desired_state`` is the operator's durable start/stop intent (``hermes gateway stop``
-            # keeps the last ``startup_failed`` + ``exit_reason`` on disk for diagnostics). A profile
-            # the operator stopped is "stopped", not a current failure the overview should alarm on.
-            if runtime.get("desired_state") == "stopped" or gateway_state not in {"stopped", "startup_failed"}:
-                gateway_state = "stopped"
+            # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
+            # ``startup_failed`` (kept on disk for diagnostics), so the overview does not alarm on it.
+            gateway_state = retained_gateway_state(runtime)
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.

@@ -241,6 +241,15 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
                 for modifier in (7, 8):  # Ctrl+Alt and Ctrl+Alt+Shift — same normalization
                     _install_paired(modifier, {cp: (Keys.Escape, ctrl_key)})
 
+    # Shift+printable ASCII under modifyOtherKeys (tilde form):
+    # Under modifyOtherKeys=2, terminals (xterm, Ghostty) encode any modified key that produces
+    # a character (e.g. Shift+- -> '_', Shift+= -> '+', Shift+[ -> '{') as ESC[27;2;<produced_cp>~.
+    # Unlike Kitty CSI-u (which sends the unshifted key), the tilde-form codepoint is already the
+    # layout-resolved produced character, so mapping ESC[27;2;<cp>~ -> chr(cp) is layout-safe.
+    # Existing entries (e.g. Shift+Enter \x1b[27;2;13~, Shift+Tab) are preserved via setdefault.
+    for cp in range(33, 127):
+        _put(f"\x1b[27;2;{cp}~", chr(cp))
+
     # The Esc KEY under Kitty disambiguate mode: ESC[27u (+ modifiers 1-16 incl. super 9+, and
     # lock twins of the modifier-less form, which is how a lone Esc arrives with a lock on).
     _put("\x1b[27u", Keys.Escape)

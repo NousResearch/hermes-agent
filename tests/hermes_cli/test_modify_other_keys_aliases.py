@@ -264,6 +264,55 @@ def test_modify_other_keys_shift_letter_produces_uppercase(letter):
     )
 
 
+# ---------------------------------------------------------------------------
+# Shift+symbols (modifyOtherKeys tilde form)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cp", [
+    33,   # '!'
+    34,   # '"'
+    35,   # '#'
+    36,   # '$'
+    43,   # '+'
+    58,   # ':'
+    60,   # '<'
+    62,   # '>'
+    63,   # '?'
+    64,   # '@'
+    95,   # '_' (Shift+Minus)
+    123,  # '{'
+    124,  # '|'
+    125,  # '}'
+    126,  # '~'
+])
+def test_modify_other_keys_shift_symbol_produces_char(cp):
+    """Under modifyOtherKeys=2, Shift+symbol (e.g. Shift+- -> '_') emits
+    ESC[27;2;<produced_cp>~. It must parse to the produced character,
+    not leak literal escape text."""
+    ch = chr(cp)
+    mok_seq = f"\x1b[27;2;{cp}~"
+    assert _parse(mok_seq) == [ch], (
+        f"modifyOtherKeys Shift+symbol ({mok_seq!r}) should produce {ch!r}"
+    )
+
+
+def test_shift_symbol_data_normalized_in_buffer():
+    """End-to-end: Vt100Parser with install_keypress_data_normalization
+    must deliver the character in KeyPress.data, not the raw escape."""
+    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    install_keypress_data_normalization()
+
+    out = []
+    parser = Vt100Parser(out.append)
+    for c in "\x1b[27;2;95~":
+        parser.feed(c)
+    parser.flush()
+
+    assert len(out) == 1
+    assert out[0].key == "_"
+    assert out[0].data == "_"
+
+
 def test_does_not_clobber_shift_enter_alias():
     """install_modify_other_keys_aliases must not overwrite mappings
     installed by install_shift_enter_alias (modifier=2, not 5)."""

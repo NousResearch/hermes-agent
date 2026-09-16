@@ -1078,6 +1078,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         """Same effective provider may still inherit when api_key is omitted."""
         parent = _make_mock_parent(depth=0)
         parent.provider = "zai"
+        parent.base_url = "https://api.z.ai/api/coding/paas/v4"
         parent.api_key = "parent-zai-key"
         cfg = {
             "model": "glm-5.2",
@@ -1092,6 +1093,52 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertIsNone(creds["api_key"])  # inherit via _build_child_agent
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_same_provider_different_endpoint_resolves_target_key(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "zai",
+            "base_url": "https://other-zai.example/v1",
+            "api_key": "other-zai-key",
+            "api_mode": "chat_completions",
+            "source": "env/config",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "zai"
+        parent.base_url = "https://api.z.ai/api/coding/paas/v4"
+        parent.api_key = "parent-zai-key"
+        cfg = {
+            "model": "glm-5.2",
+            "provider": "zai",
+            "base_url": "https://other-zai.example/v1",
+            "api_key": "",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_key"], "other-zai-key")
+        self.assertNotEqual(creds["api_key"], parent.api_key)
+        mock_resolve.assert_any_call(
+            requested="zai",
+            explicit_base_url=cfg["base_url"],
+            target_model="glm-5.2",
+        )
+
+    def test_unnamed_different_endpoint_rejects_parent_key_inheritance(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://parent.example/v1"
+        parent.api_key = "parent-secret"
+
+        with self.assertRaisesRegex(ValueError, "cannot inherit.*across endpoints"):
+            _resolve_delegation_credentials(
+                {
+                    "model": "local-model",
+                    "base_url": "https://child.example/v1",
+                    "api_key": "",
+                },
+                parent,
+            )
 
     def test_provider_alias_direct_endpoint_inherits_parent_key(self):
         """zhipu/glm aliases must count as the same effective provider as zai."""

@@ -331,8 +331,10 @@ def _same_effective_delegation_provider(
     configured = _canonicalize_delegation_provider(configured_provider)
     if not parent or not configured or parent == "moa" or configured == "moa":
         return False
+    if not _same_custom_delegation_endpoint(parent_base_url, configured_base_url):
+        return False
     if parent == "custom" or configured == "custom":
-        return _same_custom_delegation_endpoint(parent_base_url, configured_base_url)
+        return True
     return parent == configured
 
 def _resolve_direct_endpoint_api_key(v: dict, parent_agent) -> Optional[str]:
@@ -342,6 +344,10 @@ def _resolve_direct_endpoint_api_key(v: dict, parent_agent) -> Optional[str]:
 
     parent_provider = str(getattr(parent_agent, "provider", "") or "").strip().lower()
     configured_provider = v["provider"]
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None),
+    )
+    same_endpoint = _same_custom_delegation_endpoint(parent_base_url, v["base_url"])
     if parent_provider == "moa" and not configured_provider:
         raise ValueError(
             "Delegation from a MoA session cannot inherit the virtual-provider "
@@ -349,10 +355,12 @@ def _resolve_direct_endpoint_api_key(v: dict, parent_agent) -> Optional[str]:
             "or set delegation.api_key."
         )
     if not configured_provider:
-        return None
-    parent_base_url = _inherit_parent_base_url(
-        parent_agent, getattr(parent_agent, "base_url", None),
-    )
+        if same_endpoint:
+            return None
+        raise ValueError(
+            "A direct delegation endpoint cannot inherit the parent credential "
+            "across endpoints. Set delegation.provider or delegation.api_key."
+        )
     if _same_effective_delegation_provider(
         parent_provider,
         configured_provider,

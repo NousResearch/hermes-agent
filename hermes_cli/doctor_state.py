@@ -302,20 +302,19 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.
             # Holder scan first (any other process holding the DB, or an unknown, fails closed), then run the
             # checkpoint on the exclusive repair guard so an opener arriving in between is refused, not joined.
-            from hermes_state_holders import live_writer_holds_db
-            from hermes_state_repair import _connect_repair_durable, _exclusive_repair_db_guard
-            # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
-            # writer as fact.
-            held = live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable)
+            from hermes_state_repair import _exclusive_repair_db_guard, _live_writer_holds_db
+            title = f"WAL file is large ({size // (1024*1024)} MB)"
             _SKIP = ("Large WAL file — cannot prove state.db is quiet (stop the profile's gateway first, then "
                      "re-run 'hermes doctor --fix' to checkpoint)")
-            if held:
+            # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
+            # writer as fact.
+            if _live_writer_holds_db(state_db_path):
                 # A large WAL is normal while Desktop or the gateway is running; a bare "run --fix" here sent
                 # users straight into the second-writer trap (#110054).
-                check_warn(f"WAL file is large ({size // (1024*1024)} MB)",
-                           "(normal while Desktop or the gateway is running — only checkpoint with them stopped)")
+                check_warn(title, "(normal while Desktop or the gateway is running, or state.db cannot be "
+                                  "inspected — checkpoint only with them stopped)")
                 return f.issues.append(_SKIP)
-            check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
+            check_warn(title, "(may indicate missed checkpoints)")
             if not should_fix:
                 return f.issues.append(
                     "Large WAL file — stop the profile's gateway, then run 'hermes doctor --fix' to checkpoint")

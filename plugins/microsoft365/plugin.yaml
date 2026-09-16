@@ -1,6 +1,6 @@
 name: microsoft365
-version: 0.1.0
-description: "Microsoft 365 Plugin — one bundled plugin connecting Hermes to the broader Microsoft ecosystem: Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do."
+version: 0.2.0
+description: "Microsoft 365 Plugin — one bundled plugin connecting Hermes to the broader Microsoft ecosystem across Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do."
 author: NousResearch
 kind: backend
 python_dependencies:
@@ -9,42 +9,17 @@ python_dependencies:
 provides_tools:
   - microsoft365_preflight
 config_schema:
-  tenant_id:
-    type: str
-    required: true
-    description: "Microsoft Entra tenant ID"
-  client_id:
-    type: str
-    required: true
-    description: "Microsoft Entra application/client ID"
-  client_secret:
-    type: str
-    required: true
-    description: "Microsoft Entra application secret (store as a secret)"
-    secret: true
-  user_id:
-    type: str
-    default: me
-    description: "Graph user ID for user resources"
+  tenant_id: {type: str, required: true, description: "Microsoft Entra tenant ID"}
+  client_id: {type: str, required: true, description: "Microsoft Entra application/client ID"}
+  client_secret: {type: str, required: true, secret: true, description: "Microsoft Entra application secret"}
+  user_id: {type: str, default: me, description: "Graph user ID for user resources"}
   capabilities:
     type: dict
-    description: "Operation flags. Each service maps operation names to booleans; service=true enables all operations for backward compatibility."
+    description: "Operation-level flags; service=true enables every operation for compatibility."
     properties:
-      outlook:
-        type: dict
-        description: "search, read"
-      sharepoint:
-        type: dict
-        description: "search, read, download_files"
-      onedrive:
-        type: dict
-        description: "search, read, download_files"
-      calendar:
-        type: dict
-        description: "search"
-      teams:
-        type: dict
-        description: "list_teams, list_channels"
-      planner:
-        type: dict
-        description: "list_task_lists (Microsoft To Do; bounded read-only scope)"
+      outlook: {type: dict, description: "search, read, create_draft, send; Mail.Read/Mail.ReadWrite/Mail.Send"}
+      sharepoint: {type: dict, description: "search, read, download_files, upload_files; Sites.Read.All/Files.Read.All/Files.ReadWrite.All"}
+      onedrive: {type: dict, description: "search, read, download_files, upload_files; Files.Read/Files.ReadWrite"}
+      calendar: {type: dict, description: "search, create_events, update_events; Calendars.Read/Calendars.ReadWrite"}
+      teams: {type: dict, description: "list_teams, list_channels, search_messages, send_messages; Team.ReadBasic.All/Channel.ReadBasic.All/Chat.Read/ChatMessage.Send"}
+      planner: {type: dict, description: "list_task_lists, search, read, create_tasks, update_tasks (Microsoft To Do); Tasks.Read/Tasks.ReadWrite"}

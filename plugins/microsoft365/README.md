@@ -1,47 +1,25 @@
 # Microsoft 365 Plugin
 
-The **Microsoft 365 Plugin** gives Hermes one connection to the work people already do
-across Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do. That means an
-assistant can find context, move files, coordinate conversations and turn follow-ups
-into tasks without making users stitch together separate integrations. It remains one
-plugin and one `microsoft365` toolset, while administrators choose exactly which
-operations are exposed.
+The **Microsoft 365 Plugin** connects Hermes to the broader Microsoft ecosystem through Microsoft's official `msgraph-sdk` request builders. One bundled toolset can find business context, manage files, coordinate Teams conversations, schedule work, and turn follow-ups into tasks—without stitching together separate integrations. The existing Teams Bot Framework adapter and `teams_pipeline` remain separate.
 
-It uses Microsoft's official `msgraph-sdk` and `azure-identity`; it does not duplicate
-Graph HTTP operations. Install the optional dependencies with
-`pip install 'hermes-agent[microsoft365]'`.
+## Useful scope
 
-## Operation-level configuration
-
-Put this under `plugins.entries.microsoft365.settings`. Each enabled operation is a
-boolean. A service-level `true` is retained for backward compatibility and means “all
-operations for this service”; new configurations should use the explicit form:
+Enable operations individually under `plugins.entries.microsoft365.settings.capabilities`:
 
 ```yaml
 capabilities:
-  outlook: {search: true, read: true}
-  sharepoint: {search: true, read: true, download_files: true}
-  onedrive: {search: true, read: true, download_files: false}
-  calendar: {search: true}
-  teams: {list_teams: true, list_channels: true}
-  planner: {list_task_lists: true}
+  outlook: {search: true, read: true, create_draft: true, send: false}
+  sharepoint: {search: true, read: true, download_files: true, upload_files: true}
+  onedrive: {search: true, read: true, download_files: true, upload_files: true}
+  calendar: {search: true, create_events: true, update_events: true}
+  teams: {list_teams: true, list_channels: true, search_messages: true, send_messages: false}
+  planner: {list_task_lists: true, search: true, read: true, create_tasks: true, update_tasks: false}
 ```
 
-`planner` is the bundled task capability; its current bounded operation lists Microsoft To Do task lists. A service tool is registered
-only when at least one operation is enabled; calls for disabled or unknown operations
-are rejected before a Graph client is created. `microsoft365_preflight` is local and
-side-effect-free and reports the least-privilege permissions derived from the selected
-flags. The manifest contains the explicit operation and permission contract.
+Supported operations are Outlook search/read/create draft/send; SharePoint and OneDrive search/read/download/upload; Calendar search/create/update events; Teams list teams/list channels/search/send messages; and Planner/To Do task-list search/read/create/update tasks. Reads use `get`; writes use generated SDK models and `post`, `patch`, or `put` request-builder methods. No raw Graph HTTP is used.
 
-This bundled scope is read-only. It does not advertise draft/send, upload, event creation,
-message sending, or task mutation because those SDK calls and approval wiring are not
-implemented here. This plugin does not implement a separate approval gate.
-Secrets are read through the host configuration flow and redacted from preflight and
-SDK-shaped results.
+Every write requests explicit host approval through `tools.approval.request_tool_approval`. If approval is unavailable, denied, or times out, the handler returns `required_confirmation` and creates no client and performs no side effect. The approval rule key is `microsoft365.<capability>.<operation>`. Disabled and unknown operations are rejected before Graph client creation. Only capability tools with at least one enabled operation are registered; preflight is always local and reports least-privilege permissions.
 
-## Desktop scope
+Permission mapping is operation-specific: Mail.Read/Mail.ReadWrite/Mail.Send, Sites.Read.All/Files.Read.All/Files.ReadWrite.All, Files.Read/Files.ReadWrite, Calendars.Read/Calendars.ReadWrite, Team.ReadBasic.All, Channel.ReadBasic.All, Chat.Read, ChatMessage.Send, Tasks.Read and Tasks.ReadWrite. Administrators should grant only the permissions needed by enabled flags.
 
-The current Desktop plugin seam exposes discovery/status but has no generic schema-driven
-plugin configuration screen or secret-field editor. This plugin ships the real
-manifest/backend contract without a bespoke UI; a future generic renderer can map this
-manifest's settings to the existing seam.
+Install optional dependencies with `pip install 'hermes-agent[microsoft365]'`. No credentials or network access are needed by plugin tests.

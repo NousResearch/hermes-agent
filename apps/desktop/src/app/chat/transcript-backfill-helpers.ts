@@ -23,6 +23,19 @@ const nearTimestamp = (a: number | undefined, b: number | undefined): boolean =>
   return Math.abs((a as number) - (b as number)) <= TEMPORAL_MATCH_TOLERANCE_S
 }
 
+/** The temporal fallback is only safe when text/tool matching had NOTHING to
+ *  work with or genuinely could not disambiguate: a live stream is matched to
+ *  its stored row by id/tool/text first, so reaching here means the texts
+ *  differ. Two DISTINCT turns can still sit within the tolerance (a fast dry
+ *  turn answers in <2s), so require at least one row to carry no comparable
+ *  text at all — a textless/empty stream fragment — before trusting time
+ *  alone. A turn with real text on both sides is never matched by clock. */
+const temporalFallbackAllowed = (stored: ChatMessage, local: ChatMessage): boolean => {
+  const hasRealText = (message: ChatMessage) => normalizedTimelineText(message).length > 0
+
+  return !hasRealText(stored) || !hasRealText(local)
+}
+
 export const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage): boolean => {
   if (stored.id === local.id) {
     return true
@@ -47,8 +60,14 @@ export const assistantTimelineMatch = (stored: ChatMessage, local: ChatMessage):
   // persisted row never text-matches, and the previous behavior let hydration
   // replace the live bubble with the stored row — the message "disappeared"
   // until a later rehydrate brought it back. Same turn when the timestamps
-  // agree; text/tool matching still wins first.
-  return nearTimestamp(stored.timestamp, local.timestamp) || nearTimestamp(stored.completedAt, local.completedAt)
+  // agree AND at least one side is textless (a text-bearing turn on both
+  // sides is never matched by clock — two distinct turns can sit within the
+  // tolerance, so time alone cannot carry the match there). Text/tool
+  // matching still wins first.
+  return (
+    (nearTimestamp(stored.timestamp, local.timestamp) || nearTimestamp(stored.completedAt, local.completedAt)) &&
+    temporalFallbackAllowed(stored, local)
+  )
 }
 
 /**

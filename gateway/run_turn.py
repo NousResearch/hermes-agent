@@ -2903,11 +2903,9 @@ class GatewayTurnMixin:
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
         turn_runner = TurnRunner(self, turn_ctx)
-        from gateway.warning_notifications import warning_notifications_enabled
-        turn_ctx.mute_notification_reply = (
-            (turn_ctx.persist_user_display_metadata or {}).get("notification_category") == "diagnostic"
-            and not warning_notifications_enabled(source.platform, turn_ctx.user_config)
-        )
+        from gateway.warning_notifications import diagnostic_turn_muted
+        turn_ctx.mute_notification_reply = diagnostic_turn_muted(
+            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback

@@ -3725,8 +3725,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_history_delivery=session_history_delivery)
                 agent = None
                 from agent.notification_presentation import notification_turn
-                from gateway.warning_notifications import warning_notifications_enabled
-                muted = notification_category == "diagnostic" and not warning_notifications_enabled("api_server")
+                from gateway.warning_notifications import diagnostic_turn_muted
+                muted = diagnostic_turn_muted({"notification_category": notification_category}, "api_server")
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,

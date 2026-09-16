@@ -75,11 +75,9 @@ class CLIChatTurnMixin:
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
             turn = _ChatTurn()
-            from gateway.warning_notifications import warning_notifications_enabled
-            turn.mute_notification_reply = (
-                (agent._pending_cli_user_message.get("display_metadata") or {}).get("notification_category") == "diagnostic"
-                and not warning_notifications_enabled("cli", agent._notification_config)
-            )
+            from gateway.warning_notifications import diagnostic_turn_muted
+            turn.mute_notification_reply = diagnostic_turn_muted(
+                agent._pending_cli_user_message.get("display_metadata"), "cli", agent._notification_config)
             try:
                 self._reset_stream_state()
                 # Not part of _reset_stream_state: must persist across intermediate turn

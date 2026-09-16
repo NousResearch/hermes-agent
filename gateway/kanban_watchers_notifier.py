@@ -604,15 +604,18 @@ class _KanbanNotification:
 
     async def _send_event(self, ev: Any, msg: str) -> bool:
         """Send one text ping; raises on adapter exception or SendResult(success=False)."""
-        from gateway.warning_notifications import warning_notifications_enabled
-        if diagnostic_event(ev) and not warning_notifications_enabled(self.platform_str):
-            return False
+        from gateway.warning_notifications import present_notification
         sub, adapter = self.sub, self.adapter
         delivery_metadata = sub.get("delivery_metadata")
         metadata: dict[str, Any] = dict(delivery_metadata) if isinstance(delivery_metadata, dict) else {}
         if sub.get("thread_id") and not metadata.get("thread_id"):
             metadata["thread_id"] = sub["thread_id"]
-        _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        _send_res = None
+        async def send_ping():
+            nonlocal _send_res
+            _send_res = await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        if not await present_notification(send_ping, platform=self.platform_str, diagnostic=diagnostic_event(ev)):
+            return False
         # SendResult(success=False) without an exception is a FAILED delivery
         # (else the event is lost); None / non-SendResult keeps the
         # "no exception == delivered" contract.

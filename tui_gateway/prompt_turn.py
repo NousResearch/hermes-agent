@@ -847,12 +847,11 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
-    from gateway.warning_notifications import warning_notifications_enabled
+    from gateway.warning_notifications import diagnostic_turn_muted
     from agent.notification_presentation import notification_config_snapshot
     with _session_profile_runtime_scope(session):
         notification_config = notification_config_snapshot()
-        muted = ((display_metadata or {}).get("notification_category") == "diagnostic"
-                 and not warning_notifications_enabled("tui", notification_config))
+        muted = diagnostic_turn_muted(display_metadata, "tui", notification_config)
     if muted:
         display_kind = "hidden"
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,

@@ -15,16 +15,20 @@ def is_warning_status(event_type: str, message: str) -> bool:
     return event_type == "warn" or isinstance(message, DiagnosticText)
 
 
+def diagnostic_turn_muted(display_metadata, platform, user_config=None) -> bool:
+    """One admission rule for every surface: a diagnostic-category wake mutes its turn's
+    presentation only when the owning policy hides diagnostics. Human content never mutes."""
+    return ((display_metadata or {}).get("notification_category") == "diagnostic"
+            and not warning_notifications_enabled(platform, user_config))
+
+
 def diagnostic_wake_muted(event, user_config=None) -> bool:
     """Only trusted diagnostic-only wakes can mute a turn, never human content."""
     snapshot = getattr(event, "_notification_reply_muted", None)
     if isinstance(snapshot, bool):
         return snapshot
-    return (
-        getattr(event, "internal", False)
-        and (getattr(event, "metadata", None) or {}).get("notification_category") == "diagnostic"
-        and not warning_notifications_enabled(event.source.platform, user_config)
-    )
+    return bool(getattr(event, "internal", False)) and diagnostic_turn_muted(
+        getattr(event, "metadata", None), event.source.platform, user_config)
 
 
 def render_notification(render, *, platform, diagnostic=True, user_config=None) -> bool:

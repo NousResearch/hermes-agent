@@ -91,17 +91,33 @@ class TestHandleUpdateCommand:
 
 
     @pytest.mark.asyncio
-    async def test_resolve_hermes_bin_fallback(self):
-        """_resolve_hermes_bin falls back to sys.executable argv when which fails."""
+    async def test_resolve_hermes_bin_module_argv(self):
+        """_resolve_hermes_bin uses the running interpreter's module argv when hermes_cli is
+        importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
+        lookup would re-exec an attacker-planted executable on /update and /restart)."""
         import sys
         from gateway.run import _resolve_hermes_bin
 
         fake_spec = MagicMock()
-        with patch("shutil.which", return_value=None), \
+        with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 
         assert result == [sys.executable, "-m", "hermes_cli.main"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):
+        """Without an importable hermes_cli the argv degrades to PATH, then to None — never a
+        bare ``hermes`` string that a hostile PATH entry could shadow."""
+        from gateway.run import _resolve_hermes_bin
+
+        with patch("shutil.which", return_value="/usr/local/bin/hermes"), \
+             patch("importlib.util.find_spec", return_value=None):
+            assert _resolve_hermes_bin() == ["/usr/local/bin/hermes"]
+
+        with patch("shutil.which", return_value=None), \
+             patch("importlib.util.find_spec", side_effect=ImportError):
+            assert _resolve_hermes_bin() is None
 
 
     @pytest.mark.asyncio

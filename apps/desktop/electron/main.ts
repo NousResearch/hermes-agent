@@ -208,7 +208,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
-import { createGatewayWsCookieStore } from './gateway-ws-cookie'
+import { cookieAppliesToHost, createGatewayWsCookieStore } from './gateway-ws-cookie'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
@@ -7665,9 +7665,8 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
-// The bare hostname of a gateway, for a cookie `domain` filter. Cookies are
-// not port-scoped, so hostLabelFromBaseUrl's `host:port` label cannot be used
-// here; an unparseable url yields null and the caller clears the whole jar.
+// The bare hostname of a gateway. Cookies are not port-scoped, so
+// hostLabelFromBaseUrl's `host:port` label cannot be used for cookie matching.
 function cookieHostFromBaseUrl(baseUrl) {
   try {
     return new URL(String(baseUrl || '')).hostname || null
@@ -7693,15 +7692,28 @@ async function clearOauthSession(baseUrl) {
   }
 
   try {
-    // Enumerate by DOMAIN, not by url. A url filter applies path matching, so
-    // the forward-auth cookie this feature forwards -- scoped to `Path=/api/`
-    // or to a reverse-proxy prefix -- is absent from a base-url read and would
-    // survive the sign-out that is supposed to remove it, ready to be
-    // forwarded again on the next upgrade. The host keeps other gateways in a
-    // shared jar untouched; an unknown host falls back to the whole jar, as
-    // before.
+    // Read the whole jar and match on DOMAIN ourselves, rather than handing the
+    // base url to the cookie store. A url filter applies PATH matching, so the
+    // forward-auth cookie this feature forwards -- scoped to `Path=/api/` or to
+    // a reverse-proxy prefix -- was never in that enumeration and survived the
+    // sign-out meant to remove it, ready to be forwarded onto the next upgrade.
+    // cookieAppliesToHost covers every path, and every cookie that applies to
+    // this host including one set on a parent domain, while leaving other
+    // gateways in a shared jar alone (its comment records the measurements).
+    //
+    // An empty base url means "clear everything" (the store's blanket revoke
+    // mirrors it). A NON-empty url we cannot parse deletes nothing rather than
+    // everything: it names a gateway, just not one we can match cookies to.
     const signedOutHost = cookieHostFromBaseUrl(baseUrl)
-    const cookies = await sess.cookies.get(signedOutHost ? { domain: signedOutHost } : {})
+
+    if (baseUrl && !signedOutHost) {
+      rememberLog(`[oauth] sign-out could not parse the gateway url; left its cookies in place`)
+
+      return
+    }
+
+    const jar = await sess.cookies.get({})
+    const cookies = signedOutHost ? jar.filter(c => cookieAppliesToHost(c, signedOutHost)) : jar
     await Promise.all(
       cookies.map(c => {
         const scheme = c.secure ? 'https' : 'http'
@@ -9294,8 +9306,11 @@ const gatewayWsCookieStore = createGatewayWsCookieStore({
 //
 // `consumer` names the caller that re-mints for THIS socket. It matters
 // because one baseUrl can back several live sockets -- a shared remote serves
-// a socket per profile, and a descriptor build mints alongside them -- and a
-// new mint may only retire the url its own consumer registered before.
+// a socket per profile, and one window's chat, speech and secondary flows mint
+// against the same route -- and a new mint may only retire the url its own
+// consumer registered before. `authorizeCookie` is false for a caller that
+// rewrites the minted url before dialing it, where the url we could authorize
+// is not the one that gets opened.
 async function rememberGatewayWsAuth(wsUrl, connection, consumer?: string, authorizeCookie = true) {
   rememberRemoteWsHeaders(wsUrl, connection?.headers)
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createGatewayWsCookieStore, type GatewayCookie } from './gateway-ws-cookie'
+import { cookieAppliesToHost, createGatewayWsCookieStore, type GatewayCookie } from './gateway-ws-cookie'
 
 const LEGACY = 'persist:hermes-oauth'
 const GATEWAY = 'https://gateway.example'
@@ -58,6 +58,33 @@ function cookieOn(store: ReturnType<typeof createGatewayWsCookieStore>, url: str
 
   return response?.requestHeaders?.Cookie
 }
+
+// Sign-out deletes what this feature is willing to forward, so the two have to
+// agree on which cookies belong to a gateway.
+describe('cookie ownership for sign-out', () => {
+  it('matches the exact host and a cookie set on a parent domain', () => {
+    expect(cookieAppliesToHost({ domain: 'gateway.example' }, 'gateway.example')).toBe(true)
+    // A forward-auth proxy commonly sets its session on the parent domain; an
+    // Electron {domain} filter would miss it and leave it in the jar.
+    expect(cookieAppliesToHost({ domain: '.example' }, 'gateway.example')).toBe(true)
+    expect(cookieAppliesToHost({ domain: 'example' }, 'gateway.example')).toBe(true)
+  })
+
+  it('does not match siblings, subdomains, or lookalike suffixes', () => {
+    // Deleting a sibling would sign another gateway out of the shared jar.
+    expect(cookieAppliesToHost({ domain: 'other.example' }, 'gateway.example')).toBe(false)
+    expect(cookieAppliesToHost({ domain: 'sub.gateway.example' }, 'gateway.example')).toBe(false)
+    expect(cookieAppliesToHost({ domain: 'gateway.example' }, 'evilgateway.example')).toBe(false)
+    expect(cookieAppliesToHost({ domain: 'ateway.example' }, 'gateway.example')).toBe(false)
+  })
+
+  it('is case-insensitive and refuses empty input', () => {
+    expect(cookieAppliesToHost({ domain: 'GATEWAY.Example' }, 'gateway.example')).toBe(true)
+    expect(cookieAppliesToHost({ domain: '' }, 'gateway.example')).toBe(false)
+    expect(cookieAppliesToHost(null, 'gateway.example')).toBe(false)
+    expect(cookieAppliesToHost({ domain: 'gateway.example' }, '')).toBe(false)
+  })
+})
 
 describe('gateway WebSocket cookie forwarding', () => {
   it('authorizes the exact freshly minted upgrade url', async () => {

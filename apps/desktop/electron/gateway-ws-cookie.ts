@@ -24,14 +24,17 @@
 //     cookie scoped to `Path=/api/`, or to a reverse-proxy prefix, does not
 //     apply to the bare base url, so reading the base returned a snapshot
 //     missing exactly the credential this exists to forward;
-//   - one live url per CONSUMER (the gateway plus the caller that re-mints for
-//     that socket: the primary ws-url path per profile, a registry
-//     (connectionId, profile) pair, a descriptor build) — its next mint drops
-//     its own previous url, so a stale / pre-rotation ticket carries no
-//     authority. Replacement stops there: two Cloud agents share the legacy
-//     partition, and a shared remote serves several profiles at one baseUrl,
-//     so another gateway, profile consumer, or descriptor build must not
-//     cancel an in-flight handshake nobody signed out;
+//   - one live url per CONSUMER (the gateway, plus the window and purpose of
+//     the caller that re-mints for that socket) — its next mint drops its own
+//     previous url, so a stale / pre-rotation ticket carries no authority.
+//     Replacement stops there: two Cloud agents share the legacy partition, a
+//     shared remote serves several profiles at one baseUrl, and one window's
+//     chat, speech and secondary flows all mint against the same route, so no
+//     other gateway, profile, window or purpose may cancel an in-flight
+//     handshake nobody signed out;
+//   - authorized only when the caller dials the url it minted. Speech rewrites
+//     the path before dialing, so authorizing its minted url would park a
+//     credential nothing can consume; that endpoint is out of scope here;
 //   - consumed by the upgrade that uses it and additionally time-bounded, so
 //     an upgrade that never happens expires instead of lingering for the
 //     process lifetime, and bounded in count;
@@ -55,6 +58,38 @@
 export interface GatewayCookie {
   name: string
   value: string
+}
+
+// Does a stored cookie apply to `host`? Standard cookie domain-matching: an
+// exact host match, or a Domain cookie set on a PARENT of it.
+//
+// This is the counterpart of the forwarding below -- whatever we are willing
+// to forward, sign-out has to be able to delete. A `{url}` filter cannot do
+// it: it applies PATH matching, so it never sees the `Path=/api/` proxy cookie
+// this feature exists to forward, and sign-out left it in the jar.
+//
+// Measured on the pinned Electron (40.10.2), against a jar holding a
+// `.example.test` parent cookie, a `gw.example.test` host cookie, a
+// `Path=/api/` cookie, a sibling and a subdomain:
+//   get({url: 'https://gw.example.test'})  -> host, parent          (no /api/)
+//   get({url: 'https://gw.example.test/api/ws'}) -> host, parent, /api/
+//   get({domain: 'gw.example.test'})       -> host, parent, /api/   (no sibling/sub)
+// So Electron's `{domain}` filter would also be correct here. Matching
+// explicitly instead keeps what sign-out deletes pinned by unit tests that
+// need no Electron, and legible at the call site: this host, a parent's Domain
+// cookie, any path -- never a sibling or a subdomain, which in the shared
+// legacy jar belong to other connections.
+export function cookieAppliesToHost(cookie: { domain?: string } | null, host: string) {
+  const domain = String(cookie?.domain || '')
+    .replace(/^\./, '')
+    .toLowerCase()
+  const target = String(host || '').toLowerCase()
+
+  if (!domain || !target) {
+    return false
+  }
+
+  return target === domain || target.endsWith(`.${domain}`)
 }
 
 export interface GatewayWsCookieStoreDependencies {

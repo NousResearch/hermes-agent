@@ -49,11 +49,13 @@ The same target is used by native Browse and the card's CLI fallback:
 hermes://skill/install?identifier=official%2Fsecurity%2F1password
 ```
 
-Hermes asks you to review the identifier and destination profile before
-installing. Cancel makes no changes. Confirmation uses the existing Skills Hub
-background installer, including security scanning, action logs, error reporting,
-and installed-list refresh. If you switch profile or connection while the
-confirmation is open, reopen the link for the new destination. Changes apply to
+Hermes shows **Install “skill-name”?** with separate **Source** and **Install to**
+rows. Cancel makes no changes. After confirmation, the same dialog shows
+**Installing…**, then **Installed** and a completion notification. Errors stay
+in the dialog so you can read them and retry. Installation uses the existing
+Skills Hub pipeline, including security scanning, action logs, and installed-list
+refresh. If you switch profile or connection while the confirmation is open,
+reopen the link for the new destination. Changes apply to
 new sessions; a link cannot bypass scanning or select a different profile.
 
 The public links use `hermes://`, not the development-only `hermes-dev://`

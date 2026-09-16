@@ -4,6 +4,13 @@ import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
   catalog: {
+    installTitle: (name: string) => `安裝「${name}」？`,
+    installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
+    installTo: '安裝至',
+    thisComputer: '這部電腦',
+    installing: '正在安裝…',
+    installComplete: (name: string) => `已安裝「${name}」`,
+    destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
     browse: '瀏覽',
     installed: '已安裝',
     searchSkills: '搜尋技能',

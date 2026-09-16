@@ -60,6 +60,13 @@ interface AuxTaskCopy {
 
 export interface Translations {
   catalog: {
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
     browse: string
     installed: string
     searchSkills: string

@@ -907,7 +907,9 @@ class TurnRunner:
             from gateway.config import StreamingConfig
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
-        plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
+        # Per-chat overrides too (#8e05a066d4): display.platforms.<plat>.chats.<chat_id>.streaming —
+        # mobile inbox groups (partner threads) want final-answer-first, DMs keep live streaming.
+        plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming", chat_id=ctx.source.chat_id)
         want_stream_deltas = (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )

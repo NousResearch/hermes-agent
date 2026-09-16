@@ -1996,7 +1996,9 @@ body.guest-pointer-lock :is(webview, iframe) {
    one row (an open diff) could not stay lit while its siblings dimmed. Hence
    the tool group wrapper carries no mark and each row inside it carries its
    own — no two marked elements nest, so the fade never compounds. */
-[data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold],
+[data-slot='aui_background-result'] [data-conversation-scaffold],
+[data-slot='aui_background-resume'] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -2004,7 +2006,9 @@ body.guest-pointer-lock :is(webview, iframe) {
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
-[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)) {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)),
+[data-slot='aui_background-result'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)),
+[data-slot='aui_background-resume']:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 

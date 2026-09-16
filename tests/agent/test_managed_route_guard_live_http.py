@@ -238,8 +238,30 @@ def managed_agent_env():
             "unapproved_url": f"http://127.0.0.1:{unapproved_server.server_address[1]}/v1",
         }
     finally:
+        # Close the agent's own resources (relay session scope, shared client, memory
+        # provider, ...) BEFORE the fake HTTP servers stop and the temp HERMES_HOME is
+        # deleted. Skipping this left the HermesRelay session, its log-queue listener
+        # thread and any still-open file handlers pointed at a home directory that no
+        # longer exists by the time they next tried to write -- surfacing as
+        # 'session scope close failed: not found' and FileNotFoundError spam in
+        # errors.log/agent.log from a background thread racing shutil.rmtree below,
+        # not a real production defect. agent.close() is idempotent and every phase
+        # is individually guarded, so this is safe even if the turn already failed.
+        _quietly_close(agent)
         approved_server.shutdown()
         unapproved_server.shutdown()
+        # The shared queued file-log listener (hermes_logging.py) runs on its own
+        # background thread and only writes a record's bytes when it eventually
+        # dequeues it -- agent.close() above returns long before that happens.
+        # Without draining here, warnings/errors logged during this test's own
+        # teardown (e.g. relay session close) race shutil.rmtree below and land
+        # as FileNotFoundError spam from the listener thread instead of ever
+        # reaching a real errors.log.
+        try:
+            from hermes_logging import drain_log_queue
+            drain_log_queue(timeout=2.0)
+        except Exception:
+            pass
         sys.modules.clear()
         sys.modules.update(saved_modules)
         for _name, _mod in saved_modules.items():
@@ -254,6 +276,13 @@ def managed_agent_env():
         else:
             os.environ["HERMES_HOME"] = prev_home
         shutil.rmtree(test_home, ignore_errors=True)
+
+
+def _quietly_close(agent) -> None:
+    try:
+        agent.close()
+    except Exception:
+        pass
 
 
 def test_matched_route_multi_iteration_turn_reaches_only_approved_endpoint(managed_agent_env):
@@ -272,13 +301,19 @@ def test_matched_route_multi_iteration_turn_reaches_only_approved_endpoint(manag
 
 
 def test_revocation_between_requests_blocks_the_next_request_content(managed_agent_env):
-    """Policy revoked (activated a new revision) after request 1's response
-    lands, before request 2 is built -- request 2's task content must NEVER
-    reach the still-listening approved endpoint."""
-    from agent.model_selection_store import activate_policy, publish_policy
+    """An explicit EMERGENCY revocation (``revoke_route``, not a routine policy
+    republish/activate) issued after request 1's response lands, before request
+    2 is built -- request 2's task content must NEVER reach the still-listening
+    approved endpoint. Only ``revoke_route`` is the mechanism allowed to kill a
+    live run mid-turn; a routine ``publish_policy``/``activate_policy`` edit is
+    intentionally transparent to an already-pinned live run (see
+    ``test_routine_policy_edit_between_requests_does_not_block_the_live_run``
+    below) and must never be conflated with revocation here."""
+    from agent.model_selection_store import revoke_route
 
     env = managed_agent_env
     agent, approved, unapproved = env["agent"], env["approved"], env["unapproved"]
+    route_id = env["policy"]["routes"][0]["route_id"]
 
     approved.response_queue.append(_tc_resp("terminal", '{"command": "echo SECRET_PAYLOAD_2"}'))
     approved.response_queue.append(_text_resp("should never be produced"))
@@ -294,21 +329,59 @@ def test_revocation_between_requests_blocks_the_next_request_content(managed_age
         original_do_POST(self)
         if len(type(self).requests) == 1 and not revoked["done"]:
             revoked["done"] = True
-            new_policy = dict(env["policy"])
-            new_policy["revision"] = env["revision"] + 1
-            record = publish_policy(env["hermes_home"], new_policy, approval_ref="operator:revoke")
-            activate_policy(env["hermes_home"], "kanban-default", record["revision"])
+            revoke_route(
+                env["hermes_home"], "kanban-default", route_id=route_id,
+                reason="incident", approval_ref="operator:revoke",
+            )
 
     approved.do_POST = _do_post_then_revoke
 
     agent.run_conversation("run echo SECRET_PAYLOAD_2", conversation_history=[], task_id="t")
 
     assert len(approved.requests) == 1, (
-        "revocation between requests must stop the turn before request 2 is sent -- "
+        "emergency revocation between requests must stop the turn before request 2 is sent -- "
         f"got {len(approved.requests)} requests"
     )
     assert "SECRET_PAYLOAD_2" not in json.dumps(_tool_results(approved)), (
         "no leaked task content in a tool-result round-trip after revocation"
+    )
+    assert unapproved.requests == []
+
+
+def test_routine_policy_edit_between_requests_does_not_block_the_live_run(managed_agent_env):
+    """Contrast case: a ROUTINE policy edit (publish + activate a new revision
+    of the SAME route, no ``revoke_route`` call) landing between request 1 and
+    request 2 of the SAME live turn must NOT stop it -- routine policy edits
+    affect new attempts, not active conversations. Proves the guard
+    distinguishes an ordinary republish from an explicit emergency revocation
+    rather than treating any policy-store write as cause to kill the turn."""
+    from agent.model_selection_store import activate_policy, publish_policy
+
+    env = managed_agent_env
+    agent, approved, unapproved = env["agent"], env["approved"], env["unapproved"]
+
+    approved.response_queue.append(_tc_resp("terminal", '{"command": "echo one"}'))
+    approved.response_queue.append(_text_resp("done"))
+
+    original_do_POST = approved.do_POST
+    edited = {"done": False}
+
+    def _do_post_then_routine_edit(self):
+        original_do_POST(self)
+        if len(type(self).requests) == 1 and not edited["done"]:
+            edited["done"] = True
+            new_policy = dict(env["policy"])
+            new_policy["revision"] = env["revision"] + 1
+            record = publish_policy(env["hermes_home"], new_policy, approval_ref="operator:routine-edit")
+            activate_policy(env["hermes_home"], "kanban-default", record["revision"])
+
+    approved.do_POST = _do_post_then_routine_edit
+
+    agent.run_conversation("run echo one", conversation_history=[], task_id="t")
+
+    assert len(approved.requests) == 2, (
+        "a routine policy republish/activate between requests must not interrupt the "
+        f"already-pinned live turn -- got {len(approved.requests)} requests"
     )
     assert unapproved.requests == []
 
@@ -367,6 +440,110 @@ def test_mid_turn_provider_swap_to_unapproved_endpoint_sends_zero_requests(manag
         f"requests -- got {unapproved.requests!r}"
     )
     assert len(approved.requests) == 1, "only the pre-swap request should have gone anywhere"
+
+
+def test_same_iteration_transport_recovery_retry_reenforces_managed_route(managed_agent_env):
+    """The ACTUAL same-iteration transport recovery/retry path
+    (``agent._try_recover_primary_transport`` in ``turn_api_error.py``,
+    triggered after ``max_retries`` transient transport failures) must
+    re-run the per-request managed-route guard immediately before the
+    rebuilt-client retry is sent -- not merely have its fields poked between
+    iterations. Two sub-cases exercised against the REAL retry loop:
+
+      1. no revocation lands in the failure window -> the rebuilt-client
+         retry still reaches the approved endpoint (recovery isn't proof-
+         by-itself of an unmanaged escape hatch);
+      2. an explicit emergency ``revoke_route`` lands in the window between
+         the transient failures and the rebuilt-client retry -> the retry
+         must be blocked before it reaches the provider, exactly like the
+         between-requests case, because a client rebuild is not a fresh
+         grace period.
+    """
+    from agent.model_selection_store import revoke_route
+
+    env = managed_agent_env
+    agent, approved, unapproved = env["agent"], env["approved"], env["unapproved"]
+    route_id = env["policy"]["routes"][0]["route_id"]
+
+    # Force real ConnectionResetError connect failures (classified as a
+    # transient transport error) for exactly agent._api_max_retries attempts,
+    # driving the SAME code path production uses -- then allow the rebuilt
+    # client's retry through to a real success response.
+    approved_port = approved.server.server_address[1] if hasattr(approved, "server") else None
+
+    real_openai_cls = None
+    from openai import OpenAI as _RealOpenAI
+
+    real_openai_cls = _RealOpenAI
+    attempts = {"n": 0}
+    max_retries = agent._api_max_retries
+
+    class _FlakyThenRealClient:
+        """First ``max_retries`` chat-completions calls raise a transient
+        transport error class name recognised by ``_TRANSIENT_TRANSPORT_ERRORS``;
+        subsequent calls delegate to a real client against the approved server."""
+
+        def __init__(self, real_client):
+            self._real = real_client
+            self.chat = self
+
+        @property
+        def completions(self):
+            return self
+
+        def create(self, *args, **kwargs):
+            attempts["n"] += 1
+            if attempts["n"] <= max_retries:
+                from httpx import ConnectError
+                raise ConnectError("simulated transient transport failure")
+            return self._real.chat.completions.create(*args, **kwargs)
+
+    approved.response_queue.append(_text_resp("recovered"))
+    real_client = real_openai_cls(api_key="test-key", base_url=agent.base_url)
+    flaky = _FlakyThenRealClient(real_client)
+    agent._create_request_openai_client = lambda reason=None, api_kwargs=None: flaky
+    agent._disable_streaming = True
+
+    agent.run_conversation("run recovery probe", conversation_history=[], task_id="t")
+
+    assert len(approved.requests) == 1, (
+        "post-recovery retry with no revocation must still reach the approved "
+        f"endpoint -- got {len(approved.requests)} requests"
+    )
+    assert unapproved.requests == []
+
+    # --- sub-case 2: revoke during the transient-failure window, before the
+    # rebuilt-client retry is sent. ---
+    attempts["n"] = 0
+    approved.requests.clear()
+    approved.response_queue.append(_text_resp("should never be produced"))
+    real_client_2 = real_openai_cls(api_key="test-key", base_url=agent.base_url)
+
+    class _FlakyThenRevokedClient(_FlakyThenRealClient):
+        def create(self, *args, **kwargs):
+            attempts["n"] += 1
+            if attempts["n"] == max_retries:
+                # Revoke on the LAST transient failure, i.e. exactly in the
+                # window before try_recover_primary_transport's retry fires.
+                revoke_route(
+                    env["hermes_home"], "kanban-default", route_id=route_id,
+                    reason="incident", approval_ref="operator:revoke",
+                )
+            if attempts["n"] <= max_retries:
+                from httpx import ConnectError
+                raise ConnectError("simulated transient transport failure")
+            return self._real.chat.completions.create(*args, **kwargs)
+
+    flaky2 = _FlakyThenRevokedClient(real_client_2)
+    agent._create_request_openai_client = lambda reason=None, api_kwargs=None: flaky2
+
+    agent.run_conversation("run recovery probe 2", conversation_history=[], task_id="t")
+
+    assert approved.requests == [], (
+        "emergency revocation during the transient-failure window must block the "
+        f"rebuilt-client retry before it reaches the provider -- got {approved.requests!r}"
+    )
+    assert unapproved.requests == []
 
 
 def _tool_results(handler) -> list[str]:

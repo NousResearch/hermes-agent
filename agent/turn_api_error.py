@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.turn_failure_copy import stamp_failure
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -343,6 +344,31 @@ def settle_unrecovered_error(
             _retry.has_retried_429 = False
             agent._fallback_index = 0
             agent._fallback_activated = False
+            # Same-iteration transport recovery just rebuilt the client (fresh
+            # connection pool / auth / possibly a different concrete endpoint under
+            # the hood) and is about to loop straight back into ``build_api_request``
+            # -> ``perform_api_call`` for a RETRY of this same iteration -- the only
+            # per-request guard checkpoint (turn_iteration_prep.py) already ran
+            # before this iteration started and will NOT run again before this
+            # retried send. Without re-checking here, a policy revoked in the
+            # window between the original failed send and this rebuilt retry would
+            # reach the provider boundary unvalidated (design §12: "no silent
+            # escape through parent inheritance"; a rebuilt/rotated client must
+            # never bypass the receipted route check). Re-run the same fail-closed
+            # guard immediately before arming the retry.
+            from agent.managed_route_guard import enforce_managed_route_per_request
+
+            _retry_route_block_reason = enforce_managed_route_per_request(agent)
+            if _retry_route_block_reason is not None:
+                return _verdict("return", stamp_failure({
+                    "final_response": (
+                        "⛔ Managed routing guard blocked the post-recovery retry "
+                        f"({_retry_route_block_reason}) — stopping before it reaches "
+                        "the provider."
+                    ),
+                    "messages": messages, "api_calls": api_call_count, "completed": False,
+                    "failed": True, "error": f"managed_route_blocked({_retry_route_block_reason})",
+                }, FailoverReason.unknown.value, False))
             return _verdict("continue")
         if agent._has_pending_fallback():
             agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")

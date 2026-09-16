@@ -35,6 +35,74 @@ from agent.turn_retry_state import TurnRetryState
 from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
+_PROVIDER_CODE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+def _errno_of(error: Exception) -> Optional[int]:
+    """First OS errno on the error or its cause chain (``None`` when absent)."""
+    current: Optional[BaseException] = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        errno_value = getattr(current, "errno", None)
+        if isinstance(errno_value, int) and errno_value > 0:
+            return errno_value
+        cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if cause is current:
+            break
+        current = cause if isinstance(cause, BaseException) else None
+    return None
+
+
+def _failure_discriminators(api_error: Optional[Exception], classified: Any) -> Dict[str, Any]:
+    """Narrow, provider-neutral terminal-failure discriminators for machine reports."""
+    discriminators: Dict[str, Any] = {}
+    status_code = getattr(classified, "status_code", None)
+    if isinstance(status_code, int):
+        discriminators["failure_status_code"] = status_code
+    if api_error is not None:
+        errno_value = _errno_of(api_error)
+        if errno_value is not None:
+            discriminators["failure_errno"] = errno_value
+        from agent.error_classifier import _extract_error_body
+
+        try:
+            body = _extract_error_body(api_error)
+        except Exception:
+            body = {}
+
+        code = None
+        code_is_type = False
+        if isinstance(body, dict):
+            error_obj = body.get("error")
+            if isinstance(error_obj, dict):
+                for field, is_type in (("code", False), ("type", True)):
+                    raw_value = error_obj.get(field)
+                    if raw_value:
+                        code, code_is_type = raw_value, is_type
+                        break
+            if code is None:
+                for field in ("code", "error_code", "errorCode"):
+                    raw_value = body.get(field)
+                    if raw_value:
+                        code, code_is_type = raw_value, False
+                        break
+            if code is None:
+                raw_type = body.get("type")
+                if raw_type:
+                    code, code_is_type = raw_type, True
+        # Extraction is not validation: preserve unknown identifiers, but omit
+        # diagnostic prose, generic envelope markers, and oversized values rather
+        # than rewriting them. A real provider ``code: "error"`` remains valid;
+        # only a generic ``type: "error"`` marker is omitted.
+        if (
+            type(code) is str
+            and not (code_is_type and code == "error")
+            and _PROVIDER_CODE_PATTERN.fullmatch(code)
+        ):
+            discriminators["failure_provider_code"] = code
+    return discriminators
+
+
 logger = logging.getLogger("agent.conversation_loop")
 
 
@@ -858,17 +926,23 @@ def nonretryable_client_error_result(
     else:
         agent._persist_session(messages, conversation_history)
     if classified.reason == FailoverReason.content_policy_blocked:
-        return _content_policy_blocked_result(
-            messages, api_call_count,
-            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
-            error_detail=_nonretryable_summary,
-        )
+        return {
+            **_content_policy_blocked_result(
+                messages, api_call_count,
+                final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
+                error_detail=_nonretryable_summary,
+            ),
+            "failure_reason": classified.reason.value,
+            "failure_retryable": bool(classified.retryable),
+            **_failure_discriminators(api_error, classified),
+        }
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
     if classified.reason == FailoverReason.billing:
         return _billing_failure_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
+            **_failure_discriminators(api_error, classified),
         )
     if _welcome_hint:
         # A free-tier refusal is fully explained by its own sentence; the raw provider summary
@@ -887,6 +961,7 @@ def nonretryable_client_error_result(
     result.update({
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
+        **_failure_discriminators(api_error, classified),
     })
     if _welcome_hint:
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
@@ -1019,6 +1094,7 @@ def max_retries_exhausted_result(
         "billing_unverified": _billing_unverified,
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
+        **_failure_discriminators(api_error, classified),
     })
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (

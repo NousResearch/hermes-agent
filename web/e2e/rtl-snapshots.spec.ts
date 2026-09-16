@@ -59,6 +59,9 @@ const PAGES: Array<{ path: string; name: string }> = [
   { path: "/skills", name: "skills" },
   { path: "/profiles", name: "profiles" },
   { path: "/docs", name: "docs" },
+  { path: "/channels", name: "channels" }, // NOTE: copy is still English-hardcoded (no i18n on ChannelsPage yet) — this baseline pins that pre-localization state; the diff will visualize the Persian conversion when it lands.
+  { path: "/config", name: "config" },
+  { path: "/env", name: "env" },
 ];
 
 /**
@@ -81,10 +84,11 @@ const API_STUBS: Record<string, { status: number; body: string }> = {
   "/api/analytics": stubJson([]),
   "/api/skills": stubJson([]),
   "/api/model/options": stubJson([]),
-  "/api/messaging/platforms": stubJson([]),
+  "/api/messaging/platforms": stubJson({ platforms: [] }),
   // Object-shaped endpoints (shape mismatches crash pages):
   "/api/sessions": stubJson({ sessions: [], total: 0 }),
-  "/api/sessions/stats": stubJson({ sessions: 0, messages: 0, by_source: {} }),
+  "/api/sessions/stats":
+    stubJson({ total: 0, active_store: 0, archived: 0, messages: 0, by_source: {} }),
   "/api/sessions/empty/count": stubJson({ count: 0 }),
   "/api/status": stubJson({
     version: "0.0.0-test",

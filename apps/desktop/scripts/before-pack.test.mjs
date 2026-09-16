@@ -3,8 +3,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'vitest'
+import { writeFixture, readFixture } from './pe-test-fixture.mjs'
 
-import beforePack, { cleanStaleAppOutDir, preserveRollbackBackup } from '../scripts/before-pack.mjs'
+import beforePack, {
+  ROLLBACK_ACQUISITION_STATUS,
+  cleanStaleAppOutDir,
+  preserveRollbackBackup
+} from '../scripts/before-pack.mjs'
+
+const { BLOCKED, PRESERVED, SAFE_TO_CLEAN } = ROLLBACK_ACQUISITION_STATUS
 
 test('cleanStaleAppOutDir removes a populated unpacked directory', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
@@ -12,11 +19,11 @@ test('cleanStaleAppOutDir removes a populated unpacked directory', () => {
     const appOutDir = path.join(tempRoot, 'linux-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
     // Reproduce the corrupted partial state: license + payload present,
-    // electron binary missing — exactly what trips the ENOENT rename.
-    fs.writeFileSync(path.join(appOutDir, 'LICENSE.electron.txt'), 'x', 'utf8')
-    fs.writeFileSync(path.join(appOutDir, 'resources.pak'), 'x', 'utf8')
+    // electron binary missing â€” exactly what trips the ENOENT rename.
+    writeFixture(path.join(appOutDir, 'LICENSE.electron.txt'), 'x', 'utf8')
+    writeFixture(path.join(appOutDir, 'resources.pak'), 'x', 'utf8')
     fs.mkdirSync(path.join(appOutDir, 'resources'), { recursive: true })
-    fs.writeFileSync(path.join(appOutDir, 'resources', 'app.asar'), 'x', 'utf8')
+    writeFixture(path.join(appOutDir, 'resources', 'app.asar'), 'x', 'utf8')
 
     const removed = cleanStaleAppOutDir(appOutDir)
 
@@ -44,31 +51,26 @@ test('cleanStaleAppOutDir ignores empty or invalid input', () => {
   assert.equal(cleanStaleAppOutDir(42), false)
 })
 
-test('beforePack default export resolves even when cleanup throws', async () => {
-  // A directory path that rmSync can't remove is simulated by passing a
-  // context whose appOutDir is a file the hook will try (and be allowed) to
-  // remove; the contract under test is that the hook never rejects.
+test('beforePack default export resolves for an empty best-effort cleanup target', async () => {
   await assert.doesNotReject(beforePack({ appOutDir: '', electronPlatformName: 'linux' }))
 })
 
-// ─── Windows rollback preservation (#69179) ────────────────────────────────
+// â”€â”€â”€ Windows rollback preservation (#69179) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('preserveRollbackBackup moves a working build to .bak', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const appOutDir = path.join(tempRoot, 'win-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
-    fs.writeFileSync(path.join(appOutDir, 'Hermes.exe'), 'MZ-old-build', 'utf8')
-    fs.writeFileSync(path.join(appOutDir, 'resources.pak'), 'x', 'utf8')
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-old-build', 'utf8')
+    writeFixture(path.join(appOutDir, 'resources.pak'), 'x', 'utf8')
 
-    const preserved = preserveRollbackBackup(appOutDir, 'Hermes.exe')
+    const acquisition = preserveRollbackBackup(appOutDir, 'Hermes.exe')
 
-    assert.equal(preserved, true)
-    // Original slot vacated so electron-builder stages into a clean tree...
+    assert.equal(acquisition.status, PRESERVED)
     assert.equal(fs.existsSync(appOutDir), false)
-    // ...and the previous working build is intact under .bak for rollback.
     assert.equal(
-      fs.readFileSync(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'),
+      readFixture(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'),
       'MZ-old-build'
     )
   } finally {
@@ -81,28 +83,29 @@ test('preserveRollbackBackup replaces a stale .bak from an older update', () => 
   try {
     const appOutDir = path.join(tempRoot, 'win-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
-    fs.writeFileSync(path.join(appOutDir, 'Hermes.exe'), 'current', 'utf8')
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'current', 'utf8')
     fs.mkdirSync(`${appOutDir}.bak`, { recursive: true })
-    fs.writeFileSync(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'two-updates-ago', 'utf8')
+    writeFixture(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'two-updates-ago', 'utf8')
 
-    assert.equal(preserveRollbackBackup(appOutDir, 'Hermes.exe'), true)
-    assert.equal(fs.readFileSync(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'), 'current')
+    const acquisition = preserveRollbackBackup(appOutDir, 'Hermes.exe')
+
+    assert.equal(acquisition.status, PRESERVED)
+    assert.equal(readFixture(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'), 'current')
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
-test('preserveRollbackBackup refuses a partial tree missing the product exe', () => {
-  // The corrupted partial state (interrupted prior pack) must NOT become
-  // rollback material — it is exactly what cleanStaleAppOutDir exists to wipe.
+test('preserveRollbackBackup marks a partial tree safe to clean', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const appOutDir = path.join(tempRoot, 'win-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
-    fs.writeFileSync(path.join(appOutDir, 'LICENSE.electron.txt'), 'x', 'utf8')
+    writeFixture(path.join(appOutDir, 'LICENSE.electron.txt'), 'x', 'utf8')
 
-    assert.equal(preserveRollbackBackup(appOutDir, 'Hermes.exe'), false)
-    // Tree untouched; the caller's wipe path handles it.
+    const acquisition = preserveRollbackBackup(appOutDir, 'Hermes.exe')
+
+    assert.equal(acquisition.status, SAFE_TO_CLEAN)
     assert.equal(fs.existsSync(appOutDir), true)
     assert.equal(fs.existsSync(`${appOutDir}.bak`), false)
   } finally {
@@ -110,11 +113,14 @@ test('preserveRollbackBackup refuses a partial tree missing the product exe', ()
   }
 })
 
-test('preserveRollbackBackup ignores missing or invalid input', () => {
-  assert.equal(preserveRollbackBackup(''), false)
-  assert.equal(preserveRollbackBackup(undefined), false)
-  assert.equal(preserveRollbackBackup(null), false)
-  assert.equal(preserveRollbackBackup(path.join(os.tmpdir(), 'does-not-exist-xyz')), false)
+test('preserveRollbackBackup marks missing or invalid input safe to clean', () => {
+  assert.equal(preserveRollbackBackup('').status, SAFE_TO_CLEAN)
+  assert.equal(preserveRollbackBackup(undefined).status, SAFE_TO_CLEAN)
+  assert.equal(preserveRollbackBackup(null).status, SAFE_TO_CLEAN)
+  assert.equal(
+    preserveRollbackBackup(path.join(os.tmpdir(), 'does-not-exist-xyz')).status,
+    SAFE_TO_CLEAN
+  )
 })
 
 test('beforePack on win32 preserves the previous build instead of wiping it', async () => {
@@ -122,17 +128,203 @@ test('beforePack on win32 preserves the previous build instead of wiping it', as
   try {
     const appOutDir = path.join(tempRoot, 'win-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
-    fs.writeFileSync(path.join(appOutDir, 'Hermes.exe'), 'MZ-working', 'utf8')
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-working', 'utf8')
 
-    // No packager info in the context → default 'Hermes.exe' product name.
-    // node-pty staging is skipped because arch is not a number here.
     await beforePack({ appOutDir, electronPlatformName: 'win32' })
 
     assert.equal(fs.existsSync(appOutDir), false)
     assert.equal(
-      fs.readFileSync(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'),
+      readFixture(path.join(`${appOutDir}.bak`, 'Hermes.exe'), 'utf8'),
       'MZ-working'
     )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('beforePack retains an interrupted session backup instead of retiring it', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    const appOutDir = path.join(tempRoot, 'win-unpacked')
+    const backupDir = `${appOutDir}.bak`
+    const markerPath = `${backupDir}.session`
+    fs.mkdirSync(appOutDir, { recursive: true })
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-current-working', 'utf8')
+    fs.mkdirSync(backupDir, { recursive: true })
+    writeFixture(path.join(backupDir, 'Hermes.exe'), 'MZ-older-working', 'utf8')
+    writeFixture(markerPath, 'older-session\n', 'utf8')
+
+    // The older marker means an interrupted invocation; its backup is the
+    // rollback authority and must be adopted, not replaced or retired.
+    await beforePack(
+      { appOutDir, electronPlatformName: 'win32' },
+      {
+        rollbackSessionId: 'new-session',
+        rollbackOperations: {
+          clearRollbackSession() {
+            throw new Error('must not retire an interrupted backup marker')
+          }
+        }
+      }
+    )
+
+    assert.equal(fs.existsSync(appOutDir), false)
+    assert.equal(readFixture(path.join(backupDir, 'Hermes.exe'), 'utf8'), 'MZ-older-working')
+    assert.equal(readFixture(markerPath, 'utf8'), 'new-session\n')
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('beforePack fails closed when interrupted backup adoption fails', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    const appOutDir = path.join(tempRoot, 'win-unpacked')
+    const backupDir = `${appOutDir}.bak`
+    const markerPath = `${backupDir}.session`
+    fs.mkdirSync(appOutDir, { recursive: true })
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-current-working', 'utf8')
+    fs.mkdirSync(backupDir, { recursive: true })
+    writeFixture(path.join(backupDir, 'Hermes.exe'), 'MZ-older-working', 'utf8')
+    writeFixture(markerPath, 'older-session\n', 'utf8')
+
+    await assert.rejects(
+      beforePack(
+        { appOutDir, electronPlatformName: 'win32' },
+        {
+          rollbackSessionId: 'new-session',
+          rollbackOperations: {
+            writeRollbackSession() {
+              const error = new Error('simulated locked rollback session marker')
+              error.code = 'EPERM'
+              throw error
+            }
+          }
+        }
+      ),
+      error => {
+        assert.match(error.message, /refusing destructive Windows package replacement/)
+        assert.match(error.message, /existing-backup-adoption-failed/)
+        assert.match(error.message, /simulated locked rollback session marker/)
+        return true
+      }
+    )
+
+    assert.equal(readFixture(path.join(appOutDir, 'Hermes.exe'), 'utf8'), 'MZ-current-working')
+    assert.equal(readFixture(path.join(backupDir, 'Hermes.exe'), 'utf8'), 'MZ-older-working')
+    assert.equal(readFixture(markerPath, 'utf8'), 'older-session\n')
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('beforePack leaves the current app untouched when marker creation fails', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    const appOutDir = path.join(tempRoot, 'win-unpacked')
+    const backupDir = `${appOutDir}.bak`
+    let renameCalled = false
+    fs.mkdirSync(appOutDir, { recursive: true })
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-current-working', 'utf8')
+    writeFixture(path.join(appOutDir, 'resources.pak'), 'current-resources', 'utf8')
+
+    await assert.rejects(
+      beforePack(
+        { appOutDir, electronPlatformName: 'win32' },
+        {
+          rollbackSessionId: 'write-failure-session',
+          rollbackOperations: {
+            writeRollbackSession() {
+              const error = new Error('simulated rollback session write failure')
+              error.code = 'EACCES'
+              throw error
+            },
+            renameSync() {
+              renameCalled = true
+              throw new Error('rename must not run after marker failure')
+            }
+          }
+        }
+      ),
+      error => {
+        assert.match(error.message, /refusing destructive Windows package replacement/)
+        assert.match(error.message, /rollback-session-write-failed/)
+        assert.match(error.message, /simulated rollback session write failure/)
+        return true
+      }
+    )
+
+    assert.equal(renameCalled, false)
+    assert.equal(readFixture(path.join(appOutDir, 'Hermes.exe'), 'utf8'), 'MZ-current-working')
+    assert.equal(
+      readFixture(path.join(appOutDir, 'resources.pak'), 'utf8'),
+      'current-resources'
+    )
+    assert.equal(fs.existsSync(backupDir), false)
+    assert.equal(fs.existsSync(`${backupDir}.session`), false)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('beforePack clears the staged marker and leaves the current app when rename fails', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    const appOutDir = path.join(tempRoot, 'win-unpacked')
+    const backupDir = `${appOutDir}.bak`
+    fs.mkdirSync(appOutDir, { recursive: true })
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-current-working', 'utf8')
+
+    await assert.rejects(
+      beforePack(
+        { appOutDir, electronPlatformName: 'win32' },
+        {
+          rollbackSessionId: 'rename-failure-session',
+          rollbackOperations: {
+            renameSync() {
+              const error = new Error('simulated package rename failure')
+              error.code = 'EPERM'
+              throw error
+            }
+          }
+        }
+      ),
+      error => {
+        assert.match(error.message, /current-package-preservation-failed/)
+        assert.match(error.message, /simulated package rename failure/)
+        return true
+      }
+    )
+
+    assert.equal(readFixture(path.join(appOutDir, 'Hermes.exe'), 'utf8'), 'MZ-current-working')
+    assert.equal(fs.existsSync(backupDir), false)
+    assert.equal(fs.existsSync(`${backupDir}.session`), false)
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('preserveRollbackBackup reports blocked when rollback acquisition fails', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    const appOutDir = path.join(tempRoot, 'win-unpacked')
+    fs.mkdirSync(appOutDir, { recursive: true })
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-current-working', 'utf8')
+
+    const acquisition = preserveRollbackBackup(
+      appOutDir,
+      'Hermes.exe',
+      'blocked-session',
+      {
+        clearRollbackSession() {
+          throw new Error('cannot retire rollback slot')
+        }
+      }
+    )
+
+    assert.equal(acquisition.status, BLOCKED)
+    assert.equal(acquisition.reason, 'rollback-slot-retirement-failed')
+    assert.equal(readFixture(path.join(appOutDir, 'Hermes.exe'), 'utf8'), 'MZ-current-working')
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -143,7 +335,7 @@ test('beforePack on linux keeps the plain wipe (no .bak)', async () => {
   try {
     const appOutDir = path.join(tempRoot, 'linux-unpacked')
     fs.mkdirSync(appOutDir, { recursive: true })
-    fs.writeFileSync(path.join(appOutDir, 'Hermes.exe'), 'x', 'utf8')
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'x', 'utf8')
 
     await beforePack({ appOutDir, electronPlatformName: 'linux' })
 
@@ -151,5 +343,20 @@ test('beforePack on linux keeps the plain wipe (no .bak)', async () => {
     assert.equal(fs.existsSync(`${appOutDir}.bak`), false)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('an unreadable package is not treated as disposable partial output', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-pack-inspect-'))
+  try {
+    const output = path.join(root, 'win-unpacked')
+    fs.mkdirSync(output)
+    writeFixture(path.join(output, 'Hermes.exe'), 'original')
+    await assert.rejects(beforePack({ appOutDir: output, electronPlatformName: 'win32' }, {
+      rollbackOperations: { isWindowsPeExecutable() { throw Object.assign(new Error('inspection denied'), { code: 'EACCES' }) } }
+    }), /package-inspection-failed/)
+    assert.equal(readFixture(path.join(output, 'Hermes.exe')), 'original')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })

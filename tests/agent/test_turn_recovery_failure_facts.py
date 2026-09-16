@@ -347,6 +347,18 @@ class TestLiveCodexWallShape:
             d = _failure_discriminators(exc, _classified())
             assert d["failure_provider_code"] == "usage_limit_reached"
 
+    def test_sse_frame_does_not_normalize_malformed_error_type(self):
+        from agent.codex_runtime import _raise_stream_error
+
+        frame = {"type": "error", "error": {"type": " usage_limit_reached ", "message": "limit"}}
+        try:
+            _raise_stream_error(frame)
+            raise AssertionError("expected _raise_stream_error to raise")
+        except Exception as exc:
+            body = getattr(exc, "body", {})
+            assert body["error"]["type"] == " usage_limit_reached "
+            assert "failure_provider_code" not in _failure_discriminators(exc, _classified())
+
     def test_sse_generic_frame_keeps_placeholder_and_code_preference(self):
         from agent.codex_runtime import _raise_stream_error
         frame = {"type": "error", "message": "boom", "code": "server_error"}

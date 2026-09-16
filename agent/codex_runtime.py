@@ -570,13 +570,11 @@ def _raise_stream_error(event: Any) -> None:
     # nest it under ``error.type`` while the envelope's own ``type`` is just the generic ``error``
     # marker. Without this the token is lost to the classifier and the machine report.
     raw_type = _error_field("type")
-    if isinstance(raw_type, str):
-        raw_type = raw_type.strip()
     error_type = raw_type if isinstance(raw_type, str) and raw_type and raw_type != "error" else None
     if error_type is None and nested is not None:
         nested_type = _event_field(nested, "type")
-        if isinstance(nested_type, str) and nested_type.strip() and nested_type.strip() != "error":
-            error_type = nested_type.strip()
+        if isinstance(nested_type, str) and nested_type and nested_type != "error":
+            error_type = nested_type
     raise _StreamErrorEvent(message, code=_error_field("code"), param=_error_field("param"), error_type=error_type)
 
 

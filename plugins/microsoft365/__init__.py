@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from . import tools
-from .backend import CAPABILITIES, Microsoft365Settings
+from .backend import CAPABILITIES, AUTHENTICATION_MODE, Microsoft365Settings, operation_support, supported_operations, WRITE_OPERATIONS
 
 
 def _sdk_available() -> bool:
@@ -23,12 +23,40 @@ def register(ctx) -> None:
         check_fn=lambda: True, is_async=True, emoji="🧩",
     )
     enabled = ctx.get_config("capabilities", {}) or {}
-    settings = Microsoft365Settings.from_mapping({"capabilities": enabled})
+    settings = Microsoft365Settings.from_mapping({
+        "tenant_id": ctx.get_config("tenant_id", ""),
+        "client_id": ctx.get_config("client_id", ""),
+        "client_secret": ctx.get_config("client_secret", ""),
+        "user_id": ctx.get_config("user_id", "me"),
+        "capabilities": enabled,
+    })
+
+    def pre_tool_call(*, tool_name="", args=None, **kwargs):
+        prefix = "microsoft365_"
+        if not isinstance(tool_name, str) or not tool_name.startswith(prefix):
+            return None
+        capability = tool_name[len(prefix):]
+        if capability not in CAPABILITIES:
+            return None
+        if not isinstance(args, dict):
+            return {"action": "block", "message": f"Microsoft 365 {capability} call rejected: arguments must be an object"}
+        action = str(args.get("action") or "").strip().lower()
+        status = operation_support(AUTHENTICATION_MODE, capability, action)
+        if not status.supported:
+            return {"action": "block", "message": f"Microsoft 365 operation unsupported: {capability}.{action}: {status.reason}"}
+        if action not in settings.operations(capability):
+            return {"action": "block", "message": f"Microsoft 365 operation is disabled: {capability}.{action}"}
+        if action in WRITE_OPERATIONS:
+            return {"action": "approve", "message": f"Microsoft 365 {action}: external side effect", "rule_key": f"microsoft365.{capability}.{action}"}
+        return None
+
+    ctx.register_hook("pre_tool_call", pre_tool_call)
     for capability in CAPABILITIES:
         if not settings.enabled(capability):
             continue
+        operations = sorted(supported_operations(settings, capability))
         ctx.register_tool(
             name=f"microsoft365_{capability}", toolset="microsoft365",
-            schema=tools.schema(capability), handler=tools.capability_handler(capability),
+            schema=tools.schema(capability, operations), handler=tools.capability_handler(capability),
             check_fn=_sdk_available, is_async=True, emoji="📎",
         )

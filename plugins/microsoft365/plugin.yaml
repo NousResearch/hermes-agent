@@ -12,7 +12,7 @@ config_schema:
   tenant_id: {type: str, required: true, description: "Microsoft Entra tenant ID"}
   client_id: {type: str, required: true, description: "Microsoft Entra application/client ID"}
   client_secret: {type: str, required: true, secret: true, description: "Microsoft Entra application secret for client-credentials (app-only) Graph auth"}
-  user_id: {type: str, default: me, description: "Target Graph user ID for app-only user resources; configure an actual ID, not /me"}
+  user_id: {type: str, default: me, description: "Target Graph user ID for app-only user resources; configure an actual ID, not /me. SharePoint-only selections do not require this field."}
   capabilities:
     type: dict
     description: "Operation-level flags; service=true enables every operation for compatibility. Permissions are Microsoft Graph application roles, not delegated scopes."

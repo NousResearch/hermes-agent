@@ -22,9 +22,9 @@ capabilities:
   planner: {list_task_lists: true, search: true, read: true, create_tasks: true, update_tasks: false}
 ```
 
-The model sees one tool per enabled capability, and each tool's `action` enum contains the configured operation family. Disabled and unknown operations are rejected before Graph client creation. `microsoft365_preflight` is always local, reports the derived application permissions, and identifies operations unavailable in app-only mode. Service-level `true` remains supported and enables every operation for compatibility.
+The model sees one tool per enabled capability, and each tool's `action` enum contains only configured operations supported by the active application-only mode. Disabled, unsupported, and unknown operations are rejected before Graph client creation. The full operation catalog remains visible in configuration metadata, including disabled/unsupported selections and their reasons. `microsoft365_preflight` is local: it reports derived application permissions and identifies operations unavailable in app-only mode. Service-level `true` remains supported and enables every operation for compatibility.
 
-Supported operations are Outlook search/read/create draft/send; SharePoint and OneDrive search/read/download/upload; Calendar search/create/update events; Teams list teams/list channels/search/send messages; and Planner/To Do task-list search/read/create/update tasks. Reads use `get`; writes use generated SDK models and `post`, `patch`, or `put` request-builder methods. No raw Graph HTTP is used.
+Supported operations are Outlook search/read/create draft/send; SharePoint and OneDrive search/read/download/upload; Calendar search/create/update events; Teams list teams/list channels/search (message send is retained in the catalog but unsupported for app-only auth); and Planner/To Do task-list search/read/create/update tasks. Reads use `get`; writes use generated SDK models and `post`, `patch`, or `put` request-builder methods. No raw Graph HTTP is used.
 
 ## Authentication and permissions
 
@@ -50,6 +50,8 @@ Teams `send_messages` remains in the requested operation surface and is approval
 - Credentials are never included in tool results; returned objects are bounded and secret-key redacted.
 - The permission report is derived from enabled operations rather than requesting a blanket permission set.
 
+Preflight fields distinguish local readiness from remote checks: `ready`/`locally_ready` means required local fields, SDK availability, a real `user_id` for user resources, and supported selections are present. `authentication` and `permissions` remain `not_tested`; readiness does not prove token acquisition, tenant consent, endpoint access, or connectivity. This plugin does not currently wire preflight into a separate save/apply UI gate.
+
 Approval is a policy layer, not a sandbox. It does not limit what an already-authorized Entra application can do if the application has broader roles, and it cannot contain a compromised dependency or Graph service. Use least-privilege app registration, tenant controls, secret rotation, and endpoint/network controls as defense in depth.
 
 ## PR-facing rationale
@@ -58,6 +60,6 @@ This change keeps the full requested Microsoft 365 workflow surface while making
 
 ## Test evidence
 
-The targeted plugin tests pass with `py -3.11 -m pytest tests/plugins/test_microsoft365_plugin.py -q` (16 passed). They cover operation-specific least privilege, app-only permission names, delegated-permission non-claims, unsupported operation reporting, generated SDK models/request builders, disabled-operation rejection, and fail-closed approval before client creation. No credentials or network access are needed.
+The targeted plugin tests pass with `py -3.11 -m pytest tests/plugins/test_microsoft365_plugin.py -q` (20 passed). They cover operation-specific least privilege, app-only permission names, delegated-permission non-claims, unsupported operation reporting, generated SDK models/request builders, disabled-operation rejection, host-owned approval directives, and fail-closed approval before client creation. No credentials or network access are needed.
 
 The repository environment has Trio installed but does not have the `pytest-trio` plugin installed. Consequently these plugin tests exercise async handlers through `asyncio.run`; no Trio test run is claimed, and this limitation is not a hidden test failure.

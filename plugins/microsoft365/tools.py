@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import quote
 from tools.registry import tool_error, tool_result
-from .backend import CAPABILITIES, OPERATIONS, WRITE_OPERATIONS, Microsoft365Settings, create_graph_client, preflight, safe_result
+from .backend import CAPABILITIES, OPERATIONS, AUTHENTICATION_MODE, Microsoft365Settings, create_graph_client, operation_support, preflight, safe_result
 
 async def _maybe(value): return await value if inspect.isawaitable(value) else value
 
@@ -26,16 +26,6 @@ def _body(content: str):
     values = {"content": content};
     if body_type is not None: values["content_type"] = body_type
     return _model("ItemBody", **values)
-
-def _approved(capability, action, args):
-    try:
-        from tools.approval import request_tool_approval
-        result = request_tool_approval(f"microsoft365_{capability}", f"Microsoft 365 {action}: external side effect", rule_key=f"microsoft365.{capability}.{action}")
-        # Approval decisions belong to Hermes' host gate. Only its documented
-        # result shape is trusted; plugin-local strings cannot approve writes.
-        return isinstance(result, dict) and result.get("approved") is True
-    except Exception:
-        return False
 
 async def handle_preflight(args: dict, *, context=None, ctx=None, **kwargs): return tool_result(preflight(_settings(ctx or context)))
 def _settings(ctx):
@@ -62,9 +52,10 @@ def _drive_path(root, drive_id: str, path: str):
 async def _run(capability: str, args: dict, ctx) -> str:
     settings = _settings(ctx); action = str(args.get("action") or "").strip().lower()
     if capability not in CAPABILITIES: return tool_error(f"Unknown Microsoft 365 capability: {capability}")
-    if action not in OPERATIONS[capability]: return tool_error(f"Unknown {capability} operation: {action or '<missing>'}")
+    status = operation_support(AUTHENTICATION_MODE, capability, action)
+    if not status.supported:
+        return tool_error(f"Microsoft 365 operation unsupported: {capability}.{action}: {status.reason}")
     if action not in settings.operations(capability): return tool_error(f"Microsoft 365 operation is disabled: {capability}.{action}")
-    if action in WRITE_OPERATIONS and not _approved(capability, action, args): return tool_result({"required_confirmation": True, "capability": capability, "action": action, "message": "Explicit approval is required; no Microsoft 365 side effect was performed."})
     client = create_graph_client(settings); user = settings.user_id
     try:
         if capability == "outlook":
@@ -122,6 +113,8 @@ def capability_handler(capability):
     handler.__name__ = f"handle_microsoft365_{capability}"; return handler
 
 _COMMON = {"action":{"type":"string","enum":[]},"id":{"type":"string"},"site_id":{"type":"string"},"team_id":{"type":"string"},"channel_id":{"type":"string"},"list_id":{"type":"string"},"path":{"type":"string"},"query":{"type":"string"},"subject":{"type":"string"},"body":{"type":"string"},"to":{"type":"string"},"start":{"type":"string"},"end":{"type":"string"},"time_zone":{"type":"string"},"content":{"type":"string"}}
-def schema(capability):
-    props = {**_COMMON, "action": {"type":"string","enum":list(OPERATIONS[capability])}}
+def schema(capability, operations=None):
+    selected = OPERATIONS[capability] if operations is None else operations
+    selected = [op for op in selected if operation_support(AUTHENTICATION_MODE, capability, op).supported]
+    props = {**_COMMON, "action": {"type":"string","enum":list(selected)}}
     return {"name":f"microsoft365_{capability}","description":f"Microsoft 365 Plugin {capability} operations; writes require explicit approval.","parameters":{"type":"object","properties":props,"required":["action"]}}

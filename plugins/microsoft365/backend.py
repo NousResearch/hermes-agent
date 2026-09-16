@@ -31,6 +31,33 @@ OPERATION_PERMISSIONS = {
 # surface, but never claim a delegated-only role makes app-only auth work.
 UNSUPPORTED_APPLICATION_OPERATIONS = frozenset({"teams.send_messages"})
 SECRET_KEYS = frozenset({"client_secret", "access_token", "refresh_token"})
+
+
+@dataclass(frozen=True)
+class SupportStatus:
+    code: str
+    reason: str
+
+    @property
+    def supported(self) -> bool:
+        return self.code == "supported"
+
+
+def operation_support(auth_mode: str, capability: str, operation: str) -> SupportStatus:
+    """Return the one authoritative support decision for an operation."""
+    if capability not in OPERATIONS or operation not in OPERATIONS[capability]:
+        return SupportStatus("unknown_operation", f"Unknown Microsoft 365 operation: {capability}.{operation}")
+    if auth_mode in {AUTHENTICATION_MODE, APPLICATION_PERMISSION_MODE, "app_only", "application"} and f"{capability}.{operation}" in UNSUPPORTED_APPLICATION_OPERATIONS:
+        return SupportStatus("unsupported_auth_mode", "This operation is not supported with application-only authentication")
+    return SupportStatus("supported", "Supported by the configured authentication mode")
+
+
+def supported_operations(settings: "Microsoft365Settings", capability: str) -> set[str]:
+    return {op for op in settings.operations(capability) if operation_support(AUTHENTICATION_MODE, capability, op).supported}
+
+
+def _requires_user_id(capability: str) -> bool:
+    return capability != "sharepoint"
 WRITE_OPERATIONS = frozenset(op for ops in OPERATIONS.values() for op in ops if op in {"create_draft", "send", "upload_files", "create_events", "update_events", "send_messages", "create_tasks", "update_tasks"})
 
 @dataclass(frozen=True)
@@ -47,7 +74,8 @@ class Microsoft365Settings:
         for service, operations in OPERATIONS.items():
             value = flags.get(service, False)
             normalized[service] = {op: True for op in operations} if value is True else {op: bool(value.get(op, False)) for op in operations} if isinstance(value, Mapping) else {op: False for op in operations}
-        return cls(str(raw.get("tenant_id") or ""), str(raw.get("client_id") or ""), str(raw.get("client_secret") or ""), str(raw.get("user_id") or "me"), normalized)
+        user_id = "me" if "user_id" not in raw else str(raw.get("user_id") or "")
+        return cls(str(raw.get("tenant_id") or ""), str(raw.get("client_id") or ""), str(raw.get("client_secret") or ""), user_id, normalized)
     def operations(self, service: str) -> set[str]: return {op for op, enabled in self.capabilities.get(service, {}).items() if enabled}
     def enabled(self, service: str) -> bool: return bool(self.operations(service))
 
@@ -55,7 +83,7 @@ def required_permissions(settings: Microsoft365Settings) -> set[str]:
     return {p for service in CAPABILITIES for op in settings.operations(service) for p in OPERATION_PERMISSIONS[service][op]}
 
 def unsupported_operations(settings: Microsoft365Settings) -> list[str]:
-    return sorted(f"{service}.{op}" for service in CAPABILITIES for op in settings.operations(service) if f"{service}.{op}" in UNSUPPORTED_APPLICATION_OPERATIONS)
+    return sorted(f"{service}.{op}" for service in CAPABILITIES for op in settings.operations(service) if not operation_support(AUTHENTICATION_MODE, service, op).supported)
 
 def _redacted_settings(settings):
     return {"tenant_id": settings.tenant_id, "client_id": settings.client_id, "user_id": settings.user_id, "client_secret": "[redacted]" if settings.client_secret else "", "capabilities": {s: dict(v) for s, v in settings.capabilities.items()}}
@@ -65,8 +93,13 @@ def preflight(settings, *, sdk_available=None):
         try: import msgraph, azure.identity; sdk_available = True
         except ImportError: sdk_available = False
     missing = [k for k,v in (("tenant_id",settings.tenant_id),("client_id",settings.client_id),("client_secret",settings.client_secret)) if not v]
-    if not any(settings.enabled(s) for s in CAPABILITIES): missing.append("capabilities")
-    return {"ready": bool(sdk_available and not missing), "sdk_available": bool(sdk_available), "authentication_mode": AUTHENTICATION_MODE, "permission_mode": APPLICATION_PERMISSION_MODE, "graph_scope": GRAPH_DEFAULT_SCOPE, "missing": missing, "enabled_capabilities": [s for s in CAPABILITIES if settings.enabled(s)], "enabled_operations": {s: sorted(settings.operations(s)) for s in CAPABILITIES if settings.enabled(s)}, "required_permissions": sorted(required_permissions(settings)), "unsupported_operations": unsupported_operations(settings), "configuration": _redacted_settings(settings)}
+    selected = [s for s in CAPABILITIES if settings.enabled(s)]
+    if not selected: missing.append("capabilities")
+    if any(_requires_user_id(s) and not settings.user_id.strip() for s in selected): missing.append("user_id")
+    if any(_requires_user_id(s) and settings.user_id.strip().lower() == "me" for s in selected): missing.append("user_id")
+    unsupported = unsupported_operations(settings)
+    locally_ready = bool(sdk_available and not missing and not unsupported)
+    return {"ready": locally_ready, "locally_ready": locally_ready, "sdk_available": bool(sdk_available), "authentication": "not_tested", "permissions": "not_tested", "admin_consent": "required" if selected else "not_applicable", "authentication_mode": AUTHENTICATION_MODE, "permission_mode": APPLICATION_PERMISSION_MODE, "graph_scope": GRAPH_DEFAULT_SCOPE, "missing": sorted(set(missing)), "enabled_capabilities": selected, "enabled_operations": {s: sorted(settings.operations(s)) for s in selected}, "required_permissions": sorted(required_permissions(settings)), "unsupported_operations": unsupported, "configuration": _redacted_settings(settings)}
 
 def create_graph_client(settings):
     try:

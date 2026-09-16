@@ -221,7 +221,10 @@ export async function scanVenvBlockers(
   const venvPython = resolveFn(updateRoot)
 
   if (!venvPython) {
-    return { kind: 'probe-failure', error: 'venv python not found' }
+    return {
+      kind: 'probe-failure',
+      error: `venv python not found under ${path.join(updateRoot, 'venv')} or ${path.join(updateRoot, '.venv')}`
+    }
   }
 
   let stdout: string
@@ -259,12 +262,29 @@ export async function scanVenvBlockers(
 // Internal helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
-/** Resolve the venv python path.  Returns null if the file does not exist. */
+/** Resolve the supported venv directory, preserving legacy ``venv`` precedence. */
+export function resolveVenvDir(updateRoot: string): string {
+  for (const venvName of ['venv', '.venv']) {
+    const candidate = path.join(updateRoot, venvName)
+
+    try {
+      if (fs.statSync(candidate).isDirectory()) {
+        return candidate
+      }
+    } catch {
+      // Try the next supported venv layout.
+    }
+  }
+
+  return path.join(updateRoot, 'venv')
+}
+
+/** Resolve the venv python path. Returns null if the selected runtime is missing. */
 export function resolveVenvPython(updateRoot: string): string | null {
   const isWindows = process.platform === 'win32'
   const pythonName = isWindows ? 'python.exe' : 'python3'
   const scriptsDir = isWindows ? 'Scripts' : 'bin'
-  const candidate = path.join(updateRoot, 'venv', scriptsDir, pythonName)
+  const candidate = path.join(resolveVenvDir(updateRoot), scriptsDir, pythonName)
 
   try {
     fs.accessSync(candidate)
@@ -309,6 +329,15 @@ export function formatBlockerMessage(result: VenvBlockerScanResult): string {
  * Build a probe-failure error message.
  */
 export function formatProbeFailedMessage(error?: string): string {
+  if (error?.startsWith('venv python not found')) {
+    return (
+      'Update aborted: Desktop could not find the Python interpreter in this Hermes installation.' +
+      '\n\n' +
+      `${error}.\n` +
+      'Repair the installation, then retry the update.'
+    )
+  }
+
   const timeoutDetail = error?.startsWith('timed out after')
     ? `\n\nThe verification scan ${error}; no blocking process was confirmed.`
     : ''

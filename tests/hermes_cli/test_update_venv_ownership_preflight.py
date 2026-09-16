@@ -52,15 +52,14 @@ def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
         venv / "lib" / "python3.12" / "site-packages"
         / "hermes_agent-1.0.0.dist-info" / "INSTALLER"
     )
-    real_uid = update_cmd._path_uid
-
     def fake_uid(path):
         if str(path) == installer:
             return 0  # simulate root-owned sudo-pip residue
-        return real_uid(path)
+        return 12345
 
     monkeypatch.setattr(update_cmd, "_path_uid", fake_uid)
     monkeypatch.setattr(update_cmd_deps, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps.os, "geteuid", lambda: 12345, raising=False)
     foreign = update_cmd._venv_foreign_owned_paths(venv)
     assert foreign == [(installer, 0)]
 
@@ -68,17 +67,17 @@ def test_foreign_owned_dist_info_child_detected(tmp_path, monkeypatch):
 def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
     venv = _make_fake_venv(tmp_path)
     hermes_bin = str(venv / "bin" / "hermes")
-    real_uid = update_cmd._path_uid
     monkeypatch.setattr(
         update_cmd,
         "_path_uid",
-        lambda p: 0 if str(p) == hermes_bin else real_uid(p),
+        lambda p: 0 if str(p) == hermes_bin else 12345,
     )
     monkeypatch.setattr(
         update_cmd_deps,
         "_path_uid",
-        lambda p: 0 if str(p) == hermes_bin else real_uid(p),
+        lambda p: 0 if str(p) == hermes_bin else 12345,
     )
+    monkeypatch.setattr(update_cmd_deps.os, "geteuid", lambda: 12345, raising=False)
     with pytest.raises(SystemExit) as exc:
         update_cmd._refuse_update_if_venv_foreign_owned(tmp_path)
     assert exc.value.code == 1
@@ -87,6 +86,29 @@ def test_foreign_owned_refuses_with_chown_hint(tmp_path, monkeypatch, capsys):
     assert "owner uid 0" in out
     assert f"sudo chown -R $(id -un): {tmp_path}" in out
     assert "Nothing in the venv was modified." in out
+
+
+def test_foreign_owned_preflight_scans_dot_venv(tmp_path, monkeypatch):
+    venv = _make_fake_venv(tmp_path)
+    dot_venv = tmp_path / ".venv"
+    venv.rename(dot_venv)
+    installer = str(
+        dot_venv / "lib" / "python3.12" / "site-packages"
+        / "hermes_agent-1.0.0.dist-info" / "INSTALLER"
+    )
+    def fake_uid(path):
+        if str(path) == installer:
+            return 0
+        return 12345
+
+    monkeypatch.setattr(update_cmd, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps, "_path_uid", fake_uid)
+    monkeypatch.setattr(update_cmd_deps.os, "geteuid", lambda: 12345, raising=False)
+
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._refuse_update_if_venv_foreign_owned(tmp_path)
+
+    assert exc.value.code == 1
 
 
 def test_limit_caps_reported_paths(tmp_path, monkeypatch):

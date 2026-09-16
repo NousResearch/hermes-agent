@@ -88,3 +88,32 @@ def test_handoff_venv_repair_finishes_node_and_web_phase(tmp_path):
     update_node.assert_called_once_with()
     m.return_value._build_web_ui.assert_called_once_with(project_root / "web")
     completion.assert_called_once_with("✓ Update complete!")
+
+
+def test_handoff_venv_repair_recreates_selected_dot_venv(tmp_path):
+    project_root = tmp_path / "hermes"
+    (project_root / ".venv").mkdir(parents=True)
+
+    with (
+        patch.object(update_cmd.subprocess, "run") as run,
+        patch.object(update_cmd, "_pip_install_prefix", return_value=(["uv", "pip"], None)),
+        patch.object(update_cmd, "_venv_core_imports_healthy", return_value=(True, "ok")),
+        patch.object(update_cmd, "_write_update_incomplete_marker"),
+        patch.object(update_cmd, "_repair_node_deps_on_current_checkout", return_value=True),
+        patch("hermes_cli.managed_uv.ensure_uv", return_value="uv"),
+        patch.object(update_cmd, "_m") as m,
+    ):
+        m.return_value.PROJECT_ROOT = project_root
+        m.return_value._is_windows.return_value = True
+        complete = update_cmd._repair_venv_on_current_checkout(
+            assume_yes=True,
+            gateway_mode=False,
+            pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False,
+            active_lazy_features=(),
+            active_tool_dependencies=(),
+            _windows_gateway_resume=None,
+        )
+
+    assert complete is True
+    run.assert_called_once_with(["uv", "venv", ".venv"], cwd=project_root, check=False)

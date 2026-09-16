@@ -61,6 +61,7 @@ if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
 }
 
 $ErrorActionPreference = "Continue"
+. (Join-Path $PSScriptRoot "venv-path.ps1")
 # Foreground helpers: the script is spawned via `cmd start /min`, so its
 # WinForms window comes up backgrounded unless we explicitly claim focus --
 # and after the update we must hand focus TO the relaunched Desktop (a
@@ -1483,7 +1484,8 @@ try {
     }
 
     # Check only the interpreter here: dependency recovery belongs to update.
-    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    $venvDir = Resolve-HermesVenvDir $InstallRoot
+    $pythonExe = Join-Path $venvDir "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
         $finalCode = 3
         $finalMsg = "Update aborted: $pythonExe is missing. Repair the installation and review antivirus quarantine before retrying."
@@ -1514,7 +1516,7 @@ try {
 
     # -- 2. Wait for the venv shim to unlock (FAIL CLOSED) ------------------
     Publish-UiProgress "Preparing Hermes files"
-    $shim = Join-Path $InstallRoot "venv\Scripts\hermes.exe"
+    $shim = Join-Path $venvDir "Scripts\hermes.exe"
     if (Test-Path -LiteralPath $shim) {
         $unlocked = $false
         $deadline = (Get-Date).AddSeconds(20)
@@ -1533,7 +1535,7 @@ try {
             # Something still maps the venv. --force-ing past it guarantees a
             # half-updated venv (the exact 2026-08-09 Access-denied brick).
             $finalCode = 5
-            $finalMsg = "Update aborted: another process is still holding the Hermes install open (venv\Scripts\hermes.exe locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
+            $finalMsg = "Update aborted: another process is still holding the Hermes install open ($shim locked after 20s). Nothing was changed. Close other Hermes windows/terminals and try again."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }
@@ -1577,7 +1579,7 @@ try {
     #
     # posix.sh is deliberately left alone: unlinking a running executable is
     # legal there, so the equivalent call is harmless.
-    $pythonExe = Join-Path $InstallRoot "venv\Scripts\python.exe"
+    $pythonExe = Join-Path $venvDir "Scripts\python.exe"
     if (-not (Test-Path -LiteralPath $pythonExe)) {
         $finalCode = 3
         $finalMsg = "Update aborted: $pythonExe is missing. The install needs repair (run the Hermes installer or `hermes doctor`)."

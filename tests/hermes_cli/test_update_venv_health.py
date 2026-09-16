@@ -120,6 +120,22 @@ def test_detect_venv_python_prefetches_only_cheap_process_fields(_winp, tmp_path
 
 
 @patch.object(cli_main, "_is_windows", return_value=True)
+def test_detect_venv_python_matches_dot_venv_install(_winp, tmp_path):
+    dot_venv = tmp_path / ".venv"
+    dot_venv.mkdir()
+    venv_py = str(dot_venv / "Scripts" / "python.exe")
+    holder = _proc(104, venv_py, "python.exe", [venv_py, "-m", "hermes_cli.main", "serve"])
+    me = MagicMock()
+    me.parents.return_value = []
+    fake_psutil = types.SimpleNamespace(process_iter=lambda attrs: iter([holder]), Process=lambda *a, **k: me)
+
+    with patch.object(cli_main, "PROJECT_ROOT", tmp_path), patch.dict(sys.modules, {"psutil": fake_psutil}):
+        matches = cli_main._detect_venv_python_processes()
+
+    assert [match[0] for match in matches] == [104]
+
+
+@patch.object(cli_main, "_is_windows", return_value=True)
 def test_detect_venv_python_keeps_external_interpreter_fallback(_winp, tmp_path):
     external = _proc(
         103,

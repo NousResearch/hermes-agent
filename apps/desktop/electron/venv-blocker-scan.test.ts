@@ -18,6 +18,7 @@ import {
   formatBlockerMessage,
   formatProbeFailedMessage,
   parseVenvBlockerScanOutput,
+  resolveVenvDir,
   resolveVenvPython,
   scanVenvBlockers,
   stopSafeVenvBlockers
@@ -46,6 +47,40 @@ describe('resolveVenvPython', () => {
 
   it('returns null for non-existent venv', () => {
     assert.equal(resolveVenvPython('/nonexistent'), null)
+  })
+
+  it('falls back to .venv while keeping venv precedence', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-dot-vt-'))
+    const scriptsDir = process.platform === 'win32' ? 'Scripts' : 'bin'
+    const pythonName = process.platform === 'win32' ? 'python.exe' : 'python3'
+
+    try {
+      const dotPython = path.join(sandbox, '.venv', scriptsDir, pythonName)
+      fs.mkdirSync(path.dirname(dotPython), { recursive: true })
+      fs.writeFileSync(dotPython, '')
+      assert.equal(resolveVenvPython(sandbox), dotPython)
+      assert.equal(resolveVenvDir(sandbox), path.join(sandbox, '.venv'))
+
+      const plainPython = path.join(sandbox, 'venv', scriptsDir, pythonName)
+      fs.mkdirSync(path.dirname(plainPython), { recursive: true })
+      fs.writeFileSync(plainPython, '')
+      assert.equal(resolveVenvPython(sandbox), plainPython)
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
+  })
+
+  it('does not bypass a broken legacy venv for a sibling .venv', () => {
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-vt-precedence-'))
+
+    try {
+      fs.mkdirSync(path.join(sandbox, 'venv'), { recursive: true })
+      fs.mkdirSync(path.join(sandbox, '.venv'), { recursive: true })
+      assert.equal(resolveVenvDir(sandbox), path.join(sandbox, 'venv'))
+      assert.equal(resolveVenvPython(sandbox), null)
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true })
+    }
   })
 })
 
@@ -80,6 +115,13 @@ describe('formatProbeFailedMessage', () => {
     const msg = formatProbeFailedMessage('timed out after 60 seconds')
     assert.ok(msg.includes('timed out after 60 seconds'))
     assert.ok(msg.includes('no blocking process was confirmed'))
+  })
+
+  it('reports a missing interpreter as an install-layout problem', () => {
+    const msg = formatProbeFailedMessage('venv python not found under C:\\Hermes\\venv or C:\\Hermes\\.venv')
+    assert.ok(msg.includes('could not find the Python interpreter'))
+    assert.ok(msg.includes('C:\\Hermes\\.venv'))
+    assert.ok(!msg.includes('Close other Hermes windows'))
   })
 })
 

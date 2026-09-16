@@ -4,6 +4,7 @@ Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) s
 in ``tools.memory_tool`` and is read lazily."""
 
 import logging
+import os
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -198,7 +199,9 @@ class MemoryStore:
 
         for target in ("memory", "user"):
             path = self._path_for(target)
-            path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+
+            mkdir_under_hermes_home(path.parent)
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
@@ -219,11 +222,28 @@ class MemoryStore:
         from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
         lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+
+        mkdir_under_hermes_home(lock_path.parent)
         if fcntl is None and msvcrt is None:
             yield
             return
-        with open(lock_path, "a+", encoding="utf-8") as fd:
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        raw_fd = os.open(lock_path, flags, 0o600)
+        try:
+            # The creation mode is filtered through the process umask and does
+            # not repair a lock left loose by an older Hermes process. Tighten
+            # the opened inode before acquiring the lock so both cases are
+            # owner-only. Operating on the fd avoids a path-swap window.
+            if hasattr(os, "fchmod"):
+                os.fchmod(raw_fd, 0o600)
+            fd = os.fdopen(raw_fd, "r+", encoding="utf-8")
+        except Exception:
+            os.close(raw_fd)
+            raise
+        with fd:
             def _flock(unlock: bool):
                 if fcntl:
                     fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)
@@ -290,7 +310,9 @@ class MemoryStore:
                 return result
             extra = result[2] if len(result) > 2 else {}
             self._set_entries(target, result[0])
-            path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+
+            mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
             return self._success_response(target, result[1], extra=extra)
 

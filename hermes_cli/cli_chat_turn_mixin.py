@@ -22,6 +22,11 @@ from typing import Optional
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
+    # Last completed turn's raw agent result. chat() returns only the rendered
+    # response string, so one-shot callers that must map an outcome onto a
+    # process exit code (see cli._run_single_query_mode) read this instead.
+    _last_turn_result = None
+
     def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
@@ -35,7 +40,7 @@ class CLIChatTurnMixin:
         the concise voice-response prefix, #65827)
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
-        from tools.process_registry_notifications import SubagentNotification
+        from tools.process_registry_notifications import TimelineNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
@@ -57,7 +62,7 @@ class CLIChatTurnMixin:
             return None
         message = self._chat_route_images(message, images)
 
-        if isinstance(message, str) and not isinstance(message, SubagentNotification):
+        if isinstance(message, str) and not isinstance(message, TimelineNotification):
             message, blocked = self._chat_expand_context_references(message)
             if blocked is not None:
                 return blocked
@@ -66,7 +71,7 @@ class CLIChatTurnMixin:
             message = _sanitize_surrogates(message)
 
         self._chat_stage_user_message(agent, message)
-        if isinstance(message, SubagentNotification):
+        if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
@@ -207,9 +212,9 @@ class CLIChatTurnMixin:
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = stamp_message_timestamp({"role": "user", "content": message})
-            from tools.process_registry_notifications import SubagentNotification
-            if isinstance(message, SubagentNotification):
-                staged_user_message.update(content=str(message), display_kind="async_delegation_complete",
+            from tools.process_registry_notifications import TimelineNotification
+            if isinstance(message, TimelineNotification):
+                staged_user_message.update(content=str(message), display_kind=message.display_kind,
                                            display_metadata={"display_text": message.display_text})
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
@@ -331,8 +336,12 @@ class CLIChatTurnMixin:
         except Exception as exc:
             logging.error("run_conversation raised: %s", exc, exc_info=True)
             _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
+            from hermes_cli.cli_chat_error_copy import chat_error_response
             turn.result = {
-                "final_response": f"Error: {_summary}", "messages": [], "api_calls": 0,
+                "final_response": chat_error_response(
+                    exc, provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
+                    model=str(getattr(self.agent, "model", "") or self.model or "")),
+                "messages": [], "api_calls": 0,
                 "completed": False, "failed": True, "error": _summary,
             }
         finally:
@@ -437,6 +446,7 @@ class CLIChatTurnMixin:
             self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
             self._prompt_start_time = None
         self._last_turn_finished_at = time.time()  # status bar idle time
+        self._last_turn_result = turn.result
         # AsyncOpenAI clients bound to the worker's now-closed loop would crash
         # prompt_toolkit's loop from __del__ on GC.
         try:
@@ -476,7 +486,12 @@ class CLIChatTurnMixin:
         response = turn.result.get("final_response", "") if turn.result else ""
         # "failed"/"partial" with an empty final_response: no usable answer.
         if turn.result and (turn.result.get("failed") or turn.result.get("partial")) and not response:
-            response = f"Error: {turn.result.get('error', 'Unknown error')}"
+            from hermes_cli.cli_chat_error_copy import chat_error_response
+            response = chat_error_response(
+                str(turn.result.get("error") or "Unknown error"),
+                provider=str(getattr(self.agent, "provider", "") or self.provider or ""),
+                model=str(getattr(self.agent, "model", "") or self.model or ""),
+                failure_reason=turn.result.get("failure_reason"))
             # Stop continuous voice on persistent errors (e.g. 429) — else error→record→error loops.
             if self._voice_continuous:
                 self._voice_continuous = False
@@ -525,13 +540,27 @@ class CLIChatTurnMixin:
                         all_parts.append(extra)
                 except queue.Empty:
                     break
-            combined = "\n".join(all_parts)
+            # Payloads may be (text, images) tuples when the message carried image
+            # attachments (bundled at cli_tui_mixin._tui_on_enter); unpack them here —
+            # "\n".join(all_parts) raises TypeError on a tuple and the outer
+            # handler swallows it, silently dropping the interrupt (#110737).
+            text_parts: list[str] = []
+            image_parts: list = []
+            for part in all_parts:
+                if isinstance(part, tuple):
+                    part_text, part_images = part
+                    text_parts.append(part_text)
+                    image_parts.extend(part_images or [])
+                else:
+                    text_parts.append(part)
+            combined = "\n".join(text_parts)
+            payload = (combined, image_parts) if image_parts else combined
             preview = combined[:50] + ("..." if len(combined) > 50 else "")
             if len(all_parts) > 1:
                 print(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
             else:
                 print(f"\n⚡ Sending after interrupt: '{preview}'")
-            self._pending_input.put(combined)
+            self._pending_input.put(payload)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None

@@ -189,7 +189,7 @@ def _todo_state_from_history(history) -> dict | None:
 
 
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
-    from tools.tool_gateway.names import is_connector_name
+    from tools.connectors import is_connector_name
 
     if name == "manage_connections" or is_connector_name(name):
         return True

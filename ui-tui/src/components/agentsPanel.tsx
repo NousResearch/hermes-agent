@@ -1,11 +1,11 @@
 import { Box, stringWidth, Text, useStdout } from '@hermes/ink'
+import { mix } from '@hermes/shared/color'
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { $agentDockCollapsed, useAgentRoster } from '../app/agentRoster.js'
 import { $uiState } from '../app/uiStore.js'
 import { type AgentRows, buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
-import { mix } from '../lib/color.js'
 import { statusGlyph } from '../lib/subagentGlyph.js'
 import { fmtDuration } from '../lib/subagentTree.js'
 import { compactPreview } from '../lib/text.js'

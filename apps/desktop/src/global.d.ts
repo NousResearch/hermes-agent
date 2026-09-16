@@ -368,13 +368,13 @@ declare global {
       /** One-shot loopback callback listener for MCP OAuth against remote
        *  backends (electron/mcp-oauth-callback-ipc.ts): bind on THIS machine,
        *  pass redirectUri as client_redirect_uri to mcp.servers.oauth.start,
-       *  await the provider redirect, relay code/state via oauth.callback. */
+       *  await the provider redirect, relay code/state/iss via oauth.callback. */
       mcpOauth?: {
         listen: () => Promise<{ id: string; redirectUri: string }>
         wait: (
           id: string,
           timeoutMs?: number
-        ) => Promise<{ code: null | string; error: null | string; state: null | string }>
+        ) => Promise<{ code: null | string; error: null | string; iss: null | string; state: null | string }>
         cancel: (id: string) => Promise<boolean>
       }
       openPreviewInBrowser?: (url: string) => Promise<void>
@@ -1299,6 +1299,10 @@ export interface HermesApiRequest {
   // fails fast without spawning a child or consuming a pool slot, so background
   // tile reconciles cannot starve interactive opens.
   passive?: boolean
+  // An interactive Settings scope selection may cold-start a profile backend.
+  // Keep that intent separate from passive hydration so the pool can reserve a
+  // slot for the user's visible request.
+  priority?: 'foreground'
 }
 
 export interface HermesPreviewTarget {

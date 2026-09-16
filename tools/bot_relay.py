@@ -21,13 +21,13 @@ import re
 import shlex
 import shutil
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from tools.bot_mode_probe import _default_home, _hermes_root
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -86,21 +86,13 @@ def relay_root(root: Path | str) -> Path:
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
     for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
-        (base / sub).mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(base / sub)
     return base
 
 
-def _atomic_write_json(target: Path, payload: Any, *, prefix: str, sort_keys: bool = False) -> None:
-    """tempfile + os.replace so readers never see a partial file; tempfile removed on failure."""
-    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, sort_keys=sort_keys)
-        os.replace(tmp, target)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+def _atomic_write_json(target: Path, payload: Any, *, sort_keys: bool = False) -> None:
+    atomic_json_write(target, payload, indent=None, sort_keys=sort_keys, mode=0o600)
 
 
 def _bot_mode_cfg(key: str, *, loader: str) -> Any:
@@ -145,8 +137,7 @@ def write_remote_roster(root: Path | str, rows: Any) -> int:
     for norm in filter(None, map(_normalize_roster_row, rows if isinstance(rows, list) else [])):
         by_key.setdefault((norm["connection_id"], norm["profile"]), norm)
     cleaned = [by_key[k] for k in sorted(by_key)]
-    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned},
-                       prefix=".roster-", sort_keys=True)
+    _atomic_write_json(base / ROSTER_FILE, {"updated_at": int(time.time()), "agents": cleaned}, sort_keys=True)
     return len(cleaned)
 
 
@@ -229,7 +220,7 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
     }
-    _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope, prefix=".env-")
+    _atomic_write_json(base / OUTBOX_DIR / f"{envelope['id']}.json", envelope)
     return envelope
 
 
@@ -289,8 +280,7 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
 
         code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
-    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code},
-                       prefix=".rep-")
+    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
     return path
 
 
@@ -415,13 +405,34 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
             "is_bot": True}
 
 
-def delivery_env(author: Optional[dict]) -> dict[str, str]:
-    """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
-    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
-    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+def _delivery_child_session_env_names() -> "tuple[str, ...]":
+    """Session-bound env names to strip from a delivery child, from ``gateway.session_context``.
 
-    env = dict(os.environ)
+    Synced with the session binding surface as vars are added; deliberately NOT a
+    ``HERMES_SESSION_*`` prefix match, which would also strip non-identity knobs
+    (e.g. ``HERMES_SESSION_STALL_TIMEOUT``)."""
+    from gateway.session_context import _VAR_MAP
+
+    return tuple(_VAR_MAP)
+
+
+def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = None) -> dict[str, str]:
+    """Environment for one delivery turn's ``hermes -p <profile>`` child. The dispatcher's own
+    HERMES_TURN_AUTHOR is dropped first so a delivery without an author never inherits the author of the turn
+    that sent it. Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
+    dropped too: a nested recipient that ``message_agent``s onward must not stamp that grandchild
+    notify with the grandparent's key, or the live recipient never resumes. The child runs the target
+    profile's Bot Chat turn, so it starts from THAT profile's env (``served_profile_child_env``: launch
+    profile ``.env`` / TERMINAL_* residue dropped, target secrets overlaid), never the multiplexer's raw
+    ``os.environ``; ``-p`` alone only pinned HERMES_HOME. ``profile_home`` is the target's home when the
+    caller knows it (relay RPC, roster); otherwise the active override."""
+    from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
+    from tools.environments.local import served_profile_child_env
+
+    env = served_profile_child_env(base=os.environ, target_home=profile_home, inherit_credentials=True)
     env.pop(TURN_AUTHOR_ENV, None)
+    for name in _delivery_child_session_env_names():
+        env.pop(name, None)
     if author:
         env.update(turn_author_env(author))
     return env

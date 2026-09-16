@@ -171,6 +171,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
     if (hotServed) {
       window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+
       return
     }
 
@@ -418,7 +419,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       if (!ok) {
         setRestartNeeded(true)
-        notifyError(new Error(m.restartFailedManual), m.restartFailedManual)
+        notify({
+          kind: 'error',
+          title: m.restartFailedManual,
+          message: m.restartFailedManualDetail,
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          secondaryAction: { label: m.openLogs, onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined) }
+        })
       }
 
       void refreshPlatforms(true)
@@ -1023,6 +1030,19 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 
 function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
   const { t } = useI18n()
+
+  // A served secondary's api_server/webhook live on the shared gateway listener under
+  // /p/<profile>/: the state pill says connected, this line says where to point the client.
+  if (platform.ingress_url) {
+    return (
+      <p className="mt-2 text-xs leading-5 text-muted-foreground break-all">
+        {t.messaging.sharedListenerUrl}{' '}
+        <code className="font-mono text-foreground" data-slot="ingress-url">
+          {platform.ingress_url}
+        </code>
+      </p>
+    )
+  }
 
   if (!platform.enabled || platform.state === 'connected') {
     return null

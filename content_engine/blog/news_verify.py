@@ -14,21 +14,69 @@ from __future__ import annotations
 from typing import Any
 
 
+def _tavily_key() -> str:
+    """TAVILY_API_KEY from env; fall back to reading ~/.hermes/.env once."""
+    import os
+    from pathlib import Path
+
+    key = (os.environ.get("TAVILY_API_KEY") or "").strip()
+    if key:
+        return key
+    env_path = Path.home() / ".hermes" / ".env"
+    try:
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("TAVILY_API_KEY=") and "export " not in line[:8]:
+                key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if key:
+                    os.environ["TAVILY_API_KEY"] = key
+                    return key
+    except Exception:
+        pass
+    return ""
+
+
 def _web_search(query: str, max_results: int = 3) -> list[dict[str, str]]:
     """Run a web search for `query`, return up to `max_results` snippets.
 
-    Uses DuckDuckGo's free Lite API (no API key required) through its HTML
-    endpoint. Falls back to a simple requests-based HTML scrape, which may be
-    unreliable. On any failure returns [] so the caller never gets fabricated
-    evidence.
-
-    Returns a list of dicts with keys 'title', 'snippet', 'url'.
+    Primary: Tavily API (house key in ~/.hermes/.env) — reliable and the same
+    backend the agent's web_search tool uses. Fallback: DuckDuckGo lite HTML
+    scrape (may be rate-limited/blocked; these days often returns an anti-bot
+    page). On any failure returns [] so the caller never gets fabricated
+    evidence. Never prints credentials.
     """
     import re
-    import urllib.parse
 
     import requests
 
+    results: list[dict[str, str]] = []
+
+    # --- Primary: Tavily ---
+    key = _tavily_key()
+    if key:
+        try:
+            session = requests.Session()
+            session.trust_env = False  # bypass stale HTTP(S)_PROXY env
+            resp = session.post(
+                "https://api.tavily.com/search",
+                json={"query": query, "max_results": max_results,
+                      "search_depth": "basic"},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                for r in (resp.json().get("results") or [])[:max_results]:
+                    results.append({
+                        "title": str(r.get("title") or "").strip(),
+                        "snippet": str(r.get("content") or "").strip()[:500],
+                        "url": str(r.get("url") or "").strip(),
+                    })
+                if results:
+                    return results
+        except Exception:
+            pass
+
+    # --- Fallback: DuckDuckGo lite scrape (best-effort) ---
     url = "https://lite.duckduckgo.com/lite/"
     data = {"q": query}
     headers = {
@@ -42,7 +90,6 @@ def _web_search(query: str, max_results: int = 3) -> list[dict[str, str]]:
         if resp.status_code != 200:
             return []
         # Parse the HTML table rows for results.
-        results: list[dict[str, str]] = []
         # Look for result rows: <tr class="result">...</tr>
         for row in re.findall(
             r'<tr class="result".*?</tr>', resp.text, re.DOTALL

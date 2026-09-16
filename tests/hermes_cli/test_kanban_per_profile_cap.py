@@ -104,3 +104,37 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     assert res2.spawned[0][0] != spawned_id  # different task this time
 
 
+def test_cap_counts_running_workers_on_other_boards(isolated_kanban_home_with_profiles):
+    """A profile at cap on board A is still at cap when board B ticks.
+
+    The cap protects the PROFILE (its local model / API quota / browser pool),
+    which no board owns alone: seeded from the ticking board's own DB, one
+    running worker per board reads as "under cap" on every board and the cap
+    multiplies by the number of active boards. An assignee nobody is running
+    stays dispatchable, so the cap is per-profile, not a global freeze.
+    """
+    kb = isolated_kanban_home_with_profiles
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    # Board A: one alpha worker already in flight.
+    with kbc.connect_closing(board="busy-board") as conn:
+        kb.create_board(slug="busy-board", name="Busy")
+        busy_id = kb.create_task(conn, title="alpha running elsewhere", assignee="alpha")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (busy_id,))
+
+    # Board B ticks with cap=1: its own DB has no running worker, but alpha is
+    # already at cap host-wide.
+    with kbc.connect_closing(board="idle-board") as conn:
+        kb.create_board(slug="idle-board", name="Idle")
+        kb.create_task(conn, title="alpha here", assignee="alpha")
+        kb.create_task(conn, title="beta here", assignee="beta")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=True,
+            board="idle-board", max_in_progress_per_profile=1,
+        )
+
+    assert [s[1] for s in res.spawned] == ["beta"]
+    assert [c[1] for c in res.skipped_per_profile_capped] == ["alpha"]
+

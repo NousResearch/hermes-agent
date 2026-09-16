@@ -2248,3 +2248,40 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).toBe('open')
   })
 })
+
+describe('window-state IPC before the first connection publishes (#108641)', () => {
+  it('a fullscreen toggle that lands while getConnection is still pending reaches the published connection', async () => {
+    // Main snapshots chrome state into the descriptor at mint time; a toggle
+    // that fires after the mint but before the renderer publishes it is newer
+    // than the snapshot and used to be dropped because $connection was null.
+    let windowState: ((payload: Record<string, unknown>) => void) | null = null
+    const pending = deferred<Record<string, unknown>>()
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(() => pending.promise),
+      onWindowStateChanged: vi.fn((callback: (payload: Record<string, unknown>) => void) => {
+        windowState = callback
+
+        return () => undefined
+      })
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()).toBeNull()
+
+    act(() => windowState?.({ isFullscreen: true, nativeOverlayWidth: 0, windowButtonPosition: null }))
+    expect($connection.get()).toBeNull()
+
+    await act(async () => {
+      pending.resolve({ ...primaryConn, isFullscreen: false, windowButtonPosition: { x: 12, y: 16 } })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($connection.get()?.isFullscreen).toBe(true)
+    expect($connection.get()?.windowButtonPosition).toBeNull()
+  })
+})

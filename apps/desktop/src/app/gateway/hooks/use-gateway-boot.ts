@@ -10,7 +10,7 @@ import {
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
-import type { DesktopBootProgress, HermesConnection } from '@/global'
+import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
@@ -199,7 +199,20 @@ export function useGatewayBoot({
     let cancelled = false
     const desktop = window.hermesDesktop
 
+    // Window-state IPC (fullscreen / traffic-light position) that lands while
+    // no connection is published — mid-boot, or between a dropped primary and
+    // its fallback resolving — has nowhere to merge into. Main snapshots the
+    // chrome state into each descriptor at mint time, so a toggle that happens
+    // AFTER the mint but BEFORE the renderer publishes it is newer than the
+    // snapshot and would otherwise be lost until the next toggle (#108641).
+    let pendingWindowState: HermesWindowState | null = null
+
     const publish = (next: HermesConnection | null) => {
+      if (next && pendingWindowState) {
+        next = { ...next, ...pendingWindowState }
+        pendingWindowState = null
+      }
+
       callbacksRef.current.onConnectionReady(next)
       setConnection(next)
       desktop?.setActiveConnectionRoute?.(
@@ -1108,6 +1121,8 @@ export function useGatewayBoot({
 
       if (current) {
         publish({ ...current, ...payload })
+      } else {
+        pendingWindowState = payload
       }
     })
 

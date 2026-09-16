@@ -17,6 +17,68 @@ def _apply(patch: str, root: Path):
     return apply_v4a_operations(operations, file_ops)
 
 
+@pytest.mark.parametrize("phase", ["batch", "candidate", "apply"])
+def test_existing_binary_add_is_rejected(tmp_path: Path, phase: str):
+    from tools.patch_parser import _apply_add, _validate_operations
+
+    good = tmp_path / "good.txt"
+    binary = tmp_path / "existing.bin"
+    original = b"\x00ORIGINAL-BYTES\xff"
+    good.write_text("old\n")
+    binary.write_bytes(original)
+    file_ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    read = file_ops.read_file_raw(str(binary))
+    assert read.is_binary and read.error
+    operations, error = parse_v4a_patch(
+        f"*** Begin Patch\n*** Update File: {good}\n@@\n-old\n+new\n"
+        f"*** Add File: {binary}\n+replacement text\n*** End Patch\n"
+    )
+    assert error is None
+    if phase == "batch":
+        result = file_ops.patch_v4a(
+            f"*** Begin Patch\n*** Update File: {good}\n@@\n-old\n+new\n"
+            f"*** Add File: {binary}\n+replacement text\n*** End Patch\n"
+        )
+        assert result.success is False
+        assert "no files were modified" in (result.error or "")
+        assert not result.files_created and not result.files_modified
+    elif phase == "candidate":
+        assert _validate_operations(operations, file_ops)
+    else:
+        assert _apply_add(operations[-1], file_ops)[0] is False
+    assert good.read_text() == "old\n"
+    assert binary.read_bytes() == original
+
+
+@pytest.mark.parametrize("error", [
+    "Failed to read file: Permission denied",
+    "Terminal environment unavailable: could not stat target",
+    "Not a regular file: target",
+    "Failed to read file: File not found: target",
+])
+def test_add_read_failures_do_not_authorize_writes(error):
+    from tools.file_operations_common import ReadResult
+    from tools.patch_parser import _apply_add, _validate_operations
+
+    operations, parse_error = parse_v4a_patch("*** Add File: target\n+new")
+    assert parse_error is None
+    file_ops = MagicMock()
+    file_ops.read_file_raw.return_value = ReadResult(error=error)
+    assert error in "\n".join(_validate_operations(operations, file_ops))
+    assert error in _apply_add(operations[0], file_ops)[1]
+    file_ops.write_file.assert_not_called()
+    file_ops.validate_write_candidate.assert_not_called()
+
+
+def test_missing_add_target_is_created(tmp_path: Path):
+    target = tmp_path / "new.txt"
+    file_ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    assert file_ops.read_file_raw(str(target)).error == f"File not found: {target}"
+    result = file_ops.patch_v4a(f"*** Add File: {target}\n+new")
+    assert result.success
+    assert target.read_text() == "new"
+
+
 def test_invalid_structured_candidate_blocks_entire_batch(tmp_path: Path):
     good = tmp_path / "good.txt"
     structured = tmp_path / "config.json"

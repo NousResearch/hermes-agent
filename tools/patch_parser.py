@@ -161,6 +161,16 @@ def _candidate_validation_error(
         return f"candidate preflight raised {type(exc).__name__}: {exc}"
 
 
+def _is_missing_read_error(error: Optional[str]) -> bool:
+    """Recognize the backend's missing diagnostic, not arbitrary read failures.
+
+    ShellFileOperations emits 'File not found: <expanded path>'; the bare
+    spelling is retained for the removed-path overlay and duck-typed backends.
+    """
+    return isinstance(error, str) and (
+        error.lower() == "file not found" or error.startswith("File not found: "))
+
+
 def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> List[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
@@ -254,8 +264,11 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
             # the MOVE destination guard. Overlay-aware: an Add after a Delete of the
             # same path in this patch stays legal, and the added content enters the
             # overlay so later hunks against it validate.
-            if not _read(op.file_path)[1]:
+            _, read_error = _read(op.file_path)
+            if not read_error:
                 errors.append(f"{op.file_path}: file already exists — use Update File, not Add File")
+            elif not _is_missing_read_error(read_error):
+                errors.append(f"{op.file_path}: {read_error}")
             else:
                 removed_paths.discard(op.file_path)
                 pending_content[op.file_path] = '\n'.join(
@@ -354,6 +367,8 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
     read_back = file_ops.read_file_raw(op.file_path)
     if not read_back.error:
         return _fail(f"{op.file_path}: file already exists — use Update File, not Add File")
+    if not _is_missing_read_error(read_back.error):
+        return _fail(f"{op.file_path}: {read_back.error}")
     content_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == '+']
     result = file_ops.write_file(op.file_path, '\n'.join(content_lines))
     diff = f"--- /dev/null\n+++ b/{op.file_path}\n" + '\n'.join(f"+{line}" for line in content_lines)

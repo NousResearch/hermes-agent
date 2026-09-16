@@ -117,14 +117,16 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
     "replaced": (
         "the session database file was replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes gateway stop`), run `hermes doctor` — not `hermes doctor --fix`, which "
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
+        "`hermes {profile_arg}doctor --fix`, which "
         "would repair the wrong file in place — then start it again and send your message "
         "once more. Advanced recovery steps are in the log."
     ),
     "deleted_wal": (
         "the session database was changed or replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes gateway stop`), run `hermes doctor`, then start it again and send your "
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start it "
+        "again and send your "
         "message once more. Advanced recovery steps are in the log."
     ),
     "corrupt": (
@@ -163,7 +165,8 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
 _PERSISTENCE_DEFAULT_EXPLANATION = (
     "Hermes couldn't save this conversation, so it stopped rather than lose your messages. "
     "Possible causes: the drive is out of room, or another Hermes process is holding the "
-    "database. Close other Hermes windows, run `hermes doctor` to check storage, then send "
+    "database. Close other Hermes windows, run `hermes {profile_arg}doctor` to check storage, "
+        "then send "
     "your message again."
 )
 
@@ -366,19 +369,22 @@ class TurnExplainersMixin:
         if body is not None and "{model}" in body:
             body = body.format(model=model or "The model")
         if body is None and reason == "session_persistence_failed":
-            from hermes_constants import display_hermes_home
+            from hermes_constants import display_hermes_home, profile_cli_selector
 
-            body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
-                persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            ).replace("{home}", display_hermes_home())
+            # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
+            # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
+            # process default, and a bare `hermes` follows active_profile (#105887).
+            body = (
+                _PERSISTENCE_CAUSE_EXPLANATIONS.get(
+                    persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
+                )
+                .replace("{home}", display_hermes_home())
+                .replace("{profile_arg}", profile_cli_selector())
+            )
             if persistence_cause in ("corrupt", "fts_index"):
-                # Copy-pasteable, so name the store that actually failed and pin the profile:
-                # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
-                # the process default, and a bare `hermes` follows active_profile (#105887).
-                from hermes_constants import get_default_hermes_root, profile_cli_selector
+                from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 
-                body = body.replace("{profile_arg}", profile_cli_selector())
                 body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")

@@ -304,9 +304,17 @@ def map_cache_path_to_container(host_path: str, container_base: str = "/root/.he
 
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:
-    """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless Docker + cache dir."""
-    if _terminal_backend() != "docker":
-        return container_path
+    """Reverse an active backend's known cache mounts; leave unrelated paths alone."""
+    backend = _terminal_backend()
+    if backend not in {"docker", "apple_container"}:
+        try:
+            from agent.terminal_env_registry import provider_flag
+            plugin_base = provider_flag(backend, "cache_path_base", None)
+        except Exception:
+            plugin_base = None
+        if not plugin_base:
+            return container_path
+        container_base = str(plugin_base)
     mapped = _remap_cache_path(container_path, container_base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
     return mapped if mapped is not None else container_path
 
@@ -321,6 +329,7 @@ def _terminal_backend() -> str:
     backend, never the launch profile's process env)."""
     from tools.terminal_scope import terminal_env
     return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
+
 
 
 def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.hermes") -> str:
@@ -340,7 +349,7 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     backend = _terminal_backend()
     if backend in _HOME_RELATIVE_BACKENDS:
         container_base = "~/.hermes"
-    elif backend not in ("docker", "modal"):
+    elif backend not in ("docker", "modal", "apple_container"):
         try:
             from agent.terminal_env_registry import provider_flag
             plugin_base = provider_flag(backend, "cache_path_base", None)

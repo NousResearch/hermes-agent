@@ -110,6 +110,33 @@ def _probe_daytona_backend(_cfg) -> tuple:
     return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
 
 
+def _probe_apple_container_backend(_cfg) -> tuple:
+    from tools.environments.apple_container import (
+        container_system_status,
+        find_container_cli,
+        is_apple_container_supported_host,
+    )
+
+    if not is_apple_container_supported_host():
+        return (
+            "unavailable",
+            "Apple Container requires macOS 26 or later on Apple Silicon (arm64).",
+        )
+    executable = find_container_cli()
+    if not executable:
+        return (
+            "needs_setup",
+            "Apple Container CLI not found — install it manually.",
+        )
+    running, _detail = container_system_status(executable)
+    if not running:
+        return (
+            "needs_setup",
+            "Apple Container system is stopped — run `container system start` manually.",
+        )
+    return ("ready", "")
+
+
 _BACKEND_PROBES = {
     "local": lambda _cfg: ("ready", ""),
     "docker": _probe_docker_backend,
@@ -117,6 +144,7 @@ _BACKEND_PROBES = {
     "ssh": _probe_ssh_backend,
     "modal": _probe_modal_backend,
     "daytona": _probe_daytona_backend,
+    "apple_container": _probe_apple_container_backend,
 }
 
 
@@ -659,7 +687,12 @@ async def select_terminal_backend(
     def _run():
         with config_write_scope(body.profile or profile):
             config = load_config()
-            _dict_section(config, "terminal")["backend"] = backend
+            terminal_cfg = _dict_section(config, "terminal")
+            if backend == "apple_container":
+                status, detail = _probe_terminal_backend(backend, terminal_cfg)
+                if status == "unavailable":
+                    raise _bad_request(detail or "Apple Container is unavailable on this host.")
+            terminal_cfg["backend"] = backend
             save_config(config)
 
     await asyncio.to_thread(_run)

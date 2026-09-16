@@ -51,7 +51,7 @@ def terminal_backend_unavailable_reason() -> Optional[str]:
 
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
+_BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, apple_container, ssh"
 
 # Config -> kwargs shapers, driven by (out_key, config_key, default) tables. The container table's
 # (key, default) literal is intentionally greppable; tools/terminal_tool.py keeps its own for the AST test.
@@ -62,6 +62,8 @@ _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 51
 _CONTAINER_KEYS = (
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
     ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
+    ("apple_container_image", "python:3.11-slim-bookworm"),
+    ("apple_container_volumes", []), ("apple_container_extra_args", []),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
@@ -83,8 +85,10 @@ def _ssh_config_from_config(config: Dict[str, Any]) -> dict:
 
 
 def _container_config_from_config(config: Dict[str, Any]) -> dict:
-    """``container_config`` for :func:`_create_environment` (shared with the lazy ``ensure_task_env``)."""
-    return {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
+    """Shared defaults plus provider-specific keys without a private caller subset."""
+    shaped = {k: config.get(k, d) for k, d in _CONTAINER_KEYS}
+    shaped.update({key: value for key, value in config.items() if key not in shaped})
+    return shaped
 
 
 def _resources(cc: Dict[str, Any]) -> dict:
@@ -153,6 +157,22 @@ def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
         except AttributeError:
             pass
     return docker_env_obj
+
+
+def _build_apple_container_env(*, image, cwd, timeout, cc, task_id, **_):
+    from tools.environments.apple_container import AppleContainerEnvironment
+
+    return AppleContainerEnvironment(
+        image=image or cc.get("apple_container_image", "python:3.11-slim-bookworm"),
+        cwd=cwd,
+        timeout=timeout,
+        cpu=cc.get("container_cpu", 1),
+        memory=cc.get("container_memory", 5120),
+        persistent_filesystem=cc.get("container_persistent", True),
+        task_id=task_id,
+        volumes=cc.get("apple_container_volumes", []),
+        extra_args=cc.get("apple_container_extra_args", []),
+    )
 
 
 def _build_modal_env(*, image, cwd, timeout, cc, task_id, **_):
@@ -229,7 +249,7 @@ def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
 # Built-in backend -> builder. Anything else is looked up in the plugin registry.
 _ENV_BUILDERS = {"local": _build_local_env, "docker": _build_docker_env, "singularity": _build_singularity_env,
                  "modal": _build_modal_env, "daytona": _build_daytona_env, "vercel_sandbox": _build_vercel_env,
-                 "ssh": _build_ssh_env}
+                 "ssh": _build_ssh_env, "apple_container": _build_apple_container_env}
 
 
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
@@ -296,6 +316,17 @@ def _daytona_post(config: Dict[str, Any]) -> bool:
     return get_secret("DAYTONA_API_KEY") is not None
 
 
+def _check_apple_container_requirements(config):
+    from tools.environments.apple_container import _ensure_container_available
+
+    try:
+        _ensure_container_available()
+    except (RuntimeError, OSError) as exc:
+        logger.error("Apple Container is unavailable: %s", exc)
+        return False
+    return True
+
+
 _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
@@ -306,6 +337,7 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
               "module": ("modal", "modal is required for direct modal terminal backend: pip install modal")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
+    "apple_container": {"pre": _check_apple_container_requirements},
 }
 
 

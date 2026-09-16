@@ -69,7 +69,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
   }, [refresh])
 
   async function handleSelect(backend: TerminalBackendInfo) {
-    if (backend.active || selecting) {
+    if (backend.active || backend.status === 'unavailable' || selecting) {
       return
     }
 
@@ -128,7 +128,7 @@ export function TerminalBackendPanel({ onConfiguredChange }: TerminalBackendPane
                 ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
                 : 'border-transparent bg-background/55 hover:bg-accent/40'
             )}
-            disabled={selecting !== null}
+            disabled={backend.status === 'unavailable' || selecting !== null}
             key={backend.name}
             onClick={() => void handleSelect(backend)}
             type="button"

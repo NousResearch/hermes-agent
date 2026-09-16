@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+
 import tools.skills_tool as skills_tool_module
 from tools.skills_tool import (
     _get_required_environment_variables,
@@ -752,7 +753,7 @@ class TestSkillViewPrerequisites:
 
     @pytest.mark.parametrize(
         "backend",
-        ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox"],
+        ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox", "apple_container"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend

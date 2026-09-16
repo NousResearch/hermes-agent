@@ -313,8 +313,11 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        "apple_container_image": "python:3.11-slim-bookworm",
+        "apple_container_volumes": [],
+        "apple_container_extra_args": [],
         "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
-        # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
+        # Container limits (docker, singularity, modal, daytona, vercel_sandbox, apple_container; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)

@@ -4,6 +4,7 @@ import os
 import json
 import types
 
+import pytest
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
@@ -249,3 +250,63 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
     assert defaults["    Vercel project ID"] == "linked-project"
     assert defaults["    Vercel team ID"] == "linked-team"
+
+
+def test_apple_container_setup_on_supported_host_is_non_mutating(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+    selected = {}
+
+    def choose(question, choices, default=0):
+        if question == "Select terminal backend:":
+            label = next(label for label in choices if label.startswith("Apple Container"))
+            selected["label"] = label
+            return choices.index(label)
+        raise AssertionError(f"Unexpected prompt: {question}")
+
+    monkeypatch.setattr(
+        "tools.environments.apple_container.is_apple_container_supported_host", lambda: True
+    )
+    monkeypatch.setattr(setup_mod, "prompt_choice", choose)
+    monkeypatch.setattr("tools.environments.apple_container.find_container_cli", lambda: "/container")
+    status_calls = []
+    monkeypatch.setattr(
+        "tools.environments.apple_container.container_system_status",
+        lambda executable=None: status_calls.append(executable) or (False, "stopped"),
+        raising=False,
+    )
+
+    setup_mod.setup_terminal_backend(config)
+
+    terminal = config["terminal"]
+    assert selected["label"].startswith("Apple Container")
+    assert terminal["backend"] == "apple_container"
+    assert terminal["apple_container_image"] == "python:3.11-slim-bookworm"
+    assert terminal["container_cpu"] == 4
+    assert terminal["container_memory"] == 5120
+    assert terminal["container_persistent"] is True
+    assert terminal["apple_container_volumes"] == []
+    assert terminal["apple_container_extra_args"] == []
+    assert status_calls == ["/container"]
+    assert "container system start" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("keep_current", [False, True])
+def test_apple_container_choice_is_omitted_on_unsupported_host(monkeypatch, keep_current):
+    config = load_config()
+    seen = []
+
+    def choose(question, choices, default=0):
+        seen.extend(choices)
+        return len(choices) - 1 if keep_current else 0
+
+    monkeypatch.setattr(
+        "tools.environments.apple_container.is_apple_container_supported_host", lambda: False
+    )
+    monkeypatch.setattr(setup_mod, "prompt_choice", choose)
+
+    setup_mod.setup_terminal_backend(config)
+
+    assert not any(label.startswith("Apple Container") for label in seen)

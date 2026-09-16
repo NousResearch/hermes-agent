@@ -142,7 +142,7 @@ def _check_git_and_rg(should_fix: bool, f: Finding) -> None:
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
 
 
-_BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh"}
+_BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "managed_modal", "daytona", "vercel_sandbox", "ssh", "apple_container"}
 
 
 def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
@@ -224,6 +224,28 @@ def _check_vercel_backend(issues: list[str]) -> None:
                if persistent else "Vercel persistence: ephemeral filesystem")
 
 
+def _check_apple_container_backend(issues: list[str]) -> None:
+    from tools.environments.apple_container import (
+        container_system_status,
+        find_container_cli,
+        is_apple_container_supported_host,
+    )
+
+    if not is_apple_container_supported_host():
+        return _fail_and_issue(
+            "Apple Container requires macOS 26 or later on Apple Silicon (arm64)", "",
+            "Use macOS 26 or later on Apple Silicon for Apple Container", issues)
+    container_bin = find_container_cli()
+    if not container_bin:
+        return _fail_and_issue(
+            "container CLI not found", "(required for TERMINAL_ENV=apple_container)",
+            "Install Apple Container manually (requires macOS 26+ on Apple Silicon)", issues)
+    running, _detail = container_system_status(container_bin)
+    _require(running, ("Apple Container", "(system running)"),
+             ("Apple Container system not running", ""),
+             "Start manually with: container system start", issues)
+
+
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
         from hermes_cli.plugins import discover_plugins
@@ -239,12 +261,15 @@ def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
         _require(ok, (label, detail), (label, detail), detail.strip("()"), issues)
 
 
-_BACKEND_CHECKS = {"ssh": _check_ssh_backend, "daytona": _check_daytona_backend, "vercel_sandbox": _check_vercel_backend}
+_BACKEND_CHECKS = {
+    "ssh": _check_ssh_backend, "daytona": _check_daytona_backend,
+    "vercel_sandbox": _check_vercel_backend, "apple_container": _check_apple_container_backend,
+}
 
 
 @doctor_check()
 def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
-    """Docker/SSH/Daytona/Vercel/plugin terminal backends, gated on TERMINAL_ENV."""
+    """Docker/SSH/Daytona/Vercel/Apple/plugin terminal backends, gated on TERMINAL_ENV."""
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     try:
         from hermes_constants import is_container as _is_container

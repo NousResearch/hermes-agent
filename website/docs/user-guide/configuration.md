@@ -210,11 +210,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, an Apple Container Linux VM, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | apple_container | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
@@ -250,6 +250,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
+| **apple_container** | Per-task Linux VM through Apple's `container` CLI | VM boundary | Native sandboxing on Apple Silicon Macs |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
@@ -366,6 +367,15 @@ terminal:
 
 **`terminal.docker_extra_args`** (also overridable via `TERMINAL_DOCKER_EXTRA_ARGS='["--gpus=all"]'`) lets you pass arbitrary `docker run` flags that Hermes doesn't surface as first-class keys — `--gpus`, `--network`, `--add-host`, alternative `--security-opt` overrides, etc. Each entry must be a string; the list is appended last to the assembled `docker run` invocation so it can override Hermes' defaults if needed. Use sparingly — flags that conflict with the sandbox hardening (capability drops, `--user`, the workspace bind mount) will silently weaken isolation.
 
+Host-access approval also accounts for mounts passed through
+`terminal.docker_extra_args`, including Docker's short-option forms and
+CSV `--mount` values. Inherited volumes (`--volumes-from`) and explicitly
+selected volume drivers/options conservatively enable normal approval guards.
+Ordinary named and anonymous volumes without those options retain the isolated
+fast path. The detector does not inspect a daemon's pre-created volume registry
+or prove complete sandbox isolation. Ambiguous mount-like arguments may require
+approval or be denied under unattended deny policies.
+
 **`terminal.docker_network`** (default `true`; env: `TERMINAL_DOCKER_NETWORK`) — set to `false` to run the sandbox container with `--network=none`, cutting off all network egress from agent commands. This applies to the execution container used by `terminal`, `execute_code`, and the file tools. Because containers persist across Hermes processes, flipping this to `false` while an older networked container exists will remove that container and start a fresh air-gapped one (a warning is logged); background processes running inside it are lost. Prefer this key over passing `--network=none` through `docker_extra_args`.
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle). Podman is supported out of the box: set `HERMES_DOCKER_BINARY=podman` (or the full path) to force it when both are installed.
@@ -433,6 +443,76 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 | `TERMINAL_TEMP_DIR` | `temp_dir` | Session temp root (local backend) |
 | `TERMINAL_TIMEOUT` | `timeout` | Per-command timeout |
 | `HERMES_DOCKER_BINARY` | _none_ | Force a specific docker/podman binary path |
+
+### Apple Container Backend
+
+Apple Container runs terminal, file, and `execute_code` operations for a task inside one Linux VM-backed container. It requires macOS 26 or later on Apple Silicon. Install Apple Container yourself and start its system service manually before selecting the backend:
+
+```bash
+container system start
+```
+
+Hermes setup, doctor, and Desktop only inspect the CLI and service status. They do not install software or start the service.
+
+```yaml
+terminal:
+  backend: apple_container
+  apple_container_image: "python:3.11-slim-bookworm"
+  apple_container_volumes:
+    - "/absolute/host/data:/workspace/data"
+    - "/absolute/host/config:/workspace/config:ro"
+  apple_container_extra_args:       # Extra flags inserted before the image
+    - "--network"
+    - "none"
+  container_cpu: 4
+  container_memory: 5120
+  container_persistent: true
+  timeout: 180
+```
+
+User-declared volumes use `HOST:TARGET` or `HOST:TARGET:ro`. They are writable unless explicitly suffixed with `:ro`. Both paths must be absolute. Hermes automatically exposes configured credential files, skill directories, and cache directories with structured read-only bind mounts; persistent `/workspace` and `/root` storage remains writable.
+
+Commands execute in Linux, not on the macOS host. Host paths such as `/Users/name/project` and host-only tools are not directly available unless you explicitly mount them. The initial backend is one container per Hermes task; multi-container Compose-style services are not supported.
+
+The live container belongs to the Hermes process that created it. Hermes keeps
+an attached input pipe open to a bash keepalive. After startup, if the owner
+exits (including SIGKILL), the pipe closes and the keepalive exits. Apple
+Container then automatically stops and removes the container without waiting
+for Hermes to restart. Normal cleanup also retains explicit stop/delete
+fallbacks.
+
+`container_persistent: true` preserves the host-backed `/workspace` and `/root`
+directories, not running guest processes. Custom images must provide `bash`
+on PATH; Hermes overrides the image entrypoint to implement this lifetime
+contract. This does not remove historical orphan containers or leftover host
+credential-staging directories. Runtime-service failures may still require
+operator recovery.
+
+`terminal.apple_container_extra_args` passes additional `container run` flags verbatim immediately before the image. Use `["--network", "none"]` to disable network access or add extra `--tmpfs` mounts. Every entry must be a string without control characters. Use this escape hatch carefully: flags that conflict with Hermes' generated read-only, resource, or mount options can weaken the sandbox.
+
+Approval classification treats raw Apple `--mount`/`--volume` options and
+supported short volume forms as potential host access. It intentionally does
+not apply Docker's mount defaults to Apple. Dedicated `--tmpfs` and unrelated
+network options keep the isolated fast path when no host mounts are configured.
+
+Lifecycle controls are reserved: extra arguments cannot replace the container
+name or entrypoint, request detached or TTY operation, or insert an option
+terminator (`--`). Reserved-looking tokens are rejected even when used as
+another flag's value. For nonempty extras, Hermes checks option/flag boundaries
+against the installed CLI's `container run --experimental-dump-help` metadata
+before creating a container. Unknown options, missing or empty values,
+positional image/command tokens, and bare `-` are rejected. Supply option
+values as separate entries or explicit nonempty single-short/long `=value` forms, such as
+`["-c", "1"]`, `["-c=1"]`, or `["-v=/tmp:/mnt"]`; joined-short forms like
+`-c1` and `-v/tmp:/mnt` are rejected. Short boolean flags may precede a final
+value-taking option only with a separate value, such as `["-iv", "/tmp:/mnt"]`.
+Clustered `=value` forms such as `-iv=/tmp:/mnt` and `-ic=1` are rejected.
+Use `--option=-value` for dash-leading values. Unavailable or unsupported
+metadata fails validation closed; remove the extras or use a CLI with
+supported metadata. Network, resource, and mount options remain available;
+invalid runtime values still fail startup and trigger cleanup.
+
+Environment overrides are `TERMINAL_APPLE_CONTAINER_IMAGE`, `TERMINAL_APPLE_CONTAINER_VOLUMES`, and `TERMINAL_APPLE_CONTAINER_EXTRA_ARGS` (the two list-valued settings use JSON arrays). Shared `TERMINAL_CONTAINER_CPU`, `TERMINAL_CONTAINER_MEMORY`, `TERMINAL_CONTAINER_PERSISTENT`, and `TERMINAL_TIMEOUT` overrides also apply.
 
 ### SSH Backend
 

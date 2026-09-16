@@ -350,6 +350,27 @@ def begin_iteration(
     agent._api_call_count = api_call_count
     agent._touch_activity(f"starting API call #{api_call_count}")
 
+    # Common per-request managed-route guard (design §12: "best-effort revocation
+    # generation check before each subsequent managed request"). cli.py's startup
+    # enforcement (_enforce_kanban_routing_receipt) only proves the route once,
+    # before the turn's FIRST call; every later iteration of this same tool loop
+    # is a "subsequent request" that must be re-checked here, fail-closed, before
+    # any content for THIS iteration is built or sent. No-op for an agent with no
+    # receipt wired (unmanaged agents unchanged).
+    from agent.managed_route_guard import enforce_managed_route_per_request
+
+    _route_block_reason = enforce_managed_route_per_request(agent)
+    if _route_block_reason is not None:
+        _turn_exit_reason = f"managed_route_blocked({_route_block_reason})"
+        if not agent.quiet_mode:
+            agent._safe_print(
+                f"\n⛔ Managed routing guard blocked this request "
+                f"({_route_block_reason}) — stopping before it reaches the provider."
+            )
+        api_call_count -= 1
+        agent._api_call_count = api_call_count
+        return _verdict("break")
+
     # Grace call: budget exhausted but the model gets one more call. Consume the
     # flag so the loop exits after this iteration regardless of outcome.
     if agent._budget_grace_call:

@@ -4318,6 +4318,15 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
         logger.error("guided-routing enforcement blocked this Kanban worker: %s", exc)
         return False
     _disable_inherited_fallback_for_managed_run(agent, receipt_id)
+    # Stash what the per-request guard needs to re-validate every SUBSEQUENT
+    # request in this same managed turn (design §12: "best-effort revocation
+    # generation check before each subsequent managed request") — the loop
+    # itself has no notion of receipts/origin homes, so the exact values this
+    # startup check just proved are carried on the agent for
+    # ``agent/managed_route_guard.py::enforce_managed_route_per_request`` to
+    # reuse without re-deriving them (and without importing cli.py).
+    agent._managed_routing_receipt_id = receipt_id
+    agent._managed_routing_home = routing_home
     return True
 
 

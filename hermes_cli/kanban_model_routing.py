@@ -318,6 +318,8 @@ def enforce_worker_route(
     actual_model: str,
     actual_endpoint: Optional[str],
     actual_reasoning: Optional[str],
+    record_outcome: bool = True,
+    outcome_kind: str = "routing_started",
 ) -> None:
     """The worker-side half of the guard (design §4 step 7, §12 "Claim/start/
     crash sequence" step 5): called from the actual Kanban worker process immediately
@@ -327,6 +329,12 @@ def enforce_worker_route(
     (revoked/stale decision, a code path that silently substituted a different
     route, etc.) — the worker must stop before sending task content, never
     silently fall back to whatever it was actually constructed with.
+
+    ``record_outcome=False`` skips the append-only outcome write. Callers that
+    re-run this same check before EVERY subsequent request in a managed turn
+    (design §12: "best-effort revocation generation check before each
+    subsequent managed request") pass this so the receipt's outcome log grows
+    once per turn's first call, not once per iteration.
     """
     decision = get_receipt(hermes_home, receipt_id)
     if decision is None:
@@ -338,10 +346,11 @@ def enforce_worker_route(
     # Emergency revocation (design §12 "Availability, budget, reasoning and
     # revocation": "best-effort revocation generation check before each
     # subsequent managed request; it never substitutes another model").
-    # Already-in-flight requests cannot be recalled -- this is the one
-    # checkpoint before the FIRST request, so a policy edited/suspended after
-    # the claim but before this worker's first inference must still stop it,
-    # never silently launch under a routing that is no longer current.
+    # Already-in-flight requests cannot be recalled -- this checkpoint runs
+    # before the FIRST request AND before every later request in the same
+    # managed turn, so a policy edited/suspended between requests must still
+    # stop the NEXT one, never silently launch/continue under a routing that
+    # is no longer current.
     active_policy = get_active_policy(hermes_home, decision["policy_id"])
     if active_policy is None or active_policy.get("revision") != decision["policy_revision"]:
         raise RoutingBlocked(
@@ -357,6 +366,7 @@ def enforce_worker_route(
         actual_endpoint=actual_endpoint,
         actual_reasoning=actual_reasoning,
     )
-    append_outcome(hermes_home, receipt_id, "routing_started", {
-        "actual_provider": actual_provider, "actual_model": actual_model,
-    })
+    if record_outcome:
+        append_outcome(hermes_home, receipt_id, outcome_kind, {
+            "actual_provider": actual_provider, "actual_model": actual_model,
+        })

@@ -62,6 +62,10 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     ("context_compression_timeout", "context_overflow", False, True),
     ("context_compression_exhausted", "context_overflow", False, True),
     ("ollama_runtime_context_too_small", "context_overflow", False, True),
+    # Managed per-request guard: the receipted route no longer matches / policy
+    # was revoked between requests. Never retryable as-is -- the caller (Kanban
+    # claim/recovery lifecycle) must pick a fresh route, not blindly retry.
+    ("managed_route_blocked", "stale_or_revoked_decision", False, True),
     # Advisory: the loop ends these as an incomplete (not failed) turn with an explainer.
     ("redirect_restart_limit_exceeded", "loop_error", True, False),
     ("rebuilt_restart_limit_exceeded", "loop_error", True, False),

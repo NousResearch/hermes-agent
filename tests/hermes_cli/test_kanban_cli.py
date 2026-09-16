@@ -72,6 +72,32 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        worker = kb.create_task(conn, title="worker")
+        assert kb.claim_task(conn, worker, claimer="worker") is not None
+        worker_run_id = kb.get_task(conn, worker).current_run_id
+        parent = kb.create_task(conn, title="unfinished parent")
+        ready_child = kb.create_task(conn, title="foreign ready child")
+        running_child = kb.create_task(conn, title="foreign running child")
+        assert kb.claim_task(conn, running_child, claimer="other") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(worker_run_id))
+
+    assert kc._cmd_link(argparse.Namespace(
+        parent_id=parent, child_id=ready_child,
+    )) == 0
+    with pytest.raises(ValueError, match="child is already running"):
+        kc._cmd_link(argparse.Namespace(
+            parent_id=parent, child_id=running_child,
+        ))
+
+    with kbc.connect_closing() as conn:
+        assert kb.parent_ids(conn, ready_child) == [parent]
+        assert kb.parent_ids(conn, running_child) == []
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

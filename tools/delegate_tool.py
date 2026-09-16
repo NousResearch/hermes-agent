@@ -120,6 +120,60 @@ def _get_subagent_approval_callback():
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
+# CIVIC_ASSURE_REVIEW_DISPATCH_V1
+# CIVIC_ASSURE_REVIEW_TERMINALIZATION_V1
+_CIVIC_ASSURE_REVIEW_FINALIZATION_PROMPT = (
+    "Stop all inspection immediately. This is the one bounded finalization window. "
+    "Do not call tools, search files, read files, or continue archaeology. "
+    "Return exactly one complete structured review result now, bound to the exact "
+    "candidate identity already supplied. If a valid verdict cannot be produced, "
+    "return BLOCKED with the infrastructure finding; never imply PASS."
+)
+_CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS = frozenset({"read_file", "search_files"})
+_CIVIC_ASSURE_REVIEW_OUTPUT_SCHEMA = {
+    "type": "object",
+    "required": ["repository", "issue", "PR", "base_sha", "candidate_sha", "candidate_tree", "diff_sha256", "provider", "model", "reasoning_effort", "verdict", "findings", "blocking_findings", "reviewed_at_utc"],
+    "properties": {
+        "repository": {"type": "string"},
+        "issue": {"type": "integer"},
+        "PR": {"type": "integer"},
+        "base_sha": {"type": "string"},
+        "candidate_sha": {"type": "string"},
+        "candidate_tree": {"type": "string"},
+        "diff_sha256": {"type": "string"},
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "reasoning_effort": {"type": "string"},
+        "verdict": {"enum": ["PASS", "CHANGES_REQUIRED", "BLOCKED"]},
+        "findings": {"type": "array"},
+        "blocking_findings": {"type": "array"},
+        "reviewed_at_utc": {"type": "string"},
+    },
+}
+
+def _civic_assure_annotate_review_manifest(delegation_id, route):
+    if not delegation_id or not isinstance(route, dict):
+        raise ValueError('independent review route identity is missing')
+    from tools.delegation_live_log import _manifest_path
+    path = _manifest_path(delegation_id)
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['review_route'] = {key: route.get(key) for key in ('provider', 'model', 'reasoning_effort', 'parent_provider', 'parent_model', 'read_only_tools')}
+    temporary = path.with_name(f'.{path.name}.review-{os.getpid()}')
+    try:
+        with temporary.open('w', encoding='utf-8') as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write('\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
 # per process. _get_max_concurrent_children() runs on every get_definitions()
 # schema rebuild (via _build_top_level_description / _build_tasks_param_description),
@@ -1598,6 +1652,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    route_config: Optional[Dict[str, Any]] = None,
+    review_mode: bool = False,
+    review_root: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1631,7 +1688,7 @@ def _build_child_agent(
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
-    delegation_cfg = _load_config()
+    delegation_cfg = route_config or _load_config()
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -1985,6 +2042,27 @@ def _build_child_agent(
                 except Exception:
                     pass
             raise
+    if review_mode:
+        available = set(getattr(child, "valid_tool_names", []) or [])
+        if not _CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS.issubset(available):
+            raise ValueError("independent review child lacks the canonical read-only tool surface")
+        child.valid_tool_names = sorted(available & _CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS)
+        child._civic_assure_review_route = {
+            "provider": effective_provider,
+            "model": effective_model,
+            "reasoning_effort": delegation_cfg.get("reasoning_effort"),
+            "parent_provider": getattr(parent_agent, "provider", None),
+            "parent_model": getattr(parent_agent, "model", None),
+            "read_only_tools": sorted(_CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS),
+        }
+        child._civic_assure_review_mode = True
+        child._civic_assure_review_root = review_root
+        child._civic_assure_review_timeout_seconds = int(
+            delegation_cfg.get("child_timeout_seconds", 180)
+        )
+        child._civic_assure_review_finalization_seconds = int(
+            delegation_cfg.get("finalization_seconds", 30)
+        )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Ownership transfer for the dedicated handle: the child's close() must
     # release it (nothing else holds a reference), and no parent teardown can
@@ -2696,7 +2774,11 @@ def _run_single_child(
                 register_container_alias,
             )
 
-            record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+            _review_root = getattr(child, "_civic_assure_review_root", None)
+            if _review_root:
+                record_session_cwd(child_task_id, _review_root)
+            else:
+                record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
             # Per-session container isolation (docker + container_persistent:
             # false) keys containers by session task_id. The child must share
             # the PARENT's container — register the alias so the child's
@@ -2754,7 +2836,20 @@ def _run_single_child(
         # Run child with an optional hard timeout (off by default —
         # result(timeout=None) blocks until the child finishes). Stuck-child
         # protection comes from the heartbeat staleness monitor instead.
-        child_timeout = _get_child_timeout()
+        _review_mode = bool(getattr(child, "_civic_assure_review_mode", False))
+        _configured_review_timeout = getattr(child, "_civic_assure_review_timeout_seconds", None)
+        child_timeout = (
+            _configured_review_timeout
+            if _review_mode and isinstance(_configured_review_timeout, int)
+            else _get_child_timeout()
+        )
+        _review_finalization_seconds = int(
+            getattr(child, "_civic_assure_review_finalization_seconds", 0) or 0
+        )
+        _review_finalization_requested = False
+        _review_finalization_delivered = False
+        _review_finalization_control = None
+        _review_tools_disabled = False
         # Daemon worker (tools.daemon_pool): a timed-out child is abandoned
         # below; a stdlib non-daemon worker would then block interpreter
         # exit at atexit-join time if the child never unwinds.
@@ -2800,7 +2895,59 @@ def _run_single_child(
             _run_with_thread_capture,
         )
         try:
-            result = _child_future.result(timeout=child_timeout)
+            if (
+                _review_mode
+                and isinstance(child_timeout, int)
+                and child_timeout > _review_finalization_seconds > 0
+            ):
+                from agent.deadline import run_bounded_sync as _run_bounded_sync
+
+                def _bounded_child_result(timeout_seconds, label):
+                    _bounded = _run_bounded_sync(
+                        lambda: _child_future.result(),
+                        timeout_seconds,
+                        label=label,
+                    )
+                    if _bounded.timed_out:
+                        raise FuturesTimeoutError()
+                    return _bounded.value
+
+                try:
+                    result = _bounded_child_result(
+                        child_timeout - _review_finalization_seconds,
+                        "delegated review inspection",
+                    )
+                except FuturesTimeoutError:
+                    _review_finalization_requested = True
+                    try:
+                        child.valid_tool_names = []
+                        child.tools = []
+                        _review_tools_disabled = True
+                        child._civic_assure_review_finalizing = True
+                        _redirect = getattr(child, "redirect", None)
+                        if callable(_redirect):
+                            _review_finalization_control = "redirect"
+                            _review_finalization_delivered = bool(
+                                _redirect(_CIVIC_ASSURE_REVIEW_FINALIZATION_PROMPT)
+                            )
+                            if not _review_finalization_delivered:
+                                _review_finalization_control = "steer_fallback"
+                                _review_finalization_delivered = bool(
+                                    child.steer(_CIVIC_ASSURE_REVIEW_FINALIZATION_PROMPT)
+                                )
+                        else:
+                            _review_finalization_control = "steer"
+                            _review_finalization_delivered = bool(
+                                child.steer(_CIVIC_ASSURE_REVIEW_FINALIZATION_PROMPT)
+                            )
+                    except Exception as _steer_exc:
+                        logger.warning("Review finalization control failed: %s", _steer_exc)
+                    result = _bounded_child_result(
+                        _review_finalization_seconds,
+                        "delegated review finalization",
+                    )
+            else:
+                result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
             # No consumer boundary remains once this owner stops waiting for
             # the child. Close acceptance before any completion callback and
@@ -2900,6 +3047,10 @@ def _run_single_child(
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
                 "timeout_seconds": child_timeout if is_timeout else None,
+                "review_finalization_requested": _review_finalization_requested,
+                "review_finalization_delivered": _review_finalization_delivered,
+                "review_finalization_control": _review_finalization_control,
+                "review_tools_disabled": _review_tools_disabled,
                 "timed_out_after_seconds": duration if is_timeout else None,
                 "timeout_phase": (
                     "before_first_llm_call" if is_timeout and child_api_calls == 0
@@ -2921,6 +3072,13 @@ def _run_single_child(
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
+
+        if _review_mode:
+            result["review_finalization_requested"] = _review_finalization_requested
+            result["review_finalization_delivered"] = _review_finalization_delivered
+            result["review_finalization_control"] = _review_finalization_control
+            result["review_tools_disabled"] = _review_tools_disabled
+            result["review_finalization_seconds"] = _review_finalization_seconds
 
         # T1-24: structured-output contract validation + ONE bounded retry.
         # Runs only when a schema was attached at dispatch; schema-less
@@ -3133,6 +3291,11 @@ def _run_single_child(
             _cost_status if isinstance(_cost_status, str) and _cost_status
             else "unknown"
         )
+        review_route = getattr(child, "_civic_assure_review_route", None)
+        if isinstance(review_route, dict):
+            entry["review_route"] = dict(review_route)
+            if getattr(child, "_civic_assure_review_root", None):
+                entry["review_root"] = child._civic_assure_review_root
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
@@ -3600,6 +3763,8 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    review: Optional[bool] = None,
+    review_root: Optional[str] = None,
     background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None,
     action: Optional[str] = None,
@@ -3678,9 +3843,33 @@ def delegate_task(
             f"multiplies API cost)."
         )
 
-    # Load config
+    # Load config. Review mode is an explicit phase route and never
+    # mutates the primary worker or ordinary delegation defaults.
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    if review not in (None, False, True):
+        return tool_error("review must be a boolean when supplied")
+    review_mode = review is True
+    if review_mode:
+        if not isinstance(review_root, str) or not os.path.isabs(review_root):
+            return tool_error("independent review requires an absolute review_root")
+        review_root = os.path.realpath(review_root)
+        if not os.path.isdir(review_root):
+            return tool_error("independent review review_root is not a directory")
+    if review_mode:
+        _review_output_schema = _CIVIC_ASSURE_REVIEW_OUTPUT_SCHEMA
+    else:
+        _review_output_schema = None
+    route_cfg = cfg
+    if review_mode:
+        review_cfg = _load_review_config()
+        if review_cfg.get("enabled") is False:
+            return tool_error("independent review route is disabled")
+        for _required_review_key in ("provider", "model", "reasoning_effort"):
+            if not str(review_cfg.get(_required_review_key) or "").strip():
+                return tool_error(f"review config is missing {_required_review_key}")
+        route_cfg = dict(cfg)
+        route_cfg.update(review_cfg)
+    default_max_iter = route_cfg.get("max_iterations", cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS))
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
     # and tests; a model-emitted value here would only shrink the budget and
@@ -3700,7 +3889,7 @@ def delegate_task(
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        creds = _resolve_delegation_credentials(route_cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -3739,6 +3928,10 @@ def delegate_task(
 
     if not task_list:
         return tool_error("No tasks provided.")
+    if review_mode and len(task_list) != 1:
+        return tool_error("independent review accepts exactly one read-only task")
+    if review_mode:
+        task_list = [dict(task_list[0], output_schema=_review_output_schema)]
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
@@ -3858,6 +4051,9 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                route_config=route_cfg,
+                review_mode=review_mode,
+                review_root=review_root,
             )
         except ValueError as exc:
             # Explicit-pin preflight failures (e.g. pinned delegation.command
@@ -3883,6 +4079,8 @@ def delegate_task(
             child._live_transcript_path = str(_writer.path)
         # Delegation identity for the live registry + process-notification
         # attribution (child-started background processes report under it).
+        if review_mode and live_deleg_id:
+            _civic_assure_annotate_review_manifest(live_deleg_id, getattr(child, "_civic_assure_review_route", None))
         if live_deleg_id:
             setattr(child, "_delegation_id", live_deleg_id)
         children.append((i, t, child))
@@ -4556,6 +4754,35 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _load_review_config() -> dict:
+    """Load the phase-specific reviewer route without mutating delegation defaults."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        full = load_config_readonly()
+        value = full.get("review") or {}
+        if isinstance(value, dict) and value:
+            return value
+    except Exception:
+        pass
+    # The maintainer source stores the phase route in the tracked
+    # profile cron contract. This fallback reads configuration only;
+    # provider credentials still resolve through Hermes below.
+    try:
+        import yaml
+        profile_root = os.environ.get("HERMES_PROFILE_HOME") or os.environ.get("HERMES_HOME")
+        if not profile_root:
+            return {}
+        with open(os.path.join(profile_root, "config", "cron.yaml"), encoding="utf-8") as handle:
+            cron = yaml.safe_load(handle) or {}
+        jobs = cron.get("jobs") if isinstance(cron, dict) else None
+        maintainer = jobs.get("civic-assure-maintainer-queue") if isinstance(jobs, dict) else None
+        value = maintainer.get("review") if isinstance(maintainer, dict) else None
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
 def _load_config() -> dict:
     """Load delegation config from the active Hermes config.
 
@@ -4802,6 +5029,14 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "review": {
+                "type": "boolean",
+                "description": "Run one exact-candidate read-only independent review through the configured review selector. Requires complete candidate evidence in context.",
+            },
+            "review_root": {
+                "type": "string",
+                "description": "Absolute candidate worktree used for bounded review file tools. Required when review=true.",
+            },
             "output_schema": {
                 "type": "object",
                 "description": (
@@ -4913,6 +5148,8 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        review=args.get("review"),
+        review_root=args.get("review_root"),
         background=_model_background_value(args, kw.get("parent_agent")),
         output_schema=args.get("output_schema"),
         action=args.get("action"),

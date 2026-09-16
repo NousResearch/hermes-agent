@@ -64,6 +64,623 @@ from agent.delegation_context import (
 logger = logging.getLogger(__name__)
 
 
+# CIVIC_ASSURE_CONTINUITY_BUDGET_V1
+# Non-secret runtime bridge for the Civic Assure Maintainer budget contract.
+def _civic_assure_profile_home() -> Path:
+    """Return the active maintainer profile root or fail closed."""
+    import os
+    from pathlib import Path
+
+    value = os.environ.get("HERMES_PROFILE_HOME", "").strip()
+    if value:
+        root = Path(value).expanduser().resolve()
+    else:
+        try:
+            from hermes_constants import get_hermes_home
+        except ImportError as exc:
+            raise RuntimeError("Civic Assure maintainer root resolver is unavailable") from exc
+        root = get_hermes_home().resolve()
+    if root.name != "civic-assure-maintainer" or not root.is_dir():
+        raise RuntimeError(f"Civic Assure maintainer profile root is invalid: {root}")
+    return root
+
+
+def _civic_assure_maintenance_hold_blocks(job_id: str | None) -> bool:
+    """Return whether the exact maintainer job is blocked by runtime hold."""
+    if job_id != "406ba6820205":
+        return False
+    import sys
+    profile = _civic_assure_profile_home()
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        from maintenance_hold import enforce_hold
+        result = enforce_hold(profile)
+    except Exception as exc:
+        logger.error("Civic Assure maintenance hold unavailable; blocking job: %s", exc)
+        return True
+    return result.get("status") == "ACTIVE"
+
+
+def _civic_assure_filter_due_jobs(due_jobs: list[dict]) -> list[dict]:
+    """Filter held maintainer work without inspecting unrelated profiles."""
+    if not any(
+        isinstance(job, dict) and job.get("id") == "406ba6820205"
+        for job in due_jobs
+    ):
+        return due_jobs
+    if not _civic_assure_maintenance_hold_blocks("406ba6820205"):
+        return due_jobs
+    return [job for job in due_jobs if job.get("id") != "406ba6820205"]
+
+
+def _civic_assure_validate_job_identity(job_id: str | None, job_name: str | None) -> str:
+    """Validate maintainer identity without constraining other profiles."""
+    import json
+
+    if not isinstance(job_id, str) or not job_id.strip():
+        raise RuntimeError("Civic Assure continuity job identity is missing")
+    if job_id != "406ba6820205":
+        return job_id
+    expected_name = "Civic Assure Issue-to-PR Maintainer"
+    if job_name != expected_name:
+        raise RuntimeError(
+            f"Civic Assure continuity rejected unexpected maintainer job identity: {job_name!r}"
+        )
+    profile = _civic_assure_profile_home()
+    jobs_path = profile / "cron" / "jobs.json"
+    try:
+        data = json.loads(jobs_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Civic Assure continuity live job registry is unavailable: {jobs_path}"
+        ) from exc
+    records = data.get("jobs") if isinstance(data, dict) else None
+    matches = [
+        row
+        for row in records or []
+        if isinstance(row, dict) and row.get("name") == expected_name
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            "Civic Assure continuity live job registry must contain exactly one "
+            f"{expected_name!r} record"
+        )
+    live_job_id = str(matches[0].get("id") or "").strip()
+    if live_job_id != job_id:
+        raise RuntimeError(
+            "Civic Assure continuity job identity does not match the live scheduler "
+            f"record: supplied={job_id!r} live={live_job_id!r}"
+        )
+    return job_id
+
+
+def _civic_assure_budget_file(job_id: str) -> Path:
+    """Return the profile-owned non-secret controller budget file."""
+    return _civic_assure_profile_home() / "home" / ".cache" / "civicassure" / "controller-budget" / f"{job_id}.json"
+
+
+def _civic_assure_validate_execution_identity(job_id: str, execution_id: str | None) -> str:
+    """Require the supplied ID to be the sole active canonical ledger execution."""
+    import sqlite3
+
+    value = str(execution_id or "").strip()
+    if not value:
+        raise RuntimeError("Civic Assure native ledger execution_id is missing")
+    database = _civic_assure_profile_home() / "cron" / "executions.db"
+    if not database.is_file():
+        raise RuntimeError("Civic Assure native execution ledger is missing")
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT id, status FROM executions WHERE job_id = ? AND status IN ('claimed', 'running', 'started') ORDER BY id",
+            (job_id,),
+        ).fetchall()
+        connection.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError("Civic Assure native execution ledger is unreadable") from exc
+    if len(rows) != 1 or str(rows[0]["id"]) != value or str(rows[0]["status"]) not in {"claimed", "running", "started"}:
+        raise RuntimeError(
+            "Civic Assure native ledger execution_id does not identify the sole active execution"
+        )
+    return value
+
+
+def _civic_assure_write_controller_state(
+    job_id: str,
+    execution_id: str,
+    controller_phase: str,
+    *,
+    reason: str = "",
+) -> None:
+    """Persist truthful scheduler state before an issue lifecycle exists."""
+    import json
+    import os
+    from datetime import datetime, timezone
+
+    allowed = {"QUEUE_SWEEP_STARTING", "TERMINAL_RECONCILIATION", "QUEUE_REFRESH", "ISSUE_SELECTION", "QUEUE_IDLE"}
+    if controller_phase not in allowed:
+        raise RuntimeError(f"Civic Assure controller phase is invalid: {controller_phase}")
+    path = _civic_assure_profile_home() / "home" / ".cache" / "civicassure" / "controller-state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "measurement_only": True,
+        "controller_phase": controller_phase,
+        "status": "ACTIVE",
+        "job_id": str(job_id),
+        "execution_id": str(execution_id),
+        "reason": str(reason)[:300],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    temporary = path.with_suffix(f".tmp-{os.getpid()}")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def _civic_assure_model_request_module():
+    """Load the one active-profile model-request bounding authority."""
+    import sys
+
+    profile = _civic_assure_profile_home()
+    scripts_path = profile / "scripts" / "model_request_bounding.py"
+    if scripts_path.is_symlink() or not scripts_path.is_file():
+        raise RuntimeError("Civic Assure model-request authority path is unavailable")
+    provenance = _civic_assure_read_json(profile / ".maintainer-source.json", "profile provenance")
+    if provenance.get("repository") != "crmihelich/hermes-civicassure-maintainer":
+        raise RuntimeError("Civic Assure model-request profile provenance is invalid")
+    revision = provenance.get("source_sha")
+    if not isinstance(revision, str) or len(revision) != 40 or any(char not in "0123456789abcdef" for char in revision):
+        raise RuntimeError("Civic Assure model-request profile revision is invalid")
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        import model_request_bounding
+    except ImportError as exc:
+        raise RuntimeError("Civic Assure model-request authority is unavailable") from exc
+    module_path = Path(getattr(model_request_bounding, "__file__", "")).expanduser().resolve()
+    if module_path != scripts_path.resolve():
+        raise RuntimeError("Civic Assure model-request authority provenance is stale")
+    return model_request_bounding
+
+
+def _civic_assure_read_json(path, label):
+    """Read one required profile identity object without coercion."""
+    import json
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Civic Assure {label} is missing or malformed") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Civic Assure {label} is not an object")
+    return value
+
+
+def _civic_assure_model_request_identity(job_id, execution_id, session_id, fire_claim_owner):
+    """Return exact issue/lifecycle/owner provenance for one request."""
+    if job_id != "406ba6820205":
+        raise RuntimeError("Civic Assure model-request job identity is not canonical")
+    if not execution_id or not session_id:
+        raise RuntimeError("Civic Assure model-request execution/session identity is invalid")
+    if not fire_claim_owner:
+        raise RuntimeError("Civic Assure model-request fire-claim owner is missing")
+    profile = _civic_assure_profile_home()
+    cache = profile / "home" / ".cache" / "civicassure"
+    arbiter = _civic_assure_read_json(cache / "queue-arbiter.json", "arbiter identity")
+    owner = arbiter.get("active_owner")
+    decision = arbiter.get("last_decision")
+    if owner is None:
+        controller = _civic_assure_read_json(cache / "controller-state.json", "controller identity")
+        active_cycles = _civic_assure_active_cycle_files()
+        controller_phase = controller.get("controller_phase")
+        revision = arbiter.get("deployed_maintainer_revision")
+        if (
+            arbiter.get("job_id") != job_id
+            or arbiter.get("job_name") != "Civic Assure Issue-to-PR Maintainer"
+            or arbiter.get("profile") != "civic-assure-maintainer"
+            or controller.get("schema_version") != 1
+            or controller.get("measurement_only") is not True
+            or controller.get("status") != "ACTIVE"
+            or controller.get("job_id") != job_id
+            or str(controller.get("execution_id") or "").strip() != str(execution_id).strip()
+            or controller_phase not in {
+                "QUEUE_SWEEP_STARTING",
+                "TERMINAL_RECONCILIATION",
+                "QUEUE_REFRESH",
+                "ISSUE_SELECTION",
+                "QUEUE_IDLE",
+            }
+            or active_cycles
+            or not isinstance(revision, str)
+            or len(revision) != 40
+            or any(char not in "0123456789abcdef" for char in revision)
+        ):
+            raise RuntimeError("Civic Assure model-request controller identity is unavailable")
+        return {
+            "scope": "controller",
+            "controller_phase": controller_phase,
+            "measurement_only": True,
+            "job_id": job_id,
+            "execution_id": str(execution_id),
+            "session_id": str(session_id),
+            "repository": "crmihelich/hermes-civicassure-maintainer",
+            "issue": None,
+            "lifecycle_id": None,
+            "lifecycle_generation": None,
+            "maintainer_revision": revision,
+            "owner": None,
+            "fire_claim_owner": str(fire_claim_owner),
+        }
+    if not isinstance(owner, dict) or not isinstance(decision, dict):
+        raise RuntimeError("Civic Assure model-request lifecycle owner is unavailable")
+    lifecycle = decision.get("lifecycle_identity")
+    if not isinstance(lifecycle, dict):
+        raise RuntimeError("Civic Assure model-request lifecycle identity is unavailable")
+    issue = owner.get("issue")
+    revision = owner.get("maintainer_revision")
+    lifecycle_id = owner.get("decision_sha256")
+    generation = lifecycle.get("generation")
+    if owner.get("repository") != "crmihelich/hermes-civicassure-maintainer":
+        raise RuntimeError("Civic Assure model-request owner repository is invalid")
+    if owner.get("job_id") != job_id or owner.get("lifecycle_type") != "maintainer":
+        raise RuntimeError("Civic Assure model-request owner binding is invalid")
+    if decision.get("decision") != "MAINTAINER_SELECT":
+        raise RuntimeError("Civic Assure model-request selection decision is invalid")
+    if decision.get("issue") != issue or decision.get("repository") != owner.get("repository"):
+        raise RuntimeError("Civic Assure model-request selection binding is invalid")
+    if decision.get("decision_sha256") != lifecycle_id or lifecycle.get("selection_id") != lifecycle_id:
+        raise RuntimeError("Civic Assure model-request lifecycle selection is invalid")
+    if arbiter.get("deployed_maintainer_revision") != revision:
+        raise RuntimeError("Civic Assure model-request maintainer revision is stale")
+    active_cycles = _civic_assure_active_cycle_files()
+    if len(active_cycles) != 1:
+        raise RuntimeError("Civic Assure model-request requires exactly one active semantic cycle")
+    cycle = _civic_assure_read_json(active_cycles[0], "maintainer cycle")
+    cycle_rebind = cycle.get("revision_rebind") if isinstance(cycle.get("revision_rebind"), dict) else {}
+    cycle_lifecycle_id = cycle.get("lifecycle_id") or cycle_rebind.get("lifecycle_id")
+    cycle_generation = cycle.get("lifecycle_generation")
+    if cycle_generation is None:
+        cycle_generation = cycle.get("cycle_generation")
+    if cycle.get("issue") != issue or cycle.get("maintainer_revision") != revision:
+        raise RuntimeError("Civic Assure model-request cycle binding is invalid")
+    if cycle.get("repository", cycle.get("maintainer_repository")) != owner.get("repository"):
+        raise RuntimeError("Civic Assure model-request cycle repository is invalid")
+    if cycle_lifecycle_id != lifecycle_id:
+        raise RuntimeError("Civic Assure model-request cycle lifecycle is invalid")
+    if cycle_generation != generation:
+        raise RuntimeError("Civic Assure model-request cycle generation is invalid")
+    if cycle.get("status") not in (None, "ACTIVE"):
+        raise RuntimeError("Civic Assure model-request cycle is not active")
+    return {
+        "job_id": job_id,
+        "execution_id": str(execution_id),
+        "session_id": str(session_id),
+        "repository": owner.get("repository"),
+        "issue": issue,
+        "lifecycle_id": lifecycle_id,
+        "lifecycle_generation": generation,
+        "maintainer_revision": revision,
+        "owner": owner,
+        "fire_claim_owner": str(fire_claim_owner),
+    }
+
+
+def _civic_assure_model_request_max_tokens(job_id, model, runtime, config):
+    """Resolve the maintainer output ceiling without weakening provider caps."""
+    if job_id != "406ba6820205":
+        return None
+    module = _civic_assure_model_request_module()
+    policy = module.model_request_policy(config)
+    limit = int(policy["max_output_tokens"])
+    provider_name = str((runtime or {}).get("provider") or "").strip()
+    try:
+        import sys
+
+        profile = _civic_assure_profile_home()
+        scripts = str(profile / "scripts")
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        from providers import get_provider_profile
+
+        provider_profile = get_provider_profile(provider_name)
+        provider_limit = provider_profile.get_max_tokens(model) if provider_profile else None
+        if isinstance(provider_limit, int) and provider_limit > 0:
+            limit = min(limit, provider_limit)
+    except Exception:
+        pass
+    return limit
+
+
+def _civic_assure_install_model_request_boundary(agent, job, runtime, config, session_id):
+    """Install the real unattended request boundary for the maintainer job."""
+    if job.get("id") != "406ba6820205":
+        return
+    execution_id = str(job.get("execution_id") or "").strip()
+    claim = job.get("fire_claim")
+    fire_owner = str(claim.get("by") or "").strip() if isinstance(claim, dict) else ""
+    if not execution_id or not fire_owner:
+        raise RuntimeError("Civic Assure model-request native execution identity is missing")
+    module = _civic_assure_model_request_module()
+    policy = module.model_request_policy(config)
+    module.install_agent(
+        agent,
+        context_provider=lambda: _civic_assure_model_request_identity(
+            job.get("id"), execution_id, session_id, fire_owner
+        ),
+        cancel_request=lambda request: request_native_cancellation(job.get("id"), request),
+        max_wall_seconds=float(policy["max_wall_seconds"]),
+        max_output_tokens=int(policy["max_output_tokens"]),
+    )
+
+
+def _civic_assure_model_request_snapshot(agent):
+    """Return the current model-request observation without mutating it."""
+    if agent is None or not isinstance(getattr(agent, "_civic_assure_model_request_binding", None), dict):
+        return {}
+    try:
+        return _civic_assure_model_request_module().snapshot(agent) or {}
+    except Exception as exc:
+        import logging
+        logging.getLogger("civic_assure_model_request").warning(
+            "Civic Assure model-request snapshot unavailable: %s", exc
+        )
+        return {"status": "MODEL_REQUEST_UNKNOWN", "error": str(exc)[:300]}
+
+
+def _civic_assure_check_model_request_timeout(agent):
+    """Run the single scheduler-poll deadline check for one request."""
+    if agent is None:
+        return None
+    return _civic_assure_model_request_module().check_deadline(agent)
+
+
+def _civic_assure_backend_evidence(summary):
+    """Return provider-neutral backend evidence from the agent activity summary."""
+    if not isinstance(summary, dict):
+        return None
+    backend = summary.get("backend")
+    if not isinstance(backend, dict):
+        return None
+    result = {}
+    if "generating" in backend:
+        result["generating"] = bool(backend["generating"])
+    if "queued" in backend:
+        result["queued"] = bool(backend["queued"])
+    if "state" in backend:
+        result["state"] = str(backend["state"])
+    if "tokens_per_second" in backend:
+        result["tokens_per_second"] = float(backend["tokens_per_second"])
+    return result or None
+
+
+def _civic_assure_write_budget_snapshot(
+    job_id: str | None,
+    session_id: str,
+    max_iterations: int,
+    agent=None,
+    *,
+    job_name: str | None = None,
+    execution_id: str | None = None,
+    status: str = "running",
+    reason: str = "",
+) -> None:
+    """Persist current native-agent budget/activity metadata without secrets."""
+    import json
+    import os
+    from datetime import datetime, timezone
+
+    if job_id != "406ba6820205":
+        return
+    verified_job_id = _civic_assure_validate_job_identity(job_id, job_name)
+    session_value = str(session_id or "").strip()
+    if not session_value:
+        raise RuntimeError("Civic Assure native session_id is missing")
+    ledger_execution_id = _civic_assure_validate_execution_identity(verified_job_id, execution_id)
+    _civic_assure_write_controller_state(
+        verified_job_id,
+        ledger_execution_id,
+        "QUEUE_SWEEP_STARTING",
+        reason=reason or "native fire claim acquired",
+    )
+    summary = {}
+    if agent is not None and hasattr(agent, "get_activity_summary"):
+        try:
+            summary = agent.get_activity_summary() or {}
+        except Exception:
+            summary = {}
+    used = int(summary.get("api_call_count", 0) or 0)
+    model_request = _civic_assure_model_request_snapshot(agent)
+    payload = {
+        "schema_version": 1,
+        "job_id": verified_job_id,
+        "session_id": session_value,
+        "execution_id": ledger_execution_id,
+        "status": status,
+        "reason": reason,
+        "max_iterations": int(max_iterations),
+        "used_iterations": used,
+        "remaining_iterations": max(0, int(max_iterations) - used),
+        "current_tool": str(summary.get("current_tool") or ""),
+        "last_activity_desc": str(summary.get("last_activity_desc") or ""),
+        "seconds_since_activity": float(summary.get("seconds_since_activity", 0.0) or 0.0),
+        "model_request": model_request,
+        "model_request_id": model_request.get("request_id"),
+        "model_request_started_at": model_request.get("request_started_at"),
+        "model_request_deadline_at": model_request.get("request_deadline_at"),
+        "model_request_output_tokens": model_request.get("output_tokens"),
+        "model_request_max_output_tokens": model_request.get("max_output_tokens"),
+        "backend": model_request.get("backend_evidence") or _civic_assure_backend_evidence(summary),
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    path = _civic_assure_budget_file(verified_job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f".tmp-{os.getpid()}")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    _civic_assure_record_runtime_telemetry(
+        verified_job_id,
+        session_value,
+        ledger_execution_id,
+        max_iterations,
+        summary,
+        agent,
+        job_name=job_name,
+        status=status,
+        reason=reason,
+    )
+
+
+def _civic_assure_active_cycle_files() -> list[Path]:
+    """Return semantic active cycles without treating historical files as live."""
+    import sys
+
+    profile = _civic_assure_profile_home()
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        from terminal_promotion import PromotionError, semantic_active_cycle_files
+    except ImportError as exc:
+        raise RuntimeError("Civic Assure semantic cycle helper is unavailable") from exc
+    try:
+        return semantic_active_cycle_files(profile)
+    except PromotionError as exc:
+        raise RuntimeError(f"Civic Assure semantic active-cycle state invalid: {exc}") from exc
+
+
+def _civic_assure_record_runtime_telemetry(
+    job_id: str,
+    session_id: str,
+    execution_id: str,
+    max_iterations: int,
+    summary: dict,
+    agent=None,
+    *,
+    job_name: str | None = None,
+    status: str = "running",
+    reason: str = "",
+) -> None:
+    """Project scheduler activity into the profile-owned lifecycle telemetry."""
+    if job_id != "406ba6820205":
+        return
+    import json
+    import sys
+
+    profile = _civic_assure_profile_home()
+    cycle_files = _civic_assure_active_cycle_files()
+    if not cycle_files:
+        return
+    try:
+        cycle = json.loads(cycle_files[0].read_text(encoding="utf-8"))
+        issue = int(cycle["issue"])
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Civic Assure telemetry active cycle is invalid") from exc
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        from maintainer_telemetry import record_runtime_snapshot
+    except ImportError as exc:
+        raise RuntimeError("Civic Assure telemetry helper is unavailable") from exc
+    provider = getattr(agent, "provider", "") if agent is not None else ""
+    model = getattr(agent, "model", "") if agent is not None else ""
+    model_request = _civic_assure_model_request_snapshot(agent)
+    event_type = "continuation" if status == "continuation_required" else "heartbeat"
+    record_runtime_snapshot(
+        {
+            "issue": issue,
+            "job_id": job_id,
+            "execution_id": execution_id,
+            "event_type": event_type,
+            "current_iteration": int(summary.get("api_call_count", 0) or 0),
+            "max_iterations": int(max_iterations),
+            "current_tool": str(summary.get("current_tool") or ""),
+            "last_activity_desc": str(summary.get("last_activity_desc") or ""),
+            "provider": str(provider or ""),
+            "model": str(model or ""),
+            "model_request": model_request,
+            "model_request_id": model_request.get("request_id"),
+            "model_request_started_at": model_request.get("request_started_at"),
+            "model_request_deadline_at": model_request.get("request_deadline_at"),
+            "model_request_output_tokens": model_request.get("output_tokens"),
+            "model_request_max_output_tokens": model_request.get("max_output_tokens"),
+            "backend": model_request.get("backend_evidence") or _civic_assure_backend_evidence(summary),
+            "action": reason or "runtime heartbeat",
+            "meaningful": status == "continuation_required",
+            "branch": str(cycle.get("branch") or ""),
+            "base_sha": str(cycle.get("civicassure_start_sha") or ""),
+            "maintainer_revision": str(cycle.get("maintainer_revision") or ""),
+        },
+        profile_root=profile,
+    )
+
+
+def _civic_assure_write_continuation_checkpoint(
+    job_id: str | None,
+    workdir: str | None,
+    session_id: str,
+    *,
+    job_name: str | None = None,
+    execution_id: str | None = None,
+    reason: str,
+) -> bool:
+    """Preserve a tracked diff when one active issue reaches its limit."""
+    import hashlib
+    import json
+    import sys
+
+    if job_id != "406ba6820205":
+        return False
+    verified_job_id = _civic_assure_validate_job_identity(job_id, job_name)
+    if not execution_id or not execution_id.strip():
+        raise RuntimeError("Civic Assure continuation execution identity is missing")
+    profile = _civic_assure_profile_home()
+    cycle_files = _civic_assure_active_cycle_files()
+    if not cycle_files:
+        _civic_assure_write_controller_state(
+            verified_job_id,
+            execution_id,
+            "QUEUE_REFRESH",
+            reason="max_iterations_reached_without_active_cycle",
+        )
+        return False
+    if not workdir:
+        raise RuntimeError("Civic Assure continuation workdir is missing")
+    root = Path(workdir).expanduser().resolve()
+    if not root.is_dir():
+        raise RuntimeError(f"Civic Assure continuation workdir is invalid: {root}")
+    try:
+        cycle = json.loads(cycle_files[0].read_text(encoding="utf-8"))
+        issue = cycle.get("issue")
+        if isinstance(issue, bool) or not isinstance(issue, int) or issue <= 0:
+            raise ValueError("invalid issue identity")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Civic Assure continuation active cycle is malformed") from exc
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        from terminal_promotion import PromotionError, write_continuation_checkpoint
+
+        write_continuation_checkpoint(
+            profile,
+            root,
+            issue=issue,
+            job_id=verified_job_id,
+            execution_id=execution_id,
+            session_id=session_id,
+            reason=reason,
+        )
+    except PromotionError as exc:
+        raise RuntimeError(f"Civic Assure continuation checkpoint rejected: {exc}") from exc
+    return True
+
+
+
 def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
     """Done-callback: close a SessionDB whose constructor finished after run_job's timeout.
 
@@ -562,6 +1179,14 @@ _running_lock = threading.Lock()
 # router/watchdog no_agent jobs, 2026-08-14 t_20e23f84).
 _running_since: dict = {}
 _running_futures: dict = {}
+# CIVIC_ASSURE_ACTIVITY_LEASE_V1
+# Last verified agent/tool/model activity for each scheduler-owned run.
+# This is deliberately separate from claim age: long-running healthy work
+# may run for hours, while an orphaned execution should become recoverable
+# shortly after its real activity stops.
+_running_activity_at: dict = {}
+_INFLIGHT_ACTIVITY_LEASE_SECONDS = 180.0
+_INFLIGHT_PRE_DISPATCH_GRACE_SECONDS = 300.0
 
 # Sentinel installed in ``_running_futures`` at claim time, before
 # ``pool.submit`` has returned a real future.  This closes the race the
@@ -597,6 +1222,717 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 # every fire) must not inherit the stale flag. Legacy dispatch paths without
 # a registered fire owner fall back to storing the bare job ID.
 _interrupted_job_ids: set = set()
+
+# CIVIC_ASSURE_NATIVE_EXECUTION_CANCELLATION_V1
+# The profile-owned cancellation module is the policy/evidence authority. This
+# runtime registry only exposes the already-running native handles to that
+# authority and calls existing scheduler/agent finalization APIs.
+_NATIVE_CANCELLATION_JOB_ID = "406ba6820205"
+_native_cancellation_lock = threading.RLock()
+_native_cancellation_runtimes: dict[str, dict] = {}
+
+
+class GovernedCronCancellation(BaseException):
+    """Signal one confirmed cooperative native cancellation to the runner."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = str(reason or "governed cancellation")
+        super().__init__(self.reason)
+
+
+def _native_cancellation_module():
+    """Load the active profile's cancellation policy module."""
+    profile = _get_hermes_home().resolve()
+    if profile.name != "civic-assure-maintainer" or not profile.is_dir():
+        raise RuntimeError(f"Civic Assure cancellation profile root is invalid: {profile}")
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import hashlib
+    expected_path_source = profile / "scripts" / "cancellation.py"
+    if expected_path_source.is_symlink():
+        raise RuntimeError("Civic Assure cancellation authority must not be symlinked")
+    if hashlib.sha256(expected_path_source.read_bytes()).hexdigest() != "5b326be8319c9ed5043d2e0f2dc2975647cb35ef5d86900d841ef729e485edc0":
+        raise RuntimeError("Civic Assure cancellation authority bytes are stale")
+    expected_native_path_source = profile / "scripts" / "native_config_mutation.py"
+    if expected_native_path_source.is_symlink():
+        raise RuntimeError("Civic Assure native configuration authority must not be symlinked")
+    if hashlib.sha256(expected_native_path_source.read_bytes()).hexdigest() != "4ab1a2991f91b15338b0c8f8afd615238c3982d4e34715b6f4ccf284e1ef1daf":
+        raise RuntimeError("Civic Assure native configuration authority bytes are stale")
+    try:
+        import cancellation
+        module_path = Path(getattr(cancellation, "__file__", "")).resolve()
+        expected_path = expected_path_source.resolve()
+        if module_path != expected_path:
+            raise RuntimeError("Civic Assure cancellation module provenance is stale")
+    except ImportError as exc:
+        raise RuntimeError("Civic Assure cancellation authority is unavailable") from exc
+    try:
+        import native_config_mutation
+        native_path = Path(getattr(native_config_mutation, "__file__", "")).resolve()
+        expected_native_path = expected_native_path_source.resolve()
+        if native_path != expected_native_path:
+            raise RuntimeError("Civic Assure native configuration authority provenance is stale")
+    except ImportError as exc:
+        raise RuntimeError("Civic Assure native configuration authority is unavailable") from exc
+    cancellation.scheduler_bookkeeping_context = native_config_mutation.scheduler_bookkeeping_context
+    cancellation.bind_scheduler_runtime_token = native_config_mutation.bind_scheduler_runtime_token
+    cancellation._register_scheduler_runtime_token = native_config_mutation._register_scheduler_runtime_token
+    cancellation._forget_scheduler_runtime_token = native_config_mutation._forget_scheduler_runtime_token
+    cancellation.admission_lock = native_config_mutation.admission_lock
+    cancellation.one_run_enable_blocks_dispatch = native_config_mutation.one_run_enable_blocks_dispatch
+    cancellation.one_run_enable_allows_execution = native_config_mutation.one_run_enable_allows_execution
+    return profile, cancellation
+
+
+def _native_cancellation_register(
+    job_id: str,
+    execution_id: str,
+    *,
+    cancel_event: "_CancelEventLike",
+    fire_claim_owner: str | None = None,
+    scheduler_token: object | None = None,
+) -> None:
+    """Register one live native execution before its agent turn starts."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID or not execution_id:
+        return
+    if scheduler_token is not None:
+        profile, module = _native_cancellation_module()
+        module._register_scheduler_runtime_token(
+            profile,
+            token=scheduler_token,
+            job_id=job_id,
+            execution_id=execution_id,
+            fire_claim_owner=fire_claim_owner,
+        )
+    with _native_cancellation_lock:
+        existing = _native_cancellation_runtimes.get(execution_id)
+        if existing is not None and existing.get("cancel_event") is not cancel_event:
+            raise RuntimeError("Civic Assure cancellation execution identity is already registered")
+        _native_cancellation_runtimes[execution_id] = {
+            "job_id": job_id,
+            "execution_id": execution_id,
+            "session_id": "",
+            "cancel_event": cancel_event,
+            "fire_claim_owner": fire_claim_owner,
+            "agent": None,
+            "future": None,
+            "signal_sent": False,
+            "governed_requested": False,
+            "scheduler_bookkeeping_token": scheduler_token,
+        }
+
+
+def _native_cancellation_update(execution_id: str, **values) -> None:
+    """Attach the session, agent, and future to one registered execution."""
+    if not execution_id:
+        return
+    agent = None
+    should_signal = False
+    with _native_cancellation_lock:
+        runtime = _native_cancellation_runtimes.get(execution_id)
+        if runtime is None:
+            return
+        for key, value in values.items():
+            if value is not None:
+                runtime[key] = value
+        agent = runtime.get("agent")
+        event = runtime.get("cancel_event")
+        if event is not None and event.is_set() and agent is not None and not runtime.get("signal_sent"):
+            runtime["signal_sent"] = True
+            should_signal = True
+    if should_signal:
+        try:
+            request_hard_interrupt(agent, "Governed cancellation requested")
+        except Exception:
+            logger.debug("Civic Assure cancellation signal failed", exc_info=True)
+
+
+def _native_cancellation_unregister(execution_id: str) -> None:
+    """Remove one runtime handle after normal terminal bookkeeping."""
+    if not execution_id:
+        return
+    with _native_cancellation_lock:
+        runtime = _native_cancellation_runtimes.get(execution_id)
+        if runtime is None:
+            return
+        scheduler_token = runtime.get("scheduler_bookkeeping_token")
+    try:
+        profile, module = _native_cancellation_module()
+        state = module.status_cancellation(profile, execution_id).get("state")
+        if state in {module.REQUESTED, module.ACKNOWLEDGED}:
+            return
+    except Exception:
+        # Retain the handle when the durable authority cannot be read. A
+        # pending request must fail closed rather than becoming unobservable.
+        return
+    with _native_cancellation_lock:
+        _native_cancellation_runtimes.pop(execution_id, None)
+    if scheduler_token is not None:
+        module._forget_scheduler_runtime_token(scheduler_token)
+
+
+def _native_cancellation_runtime(execution_id: str) -> dict | None:
+    """Return a private snapshot of one live runtime handle."""
+    with _native_cancellation_lock:
+        runtime = _native_cancellation_runtimes.get(execution_id)
+        return dict(runtime) if runtime is not None else None
+
+
+def _native_cancellation_snapshot(
+    job_id: str,
+    execution_id: str,
+    session_id: str,
+    agent,
+    future,
+) -> dict:
+    """Build a liveness snapshot without touching durable lifecycle state."""
+    runtime = _native_cancellation_runtime(execution_id) or {}
+    model_alive = future is not None and not future.done()
+    tool_alive = False
+    children_alive = False
+    tracker = getattr(agent, "_tool_worker_threads", None)
+    tracker_lock = getattr(agent, "_tool_worker_threads_lock", None)
+    if tracker is not None and tracker_lock is not None:
+        try:
+            with tracker_lock:
+                tool_alive = bool(tracker)
+        except Exception:
+            tool_alive = True
+    children_lock = getattr(agent, "_active_children_lock", None)
+    children = getattr(agent, "_active_children", None)
+    if children_lock is not None and children is not None:
+        try:
+            with children_lock:
+                children_alive = bool(children)
+        except Exception:
+            children_alive = True
+    task_alive = model_alive or tool_alive or children_alive
+    return {
+        "job_id": job_id,
+        "execution_id": execution_id,
+        "session_id": session_id,
+        "scheduler_task_alive": task_alive,
+        "model_task_alive": model_alive,
+        "tool_task_alive": tool_alive or children_alive,
+        "task_alive": task_alive,
+        "fire_claim_owner": runtime.get("fire_claim_owner"),
+    }
+
+
+def _native_cancellation_is_pending(execution_id: str) -> bool:
+    """Return whether durable cancellation is requested for one execution."""
+    if not execution_id:
+        return False
+    runtime = _native_cancellation_runtime(execution_id)
+    if runtime is not None and runtime.get("governed_requested") is True:
+        return True
+    try:
+        profile, module = _native_cancellation_module()
+        status = module.status_cancellation(profile, execution_id)
+        return status.get("state") in {module.REQUESTED, module.ACKNOWLEDGED}
+    except Exception:
+        # A set cancellation event without readable authority is not safe to
+        # reinterpret as a governed request; the existing ownership-loss path
+        # will fail closed instead.
+        return False
+
+
+def native_cancellation_blocks_dispatch(job_id: str) -> bool:
+    """Return whether a pending cancellation interlocks native dispatch."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        return False
+    profile, module = _native_cancellation_module()
+    return bool(module.blocks_dispatch(profile, job_id))
+
+
+@contextlib.contextmanager
+def native_cancellation_admission_lock(job_id: str):
+    """Share the cancellation admission fence with provider claim CAS."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        yield
+        return
+    profile, module = _native_cancellation_module()
+    with module.admission_lock(profile, job_id):
+        yield
+
+
+def native_one_run_enable_blocks_dispatch(job_id: str) -> bool:
+    """Block generic execution admission after a one-run reservation."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        return False
+    _, module = _native_cancellation_module()
+    return bool(module.one_run_enable_blocks_dispatch(job_id))
+
+
+def native_one_run_enable_allows_execution(
+    job_id: str,
+    execution_id: str,
+    claim_owner: str,
+    session_id: str | None = None,
+) -> bool:
+    """Allow only the exact durable one-run execution handoff."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        return False
+    _, module = _native_cancellation_module()
+    return bool(module.one_run_enable_allows_execution(job_id, execution_id, claim_owner, session_id))
+
+
+def request_native_cancellation(job_id: str, request: dict) -> dict:
+    """Admit one exact external request and signal or recover the execution."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        raise ValueError("cancellation job identity is not canonical")
+    execution_id = str(request.get("execution_id") or "")
+    profile, module = _native_cancellation_module()
+    runtime = _native_cancellation_runtime(execution_id)
+    if runtime is None:
+        existing = module.read_record(profile, execution_id)
+        if existing is None:
+            raise ValueError("target native execution is not registered in this gateway")
+        session_id = str(request.get("session_id") or "")
+        if not session_id:
+            raise ValueError("target native execution session identity is not ready")
+        snapshot = {
+            "job_id": job_id,
+            "execution_id": execution_id,
+            "session_id": session_id,
+            "scheduler_task_alive": False,
+            "model_task_alive": False,
+            "tool_task_alive": False,
+            "task_alive": False,
+            "fire_claim_owner": request.get("fire_claim_owner"),
+        }
+    else:
+        session_id = str(runtime.get("session_id") or "")
+        if not session_id:
+            raise ValueError("target native execution session identity is not ready")
+        snapshot = _native_cancellation_snapshot(
+            job_id,
+            execution_id,
+            session_id,
+            runtime.get("agent"),
+            runtime.get("future"),
+        )
+    result = module.request_cancellation(profile, request, snapshot)
+    if runtime is not None:
+        with _native_cancellation_lock:
+            current = _native_cancellation_runtimes.get(execution_id)
+            if current is not None:
+                current["governed_requested"] = True
+                current["cancel_event"].set()
+                agent = current.get("agent")
+                if agent is not None and not current.get("signal_sent"):
+                    current["signal_sent"] = True
+                else:
+                    agent = None
+            else:
+                agent = None
+        if agent is not None:
+            request_hard_interrupt(agent, f"Governed cancellation: {request.get('reason')}")
+    elif result.get("status") == module.ACKNOWLEDGED:
+        reconciliation = _native_cancellation_reconcile(job_id, request)
+        if reconciliation.get("status") in {module.TERMINAL, "ALREADY_TERMINAL"}:
+            result = reconciliation
+        else:
+            result["reconciliation"] = reconciliation
+    result["status_snapshot"] = module.status_cancellation(
+        profile,
+        execution_id,
+        snapshot,
+    )
+    return result
+
+
+def get_native_cancellation_status(job_id: str, execution_id: str) -> dict:
+    """Return the durable and live status for one native execution."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        raise ValueError("cancellation job identity is not canonical")
+    runtime = _native_cancellation_runtime(execution_id)
+    profile, module = _native_cancellation_module()
+    snapshot = None
+    if runtime is not None:
+        snapshot = _native_cancellation_snapshot(
+            job_id,
+            execution_id,
+            str(runtime.get("session_id") or ""),
+            runtime.get("agent"),
+            runtime.get("future"),
+        )
+    return module.status_cancellation(profile, execution_id, snapshot)
+
+
+def _native_cancellation_acknowledge(execution_id: str) -> bool:
+    """Acknowledge only after the registry proves all execution work stopped."""
+    runtime = _native_cancellation_runtime(execution_id)
+    if runtime is None:
+        return False
+    profile, module = _native_cancellation_module()
+    snapshot = _native_cancellation_snapshot(
+        str(runtime.get("job_id") or ""),
+        execution_id,
+        str(runtime.get("session_id") or ""),
+        runtime.get("agent"),
+        runtime.get("future"),
+    )
+    if any(snapshot.get(key) is True for key in (
+        "scheduler_task_alive",
+        "model_task_alive",
+        "tool_task_alive",
+        "task_alive",
+    )):
+        return False
+    result = module.acknowledge_cancellation(profile, snapshot)
+    return result.get("status") in {module.ACKNOWLEDGED, module.TERMINAL, "ALREADY_TERMINAL"}
+
+
+def _native_cancellation_poll(
+    job_id: str,
+    execution_id: str,
+    session_id: str,
+    agent,
+    future,
+    cancel_event: "_CancelEventLike",
+) -> bool:
+    """Signal cancellation and raise only after the model future is stopped."""
+    if cancel_event is None or not cancel_event.is_set():
+        return False
+    if not _native_cancellation_is_pending(execution_id):
+        request_hard_interrupt(agent, "Cron fire claim ownership was lost")
+        raise RuntimeError(f"Cron job '{job_id}' lost its durable fire claim ownership")
+    runtime = _native_cancellation_runtime(execution_id) or {}
+    with _native_cancellation_lock:
+        should_signal = not runtime.get("signal_sent")
+        if should_signal and execution_id in _native_cancellation_runtimes:
+            _native_cancellation_runtimes[execution_id]["signal_sent"] = True
+    if should_signal:
+        request_hard_interrupt(agent, "Governed cancellation requested")
+    if future is None or not future.done():
+        return True
+    try:
+        future.result()
+    except BaseException:
+        pass
+    try:
+        profile, module = _native_cancellation_module()
+    except Exception:
+        return True
+    snapshot = _native_cancellation_snapshot(job_id, execution_id, session_id, agent, future)
+    try:
+        module.acknowledge_cancellation(profile, snapshot)
+    except Exception:
+        # A live tool/child task or an unproven identity keeps the request in
+        # progress. The poller will retry without terminalizing the run.
+        return True
+    status = module.status_cancellation(profile, execution_id, snapshot)
+    reason = str(status.get("reason") or "governed cancellation")
+    raise GovernedCronCancellation(reason)
+
+
+def _native_cancellation_end_reason(job_id: str, execution_id: str) -> str:
+    """Return an explicit session end reason when cancellation is active."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID or not execution_id:
+        return ""
+    try:
+        profile, module = _native_cancellation_module()
+        status = module.status_cancellation(profile, execution_id)
+    except Exception:
+        return ""
+    if status.get("state") in {module.REQUESTED, module.ACKNOWLEDGED, module.TERMINAL}:
+        return "governed_cancellation"
+    return ""
+
+
+def _native_cancellation_session(profile, session_id: str) -> dict:
+    """Read exact SessionDB finalization evidence through the profile module."""
+    _, module = _native_cancellation_module()
+    return module.read_session_evidence(profile, session_id)
+
+
+def _native_cancellation_scheduler_mark_job_run(
+    job: dict,
+    execution_id: str,
+    fire_owner: str | None,
+    error: str,
+    *,
+    allow_terminalizing: bool = False,
+) -> bool:
+    """Mark one cancellation through the exact scheduler bookkeeping context."""
+    profile, module = _native_cancellation_module()
+    runtime = _native_cancellation_runtime(execution_id) or {}
+    record = module.read_record(profile, execution_id)
+    identity = record.get("identity") if isinstance(record, dict) else {}
+    recovery_capability_digest = (
+        module.recovery_capability_digest(record)
+        if allow_terminalizing
+        else None
+    )
+    session_id = str(runtime.get("session_id") or identity.get("session_id") or "")
+    scheduler_token = runtime.get("scheduler_bookkeeping_token")
+    if scheduler_token is None and not allow_terminalizing:
+        raise RuntimeError("live scheduler finish token is missing")
+    owner = fire_owner or str(identity.get("fire_claim_owner") or "")
+    if scheduler_token is not None:
+        module.bind_scheduler_runtime_token(
+            profile,
+            token=scheduler_token,
+            job_id=job["id"],
+            execution_id=execution_id,
+            session_id=session_id,
+            fire_claim_owner=owner,
+            recovery_capability_digest=recovery_capability_digest,
+        )
+    with module.scheduler_bookkeeping_context(
+        profile,
+        job_id=job["id"],
+        execution_id=execution_id,
+        session_id=session_id,
+        fire_claim_owner=owner,
+        scheduler_token=scheduler_token,
+        expected_status="cancelled",
+        expected_error=error,
+        allow_terminalizing=allow_terminalizing,
+        recovery_capability_digest=recovery_capability_digest,
+    ):
+        return mark_job_run(
+            job["id"],
+            False,
+            error,
+            status="cancelled",
+            delivery_error=None,
+            expected_fire_owner=owner,
+        )
+
+
+def _native_cancellation_finish(
+    job: dict,
+    execution_id: str,
+    fire_owner: str | None,
+) -> bool:
+    """Run the existing fenced terminal path and publish CANCELLED evidence."""
+    try:
+        profile, module = _native_cancellation_module()
+    except Exception:
+        logger.error("Civic Assure cancellation authority is unavailable during terminalization")
+        return False
+    try:
+        acknowledged = _native_cancellation_acknowledge(execution_id)
+    except Exception:
+        logger.error("Civic Assure cancellation acknowledgement failed", exc_info=True)
+        return False
+    if not acknowledged:
+        logger.error("Civic Assure cancellation cannot acknowledge before terminal reconciliation")
+        return False
+    reason = module.status_cancellation(profile, execution_id).get("reason") or "governed cancellation"
+    error = f"Governed cancellation: {reason}"
+    marked = _native_cancellation_scheduler_mark_job_run(
+        job,
+        execution_id,
+        fire_owner,
+        error,
+    )
+    if not marked:
+        from cron.jobs import load_jobs
+        current_jobs = load_jobs()
+        current_job = next((row for row in current_jobs if row.get("id") == job["id"]), {})
+        already_reconciled = (
+            current_job.get("last_status") == "cancelled"
+            and current_job.get("last_error") == error
+            and current_job.get("fire_claim") is None
+            and current_job.get("run_claim") is None
+        )
+        if not already_reconciled:
+            logger.error("Civic Assure cancellation could not reconcile the canonical job")
+            return False
+    ledger = finish_execution(
+        execution_id,
+        success=False,
+        error=error,
+        delivery_outcome="suppressed",
+    )
+    if ledger is None:
+        try:
+            ledger = module.read_ledger_evidence(profile, execution_id)
+        except Exception:
+            logger.error("Civic Assure cancellation could not terminalize its ledger row")
+            return False
+    from cron.jobs import load_jobs
+    jobs = load_jobs()
+    job_after = next((row for row in jobs if row.get("id") == job["id"]), {})
+    session_id = str((_native_cancellation_runtime(execution_id) or {}).get("session_id") or "")
+    session = _native_cancellation_session(profile, session_id)
+    reconciliation = {
+        "claims_reconciled": job_after.get("fire_claim") is None and job_after.get("run_claim") is None,
+        "owner_reconciled": False,
+        "owner_release_pending": True,
+    }
+    result = module.terminalize_cancellation(
+        profile,
+        _native_cancellation_snapshot(
+            job["id"],
+            execution_id,
+            session_id,
+            (_native_cancellation_runtime(execution_id) or {}).get("agent"),
+            (_native_cancellation_runtime(execution_id) or {}).get("future"),
+        ),
+        ledger=ledger,
+        job=job_after,
+        session=session,
+        reconciliation=reconciliation,
+    )
+    return result.get("status") in {module.TERMINAL, "ALREADY_TERMINAL"}
+
+
+def _native_cancellation_reconcile(job_id: str, request: dict) -> dict:
+    """Recover an acknowledged cancellation through normal terminal APIs."""
+    if job_id != _NATIVE_CANCELLATION_JOB_ID:
+        raise ValueError("cancellation job identity is not canonical")
+    profile, module = _native_cancellation_module()
+    execution_id = str(request.get("execution_id") or "")
+    record = module.read_record(profile, execution_id)
+    if record is None:
+        raise ValueError("cancellation evidence is missing")
+    identity = record.get("identity") or {}
+    normalized = module._identity_from_request(request)
+    for key in (
+        "job_id",
+        "execution_id",
+        "session_id",
+        "repository",
+        "issue",
+        "lifecycle_id",
+        "lifecycle_generation",
+        "maintainer_revision",
+        "reason",
+        "reason_text",
+        "fire_claim_owner",
+    ):
+        if normalized.get(key) != identity.get(key):
+            raise ValueError("cancellation recovery identity conflicts with evidence")
+    if record.get("state") == module.TERMINAL:
+        return {"status": "ALREADY_TERMINAL", "changed": False, "record": record}
+    if record.get("state") != module.ACKNOWLEDGED:
+        return {"status": record.get("state"), "changed": False, "record": record}
+    from cron.jobs import load_jobs
+    jobs = load_jobs()
+    job = next((row for row in jobs if row.get("id") == job_id), None)
+    if not isinstance(job, dict):
+        raise ValueError("canonical cancellation job is missing")
+    ledger = module.read_ledger_evidence(profile, execution_id)
+    error = f"Governed cancellation: {identity.get('reason') or 'governed cancellation'}"
+    recovery_capability_digest = module.recovery_capability_digest(record)
+    if ledger.get("status") not in {"claimed", "running", "failed"}:
+        return {
+            "status": "RECONCILIATION_BLOCKED",
+            "changed": False,
+            "record": record,
+            "ledger_status": ledger.get("status"),
+        }
+    fire_owner = str(identity.get("fire_claim_owner") or "")
+    if not fire_owner:
+        raise ValueError("cancellation recovery fire-claim owner is missing")
+    session_id = str(identity.get("session_id") or "")
+    claims_present = job.get("fire_claim") is not None or job.get("run_claim") is not None
+    with module.scheduler_bookkeeping_context(
+        profile,
+        job_id=job_id,
+        execution_id=execution_id,
+        session_id=session_id,
+        fire_claim_owner=fire_owner,
+        scheduler_token=None,
+        expected_status="cancelled",
+        expected_error=error,
+        allow_terminalizing=True,
+        require_claim=claims_present,
+        recovery_capability_digest=recovery_capability_digest,
+    ):
+        pass
+    if ledger.get("status") in {"claimed", "running"}:
+        finished = finish_execution(
+            execution_id,
+            success=False,
+            error=error,
+            delivery_outcome="suppressed",
+        )
+        ledger = finished or module.read_ledger_evidence(profile, execution_id)
+    if ledger.get("status") != "failed":
+        return {
+            "status": "RECONCILIATION_BLOCKED",
+            "changed": False,
+            "record": record,
+            "ledger_status": ledger.get("status"),
+        }
+    if claims_present:
+        marked = _native_cancellation_scheduler_mark_job_run(
+            job,
+            execution_id,
+            fire_owner,
+            error,
+            allow_terminalizing=True,
+        )
+        if not marked:
+            jobs = load_jobs()
+            job = next((row for row in jobs if row.get("id") == job_id), {})
+            if (
+                job.get("last_status") != "cancelled"
+                or job.get("last_error") != error
+                or job.get("fire_claim") is not None
+                or job.get("run_claim") is not None
+            ):
+                return {
+                    "status": "RECONCILIATION_BLOCKED",
+                    "changed": False,
+                    "record": record,
+                }
+    else:
+        with module.scheduler_bookkeeping_context(
+            profile,
+            job_id=job_id,
+            execution_id=execution_id,
+            session_id=session_id,
+            fire_claim_owner=fire_owner,
+            scheduler_token=None,
+            expected_status="cancelled",
+            expected_error=error,
+            allow_terminalizing=True,
+            require_claim=False,
+            recovery_capability_digest=recovery_capability_digest,
+        ):
+            pass
+    jobs = load_jobs()
+    job_after = next((row for row in jobs if row.get("id") == job_id), {})
+    if (
+        job_after.get("last_status") != "cancelled"
+        or job_after.get("last_error") != error
+        or job_after.get("fire_claim") is not None
+        or job_after.get("run_claim") is not None
+    ):
+        return {"status": "RECONCILIATION_BLOCKED", "changed": False, "record": record}
+    session = module.read_session_evidence(profile, session_id)
+    runtime = {
+        "job_id": job_id,
+        "execution_id": execution_id,
+        "session_id": session_id,
+        "fire_claim_owner": fire_owner,
+        "task_alive": False,
+        "scheduler_task_alive": False,
+        "model_task_alive": False,
+        "tool_task_alive": False,
+    }
+    return module.terminalize_cancellation(
+        profile,
+        runtime,
+        ledger=ledger,
+        job=job_after,
+        session=session,
+        reconciliation={
+            "claims_reconciled": True,
+            "owner_reconciled": False,
+            "owner_release_pending": True,
+        },
+    )
+
+
+
 
 
 class _CancelEventLike(Protocol):
@@ -671,7 +2007,9 @@ def try_register_running_job(job_id: str) -> bool:
         # id is in-flight without an age the stale sweep can bound it by
         # (t_3778a491).  The sentinel is replaced by the real owning future
         # once ``pool.submit`` returns.
-        _running_since[job_id] = time.time()
+        _registered_at = time.time()
+        _running_since[job_id] = _registered_at
+        _running_activity_at[job_id] = _registered_at
         _running_futures[job_id] = _FUTURE_PENDING
         return True
 
@@ -682,6 +2020,54 @@ def release_running_job(job_id: str) -> None:
         _running_job_ids.discard(job_id)
         _running_since.pop(job_id, None)
         _running_futures.pop(job_id, None)
+        _running_activity_at.pop(job_id, None)
+
+
+def touch_running_job_activity(job_id: str, *, at: float | None = None) -> bool:
+    """Renew the in-flight activity lease for a scheduler-owned run.
+
+    Returns False when the job no longer owns an in-flight slot. A supplied
+    timestamp is monotonic-by-value: stale observations can never move the
+    lease backwards.
+    """
+    observed = time.time() if at is None else float(at)
+    with _running_lock:
+        if job_id not in _running_job_ids:
+            return False
+        prior = _running_activity_at.get(job_id)
+        if prior is None or observed > prior:
+            _running_activity_at[job_id] = observed
+        return True
+
+
+def _inflight_activity_lease_seconds() -> float:
+    """Configured inactivity lease for orphaned post-dispatch claims."""
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("inflight_activity_lease_seconds")
+        if configured is not None:
+            value = float(configured)
+            if value > 0:
+                return value
+    except Exception:
+        pass
+    return _INFLIGHT_ACTIVITY_LEASE_SECONDS
+
+
+def _inflight_pre_dispatch_grace_seconds() -> float:
+    """Bound claim->Future installation without using cron cadence."""
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("inflight_pre_dispatch_grace_seconds")
+        if configured is not None:
+            value = float(configured)
+            if value > 0:
+                return value
+    except Exception:
+        pass
+    return _INFLIGHT_PRE_DISPATCH_GRACE_SECONDS
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -805,6 +2191,13 @@ def get_inflight_guard_stats() -> dict:
                 jid: round(now - started, 1)
                 for jid, started in _running_since.items()
             },
+            "activity_idle_seconds": {
+                jid: round(max(0.0, now - observed), 1)
+                for jid, observed in _running_activity_at.items()
+                if jid in _running_job_ids
+            },
+            "activity_lease_seconds": _inflight_activity_lease_seconds(),
+            "pre_dispatch_grace_seconds": _inflight_pre_dispatch_grace_seconds(),
             "forced_releases": _forced_release_count,
             "recent_forced_releases": list(_forced_releases),
         }
@@ -853,6 +2246,8 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
 
     by_id = {j.get("id"): j for j in (due_jobs or []) if isinstance(j, dict)}
     floor_seconds = _inflight_min_allowance_minutes() * 60.0
+    activity_lease_seconds = _inflight_activity_lease_seconds()
+    pre_dispatch_grace_seconds = _inflight_pre_dispatch_grace_seconds()
     now = time.time()
     stale: list = []
 
@@ -924,18 +2319,12 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 continue
             age = now - started
             interval_minutes = _intervals.get(job_id)
-            allowance = floor_seconds
+            legacy_allowance = floor_seconds
             if interval_minutes:
-                allowance = max(allowance, 2.0 * interval_minutes * 60.0)
+                legacy_allowance = max(legacy_allowance, 2.0 * interval_minutes * 60.0)
             fut = _running_futures.get(job_id)
-            if fut is _FUTURE_PENDING:
-                # The claim is past its allowance and the owning future still
-                # has not been installed — the submit path itself (SessionDB
-                # init, agent import, config load) hung before ``pool.submit``
-                # returned.  That is exactly the wedge class; release it.
-                pass
-            elif fut is not None and not fut.done():
-                continue  # genuinely still executing
+            if fut is not None and fut is not _FUTURE_PENDING and not fut.done():
+                continue  # live Future is authoritative; never age-expire it
             # Persisted-state reconciliation: if the durable executions ledger
             # shows THIS claim's run reached a terminal state, the claim is
             # provably stale even if it is still inside its in-memory age
@@ -959,13 +2348,33 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
                 and _row_belongs_to_claim(latest, started)
             ):
                 reason = "ledger-terminal"
-            elif age >= allowance:
-                reason = "age"
+                allowance = 0.0
+            elif fut is _FUTURE_PENDING:
+                # No execution owner exists yet, so real agent activity cannot
+                # renew a lease. Use only a short bounded pre-dispatch grace.
+                allowance = pre_dispatch_grace_seconds
+                if age < allowance:
+                    continue
+                reason = "pre-dispatch"
             else:
-                continue
+                last_activity = _running_activity_at.get(job_id)
+                if last_activity is not None:
+                    idle = max(0.0, now - last_activity)
+                    allowance = activity_lease_seconds
+                    if idle < allowance:
+                        continue
+                    reason = "activity-lease"
+                else:
+                    # Backward compatibility for claims created before this patch
+                    # (or directly injected by tests): retain the old age policy.
+                    allowance = legacy_allowance
+                    if age < allowance:
+                        continue
+                    reason = "legacy-age"
             _running_job_ids.discard(job_id)
             _running_since.pop(job_id, None)
             _running_futures.pop(job_id, None)
+            _running_activity_at.pop(job_id, None)
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
 
@@ -4581,6 +5990,31 @@ class _BoundedCronSessionDB:
 
         return _bounded
 
+    # CIVIC_ASSURE_SESSION_FINALIZATION_V1
+    def finalize_session(self, session_id, end_reason):
+        """Attempt end_session even after another cleanup call timed out."""
+        target = self._session_db.end_session
+        result = {}
+
+        def _call():
+            try:
+                result["value"] = target(session_id, end_reason)
+            except BaseException as exc:
+                result["error"] = exc
+                raise
+
+        ok = _run_cron_cleanup_with_timeout(
+            _call,
+            job_id=self._job_id,
+            label="session finalization (end_session)",
+        )
+        if not ok:
+            error = result.get("error")
+            if error is not None:
+                raise error
+            raise TimeoutError("session finalization method end_session timed out")
+        return result.get("value")
+
 
 def run_job(
     job: dict,
@@ -4925,7 +6359,11 @@ def run_job(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _cron_session_id = str(job.get("session_id") or f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
+    _native_cancellation_update(
+        str(job.get("execution_id") or ""),
+        session_id=_cron_session_id,
+    )
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -5226,6 +6664,7 @@ def run_job(
 
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 500
+        _civic_assure_write_budget_snapshot(job_id, _cron_session_id, max_iterations, job_name=job_name, execution_id=job.get("execution_id"))
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
@@ -5559,6 +6998,7 @@ def run_job(
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
+            max_tokens=_civic_assure_model_request_max_tokens(job_id, model, runtime, _cfg),
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
@@ -5582,6 +7022,14 @@ def run_job(
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+        )
+        # CIVIC_ASSURE_MODEL_REQUEST_BOUNDARY_V1
+        _civic_assure_install_model_request_boundary(
+            agent, job, runtime, _cfg, _cron_session_id
+        )
+        _native_cancellation_update(
+            str(job.get("execution_id") or ""),
+            agent=agent,
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run
@@ -5612,9 +7060,19 @@ def run_job(
         )
         _last_claim_heartbeat = time.monotonic()
 
-        def _abort_if_fire_claim_lost() -> None:
+        def _abort_if_fire_claim_lost() -> bool:
             if cancel_event is None or not cancel_event.is_set():
-                return
+                return False
+            execution_value = str(job.get("execution_id") or "")
+            if _native_cancellation_is_pending(execution_value):
+                return _native_cancellation_poll(
+                    job_id,
+                    execution_value,
+                    _cron_session_id,
+                    agent,
+                    _cron_future,
+                    cancel_event,
+                )
             if agent is not None and hasattr(agent, "interrupt"):
                 agent.interrupt("Cron fire claim ownership was lost")
             raise RuntimeError(
@@ -5645,6 +7103,26 @@ def run_job(
         _audit_fire_id = uuid.uuid4().hex
         _audit_t_start = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _native_cancellation_update(
+            str(job.get("execution_id") or ""),
+            future=_cron_future,
+        )
+        touch_running_job_activity(job_id)
+        _civic_assure_write_budget_snapshot(job_id, _cron_session_id, max_iterations, agent, job_name=job_name, execution_id=job.get("execution_id"))
+
+        def _refresh_inflight_activity_from_agent() -> None:
+            """Project AIAgent's real activity clock onto the scheduler lease."""
+            _civic_assure_check_model_request_timeout(agent)
+            if not hasattr(agent, "get_activity_summary"):
+                return
+            try:
+                summary = agent.get_activity_summary()
+                idle = float(summary.get("seconds_since_activity", 0.0) or 0.0)
+            except Exception:
+                return
+            touch_running_job_activity(job_id, at=time.time() - max(0.0, idle))
+            _civic_assure_write_budget_snapshot(job_id, _cron_session_id, max_iterations, agent, job_name=job_name, execution_id=job.get("execution_id"))
+
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -5659,11 +7137,16 @@ def run_job(
                         if done:
                             _abort_if_fire_claim_lost()
                             result = _cron_future.result()
+                            _refresh_inflight_activity_from_agent()
                             break
-                        _abort_if_fire_claim_lost()
+                        if _abort_if_fire_claim_lost():
+                            _heartbeat_run_claim_if_due()
+                            continue
                         _heartbeat_run_claim_if_due()
+                        _refresh_inflight_activity_from_agent()
                 else:
                     result = _cron_future.result()
+                    _refresh_inflight_activity_from_agent()
             else:
                 result = None
                 while True:
@@ -5674,8 +7157,11 @@ def run_job(
                         _abort_if_fire_claim_lost()
                         result = _cron_future.result()
                         break
-                    _abort_if_fire_claim_lost()
+                    if _abort_if_fire_claim_lost():
+                        _heartbeat_run_claim_if_due()
+                        continue
                     _heartbeat_run_claim_if_due()
+                    _refresh_inflight_activity_from_agent()
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -5735,6 +7221,7 @@ def run_job(
         # job's `last_status` set to "ok". Raise so the except handler below
         # builds the proper failure tuple. (issue #17855)
         turn_exit_reason = str(result.get("turn_exit_reason") or "")
+        _civic_assure_write_budget_snapshot(job_id, _cron_session_id, max_iterations, agent, job_name=job_name, execution_id=job.get("execution_id"), status="returned", reason=turn_exit_reason)
         final_response_text = (result.get("final_response") or "").strip()
         max_iteration_summary = (
             result.get("failed") is not True
@@ -5750,6 +7237,11 @@ def run_job(
             )
             raise RuntimeError(_err_text)
         if max_iteration_summary:
+            if _civic_assure_active_cycle_files():
+                _civic_assure_write_budget_snapshot(job_id, _cron_session_id, max_iterations, agent, job_name=job_name, execution_id=job.get("execution_id"), status="continuation_required", reason=turn_exit_reason)
+                _civic_assure_write_continuation_checkpoint(job_id, _job_workdir, _cron_session_id, job_name=job_name, execution_id=job.get("execution_id"), reason="max_iterations_reached")
+            else:
+                _civic_assure_write_budget_snapshot(job_id, _cron_session_id, max_iterations, agent, job_name=job_name, execution_id=job.get("execution_id"), status="returned", reason="max_iterations_reached_without_active_cycle")
             logger.warning(
                 "Job '%s' reached the iteration limit but produced a final fallback response; "
                 "delivering the response instead of failing the cron run",
@@ -5920,6 +7412,7 @@ def run_job(
             # of truth for the lineage; agent.session_id is only a fail-safe
             # when the lookup itself is unavailable.
             _final_cron_session_id = _cron_session_id
+            _cron_cleanup_error = None
             try:
                 _compression_tip = _session_db.get_compression_tip(
                     _cron_session_id
@@ -5933,6 +7426,7 @@ def run_job(
                         _final_cron_session_id = _agent_session_id
                 except (Exception, KeyboardInterrupt):
                     pass
+                _cron_cleanup_error = f"{type(e).__name__}: {e}"
                 logger.debug(
                     "Job '%s': failed to resolve cron compression tip: %s",
                     job_id,
@@ -5955,17 +7449,26 @@ def run_job(
                         _session_db, _final_cron_session_id, f"cron {job_id}"
                     )
             except (Exception, KeyboardInterrupt) as e:
+                _cron_cleanup_error = f"{type(e).__name__}: {e}"
                 logger.debug(
                     "Job '%s': failed to set cron session title: %s", job_id, e
                 )
                 # Last-resort: never leave the session blank (#50535). Try the
                 # next free title in the lineage, then a bare id-stamped title.
-                for _fallback in (
-                    getattr(_session_db, "get_next_title_in_lineage", lambda b: b)(
+                _fallbacks = [f"cron {job_id} {_final_cron_session_id[-6:]}"]
+                try:
+                    _next_title = _session_db.get_next_title_in_lineage(
                         f"cron {job_id}"
-                    ),
-                    f"cron {job_id} {_final_cron_session_id[-6:]}",
-                ):
+                    )
+                    if _next_title and _next_title not in _fallbacks:
+                        _fallbacks.insert(0, _next_title)
+                except (Exception, KeyboardInterrupt) as _fallback_error:
+                    logger.debug(
+                        "Job '%s': failed to derive fallback session title: %s",
+                        job_id,
+                        _fallback_error,
+                    )
+                for _fallback in _fallbacks:
                     try:
                         if _set_cron_session_title(
                             _session_db, _final_cron_session_id, _fallback
@@ -5974,11 +7477,24 @@ def run_job(
                     except (Exception, KeyboardInterrupt):
                         continue
             try:
-                _session_db.end_session(
-                    _final_cron_session_id, "cron_complete"
+                _session_end_reason = (
+                    _native_cancellation_end_reason(
+                        job_id, str(job.get("execution_id") or "")
+                    )
+                    or "cron_complete"
+                )
+                _session_db.finalize_session(
+                    _final_cron_session_id, _session_end_reason
                 )
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+                _finalization_error = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "Job '%s': session finalization failed after cleanup; "
+                    "cleanup_error=%s finalization_error=%s",
+                    job_id,
+                    _cron_cleanup_error,
+                    _finalization_error,
+                )
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
@@ -6165,6 +7681,7 @@ def run_one_job(
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
+    native_cancel_event = threading.Event()
     profile_home = _get_hermes_home().resolve()
     with _running_lock:
         _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
@@ -6186,6 +7703,7 @@ def run_one_job(
                     else lost_ownership
                 ),
                 execution_token=execution_token,
+                native_cancel_event=native_cancel_event,
             ),
         )
     finally:
@@ -6195,6 +7713,7 @@ def run_one_job(
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(job["id"], None)
+        _native_cancellation_unregister(str(job.get("execution_id") or ""))
 
 
 def _run_one_job_body(
@@ -6206,6 +7725,7 @@ def _run_one_job_body(
     extra_prompt: Optional[str] = None,
     fire_claim_lost: Optional[_CancelEventLike] = None,
     execution_token: Optional[object] = None,
+    native_cancel_event: Optional[_CancelEventLike] = None,
 ) -> bool:
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
@@ -6220,6 +7740,9 @@ def _run_one_job_body(
 
     def _fire_claim_ownership_lost() -> bool:
         if fire_claim_lost is not None and fire_claim_lost.is_set():
+            _native_execution_id = str(job.get("execution_id") or "")
+            if _native_cancellation_is_pending(_native_execution_id):
+                raise GovernedCronCancellation("Governed cancellation requested")
             return True
         if fire_owner is None:
             return False
@@ -6238,8 +7761,34 @@ def _run_one_job_body(
         return True
 
     execution_id = job.get("execution_id")
-    if not execution_id:
-        execution_id = create_execution(job["id"], source="direct")["id"]
+    with native_cancellation_admission_lock(job["id"]):
+        if native_cancellation_blocks_dispatch(job["id"]):
+            if execution_id:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Dispatch blocked by pending governed cancellation.",
+                )
+            return True
+        _one_run_exact_handoff = False
+        if execution_id:
+            _one_run_exact_handoff = native_one_run_enable_allows_execution(
+                job["id"],
+                str(execution_id),
+                str(fire_owner or ""),
+                str(job.get("session_id") or "") or None,
+            )
+        if native_one_run_enable_blocks_dispatch(job["id"]) and not _one_run_exact_handoff:
+            if execution_id:
+                finish_execution(
+                    execution_id,
+                    success=False,
+                    error="Dispatch blocked by one-run admission fence.",
+                )
+            return True
+        if not execution_id:
+            execution_id = create_execution(job["id"], source="direct")["id"]
+            job["execution_id"] = execution_id
     delivery_attempted = False
     delivery_error = None
     try:
@@ -6265,6 +7814,14 @@ def _run_one_job_body(
         # The attempt is claimed durably before executor/provider dispatch and
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
+        native_cancel_event = native_cancel_event or threading.Event()
+        _native_cancellation_register(
+            job["id"],
+            execution_id,
+            cancel_event=native_cancel_event,
+            fire_claim_owner=fire_owner,
+            scheduler_token=execution_token,
+        )
 
         # Run the job under the profile's secret scope. get_secret() fails
         # closed outside a scope once profile isolation is in play (multiple
@@ -6291,19 +7848,16 @@ def _run_one_job_body(
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
         try:
-            if fire_claim_lost is None:
-                success, output, final_response, error = run_job(
-                    job,
-                    defer_agent_teardown=_deferred_agents,
-                    extra_prompt=extra_prompt,
-                )
-            else:
-                success, output, final_response, error = run_job(
-                    job,
-                    defer_agent_teardown=_deferred_agents,
-                    extra_prompt=extra_prompt,
-                    cancel_event=fire_claim_lost,
-                )
+            _native_cancel = _CombinedCancelEvent(
+                fire_claim_lost,
+                native_cancel_event,
+            )
+            success, output, final_response, error = run_job(
+                job,
+                defer_agent_teardown=_deferred_agents,
+                extra_prompt=extra_prompt,
+                cancel_event=_native_cancel,
+            )
         except BaseException:
             # run_job's finally still hands back the agent when it raises; tear
             # it down here so a failed run never leaks its async resources
@@ -6587,6 +8141,15 @@ def _run_one_job_body(
         # no output and no error. Record the failure first, then re-raise
         # anything that isn't a plain Exception. Owner fencing still applies:
         # a stale worker must not record over a replacement claim owner.
+        if isinstance(e, GovernedCronCancellation):
+            _native_cancellation_acknowledge(str(execution_id))
+            for _deferred_agent in _deferred_agents:
+                _teardown_cron_agent(_deferred_agent, job["id"])
+            if not _native_cancellation_finish(
+                job, str(execution_id), fire_owner
+            ):
+                return False
+            return True
         _err_text = str(e) or type(e).__name__
         logger.error("Error processing job %s: %s", job['id'], _err_text)
         delivery_outcome = "suppressed"
@@ -7016,6 +8579,13 @@ def tick(
                 )
                 _clear_run_claim_best_effort()
                 return None
+            with native_cancellation_admission_lock(job["id"]):
+                if native_cancellation_blocks_dispatch(job["id"]):
+                    logger.warning(
+                        "Job '%s': dispatch blocked by pending governed cancellation",
+                        job.get("name", job["id"]),
+                    )
+                    return None
             if not try_register_running_job(job_id):
                 logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                 return None

@@ -459,6 +459,352 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
 # into output writes/deletes.
 _IMMUTABLE_JOB_FIELDS = frozenset({"id"})
 
+# CIVIC_ASSURE_NATIVE_CONFIG_GATE_V2
+# Runtime enforcement for the canonical Civic Assure Maintainer job. The
+# maintainer profile module owns lifecycle authorization; this hook only routes
+# every persisted jobs.py mutation through that one existing authority.
+_civic_assure_native_config_module_lock = threading.RLock()
+
+
+def _civic_assure_native_config_profile():
+    """Resolve the active Civic Assure Maintainer profile for this job."""
+    import os
+    import sys
+    from pathlib import Path
+
+    value = os.environ.get("HERMES_PROFILE_HOME", "").strip()
+    if value:
+        profile = Path(value).expanduser().resolve()
+    else:
+        from hermes_constants import get_hermes_home
+        profile = get_hermes_home().resolve()
+    if profile.name != "civic-assure-maintainer" or not profile.is_dir():
+        raise RuntimeError(f"Civic Assure native-config profile root is invalid: {profile}")
+    scripts = str(profile / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    return profile
+
+
+def _civic_assure_native_config_module():
+    """Load the profile-owned native configuration enforcement module."""
+    profile = _civic_assure_native_config_profile()
+    import hashlib
+    import importlib.util
+    from pathlib import Path
+    import sys
+
+    path = profile / "scripts" / "native_config_mutation.py"
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Civic Assure native-config authority path is invalid")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != "4ab1a2991f91b15338b0c8f8afd615238c3982d4e34715b6f4ccf284e1ef1daf":
+        raise RuntimeError("Civic Assure native-config authority bytes are stale")
+    try:
+        with _civic_assure_native_config_module_lock:
+            module = sys.modules.get("native_config_mutation")
+            if module is None:
+                spec = importlib.util.spec_from_file_location("native_config_mutation", path)
+                if spec is None or spec.loader is None:
+                    raise RuntimeError("Civic Assure native-config authority cannot be loaded")
+                module = importlib.util.module_from_spec(spec)
+                sys.modules["native_config_mutation"] = module
+                try:
+                    spec.loader.exec_module(module)
+                except BaseException:
+                    if sys.modules.get("native_config_mutation") is module:
+                        sys.modules.pop("native_config_mutation", None)
+                    raise
+            module_path = Path(getattr(module, "__file__", "")).resolve()
+            if module_path != path.resolve():
+                raise RuntimeError("Civic Assure native-config authority provenance is stale")
+            return (
+                module.enforce_runtime_create,
+                module.enforce_runtime_remove,
+                module.enforce_runtime_save,
+                module.enforce_runtime_update,
+                module.one_run_enable_blocks_dispatch,
+            )
+    except (ImportError, OSError, AttributeError) as exc:
+        raise RuntimeError("Civic Assure native-config enforcement module is unavailable") from exc
+
+
+def _civic_assure_native_config_target_profile():
+    """Return whether the current cron store belongs to this maintainer profile."""
+    import os
+    from pathlib import Path
+
+    value = os.environ.get("HERMES_PROFILE_HOME", "").strip()
+    if not value:
+        value = os.environ.get("HERMES_HOME", "").strip()
+    if not value:
+        return False
+    return Path(value).expanduser().resolve().name == "civic-assure-maintainer"
+
+
+def _civic_assure_native_one_run_blocks_dispatch(job_id):
+    """Block the builtin ticker after a one-run capability is reserved."""
+    if job_id != "406ba6820205" or not _civic_assure_native_config_target_profile():
+        return False
+    return _civic_assure_native_config_module()[4](job_id)
+
+
+
+# CIVIC_ASSURE_HERMES_SCHEDULER_CONTROL_V1
+# Hermes owns operational scheduler state. These fields may change without a
+# Civic Assure lifecycle because running the scheduler does not itself admit
+# work; the maintainer arbiter/lifecycle boundary remains authoritative.
+_CIVIC_ASSURE_HERMES_SCHEDULER_CONTROL_FIELDS = frozenset(
+    {
+        "enabled",
+        "state",
+        "paused_at",
+        "paused_reason",
+        "next_run_at",
+        "fire_claim",
+        "run_claim",
+        "last_run_at",
+        "last_status",
+        "last_error",
+        "last_delivery_error",
+        "last_fire_error",
+        "monitor_state",
+        "preflight_alerted",
+        "drift_alerted",
+        "failure_streak",
+    }
+)
+
+
+def _civic_assure_hermes_scheduler_control_update(updates):
+    """Return whether update_job changes only Hermes-owned scheduler state."""
+    try:
+        keys = set(updates)
+    except (TypeError, ValueError):
+        return False
+    if not keys or not keys.issubset(_CIVIC_ASSURE_HERMES_SCHEDULER_CONTROL_FIELDS):
+        return False
+    if "enabled" in updates and not isinstance(updates.get("enabled"), bool):
+        return False
+    if "state" in updates and updates.get("state") not in {
+        None,
+        "paused",
+        "scheduled",
+        "completed",
+    }:
+        return False
+    if "next_run_at" in updates:
+        value = updates.get("next_run_at")
+        if value is not None:
+            if not isinstance(value, str) or not value.strip():
+                return False
+            try:
+                from datetime import datetime
+
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                return False
+    return True
+
+
+def _civic_assure_hermes_repeat_runtime_only(before, after):
+    """Allow Hermes to advance repeat.completed without changing repeat policy."""
+    if before == after:
+        return True
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    keys = set(before) | set(after)
+    if keys - {"times", "completed"}:
+        return False
+    if before.get("times") != after.get("times"):
+        return False
+    before_completed = before.get("completed", 0)
+    after_completed = after.get("completed", 0)
+    if (
+        isinstance(before_completed, bool)
+        or not isinstance(before_completed, int)
+        or isinstance(after_completed, bool)
+        or not isinstance(after_completed, int)
+    ):
+        return False
+    return after_completed >= before_completed
+
+
+def _civic_assure_hermes_scheduler_control_save(
+    jobs,
+    *,
+    removed_ids=None,
+    replace=False,
+):
+    """Return True only for a pure Hermes-owned operational-state save."""
+    if replace or removed_ids or not _civic_assure_native_config_target_profile():
+        return False
+    try:
+        proposed_rows = [dict(item) for item in jobs]
+    except (TypeError, ValueError):
+        return False
+    if not proposed_rows or any(not item.get("id") for item in proposed_rows):
+        return False
+
+    try:
+        payload = json.loads(_current_cron_store().jobs_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    current_rows = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(current_rows, list):
+        return False
+    try:
+        current_rows = [dict(item) for item in current_rows]
+    except (TypeError, ValueError):
+        return False
+    if any(not item.get("id") for item in current_rows):
+        return False
+
+    current_ids = [str(item["id"]) for item in current_rows]
+    proposed_ids = [str(item["id"]) for item in proposed_rows]
+    if (
+        current_ids != proposed_ids
+        or len(set(current_ids)) != len(current_ids)
+        or "406ba6820205" not in current_ids
+    ):
+        return False
+
+    current_by_id = {str(item["id"]): item for item in current_rows}
+    proposed_by_id = {str(item["id"]): item for item in proposed_rows}
+    for item_id in current_ids:
+        if item_id != "406ba6820205" and current_by_id[item_id] != proposed_by_id[item_id]:
+            return False
+
+    before = current_by_id["406ba6820205"]
+    after = proposed_by_id["406ba6820205"]
+    changed = {
+        key
+        for key in set(before) | set(after)
+        if (key in before) != (key in after) or before.get(key) != after.get(key)
+    }
+    if not changed:
+        return False
+
+    ordinary = changed - {"repeat"}
+    if not ordinary.issubset(_CIVIC_ASSURE_HERMES_SCHEDULER_CONTROL_FIELDS):
+        return False
+    if "repeat" in changed and not _civic_assure_hermes_repeat_runtime_only(
+        before.get("repeat"),
+        after.get("repeat"),
+    ):
+        return False
+    return True
+
+
+def _civic_assure_native_config_guard_update(job_id, updates):
+    """Gate declarative config while leaving scheduler operation to Hermes."""
+    if job_id != "406ba6820205":
+        return
+    if _civic_assure_hermes_scheduler_control_update(updates):
+        return
+    _civic_assure_native_config_module()[3](job_id, updates)
+
+
+# CIVIC_ASSURE_DUE_SCAN_GATE_V1
+_civic_assure_due_scan_module_lock = threading.RLock()
+
+
+def _civic_assure_due_scan_module():
+    # Load the exact profile-owned due-scan authority and pin its bytes.
+    profile = _civic_assure_native_config_profile()
+    import hashlib
+    import importlib.util
+    from pathlib import Path
+    import sys
+
+    path = profile / "scripts" / "due_scan_bookkeeping.py"
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Civic Assure due-scan authority path is invalid")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != "e23053059070ff4286b0feb54a41fc1cdceb1b3434367ca427ea642955f1a7b3":
+        raise RuntimeError("Civic Assure due-scan authority bytes are stale")
+
+    with _civic_assure_due_scan_module_lock:
+        module = sys.modules.get("due_scan_bookkeeping")
+        if module is None:
+            spec = importlib.util.spec_from_file_location("due_scan_bookkeeping", path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError("Civic Assure due-scan authority cannot be loaded")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["due_scan_bookkeeping"] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                if sys.modules.get("due_scan_bookkeeping") is module:
+                    sys.modules.pop("due_scan_bookkeeping", None)
+                raise
+        if Path(getattr(module, "__file__", "")).resolve() != path.resolve():
+            raise RuntimeError("Civic Assure due-scan authority provenance is stale")
+        return module.due_scan_context, module.enforce_due_scan_save
+
+
+def _civic_assure_due_scan_context(jobs, scan_now, *, removed_ids=None):
+    # Bind the exact stale-error re-arm to the immediately following save.
+    import contextlib
+
+    if not _civic_assure_native_config_target_profile():
+        return contextlib.nullcontext()
+    return _civic_assure_due_scan_module()[0](
+        _civic_assure_native_config_profile(),
+        jobs,
+        scan_now=scan_now,
+        removed_ids=removed_ids,
+        replace=False,
+    )
+
+
+def _civic_assure_due_scan_guard_save(jobs, *, removed_ids=None, replace=False):
+    # Return True only while the exact due-scan context owns this save.
+    if not _civic_assure_native_config_target_profile():
+        return False
+    profile = _civic_assure_native_config_profile()
+    path = profile / "scripts" / "due_scan_bookkeeping.py"
+    if not path.exists():
+        return False
+    return _civic_assure_due_scan_module()[1](
+        profile,
+        jobs,
+        removed_ids=removed_ids,
+        replace=replace,
+    )
+
+
+def _civic_assure_native_config_guard_save(jobs, *, removed_ids=None, replace=False):
+    """Gate declarative config while Hermes owns scheduler bookkeeping."""
+    if not _civic_assure_native_config_target_profile():
+        return
+    if _civic_assure_hermes_scheduler_control_save(
+        jobs, removed_ids=removed_ids, replace=replace
+    ):
+        return
+    if _civic_assure_due_scan_guard_save(
+        jobs, removed_ids=removed_ids, replace=replace
+    ):
+        return
+    _civic_assure_native_config_module()[2](
+        jobs, removed_ids=removed_ids, replace=replace
+    )
+
+
+def _civic_assure_native_config_guard_create(name):
+    """Enforce lifecycle authority before creating a maintainer-profile job."""
+    if not _civic_assure_native_config_target_profile():
+        return
+    _civic_assure_native_config_module()[0](name)
+
+
+def _civic_assure_native_config_guard_remove(job_id):
+    """Enforce lifecycle authority before removing the canonical job."""
+    if job_id != "406ba6820205" or not _civic_assure_native_config_target_profile():
+        return
+    _civic_assure_native_config_module()[1](job_id)
+
+
 
 def _job_output_dir(job_id: str) -> Path:
     """Resolve a job's output directory, rejecting any path-escape attempt.
@@ -1603,6 +1949,7 @@ def save_jobs(
     (shrink-merge guard against concurrent-create clobber, #80624).
     """
     with _jobs_lock():
+        _civic_assure_native_config_guard_save(jobs, removed_ids=removed_ids, replace=replace)
         _save_jobs_unlocked(jobs, removed_ids=removed_ids, replace=replace)
 
 
@@ -1858,6 +2205,7 @@ def create_job(
     Returns:
         The created job dict
     """
+    _civic_assure_native_config_guard_create(name)
     parsed_schedule = parse_schedule(schedule)
 
     # Normalize repeat: treat 0 or negative values as None (infinite)
@@ -2069,6 +2417,7 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
+    _civic_assure_native_config_guard_update(job_id, updates)
     # Block mutation of immutable fields. ``id`` in particular is a filesystem
     # path component under OUTPUT_DIR — letting an update change it leaks
     # path-escape values into output writes/deletes.
@@ -2257,6 +2606,7 @@ def remove_job(job_id: str) -> bool:
     if not job:
         return False
     canonical_id = job["id"]
+    _civic_assure_native_config_guard_remove(canonical_id)
     with _jobs_lock():
         jobs = load_jobs()
         original_len = len(jobs)
@@ -3039,6 +3389,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     now = _hermes_now()
     raw_jobs = load_jobs()
     needs_save = False
+    civic_assure_due_scan_authorized = False
     intentionally_removed: Set[str] = set()
 
     # Repair id-less records BEFORE anything keys off ``job["id"]``. A direct
@@ -3153,6 +3504,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
         # job this tick" so healthy siblings still run and their recovered
         # state still reaches save_jobs() below.
         try:
+            if _civic_assure_native_one_run_blocks_dispatch(job.get("id", "")):
+                continue
             if not job.get("enabled", True):
                 continue
 
@@ -3342,6 +3695,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                         if rj["id"] == jid:
                             rj["next_run_at"] = recovered_next
                             needs_save = True
+                            if jid == "406ba6820205":
+                                civic_assure_due_scan_authorized = True
                             break
 
             if next_run_dt <= now:
@@ -3377,6 +3732,8 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                             if rj["id"] == job["id"]:
                                 rj["next_run_at"] = new_next
                                 needs_save = True
+                                if job["id"] == "406ba6820205":
+                                    civic_assure_due_scan_authorized = True  # CIVIC_ASSURE_OVERDUE_CATCH_UP_SCOPE_V1
                                 break
                         record_catch_up_occurrence()
                         # Fall through to due.append(job) — execute once now
@@ -3465,7 +3822,16 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             continue
 
     if needs_save:
-        save_jobs(raw_jobs, removed_ids=intentionally_removed or None)
+        removed_ids = intentionally_removed or None
+        if civic_assure_due_scan_authorized:
+            with _civic_assure_due_scan_context(
+                raw_jobs,
+                now,
+                removed_ids=removed_ids,
+            ):
+                save_jobs(raw_jobs, removed_ids=removed_ids)
+        else:
+            save_jobs(raw_jobs, removed_ids=removed_ids)
 
     return due
 

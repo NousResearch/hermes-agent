@@ -78,6 +78,37 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
+def test_run_one_job_binds_new_execution_id_into_job_before_run(monkeypatch):
+    """A direct fire must pass its newly-created ledger ID to the job runner.
+
+    The native maintainer boundary reads ``job['execution_id']`` when it
+    constructs the request identity. A local-only variable is insufficient and
+    caused the post-ceiling failure ``native ledger execution_id is missing``.
+    """
+    observed = []
+    job = {"id": "j-execution", "name": "direct"}
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-direct"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+
+    def fake_run_job(current_job, **_kwargs):
+        observed.append(current_job.get("execution_id"))
+        return (True, "out", "final", None)
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda *_a: "/tmp/direct.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *_a, **_k: True)
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_k: None)
+
+    assert s.run_one_job(job) is True
+    assert observed == ["exec-direct"]
+    assert job["execution_id"] == "exec-direct"
+
+
 def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
     """An exception escaping the run body must not become a silent error row."""
     delivered = []

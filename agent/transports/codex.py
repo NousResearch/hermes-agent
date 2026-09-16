@@ -655,7 +655,11 @@ class ResponsesApiTransport(ProviderTransport):
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")
-        if max_tokens is not None and not is_codex_backend:
+        if max_tokens is not None:
+            # Responses API uses ``max_output_tokens`` for every route,
+            # including the ChatGPT Codex backend. Omitting the cap there
+            # leaves an unattended fallback request unbounded and prevents
+            # the maintainer request-boundary guard from admitting it.
             kwargs["max_output_tokens"] = max_tokens
 
         if is_xai_responses and session_id:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
 import logging
 import os
 import sys
@@ -180,6 +181,21 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
             base_url = ""
     if base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)
+    default_headers = config.get("llm_default_headers")
+    if not default_headers:
+        try:
+            default_headers = (
+                get_secret("HINDSIGHT_API_LLM_DEFAULT_HEADERS", "")
+                or get_secret("HINDSIGHT_LLM_DEFAULT_HEADERS", "")
+            )
+        except UnscopedSecretError:
+            default_headers = ""
+    if default_headers:
+        env_values["HINDSIGHT_API_LLM_DEFAULT_HEADERS"] = (
+            json.dumps(default_headers, separators=(",", ":"))
+            if isinstance(default_headers, dict)
+            else str(default_headers)
+        )
     if (idle_timeout := config.get("idle_timeout")) is None:
         idle_timeout = os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
     if idle_timeout is not None and idle_timeout != "":

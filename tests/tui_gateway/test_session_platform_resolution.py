@@ -97,3 +97,50 @@ class TestSessionSourceFallback:
         assert _srv._session_source({"source": "telegram"}) == "telegram"
 
 
+class TestReattachAdoptsSource:
+    """A live record keeps the ``source`` it was minted with, and nothing else rewrote it.
+
+    That is correct while one client owns the session, but a reattach can arrive from a
+    different surface — in practice an automatic reconnect after the WebSocket dropped, which
+    is not a surface change the user made. The record then keeps a source no client is on, and
+    because the next agent build reads it through ``_session_source`` -> ``platform_override``,
+    the agent gets pinned to the wrong surface and is told it has capabilities (MEDIA:
+    delivery, inline widgets) the live renderer does not have.
+    """
+
+    def _adopt(self):
+        from tui_gateway.methods_session import _adopt_reattach_source
+        return _adopt_reattach_source
+
+    def test_reconnect_from_another_surface_refreshes_the_record(self):
+        session = {"source": "tui"}
+        self._adopt()(session, "desktop")
+        assert session["source"] == "desktop"
+
+    def test_client_without_a_source_keeps_the_record(self, clean_env):
+        """Older desktops and the bot-room plumbing never send ``source``; they must keep the
+        record they created rather than be reset to the env-resolved default."""
+        session = {"source": "desktop"}
+        for omitted in (None, "", "   "):
+            self._adopt()(session, omitted)
+            assert session["source"] == "desktop"
+
+    def test_unchanged_source_is_left_alone(self):
+        session = {"source": "desktop"}
+        self._adopt()(session, "desktop")
+        assert session["source"] == "desktop"
+
+    def test_adopted_source_drives_the_next_agent_build(self, clean_env):
+        """The end-to-end point: what a rebuild reads back must be the reattaching surface.
+
+        Without the adopt, ``_session_source`` returns the stale value and the rebuilt agent is
+        pinned to it — with no env var set, an omitted source resolves to "tui" (see
+        ``_resolve_session_platform``), which is exactly how a desktop session came back as a
+        terminal one after a dropped socket.
+        """
+        _srv = _reload_resolver()
+        session = {"source": "tui"}
+        self._adopt()(session, "desktop")
+        assert _srv._session_source(session) == "desktop"
+
+

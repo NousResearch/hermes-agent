@@ -1,3 +1,4 @@
+import type { GoalStatusPayload } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { keyedTimeouts } from '@/lib/keyed-timeouts'
@@ -161,6 +162,46 @@ export function applyGoalStatusText(sid: string, text: string, opts?: { hydrate?
 
     setSessionGoal(sid, next)
   }
+}
+
+export function applyGoalStatusUpdate(sid: string, text: string, goal?: GoalStatusPayload | null) {
+  if (!goal || typeof goal.exists !== 'boolean') {
+    applyGoalStatusText(sid, text)
+
+    return
+  }
+
+  if (!goal.exists || goal.status === 'cleared') {
+    clearSessionGoal(sid)
+
+    return
+  }
+
+  if (typeof goal.condition !== 'string' || !goal.condition.trim()) {
+    applyGoalStatusText(sid, text)
+
+    return
+  }
+
+  const parsed = nextGoalFromText(text, $goalsBySession.get()[sid])
+  let status: GoalStatus
+
+  if (goal.status === 'active') {
+    status = parsed?.status === 'waiting' ? 'waiting' : 'active'
+  } else if (goal.status === 'paused' || goal.status === 'done') {
+    status = goal.status
+  } else {
+    applyGoalStatusText(sid, text)
+
+    return
+  }
+
+  setSessionGoal(sid, {
+    ...(parsed?.detail ? { detail: parsed.detail } : {}),
+    status,
+    title: goal.condition,
+    updatedAt: Date.now()
+  })
 }
 
 export async function refreshSessionGoal(sid: string): Promise<void> {

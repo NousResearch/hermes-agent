@@ -421,6 +421,9 @@ class GoalState:
     waiting_on_delegations: int = 0
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
+    # Model-supplied, portable acceptance checks. These ride with the persisted
+    # goal so status/readback surfaces report the exact contract that was set.
+    acceptance_evidence: List[Dict[str, str]] = field(default_factory=list)
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
@@ -450,6 +453,25 @@ class GoalState:
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
         raw_subgoals = data.get("subgoals") or []
+        raw_acceptance_evidence = data.get("acceptance_evidence", [])
+        if not isinstance(raw_acceptance_evidence, list):
+            raise ValueError("acceptance_evidence must be an array")
+        acceptance_evidence: List[Dict[str, str]] = []
+        for item in raw_acceptance_evidence:
+            if not isinstance(item, dict) or set(item) != {
+                "kind", "locator", "assertion",
+            }:
+                raise ValueError(
+                    "each acceptance evidence entry requires only kind, locator, and assertion"
+                )
+            if not all(
+                isinstance(item.get(key), str) and item[key].strip()
+                for key in ("kind", "locator", "assertion")
+            ):
+                raise ValueError("acceptance evidence fields must be nonblank strings")
+            acceptance_evidence.append(
+                {key: item[key] for key in ("kind", "locator", "assertion")}
+            )
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         floats["updated_at"] = float(
@@ -471,6 +493,7 @@ class GoalState:
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
+            acceptance_evidence=acceptance_evidence,
             contract=GoalContract.from_dict(data.get("contract")),
             gates=[
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
@@ -478,7 +501,6 @@ class GoalState:
             ],
             **ints, **floats,
         )
-
     def has_contract(self) -> bool:
         return self.contract is not None and not self.contract.is_empty()
 
@@ -493,6 +515,17 @@ class GoalState:
         self.waiting_on_delegations = 0
         self.waiting_reason = None
         self.waiting_since = 0.0
+
+
+def goal_state_payload(state: Optional[GoalState]) -> Dict[str, Any]:
+    """Project persisted goal identity for model and live UI consumers."""
+    if state is None:
+        return {"exists": False, "status": None, "condition": None}
+    return {
+        "exists": True,
+        "status": str(state.status or "") or None,
+        "condition": state.goal,
+    }
 
 
 # ── Persistence (SessionDB state_meta) ────────────────────────────────
@@ -1493,6 +1526,7 @@ class GoalManager:
         *,
         max_turns: Optional[int] = None,
         contract: Optional[GoalContract] = None,
+        acceptance_evidence: Optional[List[Dict[str, str]]] = None,
         expected_raw: object = _UNBOUND_GOAL_SNAPSHOT,
     ) -> GoalState:
         self._require_snapshot(expected_raw)
@@ -1502,6 +1536,7 @@ class GoalManager:
         self._state = GoalState(
             goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            acceptance_evidence=[dict(item) for item in (acceptance_evidence or [])],
             contract=contract if contract is not None else GoalContract(),
         )
         return self._save()
@@ -1512,6 +1547,7 @@ class GoalManager:
         goal: str,
         *,
         max_turns: Optional[int] = None,
+        acceptance_evidence: object = _UNBOUND_GOAL_SNAPSHOT,
         expected_raw: object = _UNBOUND_GOAL_SNAPSHOT,
     ) -> Optional[GoalState]:
         """Update text/budget while preserving lifecycle state and consumed turns."""
@@ -1524,6 +1560,12 @@ class GoalManager:
         self._state.goal = goal
         if max_turns is not None:
             self._state.max_turns = int(max_turns)
+        if acceptance_evidence is not _UNBOUND_GOAL_SNAPSHOT:
+            if not isinstance(acceptance_evidence, list):
+                raise ValueError("acceptance_evidence must be an array")
+            self._state.acceptance_evidence = [
+                dict(item) for item in acceptance_evidence
+            ]
         return self._save()
 
     @_serialized_goal_mutation

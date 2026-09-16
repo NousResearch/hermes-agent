@@ -56,33 +56,3 @@ export function createWindowOpenHandler(
     return { action: 'deny' }
   }
 }
-
-/**
- * Build the `setWindowOpenHandler` for PREVIEW-WEBVIEW guests only (main.ts
- * installs it on every `webview`-type WebContents). A guest popup request is
- * a link the user can see and click inside the preview pane (a page's
- * `target=_blank` anchor, Streamlit's traceback "Ask Google" buttons), so
- * unlike the host handler above it must not die silently — that reads as a
- * broken button (#112941). The URL is handed to the same audited
- * open-external channel the guest's context menu already uses; `openExternal`
- * (main.ts `openExternalUrl`) rejects every non-http(s)/mailto/file protocol
- * itself. The decision stays `deny`: a guest popup must never become an
- * unaudited Electron window. `onHandoff` is logging-only and receives the
- * sanitized origin; a throwing observer must not change the decision.
- */
-export function createGuestWebviewWindowOpenHandler(
-  openExternal: (url: string) => boolean,
-  onHandoff?: (origin: string) => void
-): (details: WindowOpenRequestLike) => WindowOpenDecision {
-  return details => {
-    if (openExternal(details.url)) {
-      try {
-        onHandoff?.(describeDeniedUrl(details.url))
-      } catch {
-        // observer failure is not a reason to reconsider the decision
-      }
-    }
-
-    return { action: 'deny' }
-  }
-}

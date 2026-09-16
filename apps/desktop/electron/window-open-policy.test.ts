@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { createGuestWebviewWindowOpenHandler, createWindowOpenHandler, describeDeniedUrl } from './window-open-policy'
+import { createWindowOpenHandler, describeDeniedUrl } from './window-open-policy'
 
 test('host handler denies every request and reports the origin only', () => {
   const seen: string[] = []
@@ -20,41 +20,6 @@ test('host handler keeps denying when the observer throws', () => {
   })
 
   assert.deepEqual(handler({ url: 'https://evil.example/' }), { action: 'deny' })
-})
-
-test('guest webview handler hands accepted URLs to the audited channel and still denies', () => {
-  const handed: string[] = []
-
-  const handler = createGuestWebviewWindowOpenHandler(url => {
-    handed.push(url)
-
-    return url.startsWith('https:')
-  })
-
-  // Accepted by the channel: opened in the OS browser, still no Electron popup.
-  assert.deepEqual(handler({ url: 'https://www.google.com/search?q=traceback' }), { action: 'deny' })
-  // Rejected by the channel (the allowlist in openExternalUrl said no): dropped.
-  assert.deepEqual(handler({ url: 'javascript:alert(1)' }), { action: 'deny' })
-  assert.deepEqual(handed, ['https://www.google.com/search?q=traceback', 'javascript:alert(1)'])
-})
-
-test('guest webview handler logs the origin only, and survives a throwing observer', () => {
-  const seen: string[] = []
-
-  const handler = createGuestWebviewWindowOpenHandler(
-    () => true,
-    origin => {
-      seen.push(origin)
-
-      if (seen.length === 2) {
-        throw new Error('observer blew up')
-      }
-    }
-  )
-
-  assert.deepEqual(handler({ url: 'https://example.com/a?session=secret' }), { action: 'deny' })
-  assert.deepEqual(handler({ url: 'https://example.com/b' }), { action: 'deny' })
-  assert.deepEqual(seen, ['https://example.com', 'https://example.com'])
 })
 
 test('describeDeniedUrl sanitizes unparseable and opaque origins', () => {

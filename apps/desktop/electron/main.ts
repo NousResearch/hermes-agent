@@ -432,7 +432,7 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { createGuestWebviewWindowOpenHandler, createWindowOpenHandler } from './window-open-policy'
+import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -509,6 +509,7 @@ let f12Blocked = false
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
+const PREVIEW_GUEST_PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'preview-guest-preload.js')
 
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the
@@ -13481,27 +13482,33 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 }
 
 /**
- * The preview pane's `<webview>` guests now opt into popups
- * (`allowpopups`): without it the guest's `window.open` / `target=_blank`
- * was dropped before any policy could see it, so a page's own links —
- * Streamlit traceback's "Ask Google" / "Ask ChatGPT" buttons, any
- * `target=_blank` anchor — read as dead buttons (#112941). The popup never
- * becomes an Electron window here: the request is denied, and the URL is
- * handed to the same audited channel (`openExternalUrl`) the guest's
- * context-menu "open link" and the host's `will-navigate` already use, which
- * dispatches http(s)/mailto to the OS browser and rejects everything else.
+ * Give the preview pane's `<webview>` guests a preload — and ONLY those
+ * guests. The pane's webview is the one `webview` tag in the app and it
+ * always carries the `persist:hermes-preview` partition, so the partition is
+ * the ownership key: any future webview that does not opt into that partition
+ * inherits nothing from this mechanism.
+ *
+ * The preload (preview-guest-preload-entry.ts) never opens anything itself.
+ * It forwards a clicked `_blank` anchor to the host renderer via
+ * `sendToHost`, and the pane admits the scheme and routes the URL through the
+ * audited `hermes:openExternal` channel. Popup requests themselves stay
+ * denied-by-omission: the webview has no `allowpopups`, and the
+ * `setWindowOpenHandler` contract (GHSA-9f4c-93c8-jc8g) stays side-effect
+ * free.
  */
-function installGuestWebviewPopupPolicy() {
+function installPreviewGuestPreload() {
   app.on('web-contents-created', (_event, contents) => {
-    if (contents.getType() !== 'webview') {
+    if (contents.getType() !== 'window') {
       return
     }
 
-    contents.setWindowOpenHandler(
-      createGuestWebviewWindowOpenHandler(openExternalUrl, origin =>
-        rememberLog(`[window-open] guest handed off to OS browser: ${origin}`)
-      )
-    )
+    contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
+      if (params.partition !== 'persist:hermes-preview') {
+        return
+      }
+
+      webPreferences.preload = PREVIEW_GUEST_PRELOAD_PATH
+    })
   })
 }
 
@@ -18261,7 +18268,7 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
-  installGuestWebviewPopupPolicy()
+  installPreviewGuestPreload()
 
   ensureWslWindowsFonts()
   configureSpellChecker()

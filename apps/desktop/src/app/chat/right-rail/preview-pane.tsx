@@ -25,6 +25,7 @@ import {
   endAnnotateMode,
   flushAnnotateStack
 } from '@/lib/preview-annotate'
+import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -1025,12 +1026,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
-    // Without this flag the guest's `window.open` / `target=_blank` is
-    // silently dropped before it ever reaches main's popup policy, so links
-    // like Streamlit traceback's "Ask Google" buttons read as dead (#112941).
-    // main.ts routes what this unleashes through the audited open-external
-    // channel to the OS browser; no in-app popup window is ever created.
-    webview.setAttribute('allowpopups', '')
+
+    // The guest preload (main.ts installs it on this partition) forwards a
+    // clicked `_blank` anchor here. Admission is our side of the contract —
+    // web/mail schemes only, so a guest page can never reach the local-file
+    // opener — and the open itself goes through the audited
+    // `hermes:openExternal` channel, never a popup side effect.
+    const onGuestExternal = (event: Event) => {
+      const detail = event as Event & { args?: unknown[]; channel?: string }
+
+      if (detail.channel !== PREVIEW_EXTERNAL_CHANNEL) {
+        return
+      }
+
+      const url = String(detail.args?.[0] ?? '')
+
+      if (admitPreviewExternalUrl(url)) {
+        void window.hermesDesktop?.openExternal?.(url)
+      }
+    }
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {
@@ -1212,6 +1226,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     webview.addEventListener('console-message', onConsole)
+    webview.addEventListener('ipc-message', onGuestExternal)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1229,6 +1244,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     return () => {
       annotateLoopRef.current += 1
       webview.removeEventListener('console-message', onConsole)
+      webview.removeEventListener('ipc-message', onGuestExternal)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)

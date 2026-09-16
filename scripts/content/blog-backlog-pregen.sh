@@ -71,7 +71,14 @@ rc=0
   . "${HERMES_HOME_DIR}/.env" 2>/dev/null || true
   set +a
   echo "[$(date -Is)] starting backlog pregen"
-  PYTHONPATH=. python3 -m blog.backlog_pregen
+  # Pin the fleet venv interpreter explicitly. Bare `python3` resolves via PATH,
+  # which differs between the gateway service context (venv-first) and manual/CLI
+  # runs (system python3, no hermes_constants on the editable path) — the exact
+  # split that produced ModuleNotFoundError on 2026-09-15 22:35.
+  # Also include the repo root so runtime provider paths that import repo-level
+  # packages (tools.*) resolve — the gap behind the 2026-09-16 02:56
+  # "No module named 'tools.threat_patterns'" chain failure.
+  PYTHONPATH=.:/home/kensei/repos/KenseiAgent /home/kensei/repos/KenseiAgent/.venv/bin/python -m blog.backlog_pregen
   rc=$?
   echo "[$(date -Is)] finished backlog pregen rc=$rc"
   exit "$rc"

@@ -17,9 +17,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = [
-    REPO_ROOT / "scripts" / "pr-to-blog-daily.sh",
-    REPO_ROOT / "scripts" / "blog-stream-daily.sh",
-    REPO_ROOT / "scripts" / "blog-backlog-pregen.sh",
+    REPO_ROOT / "scripts" / "content" / "pr-to-blog-daily.sh",
+    REPO_ROOT / "scripts" / "content" / "blog-stream-daily.sh",
+    REPO_ROOT / "scripts" / "content" / "blog-backlog-pregen.sh",
 ]
 EXPECTED_DRY_RUN_FRAGMENTS = {
     "pr-to-blog-daily.sh": "dry-run: would launch PR-to-blog pipeline",

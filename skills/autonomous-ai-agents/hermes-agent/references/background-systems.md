@@ -93,7 +93,12 @@ sessions still have zero `kanban_*` schema footprint unless configured.
   promotes ready tasks, atomically claims, spawns assigned profiles.
   Auto-blocks a task after `failure_limit` consecutive spawn failures
   (default 2; configurable via `kanban.failure_limit` or per-task
-  `max_retries`).
+  `max_retries`). `kanban.max_in_progress` caps concurrent `running` tasks.
+  Values are coerced to integers; failed conversions or results below 1
+  are ignored, so `0` does not pause spawning. When unset or ignored, the
+  default is 2–8 workers based on total host memory, or no derived cap
+  when that memory information is unavailable. An explicit positive value
+  overrides the derived default.
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.

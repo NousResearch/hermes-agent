@@ -90,8 +90,13 @@ def _succeeded(result: Any) -> bool:
 
 
 def _child_environment() -> dict[str, str]:
-    """Return an environment that cannot self-identify as the gateway owner."""
-    env = os.environ.copy()
+    """Return an environment that cannot self-identify as the gateway owner.
+
+    Uses the shared subprocess env builder to scrub secrets and authorization
+    gates from the launching process, preventing cross-profile leakage (#113270).
+    """
+    from tools.environments.local import build_subprocess_env
+    env = build_subprocess_env(scrub_secrets=True)
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"

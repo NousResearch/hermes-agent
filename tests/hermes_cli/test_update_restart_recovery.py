@@ -481,3 +481,49 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     assert [argv[argv.index("-p") + 1] for argv in restarts] == ["coder", "default"]
     for argv in restarts:
         assert argv[-2:] == ["gateway", "restart"]
+
+
+def test_child_environment_strips_platform_authorization_gates(monkeypatch):
+    """_child_environment must strip platform authorization gates to prevent
+    cross-profile leakage (#113270).
+
+    When the updater restarts profile B's gateway from a process that loaded
+    profile A's .env, the child must not inherit A's channel/user/role
+    allowlists. The shared subprocess env builder now scrubs these keys.
+    """
+    from hermes_cli import update_restart_recovery as recovery
+
+    gate_vars = {
+        "DISCORD_ALLOWED_USERS": "123456789",
+        "DISCORD_ALLOWED_ROLES": "111222333",
+        "DISCORD_ALLOWED_CHANNELS": "100200300",
+        "DISCORD_IGNORED_CHANNELS": "700800900",
+        "DISCORD_ALLOW_ALL_USERS": "true",
+        "TELEGRAM_ALLOWED_USERS": "987654321",
+        "TELEGRAM_GROUP_ALLOWED_USERS": "555666777",
+        "TELEGRAM_GROUP_ALLOWED_CHATS": "-1001234567890",
+        "TELEGRAM_ALLOW_ALL_USERS": "true",
+        "SLACK_ALLOWED_USERS": "U01ABC123",
+        "SLACK_ALLOW_ALL_USERS": "true",
+        "GATEWAY_ALLOWED_USERS": "alice,bob",
+        "GATEWAY_ALLOW_ALL_USERS": "false",
+        # Also ensure bot tokens are stripped (pre-existing behavior)
+        "DISCORD_BOT_TOKEN": "bot-token",
+        "TELEGRAM_BOT_TOKEN": "bot-token",
+        "SLACK_BOT_TOKEN": "bot-token",
+    }
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HOME", "/home/user")
+    for key, value in gate_vars.items():
+        monkeypatch.setenv(key, value)
+
+    env = recovery._child_environment()
+
+    for key in gate_vars:
+        assert key not in env, f"{key} leaked into child environment"
+
+    # Recovery marker must be set
+    assert env[recovery._RECOVERY_ENV] == "1"
+    # Gateway markers must be stripped
+    for marker in recovery._GATEWAY_MARKERS:
+        assert marker not in env

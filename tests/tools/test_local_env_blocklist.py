@@ -228,6 +228,39 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_platform_authorization_gates_are_stripped(self):
+        """Platform authorization gates must not leak across profiles (#113270).
+
+        When a gateway for profile A spawns a child for profile B, the child
+        must not inherit A's channel/user/role allowlists. These gates decide
+        who may talk to the agent, not merely what it can authenticate as.
+        """
+        gate_vars = {
+            # Discord gates
+            "DISCORD_ALLOWED_USERS": "123456789,987654321",
+            "DISCORD_ALLOWED_ROLES": "111222333,444555666",
+            "DISCORD_ALLOWED_CHANNELS": "100200300,400500600",
+            "DISCORD_IGNORED_CHANNELS": "700800900",
+            "DISCORD_NO_THREAD_CHANNELS": "101102103",
+            "DISCORD_FREE_RESPONSE_CHANNELS": "201202203",
+            "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS": "301302303",
+            "DISCORD_ALLOW_ALL_USERS": "true",
+            "DISCORD_ALLOW_BOTS": "false",
+            # Telegram gates
+            "TELEGRAM_ALLOWED_USERS": "123456789",
+            "TELEGRAM_GROUP_ALLOWED_USERS": "987654321",
+            "TELEGRAM_GROUP_ALLOWED_CHATS": "-1001234567890",
+            "TELEGRAM_ALLOW_ALL_USERS": "true",
+            "TELEGRAM_ALLOW_BOTS": "false",
+            # Slack gates
+            "SLACK_ALLOWED_USERS": "U01ABC123",
+            "SLACK_ALLOW_ALL_USERS": "true",
+        }
+        result_env = _run_with_env(extra_os_env=gate_vars)
+
+        for var in gate_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
     def test_safe_vars_are_preserved(self):
         """Standard env vars (PATH, HOME, USER) must still be passed through."""
         result_env = _run_with_env()

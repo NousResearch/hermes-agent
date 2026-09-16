@@ -38,6 +38,16 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
+    # Platform authorization gates — profile-scoped channel/user/role allowlists
+    # that decide who may talk to the agent. Must not leak across profiles when
+    # spawning children for a different profile (see #113270).
+    "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
+    "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
+    "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS", "TELEGRAM_ALLOW_ALL_USERS", "TELEGRAM_ALLOW_BOTS",
+    "SLACK_ALLOW_ALL_USERS",
 })
 
 
@@ -210,4 +220,14 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
+    # Platform authorization gates — profile-scoped channel/user/role allowlists
+    # that decide who may talk to the agent. Must not leak across profiles when
+    # spawning children for a different profile (see #113270).
+    "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_FREE_RESPONSE_CHANNELS", "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
+    "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
+    "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS",
+    "TELEGRAM_GROUP_ALLOWED_CHATS", "TELEGRAM_ALLOW_ALL_USERS", "TELEGRAM_ALLOW_BOTS",
+    "SLACK_ALLOWED_USERS", "SLACK_ALLOW_ALL_USERS",
 })

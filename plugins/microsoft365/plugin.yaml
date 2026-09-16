@@ -1,0 +1,36 @@
+name: microsoft365
+version: 0.1.0
+description: "Microsoft 365 Plugin — connects Hermes to the broader Microsoft 365 ecosystem: Outlook mail, SharePoint, OneDrive, Calendar, Teams and Planner/To Do, with per-capability flags."
+author: NousResearch
+kind: backend
+python_dependencies:
+  - "msgraph-sdk>=1.0.0,<2"
+  - "azure-identity>=1.17.0,<2"
+provides_tools:
+  - microsoft365_preflight
+  - microsoft365_outlook
+  - microsoft365_sharepoint
+  - microsoft365_calendar
+  - microsoft365_teams
+  - microsoft365_planner
+config_schema:
+  tenant_id:
+    type: str
+    required: true
+    description: "Microsoft Entra tenant ID"
+  client_id:
+    type: str
+    required: true
+    description: "Microsoft Entra application/client ID"
+  client_secret:
+    type: str
+    required: true
+    description: "Microsoft Entra application secret (store as a secret)"
+    secret: true
+  user_id:
+    type: str
+    default: me
+    description: "Graph user ID for delegated-style user resources"
+  capabilities:
+    type: dict
+    description: "Flags: outlook, sharepoint, calendar, teams, planner"

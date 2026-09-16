@@ -2,6 +2,11 @@ import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 
+/** Keep physical breathing room around native controls constant at every UI scale. */
+export function zoomAdjustedGapCss(gap: number, zoomFactor: number): number {
+  return gap / (Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1)
+}
+
 /** Reserve actual chrome intersections, including after a neighbor becomes a rail. */
 export function usePanelTitlebar(
   ref: RefObject<HTMLElement | null>,
@@ -35,8 +40,11 @@ export function usePanelTitlebar(
       return
     }
 
-    const left = Math.min(rect.width, Math.max(0, leftControls.right + 12 - rect.left))
-    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + 24))
+    const zoomFactor = window.hermesDesktop?.zoom?.factor?.() ?? 1
+    const leftGap = zoomAdjustedGapCss(12, zoomFactor)
+    const rightGap = zoomAdjustedGapCss(24, zoomFactor)
+    const left = Math.min(rect.width, Math.max(0, leftControls.right + leftGap - rect.left))
+    const right = Math.min(rect.width - left, Math.max(0, rect.right - rightControls.left + rightGap))
     element.style.setProperty('--panel-titlebar-left', `${left}px`)
     element.style.setProperty('--panel-titlebar-right', `${right}px`)
     setBelowControls(keepTabsBelowControls || minimized || rect.width - left - right < 120)

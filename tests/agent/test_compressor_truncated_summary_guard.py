@@ -73,10 +73,13 @@ class TestGenerateSummaryTruncationGuard:
         with patch(
             "agent.context_compressor.call_llm",
             return_value=_mock_response("partial summary that got cut o", "length"),
-        ):
+        ) as mock_call:
             result = c.compress(msgs, current_tokens=999999, force=True)
+            automatic_retry = c.compress(msgs, current_tokens=999999)
 
         assert result == msgs
+        assert automatic_retry == msgs
+        assert mock_call.call_count == 1
         assert c._last_summary_truncated_failure is True
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
@@ -104,6 +107,35 @@ class TestGenerateSummaryTruncationGuard:
         assert result is not None
         assert "full summary via main model" in result
         assert c._last_summary_truncated_failure is False
+
+    def test_configured_auxiliary_route_falls_back_to_main_model_once(self):
+        """A task-configured aux route must not be selected again for the retry."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="main-provider", base_url="https://main.example/v1",
+                api_key="main-key", api_mode="chat_completions", quiet_mode=True,
+            )
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            route_info = kwargs["route_info"]
+            if kwargs.get("provider") == "main-provider":
+                route_info.update(provider="main-provider", model="main-model")
+                return _mock_response("full summary via main model", "stop")
+            route_info.update(provider="google", model="gemini-2.5-flash-lite")
+            return _mock_response("partial configured-route summary", "length")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert "full summary via main model" in result
+        assert len(calls) == 2
+        assert calls[1]["provider"] == "main-provider"
+        assert calls[1]["model"] == "main-model"
+        assert calls[1]["base_url"] == "https://main.example/v1"
 
     def test_stop_finish_reason_still_succeeds(self):
         """Control: a normal stop-terminated summary is accepted unchanged."""

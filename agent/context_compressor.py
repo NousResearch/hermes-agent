@@ -1870,6 +1870,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # A handoff may carry role="user" only for alternation, so role alone can't prove a human turn existed.
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
+        self._last_summary_route_provider = self._last_summary_route_model = ""
+        self._summary_force_main_route = self._summary_model_fallen_back = False
+        # A terminal length stop is deterministic for an unchanged route and prompt. Keep
+        # automatic compaction disabled until a manual retry or runtime switch changes the inputs.
+        self._summary_truncation_blocked = False
         self._consecutive_timeout_failures = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
@@ -2211,6 +2216,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._persist_fallback_compression_streak()
             # Cooldowns are scoped to the failed model/provider; a switch gets an immediate attempt.
             self._clear_compression_failure_cooldown()
+            self._summary_truncation_blocked = False
+            self._summary_force_main_route = self._summary_model_fallen_back = False
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
         # Runway was computed against the previous model's trigger; clear the durable copy too.
         self._reset_proactive_prune_rearm()
@@ -3201,15 +3208,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             prev_end = end
         return "".join(parts)
 
-    def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
-        """Fall back from a separate ``summary_model`` to the main model: record the aux failure, clear model + cooldown."""
+    def _fallback_to_main_for_compression(self, e: Exception, reason: str, failed_model: str = "") -> None:
+        """Retry a failed configured auxiliary route once on the live main runtime."""
         self._summary_model_fallen_back = True
+        self._summary_force_main_route = True
+        failed_model = failed_model or self.summary_model or self._last_summary_route_model or "(auxiliary route)"
         logger.warning(
             "Summary model '%s' %s (%s). Falling back to main model '%s' for compression.",
-            self.summary_model, reason, e, self.model,
+            failed_model, reason, e, self.model,
         )
         self._last_aux_model_failure_error = _short_error_text(e)
-        self._last_aux_model_failure_model = self.summary_model
+        self._last_aux_model_failure_model = failed_model
         telemetry = getattr(self, "_active_compression_telemetry", None)
         if isinstance(telemetry, dict):
             telemetry["fallback_used"] = True
@@ -3233,7 +3242,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
             # (thinking models burn it on reasoning). Timeout comes from call_llm config.
         }
-        if self.summary_model:
+        if self._summary_force_main_route:
+            # Explicit args outrank auxiliary.compression.*, so this retry cannot resolve back to
+            # the same configured route that just produced a deterministic truncated response.
+            call_kwargs.update({
+                "provider": self.provider, "model": self.model, "base_url": self.base_url,
+                "api_key": self.api_key, "api_mode": self.api_mode,
+            })
+        elif self.summary_model:
             call_kwargs["model"] = self.summary_model
         # Pinned route (stall fallback) overrides task routing so the retry leaves the stalled backend.
         call_kwargs.update(_pinned_summary_call_kwargs())
@@ -3251,6 +3267,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         finally:
             route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
             _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
+            self._last_summary_route_provider = _aux_route.get("provider") or self.provider or ""
+            self._last_summary_route_model = _aux_model
             self._record_aux_compression_call(
                 prompt_messages=call_kwargs["messages"],
                 # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
@@ -3341,7 +3359,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._validate_summary_user_provenance(summary, has_user_turn)
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
-            self._summary_model_fallen_back = False
+            self._summary_force_main_route = self._summary_model_fallen_back = False
+            self._summary_truncation_blocked = False
             self._last_summary_error = None
             for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
                 setattr(self, flag, False)
@@ -3515,10 +3534,16 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "summary_model=%s main_model=%s base_url=%s err=%s",
                 self.provider or "auto", self.summary_model or "(main)", self.model, self.base_url or "default", e,
             )
-        # A distinct summary model gets ONE main-model retry: a specific reason for known transient classes,
-        # else a best-effort "failed" retry — losing N turns is worse than one extra summary attempt.
-        if self.summary_model and self.summary_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
-            self._fallback_to_main_for_compression(e, kind.fallback_reason())
+        # A distinct configured route gets ONE main-model retry. ``summary_model`` covers the
+        # legacy override; route_info covers auxiliary.compression.{provider,model}, which otherwise
+        # resolves identically on every retry (#113322).
+        routed_model = getattr(self, "_last_summary_route_model", "")
+        distinct_aux_route = (
+            bool(self.summary_model and self.summary_model != self.model)
+            or bool(routed_model and routed_model != self.model)
+        )
+        if distinct_aux_route and not getattr(self, "_summary_model_fallen_back", False):
+            self._fallback_to_main_for_compression(e, kind.fallback_reason(), routed_model)
             # Retry immediately on the main model.
             return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
@@ -3542,6 +3567,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_network_failure = True
         elif kind.truncated:
             self._last_summary_truncated_failure = True
+            self._summary_truncation_blocked = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
         logger.warning(
@@ -4353,6 +4379,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["chunk_count"] = 0
         # Manual /compress bypasses the failure cooldown and the structural no-op backoff (#93022).
         if force:
+            self._summary_truncation_blocked = False
+            self._summary_force_main_route = self._summary_model_fallen_back = False
             self._clear_compression_failure_cooldown()
             self._structural_no_op_backoff_until = 0.0
         return telemetry
@@ -4643,6 +4671,14 @@ Write only the summary body. Do not include any preamble or prefix."""
         the caller's attempt budget.
         """
         telemetry = self._begin_compress_attempt(current_tokens, force)
+        if self._summary_truncation_blocked and not force:
+            # The same prompt/route/output budget will deterministically hit the same length stop.
+            # Preserve the session without another paid call; /compress or a model switch rearms it.
+            self._last_compress_aborted = True
+            self._last_summary_error = "automatic compression disabled after repeated truncated summaries"
+            telemetry["failure_class"] = "summary_truncated_blocked"
+            telemetry["commit_status"] = "aborted"
+            return messages
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

@@ -167,8 +167,10 @@ def _own_task_env(task_id: str, var: str) -> Optional[str]:
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
 
 
-def _worker_run_id(task_id: str) -> Optional[int]:
-    """This worker's dispatcher run id when it is scoped to task_id."""
+def _worker_run_id(task_id: str, target_board: str) -> Optional[int]:
+    """This worker's dispatcher run id when it owns this task and board."""
+    if os.environ.get("HERMES_KANBAN_BOARD") != target_board:
+        return None
     raw = _own_task_env(task_id, "HERMES_KANBAN_RUN_ID")
     try:
         return int(raw) if raw else None
@@ -999,11 +1001,12 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
+        target_board = kb._normalize_board_slug(args.get("board")) or kb.get_current_board()
         gated = kb.link_tasks(
             conn,
             parent_id=parent_id,
             child_id=child_id,
-            expected_child_run_id=_worker_run_id(child_id),
+            expected_child_run_id=_worker_run_id(child_id, target_board),
         )
         return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
                    **({"gated_by": parent_id} if gated else {}))

@@ -810,6 +810,8 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
     if env_tid and env_tid != task_id:
         raise ValueError(f"worker is scoped to task {env_tid}; refusing to mutate {task_id}")
+    if os.environ.get("HERMES_KANBAN_BOARD") != kb.get_current_board():
+        return None
     raw = os.environ.get("HERMES_KANBAN_RUN_ID")
     if os.environ.get("HERMES_KANBAN_TASK") != task_id or not raw:
         return None

@@ -83,6 +83,7 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
         assert kb.claim_task(conn, running_child, claimer="other") is not None
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(worker_run_id))
 
     assert kc._cmd_link(argparse.Namespace(
@@ -96,6 +97,32 @@ def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         assert kb.parent_ids(conn, ready_child) == [parent]
         assert kb.parent_ids(conn, running_child) == []
+
+
+def test_worker_link_does_not_borrow_ownership_across_boards(kanban_home, monkeypatch):
+    with kbc.connect_closing() as conn:
+        worker = kb.create_task(conn, title="worker")
+        assert kb.claim_task(conn, worker, claimer="worker") is not None
+        worker_run_id = kb.get_task(conn, worker).current_run_id
+
+    kb.create_board("alt")
+    with kbc.connect_closing(board="alt") as conn:
+        parent = kb.create_task(conn, title="alternate parent")
+        child = kb.create_task(conn, title="colliding worker")
+        conn.execute("UPDATE tasks SET id = ? WHERE id = ?", (worker, child))
+        conn.commit()
+        assert kb.claim_task(conn, worker, claimer="other") is not None
+        assert kb.get_task(conn, worker).current_run_id == worker_run_id
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(worker_run_id))
+    with kb.scoped_current_board("alt"):
+        with pytest.raises(ValueError, match="child is already running"):
+            kc._cmd_link(argparse.Namespace(parent_id=parent, child_id=worker))
+
+    with kbc.connect_closing(board="alt") as conn:
+        assert kb.parent_ids(conn, worker) == []
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):

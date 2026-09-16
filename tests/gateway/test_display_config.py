@@ -5,6 +5,25 @@
 # Resolver: resolution order
 # ---------------------------------------------------------------------------
 
+class TestToolProgressProvenance:
+    def test_winning_source_controls_mode_and_intent(self):
+        from gateway.display_config import resolve_tool_progress
+
+        cases = [
+            ({}, None, ("off", False)),
+            ({}, "all", ("all", True)),
+            ({"tool_progress": None}, "all", ("all", True)),
+            ({"platforms": {"slack": {"tool_progress": None}}}, "off", ("off", True)),
+            ({"tool_progress_overrides": {"slack": None}}, "new", ("new", True)),
+            ({"tool_progress": False}, "all", ("off", True)),
+            ({"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}}, "off", ("all", True)),
+            ({"tool_progress": "off", "tool_progress_overrides": {"slack": "new"}}, "all", ("new", True)),
+            ({"tool_progress_overrides": {"slack": "off"}, "platforms": {"slack": {"tool_progress": "all"}}}, None, ("all", True)),
+        ]
+        for display, env, expected in cases:
+            assert resolve_tool_progress({"display": display}, "slack", env) == expected
+
+
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
 
@@ -224,6 +243,31 @@ class TestStreamingPerPlatform:
             }
         }
         assert resolve_display_setting(config, "telegram", "streaming") is False
+
+    def test_wecom_default_is_streaming_enabled(self):
+        """WeCom has a native streaming transport (msgtype: stream) so its
+        built-in default opts into streaming even though it sits in the
+        non-editable tier."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "wecom", "streaming") is True
+
+    def test_wecom_callback_default_remains_off(self):
+        """The legacy callback adapter has no stream protocol — keep off."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "wecom_callback", "streaming") is False
+
+    def test_wecom_user_can_still_disable_streaming(self):
+        """Per-platform override beats the built-in default."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"wecom": {"streaming": False}},
+            }
+        }
+        assert resolve_display_setting(config, "wecom", "streaming") is False
 
 
 # ---------------------------------------------------------------------------

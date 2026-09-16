@@ -5,14 +5,17 @@ import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
 import { writeClipboardText } from '@/components/ui/copy-button'
+import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { useTheme } from '@/themes/context'
 
+import { observeActiveTerminalResize } from './active-resize'
 import { registerAgentTerminalWriter } from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { mirrorSelection, terminalClipboardIntent } from './clipboard'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import { isMacPlatform, resolveSurfaceColor, terminalTheme } from './selection'
+import { registerTerminalContextMenu } from './terminal-context-menu'
 import { prepareTerminalFontFamily } from './terminal-font'
 import { useTerminalFontController } from './use-terminal-font'
 
@@ -24,7 +27,8 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
-  const fitRef = useRef<(() => void) | null>(null)
+  const fitRef = useRef<((visible: boolean) => void) | null>(null)
+  const initialActiveFitRef = useRef(false)
   const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
 
   const surfaceTheme = () => {
@@ -47,7 +51,6 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     }
 
     let disposed = false
-    let observer: ResizeObserver | null = null
 
     let unregister = () => {}
 
@@ -81,6 +84,15 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     // No paste path: this terminal has no PTY to paste into.
     const selectionDisposable = term.onSelectionChange(() => mirrorSelection(host, term.getSelection()))
 
+    // Right-clicks resolve through the app context menu; the handle carries
+    // the xterm selection the DOM resolver cannot see. paste stays null —
+    // there is nothing to paste into.
+    const contextMenuDisposable = registerTerminalContextMenu(host, {
+      getSelection: () => term.getSelection(),
+      paste: null,
+      selectAll: () => term.selectAll()
+    })
+
     term.attachCustomKeyEventHandler(event => {
       const intent = terminalClipboardIntent(event, {
         hasSelection: Boolean(term.getSelection()),
@@ -101,10 +113,11 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       return false
     })
 
-    fitRef.current = () => {
+    fitRef.current = visible => {
       if (host.clientWidth > 0 && host.clientHeight > 0) {
         try {
           fit.fit()
+          markRightPanePerf(visible ? 'terminal-fit-active' : 'terminal-fit-hidden', id)
         } catch {
           // Mid-transition layout — the next observer tick refits.
         }
@@ -132,9 +145,8 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
         // No WebGL — xterm falls back to the DOM renderer.
       }
 
-      fitRef.current?.()
-      observer = new ResizeObserver(() => fitRef.current?.())
-      observer.observe(host)
+      fitRef.current?.(active)
+      initialActiveFitRef.current = active
 
       // Stream live output straight into the terminal (replays backlog on attach).
       unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
@@ -159,7 +171,7 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       unregister()
       unregisterReader()
       selectionDisposable.dispose()
-      observer?.disconnect()
+      contextMenuDisposable()
       fitRef.current = null
       term.dispose()
       termRef.current = null
@@ -184,25 +196,39 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderedMode, themeName])
 
-  // A visibility:hidden xterm doesn't paint — refit + redraw on re-activation.
+  // Keep inactive agent terminals mounted for their backlog, but do not observe
+  // or fit them until they become the visible tab.
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle flag prevents a duplicate first-mount fit
   useEffect(() => {
     if (!active) {
+      initialActiveFitRef.current = false
+
       return
     }
 
-    const frame = requestAnimationFrame(() => {
-      const term = termRef.current
+    const host = hostRef.current
 
-      fitRef.current?.()
-      webglRef.current?.clearTextureAtlas()
-      term?.refresh(0, term.rows - 1)
-      // Take focus on activation (parity with the user terminal) so the active
-      // agent tab holds focus and ⌘W's isFocusWithin('[data-terminal]') routes
-      // the close to this tab rather than to a preview.
-      term?.focus()
+    if (!host) {
+      return
+    }
+
+    const fitOnActivate = !initialActiveFitRef.current
+    initialActiveFitRef.current = false
+
+    return observeActiveTerminalResize(host, {
+      fitOnActivate,
+      onFit: () => fitRef.current?.(true),
+      onActivate: () => {
+        const term = termRef.current
+
+        webglRef.current?.clearTextureAtlas()
+        term?.refresh(0, term.rows - 1)
+        // Take focus on activation (parity with the user terminal) so the active
+        // agent tab holds focus and ⌘W's isFocusWithin('[data-terminal]') routes
+        // the close to this tab rather than to a preview.
+        term?.focus()
+      }
     })
-
-    return () => cancelAnimationFrame(frame)
   }, [active])
 
   return { hostRef }

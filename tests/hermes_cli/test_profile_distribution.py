@@ -10,6 +10,8 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -374,6 +376,81 @@ class TestInstall:
 
 class TestUpdate:
 
+    def test_update_and_force_install_merge_owned_dirs_per_root(self, profile_env):
+        """skills/ and cron/ are containers of roots: roots the payload ships are replaced
+        wholesale (retired files disappear), roots the user added survive both paths."""
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="skills_safe")
+
+        custom = plan.target_dir / "skills" / "custom"
+        custom.mkdir()
+        (custom / "SKILL.md").write_text("custom skill\n", encoding="utf-8")
+        (plan.target_dir / "cron" / "mine.json").write_text('{"schedule": "* * * * *"}\n', encoding="utf-8")
+        (plan.target_dir / "skills" / "demo" / "stale.txt").write_text("old file\n", encoding="utf-8")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
+        (staged / "skills" / "new").mkdir()
+        (staged / "skills" / "new" / "SKILL.md").write_text("new skill\n", encoding="utf-8")
+        # Categorised skill (skills/<category>/<skill>): the category is a container too,
+        # so a sibling the user added inside it survives (issue #25120's literal repro).
+        (staged / "skills" / "devops" / "team-deploy").mkdir(parents=True)
+        (staged / "skills" / "devops" / "team-deploy" / "SKILL.md").write_text("team deploy\n", encoding="utf-8")
+        mine = plan.target_dir / "skills" / "devops" / "my-custom-skill"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("my custom skill\n", encoding="utf-8")
+
+        update_distribution("skills_safe")
+
+        assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (mine / "SKILL.md").read_text(encoding="utf-8") == "my custom skill\n"
+        assert (plan.target_dir / "skills" / "devops" / "team-deploy" / "SKILL.md").exists()
+        assert (plan.target_dir / "cron" / "mine.json").read_text(encoding="utf-8") == '{"schedule": "* * * * *"}\n'
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text(encoding="utf-8") == "updated demo\n"
+        assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text(encoding="utf-8") == "new skill\n"
+        assert not (plan.target_dir / "skills" / "demo" / "stale.txt").exists()
+
+        install_distribution(str(staged), name="skills_safe", force=True)
+
+        assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (plan.target_dir / "cron" / "mine.json").exists()
+
+    def test_update_refuses_symlinked_owned_container(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="link_safe")
+
+        shared = profile_env / "shared-skills"
+        (shared / "mine").mkdir(parents=True)
+        (shared / "mine" / "SKILL.md").write_text("shared skill\n", encoding="utf-8")
+        before = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+
+        # A symlinked category (skills/devops -> shared dir) is a container too and is refused
+        # rather than unlinked and replaced by the shipped copy.
+        (staged / "skills" / "devops" / "team-deploy").mkdir(parents=True)
+        (staged / "skills" / "devops" / "team-deploy" / "SKILL.md").write_text("team deploy\n", encoding="utf-8")
+        _symlink_file_or_skip(plan.target_dir / "skills" / "devops", shared)
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("link_safe")
+        assert (plan.target_dir / "skills" / "devops").is_symlink()
+        (plan.target_dir / "skills" / "devops").unlink()
+
+        skills = plan.target_dir / "skills"
+        shutil.rmtree(skills)
+        _symlink_file_or_skip(skills, shared)
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
+        # Every other shipped entry changes upstream too: the refusal must fire before the
+        # first write, or the profile is left half-updated and every retry fails the same way.
+        (staged / "SOUL.md").write_text("updated soul\n", encoding="utf-8")
+        (staged / "mcp.json").write_text('{"servers": {"new": {}}}\n', encoding="utf-8")
+        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}', encoding="utf-8")
+        untouched = {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()}
+
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("link_safe")
+
+        assert skills.is_symlink() and skills.resolve() == shared.resolve()
+        after = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+        assert after == before
+        assert {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()} == untouched
+
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install
         staged = _make_staging_dir(profile_env, "src")
@@ -449,7 +526,7 @@ class TestDescribe:
 
 
     def test_describe_missing_profile_raises(self, profile_env):
-        with pytest.raises(DistributionError, match="does not exist"):
+        with pytest.raises(DistributionError, match="No profile named .*hermes profile list"):
             describe_distribution("nonexistent")
 
 
@@ -672,3 +749,88 @@ class TestErrorSurfaces:
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
 
+
+# ===========================================================================
+# Crash durability: write_manifest rewrites distribution.yaml in place
+# ===========================================================================
+
+
+class TestManifestCrashDurability:
+    """``write_manifest`` runs on every install and update of a shared profile.
+
+    ``read_manifest`` reports a missing-or-unparseable manifest as "this isn't
+    a distribution", so a truncated distribution.yaml silently demotes the
+    profile — update tracking and ``env_requires`` just stop existing, with no
+    error surfaced anywhere.
+    """
+
+    def test_previous_manifest_survives_an_interrupted_write(self, tmp_path):
+        import os
+
+        original = DistributionManifest(
+            name="keepme",
+            version="1.0.0",
+            description="the manifest already on disk",
+            env_requires=[EnvRequirement(name="FOO", description="foo")],
+        )
+        write_manifest(tmp_path, original)
+        on_disk = (tmp_path / "distribution.yaml").read_bytes()
+
+        def boom(fd):
+            raise OSError("simulated crash mid-write")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(os, "fsync", boom)
+            with pytest.raises(OSError):
+                write_manifest(
+                    tmp_path,
+                    DistributionManifest(name="replacement", version="2.0.0"),
+                )
+
+        # The old manifest must still be byte-identical and still parse.
+        assert (tmp_path / "distribution.yaml").read_bytes() == on_disk
+        parsed = read_manifest(tmp_path)
+        assert parsed is not None, "profile silently stopped being a distribution"
+        assert parsed.name == "keepme"
+        assert parsed.env_requires[0].name == "FOO"
+
+        # No temp file left behind next to the manifest.
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_existing_file_mode_is_preserved(self, tmp_path):
+        import os
+        import stat
+
+        write_manifest(tmp_path, DistributionManifest(name="modes", version="1.0.0"))
+        mf = tmp_path / "distribution.yaml"
+        os.chmod(mf, 0o644)
+
+        write_manifest(tmp_path, DistributionManifest(name="modes", version="2.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"mode changed to {oct(mode)}"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_created_file_mode_is_not_tightened(self, tmp_path):
+        """A manifest this function *creates* must not land owner-only.
+
+        ``atomic_yaml_write`` only re-applies a mode it captured from an
+        existing file, so a fresh distribution.yaml would otherwise keep
+        ``tempfile.mkstemp``'s 0600. ``_materialize`` hits that path whenever a
+        distribution's explicit ``distribution_owned`` allowlist omits
+        distribution.yaml, so the staged copy never lands in the profile.
+        """
+        import stat
+
+        mf = tmp_path / "distribution.yaml"
+        assert not mf.exists()
+
+        write_manifest(tmp_path, DistributionManifest(name="fresh", version="1.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"new manifest created as {oct(mode)}"

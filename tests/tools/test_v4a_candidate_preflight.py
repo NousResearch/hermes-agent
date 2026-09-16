@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
@@ -42,6 +44,29 @@ def test_invalid_structured_candidate_blocks_entire_batch(tmp_path: Path):
     assert structured.read_text() == '{"ok": true}\n'
 
 
+@pytest.mark.parametrize(
+    "filename, content, error_fragment",
+    [("new.json", '{"ok":', "syntax validation"),
+     ("new.txt", "\ud800", "lone surrogate")],
+)
+def test_invalid_add_candidate_blocks_earlier_update(
+    tmp_path: Path, filename: str, content: str, error_fragment: str,
+):
+    good = tmp_path / "good.txt"
+    good.write_text("old\n")
+    added = tmp_path / filename
+    result = _apply(
+        f"*** Begin Patch\n*** Update File: {good}\n@@\n-old\n+new\n"
+        f"*** Add File: {added}\n+{content}\n*** End Patch\n",
+        tmp_path,
+    )
+    assert result.success is False
+    assert "no files were modified" in (result.error or "")
+    assert error_fragment in (result.error or "")
+    assert good.read_text() == "old\n"
+    assert not added.exists()
+
+
 def test_write_policy_denial_blocks_entire_batch(
     tmp_path: Path,
     monkeypatch,
@@ -60,7 +85,9 @@ def test_write_policy_denial_blocks_entire_batch(
 @@
 -old
 +new
-*** Add File: {protected}
+*** Update File: {protected}
+@@
+-SECRET=unchanged
 +SECRET=overwritten
 *** End Patch
 """,
@@ -98,7 +125,7 @@ def test_non_string_backend_preflight_result_is_not_a_rejection(tmp_path: Path):
     result = apply_v4a_operations(operations, file_ops)
 
     assert result.success is True
-    file_ops.write_file.assert_called_once_with(str(target), "new\n")
+    file_ops.write_file.assert_called_once_with(str(target), "new\n", pre_content="old\n")
 
 
 def test_missing_addition_only_hint_rejects_without_appending(tmp_path: Path):

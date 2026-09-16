@@ -1,8 +1,36 @@
 import assert from 'node:assert/strict'
+import { X509Certificate } from 'node:crypto'
 
-import { test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
+import { bundledRoot, expiredRoot, privateRoot } from './fixtures/windows-system-ca'
 import { installWindowsSystemCaTrust, type NodeTlsCaApi } from './windows-system-ca'
+
+afterEach(() => vi.restoreAllMocks())
+
+test('excludes expired roots and deduplicates real certificates with defaults first', () => {
+  vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-01-01T00:00:00Z').getTime())
+
+  const tlsApi = fakeTlsApi(
+    [expiredRoot, bundledRoot, bundledRoot, 'unparseable-default'],
+    [expiredRoot, bundledRoot.replaceAll('\n', '\r\n'), privateRoot, privateRoot, 'unparseable-system']
+  )
+
+  const result = installWindowsSystemCaTrust(tlsApi, 'win32')
+
+  assert.deepEqual(tlsApi.installed, [[bundledRoot, 'unparseable-default', privateRoot, 'unparseable-system']])
+  assert.deepEqual(result, { applied: true, systemCertificateCount: 2, totalCertificateCount: 4 })
+})
+
+test('excludes a root at its exact expiry while retaining valid defaults', () => {
+  vi.spyOn(Date, 'now').mockReturnValue(new X509Certificate(expiredRoot).validToDate.getTime())
+  const tlsApi = fakeTlsApi([bundledRoot], [expiredRoot])
+
+  const result = installWindowsSystemCaTrust(tlsApi, 'win32')
+
+  assert.deepEqual(tlsApi.installed, [[bundledRoot]])
+  assert.deepEqual(result, { applied: true, systemCertificateCount: 0, totalCertificateCount: 1 })
+})
 
 function fakeTlsApi(
   defaults: string[] = ['bundled-ca', 'extra-ca'],
@@ -34,7 +62,7 @@ test('installs Windows system CAs without dropping existing defaults', () => {
   })
 })
 
-test('does not inspect or replace CAs outside Windows', () => {
+test.each(['darwin', 'linux'] as const)('does not inspect or replace CAs on %s', platform => {
   let reads = 0
 
   const tlsApi: NodeTlsCaApi = {
@@ -48,7 +76,7 @@ test('does not inspect or replace CAs outside Windows', () => {
     }
   }
 
-  const result = installWindowsSystemCaTrust(tlsApi, 'darwin')
+  const result = installWindowsSystemCaTrust(tlsApi, platform)
 
   assert.equal(reads, 0)
   assert.deepEqual(result, {

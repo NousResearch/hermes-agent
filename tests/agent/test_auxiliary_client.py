@@ -34,6 +34,7 @@ from agent.auxiliary_client import (
     OPENROUTER_BASE_URL,
     _resolve_auto_route,
     _resolve_task_provider_model,
+    _prepare_aux_request,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
     _pool_runtime_base_url,
@@ -107,6 +108,44 @@ class TestAuxiliaryMaxTokensParam:
 
 
 class TestResolveTaskProviderModel:
+    def test_identical_task_and_main_endpoints_are_not_marked_as_overrides(self):
+        route_info = {}
+        client = SimpleNamespace(base_url="https://same.example/v1/")
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=(
+                    "anthropic", "main-model", "https://same.example/v1/", "task-key", None,
+                ),
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_call_client",
+                return_value=(client, "main-model", "anthropic", "anthropic"),
+            ),
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+        ):
+            _prepare_aux_request(
+                "compression",
+                provider=None,
+                model=None,
+                base_url=None,
+                api_key=None,
+                main_runtime={"base_url": "https://same.example/v1"},
+                messages=[{"role": "user", "content": "summarize"}],
+                temperature=None,
+                max_tokens=None,
+                tools=None,
+                timeout=None,
+                extra_body=None,
+                reasoning_config=None,
+                extra_headers=None,
+                api_mode=None,
+                route_info=route_info,
+                async_mode=False,
+            )
+
+        assert route_info["task_endpoint_override"] == "false"
+
     def test_omitting_task_bypasses_same_provider_task_endpoint(self):
         task_config = {
             "provider": "anthropic",

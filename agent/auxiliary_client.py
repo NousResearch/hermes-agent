@@ -6845,12 +6845,19 @@ def _prepare_aux_request(
             extra_body=effective_extra_body,
         )
     _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    main_base_url = base_url if base_url is not None else main_runtime.get("base_url")
     _record_route_info(
         route_info,
         _fallback_provider_from_label(request_provider),
         final_model,
         task_endpoint_override=bool(
-            task and not bypass_task_route and resolved_base_url and resolved_base_url != base_url
+            task
+            and not bypass_task_route
+            and resolved_base_url
+            and normalize_route_base_url(resolved_base_url)
+            != normalize_route_base_url(main_base_url)
         ),
     )
     if async_mode:

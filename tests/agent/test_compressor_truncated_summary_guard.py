@@ -194,6 +194,30 @@ class TestGenerateSummaryTruncationGuard:
         assert calls[1]["base_url"] == "https://main.example/v1"
         assert calls[1]["bypass_task_route"] is True
 
+    def test_same_provider_model_and_endpoint_does_not_retry(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="anthropic",
+                base_url="https://same.example/v1", quiet_mode=True,
+            )
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            kwargs["route_info"].update(
+                provider="anthropic",
+                model="main-model",
+                task_endpoint_override="false",
+            )
+            return _mock_response("partial summary", "length")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is None
+        assert len(calls) == 1
+
     def test_auto_main_runtime_retry_bypasses_configured_auxiliary_route(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="main-model", provider="", base_url="", quiet_mode=True)

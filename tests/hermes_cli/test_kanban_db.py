@@ -1360,9 +1360,27 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the PATH shim (familiar `ps` output) but falls back to the module
-# form so the spawn keeps working when PATH is missing the shim.
+# prefers the interpreter-bound module form (exactly this install; a PATH
+# shim could be attacker-planted or belong to another install, #111569) and
+# only falls back to the PATH shim when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
+
+
+def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
+    """A `hermes` on PATH must not shadow the running install (#111569):
+    the module argv wins whenever ``hermes_cli`` is importable; only an
+    explicit ``$HERMES_BIN`` overrides it."""
+    import shutil
+    import sys
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+    monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
+    assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
 def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
@@ -1853,6 +1871,8 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         t = kb.create_task(conn, title="x", assignee="a")
         host = kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
+        # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
 
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)

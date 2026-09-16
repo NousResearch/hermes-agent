@@ -491,6 +491,35 @@ def test_session_not_available_pipe_error_falls_back_to_mcp_for_replay_safe_tool
     mock_pipe3.call_tool.assert_called_once()
     mock_mcp3.assert_not_called()
 
+    # Sub-case 4: If a session had a transport mismatch on list_windows, subsequent mutating calls (click)
+    # route over MCP stdio where the session lives instead of attempting pipe and failing closed.
+    session4 = _CuaDriverSession(_AsyncBridge())
+    session4._started = True
+    session4._declared_session_id = "sess-pinned"
+    mock_pipe4 = MagicMock()
+    mock_pipe4.call_tool.return_value = {
+        "isError": True,
+        "data": "session is not available to this transport",
+        "images": [],
+        "structuredContent": {"error": "session is not available to this transport"},
+    }
+    session4._pipe_transport = mock_pipe4
+    # Simulate list_windows encountering transport mismatch and pinning session to MCP
+    mock_mcp4 = MagicMock(return_value={"data": "win-ok", "images": [], "structuredContent": {}, "isError": False})
+    monkeypatch.setattr(session4._bridge, "run", mock_mcp4)
+    res_list = session4.call_tool("list_windows", {"session": "sess-pinned"}, timeout=5.0)
+    assert res_list["data"] == "win-ok"
+    assert session4._pipe_disabled_for_session == "sess-pinned"
+
+    # Now click must route to MCP stdio, NOT fail on pipe
+    mock_pipe4.call_tool.reset_mock()
+    mock_mcp4.reset_mock()
+    mock_mcp4.return_value = {"data": "click-ok", "images": [], "structuredContent": {}, "isError": False}
+    res_click = session4.call_tool("click", {"element": 1}, timeout=5.0)
+    assert res_click["data"] == "click-ok"
+    mock_pipe4.call_tool.assert_not_called()
+    mock_mcp4.assert_called_once()
+
 
 def test_list_apps_propagates_transport_error():
     """list_apps() uses _call_capture_tool so transport/logical errors raise RuntimeError instead of returning []."""

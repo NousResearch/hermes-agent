@@ -217,6 +217,7 @@ class _CuaDriverSession:
         self._declared_session_id: Optional[str] = None
         self._transport_generation, self._transport_reset_callback = 0, None
         self._pipe_transport: Optional[Any] = None
+        self._pipe_disabled_for_session: Optional[str] = None
 
     async def _lifecycle_coro(self) -> None:
         """Owns the stdio MCP contexts: open, signal ready, block on shutdown, clean up — all in one task."""
@@ -362,6 +363,11 @@ class _CuaDriverSession:
             return None
         if os.environ.get("HERMES_CUA_DISABLE_PIPE", "").lower() in ("1", "true"):
             return None
+        if (
+            getattr(self, "_pipe_disabled_for_session", None) is not None
+            and self._pipe_disabled_for_session == getattr(self, "_declared_session_id", None)
+        ):
+            return None
         if self._pipe_transport is None:
             try:
                 from tools.computer_use.cua_backend_pipe import NativePipeComputerUseTransport
@@ -442,6 +448,9 @@ class _CuaDriverSession:
         result = self._bridge.run(self._call_tool_async("start_session", {"session": session_id}), timeout=timeout)
         if result.get("isError") is True:
             logger.warning(failure_msg, session_id, _logical_error_text(result))
+        else:
+            self._pipe_disabled_for_session = session_id
+            self._pipe_transport = None
         return result.get("isError") is not True
 
     def _recreate_session(self, name: str, timeout: float, log_msg: str, *, restart: bool = True,
@@ -544,6 +553,9 @@ class _CuaDriverSession:
         if not self._started:
             raise RuntimeError("cua-driver session not started")
 
+        if name == "start_session":
+            self._pipe_disabled_for_session = None
+
         pipe, pipe_result = None, None
         if (
             sys.platform == "win32"
@@ -565,6 +577,8 @@ class _CuaDriverSession:
                     self._pipe_transport = None
                     is_pre_dispatch = isinstance(exc, PipePreDispatchError)
                     is_session_unavailable = "session is not available to this transport" in str(exc).lower()
+                    if is_session_unavailable and self._declared_session_id:
+                        self._pipe_disabled_for_session = self._declared_session_id
                     is_replay_safe = name in self._TRANSPORT_REPLAY_SAFE_TOOLS or name in self._LIFECYCLE_CALLS
                     if not is_pre_dispatch and not is_replay_safe:
                         if isinstance(exc, (concurrent.futures.TimeoutError, TimeoutError)):
@@ -595,6 +609,8 @@ class _CuaDriverSession:
             )
         ):
             self._pipe_transport = None
+            if self._declared_session_id:
+                self._pipe_disabled_for_session = self._declared_session_id
             if name in self._TRANSPORT_REPLAY_SAFE_TOOLS or name in self._LIFECYCLE_CALLS:
                 logger.warning(
                     "cua-driver pipe transport reported session not available on replay-safe tool %s; "
@@ -635,8 +651,15 @@ class _CuaDriverSession:
         pipe_target = self._pipe_transport or pipe
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:
             self._declared_session_id = declared_id
-            if pipe_target is not None:
-                pipe_target.session_id = declared_id
+            if pipe_result is not None:
+                self._pipe_disabled_for_session = None
+                if pipe_target is not None:
+                    pipe_target.session_id = declared_id
+            else:
+                self._pipe_disabled_for_session = declared_id
+                self._pipe_transport = None
+                if pipe_target is not None:
+                    pipe_target.session_id = None
         if _is_ended_session_result(result):
             # Revive the stable session and replay the rejected call once; a 2nd rejection surfaces as-is.
             # Never re-runs lifecycle calls -> an end_session result is final.
@@ -649,4 +672,5 @@ class _CuaDriverSession:
             self._declared_session_id = None
             if pipe_target is not None:
                 pipe_target.session_id = None
+            self._pipe_disabled_for_session = None
         return result

@@ -87,7 +87,9 @@ class GatewayGoalsMixin:
         def _load():
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
+            return lambda sid: GoalManager.load_authoritative(
+                session_id=sid, default_max_turns=max_turns
+            )
         return await self._manager_for_event(event, "goal", _load)
 
     async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
@@ -98,9 +100,22 @@ class GatewayGoalsMixin:
         return await self._manager_for_event(event, "heartbeat", _load)
 
     @staticmethod
-    def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
+    def _synthetic_prompt_event(
+        source: Any,
+        text: str,
+        *,
+        internal: bool = False,
+        goal_continuation: bool = False,
+    ) -> MessageEvent:
         """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session."""
-        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
+        return MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=internal,
+            allow_gateway_control=not goal_continuation,
+            goal_continuation=goal_continuation,
+        )
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
         """Track the canonical route and start the restart-recoverable poller."""
@@ -264,13 +279,34 @@ class GatewayGoalsMixin:
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
-        def _load():
-            from hermes_cli.goals import GoalManager
-            max_turns = self._goal_max_turns_from_config()
-            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
-
-        mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
-        if mgr is None or not mgr.is_active():
+        try:
+            from hermes_cli.goals import (
+                GoalManager,
+                GoalPersistenceError,
+                load_goal_snapshot_authoritative,
+            )
+        except Exception as exc:
+            logger.debug("goal continuation: goals module unavailable: %s", exc)
+            return
+        sid = getattr(session_entry, "session_id", None) or ""
+        if not sid:
+            return
+        await self._warm_goals_session_db("goal continuation")
+        try:
+            state, persisted_raw = load_goal_snapshot_authoritative(sid)
+        except GoalPersistenceError as exc:
+            notice = f"Goal status unavailable: {exc}"
+            logger.warning("goal continuation: %s", notice)
+            if source is not None:
+                await self._defer_goal_status_notice_after_delivery(source, notice)
+            return
+        mgr = GoalManager.from_authoritative_snapshot(
+            session_id=sid,
+            state=state,
+            persisted_raw=persisted_raw,
+            default_max_turns=self._goal_max_turns_from_config(),
+        )
+        if not mgr.is_active():
             return
 
         _bg_procs, _active_deleg = None, 0
@@ -284,12 +320,19 @@ class GatewayGoalsMixin:
         # judge_goal() is a synchronous aux-LLM HTTP call (10-40 s; would block Discord heartbeats).
         # _run_in_executor_with_context carries the profile secret scope / aux runtime contextvars
         # without which aux credential resolution fails under multiplexing.
-        decision = await self._run_in_executor_with_context(
-            lambda: mgr.evaluate_after_turn(
-                final_response or "", user_initiated=True, background_processes=_bg_procs,
-                active_delegations=_active_deleg,
-            ),
-        )
+        try:
+            decision = await self._run_in_executor_with_context(
+                lambda: mgr.evaluate_after_turn(
+                    final_response or "", user_initiated=True, background_processes=_bg_procs,
+                    active_delegations=_active_deleg,
+                ),
+            )
+        except GoalPersistenceError as exc:
+            notice = f"Goal status unavailable: {exc}"
+            logger.warning("goal continuation: %s", notice)
+            if source is not None:
+                await self._defer_goal_status_notice_after_delivery(source, notice)
+            return
         msg = decision.get("message") or ""
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
@@ -302,7 +345,11 @@ class GatewayGoalsMixin:
             adapter = self._adapter_for_source(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                self._enqueue_fifo(
+                    _quick_key,
+                    self._synthetic_prompt_event(source, prompt, goal_continuation=True),
+                    adapter,
+                )
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 

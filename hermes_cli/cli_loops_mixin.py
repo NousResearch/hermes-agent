@@ -454,6 +454,8 @@ class CLILoopsMixin:
 
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""
+        from hermes_cli.goals import GoalPersistenceError
+
         def load():
             from hermes_cli.goals import GoalManager
             from hermes_cli.config import load_config
@@ -464,9 +466,21 @@ class CLILoopsMixin:
                     max_turns = int(goals_cfg.get("max_turns", 20) or 20)
                 except Exception:
                     max_turns = 20
-                return GoalManager(session_id=sid, default_max_turns=max_turns)
+                return GoalManager.load_authoritative(
+                    session_id=sid, default_max_turns=max_turns
+                )
             return make
-        return self._session_bound_manager("_goal_manager", "goal manager", load)
+        manager = self._session_bound_manager("_goal_manager", "goal manager", load)
+        if manager is None:
+            return None
+        try:
+            manager.refresh_if_stale()
+        except GoalPersistenceError:
+            raise
+        except Exception as exc:
+            logging.warning("goal manager refresh failed closed: %s", exc)
+            return None
+        return manager
 
     def _get_heartbeat_manager(self):
         """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""
@@ -653,7 +667,16 @@ class CLILoopsMixin:
         "continue" and would re-queue exactly what was cancelled; pausing is recoverable
         via ``/goal resume``. Empty-response skip mirrors ``gateway/run.py``."""
         from cli import _DIM, _RST, _cprint, _looks_like_slash_command
-        mgr = self._get_goal_manager()
+        from hermes_cli.goals import (
+            GoalPersistenceError,
+            goal_mutation_failure_message,
+            goal_status_failure_message,
+        )
+        try:
+            mgr = self._get_goal_manager()
+        except GoalPersistenceError:
+            _cprint(f"  {_DIM}{goal_status_failure_message()}{_RST}")
+            return
         if mgr is None or not mgr.is_active():
             return
 
@@ -678,8 +701,17 @@ class CLILoopsMixin:
         if getattr(self, "_last_turn_interrupted", False):
             try:
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
+            except GoalPersistenceError as exc:
+                logging.debug("goal pause-on-interrupt could not be verified: %s", exc)
+                _cprint(f"  {_DIM}{goal_mutation_failure_message(exc)}{_RST}")
+                return
             except Exception as exc:
                 logging.debug("goal pause-on-interrupt failed: %s", exc)
+                _cprint(
+                    f"  {_DIM}Goal pause could not be confirmed. "
+                    f"Check /goal status before another action.{_RST}"
+                )
+                return
             _cprint(
                 f"  {_DIM}⏸ Goal paused — turn was interrupted. "
                 f"Use /goal resume to continue, or /goal clear to stop.{_RST}")
@@ -698,8 +730,13 @@ class CLILoopsMixin:
             _active_deleg = count_active_delegations(getattr(self.agent, "session_id", None))
         except Exception:
             _bg_procs = None
-        decision = mgr.evaluate_after_turn(
-            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+        try:
+            decision = mgr.evaluate_after_turn(
+                last_response, user_initiated=True, background_processes=_bg_procs,
+                active_delegations=_active_deleg)
+        except GoalPersistenceError as exc:
+            _cprint(f"  {_DIM}{goal_mutation_failure_message(exc)}{_RST}")
+            return
         _print_decision_message(decision)
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")

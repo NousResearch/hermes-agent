@@ -188,11 +188,20 @@ class MessageCompletePayload(Payload):
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
 
 
+class GoalStatusPayload(Payload):
+    """Authoritative persisted goal identity attached to goal status updates."""
+
+    exists: bool
+    status: str | None
+    condition: str | None
+
+
 class StatusUpdatePayload(Payload):
     """``server._status_update`` and the direct emitters (goal / loop / heartbeat / process)."""
 
     kind: str
     text: str
+    goal: GoalStatusPayload | None = None
 
 
 event("status.update", StatusUpdatePayload, doc="Transient status line (kind: status, lifecycle, compacting, goal, loop, heartbeat, process, …).")
@@ -694,7 +703,7 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 __all__ = [
     "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
     "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload", "MessageCompletePayload",
+    "ErrorSurface", "GatewayReadyPayload", "GoalStatusPayload", "LayoutApplyPayload", "MessageCompletePayload",
     "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
     "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
     "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",

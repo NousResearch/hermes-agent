@@ -61,9 +61,25 @@ def _active_goal_manager(session: dict):
         max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
     except Exception:
         max_turns = 20
-    goal_mgr = GoalManager(
+    goal_mgr = GoalManager.load_authoritative(
         session_id=str(session.get("session_key") or ""), default_max_turns=max_turns)
     return goal_mgr if goal_mgr.is_active() else None
+
+
+def _goal_status_payload(session_id: str, text: str) -> dict:
+    """Attach canonical goal identity while preserving the prose-only fallback."""
+    from hermes_cli.goals import (
+        GoalPersistenceError,
+        goal_state_payload,
+        load_goal_authoritative,
+    )
+
+    payload = {"kind": "goal", "text": text}
+    try:
+        payload["goal"] = goal_state_payload(load_goal_authoritative(session_id))
+    except GoalPersistenceError:
+        pass
+    return payload
 
 
 def _plan_goal_compression_recovery(
@@ -321,14 +337,29 @@ def _goal_followup_after_turn(
     """/goal continuation (mirrors gateway/run._post_turn_goal_continuation): the prompt to
     chain once ``running`` is released, or None.  Compression failures are never judge
     input: the error text is not work toward the goal, and judging it spends a turn."""
+    from hermes_cli.goals import GoalPersistenceError
+
     goal_followup = None
     compression_exhausted = bool(isinstance(result, dict) and result.get("compression_exhausted"))
     try:
         recovery_prompt, recovery_notice = _plan_goal_compression_recovery(
             session, result, status=status, raw=raw)
         if recovery_notice:
-            _emit("status.update", sid, {"kind": "goal", "text": recovery_notice})
+            _emit(
+                "status.update",
+                sid,
+                _goal_status_payload(
+                    str(session.get("session_key") or sid), recovery_notice
+                ),
+            )
         goal_followup = recovery_prompt or None
+    except GoalPersistenceError:
+        from hermes_cli.goals import goal_status_failure_message
+        _emit(
+            "status.update",
+            sid,
+            {"kind": "goal", "text": goal_status_failure_message()},
+        )
     except Exception as _goal_recovery_exc:
         _hook_failure("goal compression recovery", _goal_recovery_exc)
     if compression_exhausted or not _is_successful_goal_turn(result, status, raw):
@@ -347,10 +378,34 @@ def _goal_followup_after_turn(
             decision = goal_mgr.evaluate_after_turn(
                 raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
             if verdict_msg := decision.get("message") or "":
-                _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
+                _emit(
+                    "status.update",
+                    sid,
+                    _goal_status_payload(
+                        str(session.get("session_key") or sid), verdict_msg
+                    ),
+                )
             if decision.get("should_continue") and (
                 cont_prompt := decision.get("continuation_prompt") or ""):
                 goal_followup = cont_prompt
+    except GoalPersistenceError as _goal_exc:
+        from hermes_cli.goals import (
+            GoalConflictError,
+            GoalPostconditionError,
+            goal_mutation_failure_message,
+            goal_status_failure_message,
+        )
+        notice = (
+            goal_mutation_failure_message(_goal_exc)
+            if isinstance(_goal_exc, (GoalConflictError, GoalPostconditionError))
+            else goal_status_failure_message()
+        )
+        payload = (
+            _goal_status_payload(str(session.get("session_key") or sid), notice)
+            if isinstance(_goal_exc, (GoalConflictError, GoalPostconditionError))
+            else {"kind": "goal", "text": notice}
+        )
+        _emit("status.update", sid, payload)
     except Exception as _goal_exc:
         _hook_failure("goal continuation hook", _goal_exc)
     return goal_followup

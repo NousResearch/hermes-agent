@@ -10872,6 +10872,45 @@
         "title": "GoalSnapshot",
         "type": "object"
       },
+      "GoalStatusPayload": {
+        "additionalProperties": false,
+        "description": "Authoritative persisted goal identity attached to goal status updates.",
+        "properties": {
+          "exists": {
+            "title": "Exists",
+            "type": "boolean"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          }
+        },
+        "required": [
+          "exists",
+          "status",
+          "condition"
+        ],
+        "title": "GoalStatusPayload",
+        "type": "object"
+      },
       "GroupsApproveParams": {
         "additionalProperties": false,
         "properties": {
@@ -28663,6 +28702,17 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoalStatusPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock } from '@hermes/shared'
+import { type BillingBlock, type GoalStatusPayload } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -135,6 +135,8 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // status.update (kind=goal) — authoritative persisted goal identity.
+  goal?: GoalStatusPayload | null
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
   // layout.apply (agent applying a layout preset via the apply_layout tool)

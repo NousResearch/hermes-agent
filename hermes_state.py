@@ -1544,6 +1544,41 @@ class SessionDB(
         else:
             self._write_sql(sql, (key, value))
 
+    def compare_and_set_meta(
+        self, key: str, expected: Optional[str], replacement: str
+    ) -> bool:
+        """Atomically replace one meta value iff its exact value is unchanged."""
+        return self.compare_and_set_meta_many([(key, expected, replacement)])
+
+    def compare_and_set_meta_many(
+        self, changes: List[Tuple[str, Optional[str], str]]
+    ) -> bool:
+        """Compare and replace meta rows in one authoritative transaction.
+
+        All comparisons run after ``BEGIN IMMEDIATE`` owns SQLite's writer
+        lock. No row changes unless every exact expected value still matches.
+        """
+        if not changes:
+            return True
+
+        def _do(conn):
+            for key, expected, _replacement in changes:
+                row = conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?", (key,)
+                ).fetchone()
+                current = None if row is None else row[0]
+                if current != expected:
+                    return False
+            for key, _expected, replacement in changes:
+                conn.execute(
+                    "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, replacement),
+                )
+            return True
+
+        return bool(self._execute_write(_do))
+
     def retag_kanban_worker_sessions(self, workspaces_root: str) -> int:
         """Retag legacy kanban worker rows from ``cli`` to ``kanban`` by cwd under the board's workspaces
         root; gated once per root via state_meta. Returns rows retagged."""

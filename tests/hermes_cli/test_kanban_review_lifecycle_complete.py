@@ -397,9 +397,12 @@ def test_review_retry_still_trips_the_failure_breaker(conn) -> None:
     blocked = kb.get_task(conn, task_id)
     assert blocked is not None
     assert blocked.status == "blocked"
-    gave_up = _event(kb.list_events(conn, task_id), "gave_up")
-    assert gave_up.payload is not None
-    assert gave_up.payload["retry_status"] == "review"
+    assert blocked.block_kind == "capability"
+    blocked_event = _event(kb.list_events(conn, task_id), "blocked")
+    assert blocked_event.payload is not None
+    assert blocked_event.payload["retry_status"] == "review"
+    assert blocked_event.payload["kind"] == "capability"
+    assert blocked_event.payload["reason"] == "reviewer cannot start"
     assert kb.unblock_task(conn, task_id)
     unblocked = kb.get_task(conn, task_id)
     assert unblocked is not None

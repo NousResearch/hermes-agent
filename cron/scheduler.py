@@ -295,9 +295,8 @@ def _upsert_incident_for_failure(
         from cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
-            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
-        from cron.executions import bind_delivery_incident
-        bind_delivery_incident(job.get("execution_id"), incident_id)
+            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file,
+            execution_id=job.get("execution_id"))
         incident = get_incident(incident_id)
         acked = bool(incident and incident.get("state") == "closed")
         return acked, incident_id

@@ -291,11 +291,16 @@ def bind_delivery_incident(execution_id: Optional[str], incident_id: str) -> Non
         with _transaction() as conn:
             from cron.incidents import _initialize_schema as init_incidents
             init_incidents(conn)
-            conn.execute("UPDATE executions SET incident_id=?, incident_generation="
-                         "(SELECT generation FROM cron_incidents WHERE id=?) "
-                         "WHERE id=? AND incident_id IS NULL "
-                         "AND status IN ('claimed','running') AND process_id=? AND pid=?",
-                         (incident_id, incident_id, execution_id, _PROCESS_ID, os.getpid()))
+            _bind_delivery_incident_unlocked(conn, execution_id, incident_id)
+
+
+def _bind_delivery_incident_unlocked(conn, execution_id: str, incident_id: str) -> None:
+    """Called in the producer's incident upsert transaction; no later generation lookup."""
+    conn.execute("UPDATE executions SET incident_id=?, incident_generation="
+                 "(SELECT generation FROM cron_incidents WHERE id=?) "
+                 "WHERE id=? AND incident_id IS NULL "
+                 "AND status IN ('claimed','running') AND process_id=? AND pid=?",
+                 (incident_id, incident_id, execution_id, _PROCESS_ID, os.getpid()))
 
 
 def record_delivery_manifest(execution_id: Optional[str], manifest: dict) -> None:

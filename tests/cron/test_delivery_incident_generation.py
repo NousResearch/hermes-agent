@@ -41,6 +41,7 @@ def test_upgrade_does_not_invent_old_receipts_incident_generation(tmp_path, monk
     # Exact pre-generation schema shape, with a pending receipt already persisted.
     with sqlite3.connect(tmp_path / "cron" / "executions.db") as conn:
         conn.execute("ALTER TABLE executions DROP COLUMN incident_generation")
+        conn.execute("DROP TRIGGER IF EXISTS cron_incident_recurrence_generation")
         conn.execute("ALTER TABLE cron_incidents DROP COLUMN generation")
     delivery_queue.drain(lambda *a: None)
     after = executions.get_execution(execution["id"])

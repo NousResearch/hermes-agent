@@ -83,6 +83,16 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
     from hermes_cli.sqlite_util import add_column_if_missing
     add_column_if_missing(conn, "cron_incidents", "generation", "generation INTEGER NOT NULL DEFAULT 1")
+    # Enforce recurrence at storage level: old daemons may still update state
+    # without knowing about generations. Avoid double increment for an
+    # intermediate writer which already advanced generation in its UPDATE.
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS cron_incident_recurrence_generation
+        AFTER UPDATE OF state ON cron_incidents
+        WHEN OLD.state='resolved' AND NEW.state='detected'
+             AND NEW.generation=OLD.generation
+        BEGIN
+          UPDATE cron_incidents SET generation=OLD.generation+1 WHERE id=NEW.id;
+        END""")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_cron_incidents_job "
         "ON cron_incidents(job_id)"
@@ -145,7 +155,7 @@ def _classify_failure_type(error: str) -> str:
 
 def upsert_incident(
     job_id: str, error: str, *, job_name: Optional[str] = None, failure_type: Optional[str] = None,
-    output_file: Optional[str] = None,
+    output_file: Optional[str] = None, execution_id: Optional[str] = None,
 ) -> tuple[str, bool]:
     """Record (or refresh) the incident for ``job_id`` + ``error``; returns ``(incident_id,
     is_new)``. An existing row for the signature refreshes
@@ -169,12 +179,14 @@ def upsert_incident(
             conn.execute(
                 """UPDATE cron_incidents
                    SET last_seen_at=?, error=?, output_file=?,
-                       generation=generation + CASE WHEN state='resolved' THEN 1 ELSE 0 END,
                        state=CASE WHEN state='resolved' THEN 'detected' ELSE state END,
                        closed_at=CASE WHEN state='resolved' THEN NULL ELSE closed_at END
                    WHERE id=?""",
                 (now, stored_error, output_file, incident_id),
             )
+            if execution_id:
+                _executions._initialize_schema(conn)
+                _executions._bind_delivery_incident_unlocked(conn, execution_id, incident_id)
             return incident_id, reopen
         conn.execute(
             """INSERT INTO cron_incidents
@@ -184,6 +196,9 @@ def upsert_incident(
             (incident_id, job_id, sig, failure_type, now, now,
              stored_error, output_file),
         )
+        if execution_id:
+            _executions._initialize_schema(conn)
+            _executions._bind_delivery_incident_unlocked(conn, execution_id, incident_id)
         return incident_id, True
 
 

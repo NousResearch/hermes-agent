@@ -1623,6 +1623,10 @@ DEFAULT_CONFIG = {
     "personalities": {},
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
+        # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
+        # dials them instead of rejecting them as private. Empty = normal private-address verdict.
+        "fake_ip_ranges": [],
         "redact_secrets": True,
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.

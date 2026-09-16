@@ -19,6 +19,7 @@ from tools.url_safety import (
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
+    _reset_fake_ip_cache,
 )
 
 import ipaddress
@@ -496,3 +497,44 @@ class TestRedirectTargetFromResponse:
             next_request=_FakeNextRequest("http://10.0.0.1/meta"),
         )
         assert redirect_target_from_response(resp) == "http://10.0.0.1/meta"
+
+
+class TestDeclaredFakeIpSentinelRanges:
+    """A local TUN proxy answers DNS with a fake-ip block — declared in ``security.fake_ip_ranges``.
+
+    On such a host every name outside the proxy's filter resolves into that block, so keying the
+    guard on the resolver's answer blocked every outbound fetch (web_extract, platform attachment
+    downloads, the browser relay) while the request never reached the network at all. The exemption
+    is per-host opt-in and scoped to the declared block — an undeclared host keeps the ordinary
+    private-address verdict (see TestProxyEnvironmentDnsDelegation).
+    """
+
+    @pytest.fixture
+    def declared(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
+        )
+        _reset_fake_ip_cache()
+        yield
+        _reset_fake_ip_cache()
+
+    def test_undeclared_host_is_unaffected(self):
+        with _resolves_to("198.18.0.23"):
+            assert is_safe_url("https://example.com/file.jpg") is False
+
+    def test_declared_sentinel_is_dialable_with_private_blocking_on(self, declared):
+        with _resolves_to("198.18.1.125"):
+            assert is_safe_url("https://example.com/") is True
+
+    def test_declared_sentinel_passes_the_connect_time_check_too(self, declared):
+        with _resolves_to("198.18.0.55"):
+            assert _resolved_http_connect_ips("example.com", 443, "https") == ["198.18.0.55"]
+
+    def test_declaration_does_not_excuse_real_private_answers(self, declared):
+        with _resolves_to("192.168.99.99"):
+            assert is_safe_url("https://example.com/") is False
+
+    def test_metadata_floor_outranks_the_declaration(self, declared):
+        with _resolves_to("169.254.169.254"):
+            assert is_safe_url("http://example.com/") is False

@@ -746,6 +746,27 @@ When on, web tools, the browser, vision URL fetches, and gateway media downloads
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
+#### Local proxy fake-ip ranges
+
+A TUN proxy in fake-ip mode (Mihomo/Clash `fake-ip`, Surge enhanced mode) answers DNS with an
+address from its own block — `198.18.0.0/15` (RFC 2544 benchmarking) by default — for every name
+outside its filter. Those answers are the proxy's sentinel, not an internal host, so the
+private-IP guard otherwise rejects every outbound fetch on such a host: `web_extract`, platform
+attachment downloads and the browser relay all fail with *URL targets a private or internal
+network address* while the request never reaches the network. Declare the block to let the
+sentinel through:
+
+```yaml
+security:
+  fake_ip_ranges:
+    - 198.18.0.0/15
+```
+
+Empty by default, and narrower than `allow_private_urls`: only the declared blocks get the
+exemption, they should be ranges the local proxy owns (the dial still goes to the proxy, which
+resolves the real target itself), and loopback, RFC 1918, link-local, CGNAT and cloud-metadata
+destinations stay blocked.
+
 ### Tirith Pre-Exec Security Scanning
 
 Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:

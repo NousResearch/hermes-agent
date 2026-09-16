@@ -1,7 +1,10 @@
 """URL safety checks — blocks requests to private/internal network addresses (SSRF).
 
 ``security.allow_private_urls: true`` disables private-IP blocking (DNS that resolves public
-names to private ranges); cloud metadata hostnames/IPs are **always** blocked. DNS rebinding
+names to private ranges); cloud metadata hostnames/IPs are **always** blocked. A local TUN proxy
+that answers DNS with a fake-ip block (Mihomo/Clash fake-ip, Surge enhanced) declares that block
+in ``security.fake_ip_ranges`` so its sentinel answers are dialable instead of looking private;
+the list is empty by default, so the sentinel stays blocked for everyone else. DNS rebinding
 (TOCTOU) is closed for Hermes-owned httpx paths by ``create_ssrf_safe_[async_]client()``, which
 re-apply the policy at TCP connect and dial the validated IP while preserving Host/SNI. Redirect
 bypass is mitigated by response hooks re-validating each target (``redirect_target_from_response``).
@@ -120,6 +123,7 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 # Global toggle cache (process lifetime; see _global_allow_private_urls).
 _allow_private_resolved, _cached_allow_private = False, False
+_fake_ip_resolved, _cached_fake_ip_ranges = False, ()
 
 
 def _global_allow_private_urls() -> bool:
@@ -160,6 +164,50 @@ def _reset_allow_private_cache() -> None:
     _allow_private_resolved = _cached_allow_private = False
 
 
+def _resolve_fake_ip_ranges() -> tuple:
+    """CIDR blocks this host's local proxy answers DNS with (``security.fake_ip_ranges``).
+
+    A TUN proxy in fake-ip mode answers every non-filtered name with an address from its own
+    block; that answer is the proxy's sentinel, not an internal host's, so treating it as a
+    private target blocks every outbound fetch on such a host (web_extract, platform attachment
+    downloads, the browser relay). Empty by default: no host gets the exemption unless it
+    declares one, and the sentinel range keeps the ordinary private-address verdict otherwise.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        block = read_raw_config().get("security", {})
+        raw = block.get("fake_ip_ranges") if isinstance(block, dict) else None
+        if isinstance(raw, str):
+            raw = [part.strip() for part in raw.split(",")]
+        if not isinstance(raw, (list, tuple)):
+            return ()
+        networks = []
+        for entry in raw:
+            if not str(entry).strip():
+                continue
+            try:
+                networks.append(ipaddress.ip_network(str(entry).strip(), strict=False))
+            except ValueError:
+                logger.warning("Ignoring unparseable security.fake_ip_ranges entry: %r", entry)
+        return tuple(networks)
+    except Exception:
+        return ()  # config unavailable (tests, early import) — keep the secure default
+
+
+def _global_fake_ip_ranges() -> tuple:
+    """Process-lifetime cache, same shape as the allow_private toggle."""
+    global _fake_ip_resolved, _cached_fake_ip_ranges
+    if not _fake_ip_resolved:
+        _fake_ip_resolved, _cached_fake_ip_ranges = True, _resolve_fake_ip_ranges()
+    return _cached_fake_ip_ranges
+
+
+def _reset_fake_ip_cache() -> None:
+    """Reset the cached sentinel ranges — only for tests."""
+    global _fake_ip_resolved, _cached_fake_ip_ranges
+    _fake_ip_resolved, _cached_fake_ip_ranges = False, ()
+
+
 def _normalize_hostname(host: Optional[str]) -> str:
     return (host or "").strip().lower().rstrip(".")
 
@@ -187,6 +235,21 @@ def _getaddrinfo(hostname: str, port: Optional[int] = None):
 
 def _is_always_blocked_ip(ip: _IPAddress) -> bool:
     return ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS)
+
+
+def _is_local_proxy_sentinel(ip: _IPAddress) -> bool:
+    """True when *ip* is in a fake-ip block this host declared in ``security.fake_ip_ranges``.
+
+    The dial still goes to the local proxy, which resolves and connects to the real target, so
+    exempting a declared block grants no reach an attacker lacks through the proxy's own DNS.
+    Undeclared ranges keep the ordinary private-address verdict.
+    """
+    networks = _global_fake_ip_ranges()
+    if not networks:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in networks)
 
 
 def _is_blocked_ip(ip: _IPAddress) -> bool:
@@ -248,6 +311,10 @@ def _resolved_ip_block_reason(ip: _IPAddress, allow_private: bool) -> Optional[s
     if _is_always_blocked_ip(ip):
         return "cloud metadata address"
     if not allow_private and _is_blocked_ip(ip):
+        # A fake-ip sentinel is the local proxy's own address, not an internal target — dialable either way.
+        if _is_local_proxy_sentinel(ip):
+            logger.debug("Allowing local-proxy fake-ip sentinel address: %s", ip)
+            return None
         return "private/internal address"
     return None
 

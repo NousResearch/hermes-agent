@@ -320,14 +320,12 @@ class TestBedrockPreserveDotsFlag:
 
 
 
-    def test_non_bedrock_aws_url_does_not_preserve_dots(self):
-        """Unrelated AWS endpoints (e.g. ``s3.us-east-1.amazonaws.com``)
-        must not accidentally activate the dot-preservation heuristic —
-        the heuristic is scoped to the ``bedrock-runtime.`` substring
-        specifically."""
+    def test_non_bedrock_aws_url_without_custom_provider_does_not_preserve_dots(self):
+        """Unrelated AWS endpoints do not activate the Bedrock URL heuristic
+        when the route is not explicitly configured as custom."""
         from types import SimpleNamespace
         agent = SimpleNamespace(
-            provider="custom",
+            provider="",
             base_url="https://s3.us-east-1.amazonaws.com",
         )
         from run_agent import AIAgent

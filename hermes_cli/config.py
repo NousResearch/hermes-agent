@@ -2405,6 +2405,17 @@ def save_config(
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
         # agent.max_turns) so _strip_default_values keeps exactly what the user set.
         _raw_for_paths = read_raw_config()
+        if not _raw_for_paths and config_path.exists():
+            # A file that exists but yields no settings is damage (torn write, truncated mount),
+            # not a first install: proceeding would strip every section whose value matches a
+            # schema default, collapsing e.g. 32 sections to the caller's non-defaults (#113301).
+            # ``require_readable_config_before_write`` deliberately lets an empty mapping through
+            # for intentional empty configs, so the fail-closed call belongs to the save path.
+            raise RuntimeError(
+                f"Refusing to save configuration: {config_path} exists but no settings could be "
+                f"read from it, so saving would discard every section whose value matches a "
+                f"default. Inspect the file; if it is genuinely empty, delete it to start fresh, "
+                f"then retry.")
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 
@@ -2421,6 +2432,14 @@ def save_config(
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
         atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        # One line per save so a future config.yaml surprise is reconstructible from the logs
+        # (#96571: ~52 call sites, previously zero trace). Caller name from the immediate frame.
+        _caller = sys._getframe(1)
+        logger.info(
+            "save_config: wrote %s (%d top-level sections; strip_defaults=%s, merge_existing=%s, caller=%s)",
+            config_path, len(normalized), strip_defaults, merge_existing,
+            _caller.f_code.co_name if _caller is not None and _caller.f_code else "<module>",
+        )
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

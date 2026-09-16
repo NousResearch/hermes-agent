@@ -2416,9 +2416,13 @@ def save_config(
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
         if strip_defaults:
-            # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
-            normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
+            # An existing-but-empty config.yaml yields no explicit paths, so stripping
+            # would collapse the file to non-defaults; keep the full write instead.
+            explicit_paths_known = bool(_raw_for_paths) or not config_path.exists()
+            if explicit_paths_known:
+                # ``_strip_default_values`` always preserves ``_config_version`` itself.
+                effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+                normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
         atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)

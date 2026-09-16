@@ -1762,6 +1762,23 @@ class TestConfigNormalizationDoesNotOverwriteUserValues:
 
 
 
+    def test_save_config_does_not_collapse_over_existing_empty_raw_config(self, tmp_path):
+        """Regression for #113301: an existing-but-empty config.yaml yields no explicit
+        paths, so _strip_default_values must not collapse the file to non-defaults."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["memory"]["user_char_limit"] = 2200
+            save_config(config)
+
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["memory"]["user_char_limit"] == 2200
+        assert "agent" in raw
+        assert raw["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
+
     def test_normalize_max_turns_does_not_inject_default(self):
         result = _normalize_max_turns_config(
             {"_config_version": DEFAULT_CONFIG["_config_version"]}

@@ -305,25 +305,37 @@ def _exc_children(exc: BaseException) -> List[BaseException]:
     return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
 
 
+def _walk_exceptions(exc: BaseException):
+    """Depth-first exception tree without revisiting nodes (``__cause__``/``__context__`` cycles)."""
+    visited: Set[int] = set()
+    stack: List[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        yield current
+        stack.extend(reversed(_exc_children(current)))
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
+    missing: Optional[str] = None
+    messages: List[str] = []
+    for current in _walk_exceptions(exc):
+        if missing is None and isinstance(current, FileNotFoundError):
             if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
-            if match:
-                return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
-
-    def _flatten_messages(current: BaseException) -> List[str]:
+                missing = str(current.filename)
+            else:
+                match = re.search(r"No such file or directory: '([^']+)'", str(current))
+                if match:
+                    missing = match.group(1)
         # A group's own str() is opaque — only its children speak.
         text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+        if text:
+            messages.append(text)
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(messages))[:3] or [exc.__class__.__name__]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "

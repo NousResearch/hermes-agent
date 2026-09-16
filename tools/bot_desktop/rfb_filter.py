@@ -3,7 +3,8 @@
 noVNC's ``viewOnly`` is a UI hint; anyone holding the socket could still inject input. The bridge
 parses the client stream and forwards only non-input messages from viewers that do not hold the
 lease. RFB messages do not align with WebSocket frames, so this is a stateful stream parser fed
-arbitrary chunks (RFC 6143 §7.5 layouts; TigerVNC's EnableContinuousUpdates 150 and Fence 248 pass
+arbitrary chunks (RFC 6143 §7.5 layouts; TigerVNC's EnableContinuousUpdates 150, Fence 248 and
+SetDesktopSize 251 — Xvnc runs -AcceptSetDesktopSize so the viewer can fit the screen to its pane — pass
 through untouched since they carry no input; QEMU Extended KeyEvent 255 is keyboard input — noVNC
 switches to it as soon as Xvnc advertises the pseudo-encoding — so it is gated like KeyEvent).
 
@@ -29,6 +30,7 @@ _FIXED = {
 _SET_ENCODINGS = 2
 _CLIENT_CUT_TEXT = 6
 _FENCE = 248
+_SET_DESKTOP_SIZE = 251  # u8 type, pad, u16 width, u16 height, u8 nScreens, pad, then 16 bytes per screen
 
 # TigerVNC's default MaxCutText, and the value launcher.sh passes as ``-MaxCutText`` so Xvnc and
 # the bridge agree (keep the two in sync). The length is client-declared (int32); without a cap a
@@ -96,6 +98,10 @@ class RfbClientFilter:
             if len(self._buf) < 9:
                 return None
             return 9 + self._buf[8]
+        if t == _SET_DESKTOP_SIZE:
+            if len(self._buf) < 8:
+                return None
+            return 8 + 16 * self._buf[6]
         # Unknown client message: we cannot frame it, and forwarding blind would let an input message
         # hide behind it. Drop the rest of the stream; the viewer reconnects.
         raise ValueError(f"unknown RFB client message type {t}")

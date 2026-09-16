@@ -6,7 +6,7 @@ from typing import Any
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
-from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
+from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, effective_moa_preset_name, normalize_moa_config
 
 
 def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
@@ -71,11 +71,13 @@ def _format_slot(slot: dict[str, Any]) -> str:
 
 def _print_config(config: dict[str, Any]) -> None:
     cfg = _moa_section(config)
+    effective = effective_moa_preset_name(cfg)
     print("Mixture of Agents presets")
     print(f"Default: {cfg['default_preset']}")
     print(f"Active in config: {cfg.get('active_preset') or '(off)'}")
+    print(f"Runs when no preset is named: {effective}")
     for name, preset in cfg["presets"].items():
-        print(f"\n{'*' if name == cfg['default_preset'] else ' '} {name}")
+        print(f"\n{'*' if name == effective else ' '} {name}")
         print("  Reference models:")
         for idx, slot in enumerate(preset["reference_models"], start=1):
             print(f"    {idx}. {_format_slot(slot)}")

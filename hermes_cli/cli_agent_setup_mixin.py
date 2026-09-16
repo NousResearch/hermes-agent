@@ -317,6 +317,26 @@ class CLIAgentSetupMixin:
                 _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
+                # The CLI-level reasoning_config was resolved once at init for the launch
+                # model; the fallback model may have a stricter effort contract, so
+                # re-resolve through the shared chokepoint before the agent inherits it.
+                try:
+                    from hermes_cli.config import load_config
+                    from hermes_constants import resolve_reasoning_config
+                    self.reasoning_config = resolve_reasoning_config(
+                        load_config() or {}, self.model
+                    )
+                    logger.info(
+                        "Fallback %s: reasoning_config resolved: %s",
+                        self.model,
+                        self.reasoning_config,
+                    )
+                except Exception as _reasoning_err:
+                    logger.debug(
+                        "Failed to resolve reasoning_config for fallback %s; keeping current: %s",
+                        self.model,
+                        _reasoning_err,
+                    )
                 return runtime
             except Exception:
                 continue

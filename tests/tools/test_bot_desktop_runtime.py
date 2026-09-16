@@ -246,6 +246,37 @@ def test_orphaned_x_server_of_a_dead_launcher_is_reaped_on_next_start(in_process
     assert runtime.stop() is True
 
 
+@pytest.mark.linux_only
+@pytest.mark.live_system_guard_bypass  # the orphan is reparented to init: signalling it is the point
+def test_orphaned_x_server_is_found_by_its_socket_when_the_lock_file_is_gone(tmp_path, monkeypatch):
+    """Case B of #109941: the launcher was SIGKILLed AND a /tmp reaper removed ``.X<n>-lock`` (or the failed
+    launch dropped ``display``). The lock was the reaper's only handle, so the live Xvnc leaked forever and
+    each restart allocated a new number beside it. The socket path on its command line names it too."""
+    import os
+    import shutil
+    import subprocess
+
+    sd = tmp_path / "bot-desktop"
+    sd.mkdir()
+    (sd / "rfb.sock").touch()
+    (sd / "launcher.pid").write_text("1 0.0", encoding="utf-8")  # a dead launcher, not our process group
+    monkeypatch.setattr(runtime, "_X_LOCK_DIR", tmp_path / "xlocks")  # no lock file at all
+    (tmp_path / "xlocks").mkdir()
+    # argv[0] names the fake Xvnc and argv carries our socket path, exactly what launcher.sh's Xvnc shows;
+    # `tail -f` on the socket file just blocks like a server would (a multicall coreutils rejects a symlink).
+    orphan = subprocess.Popen([str(tmp_path / "Xvnc"), "-f", str(sd / "rfb.sock")], executable=shutil.which("tail"),
+                              start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
+    try:
+        assert runtime._reap_orphaned_server(sd) is True
+        assert _wait_until(lambda: _gone(orphan.pid)), "the lock-less orphan must be reaped, not leaked"
+        assert not (sd / "rfb.sock").exists()
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(orphan.pid, 9)
+        orphan.wait()
+
+
 _SLOW_LAUNCHER = """#!/usr/bin/env bash
 # Publishes only AFTER runtime.start()'s readiness deadline has passed.
 sleep 30 &

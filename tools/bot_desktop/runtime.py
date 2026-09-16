@@ -213,26 +213,33 @@ def _reap_orphaned_server(sd: Path) -> bool:
     ``status()`` keys on the launcher and says stopped, and a naive restart allocates a second server next
     to it and overwrites the socket path both now claim. The X lock of the recorded display names that
     server: it is ours when it sits in the dead launcher's process group or its command line binds OUR
-    socket. Kill it (group first), drop the state it left, and report whether anything was signalled."""
+    socket. When a /tmp reaper took the lock too (or the failed launch dropped ``display``), the socket path
+    on the Xvnc command line is the remaining handle — without it one X server leaks per occurrence. Kill it
+    (group first), drop the state it left, and report whether anything was signalled."""
     import psutil
+
+    def _binds_our_socket(cmdline: list) -> bool:
+        return "Xvnc" in Path(cmdline[0] if cmdline else "").name and str(sd / "rfb.sock") in cmdline
 
     recorded = _read(sd / "display")
     pid = _x_lock_pid(int(recorded)) if recorded and recorded.isdigit() else None
     if pid is None or not _pid_alive(pid):
-        return False
+        pid = next((p.pid for p in psutil.process_iter(["cmdline"]) if _binds_our_socket(p.info["cmdline"] or [])), None)
+        if pid is None:
+            return False
     launcher = _recorded_launcher_pid()
     try:
         pgid = os.getpgid(pid)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
         cmdline = psutil.Process(pid).cmdline()
     except (ProcessLookupError, psutil.Error):
         return False
-    binds_our_socket = "Xvnc" in Path(cmdline[0] if cmdline else "").name and str(sd / "rfb.sock") in cmdline
-    if pgid != launcher and not binds_our_socket:
+    if pgid != launcher and not _binds_our_socket(cmdline):
         return False  # somebody else's server took the number after we died; never touch it
     logger.warning("Bot Desktop launcher %s is gone but its X server (pid %s) survived on :%s; reaping",
-                   launcher, pid, recorded)
+                   launcher, pid, recorded or "?")
     _kill_group_then_wait(pgid if pgid == launcher else None, pid)
-    (_X_LOCK_DIR / f".X{recorded}-lock").unlink(missing_ok=True)
+    if recorded:
+        (_X_LOCK_DIR / f".X{recorded}-lock").unlink(missing_ok=True)
     for name in ("launcher.pid", "env", "rfb.sock"):
         (sd / name).unlink(missing_ok=True)
     return True

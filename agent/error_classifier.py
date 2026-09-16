@@ -902,7 +902,11 @@ def _oversized_message_content_rejection(c: _Ctx) -> bool:
         if not isinstance(loc, (list, tuple)):
             continue
         parts = [str(part).lower() for part in loc]
-        if parts[-2:] != ["content", "str"] or "tool" in parts:
+        # "tool" as a literal segment never appears in pydantic locs — tool-scoped
+        # content reports as ``tool_calls`` / ``tools`` / ``tool_result``. Exact-match
+        # on "tool" therefore let those locs through and this rule claimed them,
+        # contradicting the contract above: tool-scoped content belongs to #104731.
+        if parts[-2:] != ["content", "str"] or any(part.startswith("tool") for part in parts):
             continue
         if _has_shrinkable_inlined_image(detail.get("input")):
             return True

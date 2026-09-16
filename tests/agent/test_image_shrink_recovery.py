@@ -230,22 +230,30 @@ class TestImageTooLargeClassification:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
 
     def test_tool_scoped_string_type_loc_stays_multimodal(self):
-        """A tool-scoped loc belongs to #104731 even when it carries a large image."""
+        """A tool-scoped loc belongs to #104731 even when it carries a large image.
+
+        Pydantic names the containing tool field (``tool_calls``/``tools``/``tool_result``);
+        a bare ``tool`` segment is not a shape it emits. Testing only the bare segment let an
+        exact-match guard on ``"tool"`` pass while every realistic tool loc was instead claimed
+        by the oversized-content rule.
+        """
         image = "data:image/png;base64," + "A" * (5 * 1024 * 1024)
-        err = _FakeApiError(
-            status_code=400,
-            message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
-            body={
-                "detail": [{
-                    "type": "string_type",
-                    "loc": ["body", "messages", 4, "tool", "content", "str"],
-                    "msg": "Input should be a valid string",
-                    "input": [{"type": "image_url", "image_url": {"url": image}}],
-                }]
-            },
-        )
-        result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        for tool_segment in ("tool", "tool_calls", "tools", "tool_result"):
+            err = _FakeApiError(
+                status_code=400,
+                message="Error code: 400 - {'detail': [{'msg': 'Input should be a valid string'}]}",
+                body={
+                    "detail": [{
+                        "type": "string_type",
+                        "loc": ["body", "messages", 4, tool_segment, "content", "str"],
+                        "msg": "Input should be a valid string",
+                        "input": [{"type": "image_url", "image_url": {"url": image}}],
+                    }]
+                },
+            )
+            result = classify_api_error(err, provider="nebius-token-factory", model="google/gemma-3-27b-it")
+            assert result.reason == FailoverReason.multimodal_tool_content_unsupported, tool_segment
+
 
     def test_non_image_part_type_is_not_routed_to_shrink(self):
         """Only part types the shrink pass rewrites may route it: a 5 MB ``type: text``

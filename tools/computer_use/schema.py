@@ -32,6 +32,7 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "sequence",
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
@@ -181,6 +182,31 @@ _PROPERTIES: Dict[str, Any] = {
         "description": (
             "If true, take a follow-up capture after the action and include it in the response. "
             "Saves a round-trip when you need to verify an action's effect."
+        ),
+    },
+    "steps": {
+        "type": "array",
+        "items": {"type": "object"},
+        "description": (
+            "Only for action='sequence': the ordered action slice to run from this one decision. Each "
+            "step is an object with `action` (click|double_click|right_click|middle_click|drag|scroll|"
+            "type|key|set_value|wait|focus_app) plus that action's usual parameters. V1 rules: at most "
+            "ONE step may be grounded on an element index/coordinate from the last capture — later "
+            "steps must be focus/keyboard/text/wait operations that need no new visual grounding. The "
+            "slice stops at the first failure, suspected no-op, approval denial, lost target, or "
+            "timeout; per-step `capture_after` is not allowed — the slice does one final capture. Every "
+            "step re-runs the normal safety and approval path; sequence is orchestration, not an "
+            "authorization bypass."
+        ),
+    },
+    "verify_mode": {
+        "type": "string",
+        "enum": ["ax_first", "som", "vision"],
+        "description": (
+            "Only for action='sequence' with capture_after=true: how the one final verification "
+            "capture is taken. `ax_first` (default) reads the accessibility tree and falls back to a "
+            "screenshot only when the tree is empty. `som`/`vision` force that mode. Does not change "
+            "the global capture_after_mode."
         ),
     },
 }

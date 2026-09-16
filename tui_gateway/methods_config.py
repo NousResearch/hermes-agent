@@ -187,12 +187,19 @@ def _cfg_get_thinking_mode(params):
 def _cfg_get_mtime(params):
     cfg_path = _hermes_home / "config.yaml"
     try:
-        mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
+        st = cfg_path.stat() if cfg_path.exists() else None
     except Exception:
         return {"mtime": 0}
+    if st is None:
+        return {"mtime": 0}
+    from utils import file_signature
+    # sig: mtime+size+inode+ctime, so a replacement that pins mtime (cp -p, rsync -t, a
+    # dotfile-sync tool) still changes it — the poller's general re-hydrate (theme, bell,
+    # indicator style, ...) keys off mtime alone and would otherwise never see that write.
+    sig = ":".join(str(part) for part in file_signature(st))
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when
     # their config changed — a /skin write bumps mtime but must not cost an MCP reconnect.
-    return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
+    return {"mtime": st.st_mtime, "sig": sig, "mcp_rev": _compute_mcp_rev()}
 
 
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.

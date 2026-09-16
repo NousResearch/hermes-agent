@@ -627,7 +627,22 @@ def _explicit_model_override(provider: str, model: str) -> Optional[Dict[str, An
     if isinstance(entry, dict):
         return entry
     model_lower = model_key.lower()
-    return next((mdata for mid, mdata in section.items() if mid != "_default" and mid.lower() == model_lower and isinstance(mdata, dict)), None)
+    hit = next((mdata for mid, mdata in section.items() if mid != "_default" and mid.lower() == model_lower and isinstance(mdata, dict)), None)
+    if hit is not None:
+        return hit
+    # Custom models keyed ``litellm.<model>`` must match callers passing the bare id
+    # (dashboard/runtime) as well as the prefixed id (switch dialog); without this the
+    # override applies on one surface and the catalog catch-all wins on the other (#88931).
+    # Exact and case-insensitive matches above keep precedence either way.
+    prefixed = "litellm." + model_lower
+    stripped = model_lower[len("litellm."):] if model_lower.startswith("litellm.") else None
+    for mid, mdata in section.items():
+        if mid == "_default" or not isinstance(mdata, dict):
+            continue
+        lowered = mid.lower()
+        if lowered == prefixed or (stripped is not None and lowered == stripped):
+            return mdata
+    return None
 
 
 def _default_model_override(provider: str) -> Optional[Dict[str, Any]]:

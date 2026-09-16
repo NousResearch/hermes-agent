@@ -8,7 +8,7 @@ Full reference: https://hermes-agent.nousresearch.com/docs/user-guide/configurat
 | Section | Key options |
 |---------|-------------|
 | `model` | `default`, `provider`, `base_url`, `api_key`, `context_length`, `aliases` |
-| `agent` | `max_turns` (90), `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
+| `agent` | `max_turns` (default unlimited; a cap truncates mid-task), `tool_use_enforcement`, `service_tier`, `verify_on_stop` |
 | `terminal` | `backend` (local/docker/ssh/modal/daytona/singularity), `cwd`, `timeout` (180) |
 | `compression` | `enabled`, `threshold` (0.50), `target_ratio` (0.20) |
 | `display` | `skin`, `interface` (cli/tui), `language`, `show_reasoning`, `show_cost`, `pet` |

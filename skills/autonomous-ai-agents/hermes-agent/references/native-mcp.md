@@ -70,7 +70,7 @@ mcp_servers:
   server_name:
     url: "https://my-server.example.com/mcp"   # (required) server URL
     headers:                                     # (optional) HTTP headers
-      Authorization: "Bearer sk-..."
+      Authorization: "Bearer ${MCP_BEARER_TOKEN}"
     timeout: 180               # (optional) per-tool-call timeout in seconds, default: 120
     connect_timeout: 60        # (optional) initial connection timeout in seconds, default: 60
 ```
@@ -154,7 +154,7 @@ mcp_servers:
   remote_api:
     url: "https://mcp.example.com/mcp"
     headers:
-      Authorization: "Bearer sk-..."
+      Authorization: "Bearer ${MCP_BEARER_TOKEN}"
 ```
 
 If HTTP support is not available in your installed `mcp` version, the server will fail with an ImportError and other servers will continue normally.
@@ -276,7 +276,7 @@ mcp_servers:
   company_api:
     url: "https://mcp.mycompany.com/v1/mcp"
     headers:
-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
+      Authorization: "Bearer ${MCP_BEARER_TOKEN}"
       X-Team-Id: "engineering"
     timeout: 180
     connect_timeout: 30
@@ -303,7 +303,7 @@ mcp_servers:
   company_api:
     url: "https://mcp.internal.company.com/mcp"
     headers:
-      Authorization: "Bearer sk-xxxxxxxxxxxxxxxxxxxx"
+      Authorization: "Bearer ${MCP_BEARER_TOKEN}"
     timeout: 300
 ```
 

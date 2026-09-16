@@ -878,25 +878,36 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
         if _fb_client is not None:
             agent.provider = _fb_provider
             agent.model = _fb_model or _fb_model_hint
+            _fb_timeout = _provider_timeout
             if _fb_is_moa:
                 agent.requested_provider = _fb_provider
+                agent.base_url = str(_fb_client.base_url)
                 from agent.chat_completion_helpers import _fallback_api_mode_resolved
                 agent.api_mode = _fallback_api_mode_resolved(
-                    agent, agent.provider, agent.model, str(_fb_client.base_url)
+                    agent, agent.provider, agent.model, agent.base_url
+                )
+                _fb_timeout = get_provider_request_timeout(agent.provider, agent.model)
+                agent._use_prompt_caching, agent._use_native_cache_layout = (
+                    agent._anthropic_prompt_cache_policy(
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        model=agent.model,
+                    )
                 )
             agent._fallback_activated = True
             if _fb_is_moa and agent.api_mode == "anthropic_messages":
                 _init_anthropic_client(
                     agent,
                     getattr(_fb_client, "api_key", ""),
-                    str(_fb_client.base_url),
-                    _provider_timeout,
+                    agent.base_url,
+                    _fb_timeout,
                 )
                 return None
             if _fb_is_moa and agent.api_mode == "bedrock_converse":
-                _init_bedrock_client(agent, str(_fb_client.base_url))
+                _init_bedrock_client(agent, agent.base_url)
                 return None
-            return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+            return _client_kwargs_from_routed(_fb_client, _fb_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         # Use the provider's real env var name (alibaba → DASHSCOPE_API_KEY).

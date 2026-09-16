@@ -118,8 +118,12 @@ def test_init_moa_fallback_dispatches_native_anthropic_wire():
         assert agent.requested_provider == "anthropic"
         assert agent.model == "claude-opus-4-6"
         assert agent.api_mode == "anthropic_messages"
+        assert str(agent.base_url) == "https://api.anthropic.com/v1"
         assert agent.client is None
         assert agent._anthropic_client is native_client
+        assert agent._use_prompt_caching is True
+        assert agent._use_native_cache_layout is True
+        assert str(agent._primary_runtime["base_url"]) == "https://api.anthropic.com/v1"
         assert agent._fallback_activated is True
 
 

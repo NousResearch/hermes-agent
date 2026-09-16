@@ -95,7 +95,7 @@ import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
-import { displayName, slugify } from './labels'
+import { displayName, slugifyProfileName } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -1270,7 +1270,7 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   const $visible = useMemo(
     () =>
       typeof host.paneVisibility === 'function'
-        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugify(group)}`)
+        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugifyProfileName(group)}`)
         : atom(true),
     [group]
   )
@@ -1306,7 +1306,7 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
+      const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
         title: group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,

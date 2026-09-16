@@ -417,13 +417,9 @@ def _print_oauth_heal_notices() -> None:
 
 
 def _read_auth_store_readonly(path: Path):
-    """Read one profile's auth.json with no side effects; None when unreadable.
-
-    ``auth_mod._load_auth_store`` is the wrong tool for a cross-profile sweep:
-    on corrupt JSON it writes an ``auth.json.corrupt`` copy next to the file
-    and on a read error it raises. Auditing ANOTHER profile's store must never
-    write into that profile or abort the sweep, so this is a plain read.
-    """
+    """One profile's auth.json, or None when unreadable. A plain read on purpose:
+    ``_load_auth_store`` writes an ``auth.json.corrupt`` copy on bad JSON and raises on
+    a read error, and a sweep over OTHER profiles must do neither."""
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
@@ -432,12 +428,9 @@ def _read_auth_store_readonly(path: Path):
 
 
 def _refresh_token_sites(store: dict, provider_filter: str):
-    """Yield ``(provider, label, fingerprint, last_error_reason)`` per refresh token.
-
-    Covers both store layouts: ``credential_pool`` entries and the legacy
-    ``providers.<id>.tokens`` singleton. Only the fingerprint leaves this
-    function — the token bytes are never printed.
-    """
+    """Yield ``(provider, label, fingerprint, last_error_reason)`` per refresh token in either
+    store layout (``credential_pool`` entries, the legacy ``providers.<id>.tokens`` singleton).
+    Only the fingerprint leaves here; the token bytes are never printed."""
     pool = store.get("credential_pool")
     if isinstance(pool, dict):
         for provider, entries in pool.items():
@@ -467,16 +460,10 @@ def _refresh_token_sites(store: dict, provider_filter: str):
 
 def _auth_list_all_profiles(provider_filter: str) -> None:
     """Every profile's credential store, plus refresh tokens held in more than one file.
-
-    Providers that rotate the refresh token on every refresh (xai-oauth,
-    openai-codex, nous) issue single-use grants, so two SEPARATE auth.json
-    files holding the same refresh token revoke each other the first time
-    either one refreshes (#43589 / #48415). The root write-through added for
-    those issues protects a profile that *inherits* the grant from the root
-    store; a profile holding its own copy has no such protection, and nothing
-    else reports the overlap. A symlink to another profile's store is one file
-    and is fine; a profile without auth.json reads the root store.
-    """
+    Rotating providers issue single-use refresh tokens, so two separate auth.json files
+    holding the same one revoke each other on the first refresh (#43589 / #48415); the root
+    write-through covers an inherited grant, not a copied one. A symlink is one file, and a
+    profile without auth.json reads the root store."""
     from hermes_cli.profiles import list_profiles
 
     sites_by_fingerprint: dict = {}

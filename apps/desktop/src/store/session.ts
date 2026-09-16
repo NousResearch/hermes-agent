@@ -82,6 +82,7 @@ function storedComposerString(base: string): string | null {
 // cross-profile corruption this storage boundary prevents (#67709).
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
+const LAST_SESSION_OWNER_KEY = 'hermes.desktop.lastSessionOwner.v1'
 
 function profileNavigationKey(base: string, profile: string): string {
   const key = profile.trim() || 'default'
@@ -142,6 +143,70 @@ export function getRememberedSessionId(profile: string): null | string {
 export function setRememberedSessionId(id: null | string, profile: string): void {
   discardLegacyRememberedNavigation()
   persistString(profileNavigationKey(LAST_SESSION_KEY, profile), id)
+}
+
+interface RememberedSessionOwner {
+  ownerRoute: SessionOwnerRoute
+  storedSessionId: string
+}
+
+function normalizeRememberedSessionOwner(value: unknown): RememberedSessionOwner | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const candidate = value as { ownerRoute?: unknown; storedSessionId?: unknown }
+  const route = candidate.ownerRoute
+  const storedSessionId = typeof candidate.storedSessionId === 'string' ? candidate.storedSessionId.trim() : ''
+
+  if (!storedSessionId || !route || typeof route !== 'object') {
+    return null
+  }
+
+  const raw = route as Record<string, unknown>
+  const connectionId = typeof raw.connectionId === 'string' ? raw.connectionId.trim() : ''
+  const ownerProfile = typeof raw.profile === 'string' ? raw.profile.trim() : ''
+
+  if (!connectionId || !ownerProfile) {
+    return null
+  }
+
+  const targetProfile = typeof raw.targetProfile === 'string' ? raw.targetProfile.trim() : ''
+  const mode = raw.mode === 'local' || raw.mode === 'remote' ? raw.mode : undefined
+
+  return {
+    ownerRoute: {
+      connectionId,
+      ...(mode ? { mode } : {}),
+      profile: ownerProfile,
+      ...(targetProfile ? { targetProfile } : {})
+    },
+    storedSessionId
+  }
+}
+
+/** Exact owner of the remembered MAIN session. This is navigation state, not
+ * a second runtime-binding registry: the stored id is validated on read and
+ * the value is consumed only to route cold restore. */
+export function getRememberedSessionOwner(storedSessionId: string, profile: string): SessionOwnerRoute | undefined {
+  const remembered = normalizeRememberedSessionOwner(
+    readJson<unknown>(profileNavigationKey(LAST_SESSION_OWNER_KEY, profile))
+  )
+
+  return remembered?.storedSessionId === storedSessionId.trim() ? remembered.ownerRoute : undefined
+}
+
+export function setRememberedSessionOwner(
+  storedSessionId: null | string,
+  ownerRoute: SessionOwnerRoute | undefined,
+  profile: string
+): void {
+  const id = storedSessionId?.trim() ?? ''
+
+  writeJson(
+    profileNavigationKey(LAST_SESSION_OWNER_KEY, profile),
+    id && ownerRoute ? normalizeRememberedSessionOwner({ ownerRoute, storedSessionId: id }) : null
+  )
 }
 
 export function sessionBelongsToProfile(

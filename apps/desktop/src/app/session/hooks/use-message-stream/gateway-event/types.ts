@@ -4,6 +4,7 @@ import type { MutableRefObject } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 
 import type { ClientSessionState } from '../../../../types'
 
@@ -43,7 +44,8 @@ export interface GatewayEventDeps {
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
-    storedSessionId?: string | null
+    storedSessionId?: string | null,
+    sourceOwner?: SessionOwnerRoute
   ) => ClientSessionState
   upsertToolCall: (
     sessionId: string,

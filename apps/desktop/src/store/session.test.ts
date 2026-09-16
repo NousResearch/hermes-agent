@@ -38,6 +38,7 @@ import {
   getConfiguredDefaultProjectDir,
   getRememberedRoute,
   getRememberedSessionId,
+  getRememberedSessionOwner,
   getRememberedWorkspaceCwd,
   getSessionOwnerHint,
   getSessionOwnerHints,
@@ -62,6 +63,7 @@ import {
   setCurrentProvider,
   setRememberedRoute,
   setRememberedSessionId,
+  setRememberedSessionOwner,
   setSelectedStoredSessionId,
   setSessionOwnerHint,
   setSessions,
@@ -1344,6 +1346,16 @@ describe('remembered route (per profile)', () => {
     expect(getRememberedRoute('default')).toBeNull()
     expect(getRememberedSessionId('default')).toBeNull()
     expect(getRememberedRoute('ai-engineer')).toBe('/session/stored-1')
+  })
+
+  it('restores an exact main owner only for the remembered stored id', () => {
+    const ownerRoute = { connectionId: 'source-b', profile: 'default', targetProfile: 'worker' }
+
+    setRememberedSessionOwner('shared-id', ownerRoute, 'default')
+
+    expect(getRememberedSessionOwner('shared-id', 'default')).toEqual(ownerRoute)
+    expect(getRememberedSessionOwner('other-id', 'default')).toBeUndefined()
+    expect(getRememberedSessionOwner('shared-id', 'worker')).toBeUndefined()
   })
 })
 

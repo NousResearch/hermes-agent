@@ -45,7 +45,8 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
-import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
+import { $sessionTiles, closeAllOpenSessionTiles, mainSessionOwnerRoute } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -103,6 +104,10 @@ interface SessionActions {
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
   profile?: string
+  /** Exact owner of a connection-tagged sidebar row. */
+  ownerRoute?: SessionOwnerRoute
+  /** Sidebar rows route opens through their captured row owner. */
+  onOpen?: (intent: 'tab' | 'window') => void
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -121,6 +126,14 @@ interface SessionActions {
   /** The MAIN tab's escape hatch: hide the zone's tab bar (it sticky-shows
    *  once a tab is ever gained; this is the explicit off switch). */
   onHideTabBar?: () => void
+}
+
+function sameSessionOwner(a: SessionOwnerRoute | undefined, b: SessionOwnerRoute | undefined): boolean {
+  if (!a || !b) {
+    return a === b
+  }
+
+  return a.connectionId.trim() === b.connectionId.trim() && a.profile.trim() === b.profile.trim()
 }
 
 // The color picker inside the session menu's Appearance submenu. Its own
@@ -188,6 +201,8 @@ function useSessionActions({
   pinned = false,
   unread = false,
   profile,
+  ownerRoute,
+  onOpen,
   onPin,
   onToggleUnread,
   onBranch,
@@ -219,7 +234,10 @@ function useSessionActions({
 
   // Already showing as a tab somewhere (a tile, or loaded in main — main IS
   // a tab): offering "Open in new tab" again is noise.
-  const alreadyTabbed = sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId)
+  const alreadyTabbed = ownerRoute
+    ? (sessionId === selectedStoredSessionId && sameSessionOwner(mainSessionOwnerRoute(sessionId), ownerRoute)) ||
+      tiles.some(tile => tile.storedSessionId === sessionId && sameSessionOwner(tile.ownerRoute, ownerRoute))
+    : sessionId === selectedStoredSessionId || tiles.some(tile => tile.storedSessionId === sessionId)
 
   const spec = (partial: Omit<ActionItemSpec, 'onSelect'> & { onSelect: () => void }): ActionItemSpec => partial
 
@@ -234,10 +252,15 @@ function useSessionActions({
             label: r.openInNewTab,
             onSelect: () => {
               triggerHaptic('selection')
+
               // Stack into the MAIN zone as a tab (center dock; the strip
               // sticky-shows on gain) — the door to the tab bar. Focuses first
               // if the session is already on screen.
-              openSession(sessionId, () => undefined, 'tab')
+              if (onOpen) {
+                onOpen('tab')
+              } else {
+                openSession(sessionId, () => undefined, 'tab')
+              }
             }
           })
         ]
@@ -250,7 +273,12 @@ function useSessionActions({
             label: r.newWindow,
             onSelect: () => {
               triggerHaptic('selection')
-              openSession(sessionId, () => undefined, 'window')
+
+              if (onOpen) {
+                onOpen('window')
+              } else {
+                openSession(sessionId, () => undefined, 'window')
+              }
             }
           })
         ]

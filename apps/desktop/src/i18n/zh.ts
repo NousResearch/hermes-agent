@@ -1708,6 +1708,9 @@ export const zh = defineLocale({
       autoArchiveDaysLabel: '归档前',
       autoArchiveDaysUnit: '天无活动',
       autoArchiveFailed: '无法更新自动归档设置',
+      sidebarOpenInNewTabTitle: '打开或聚焦标签页',
+      sidebarOpenInNewTabDesc:
+        '普通点击侧边栏会话会打开或聚焦标签页。关闭此项则在主标签页中打开。Cmd/Ctrl 点击始终使用标签页。',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
       defaultDirUpdated: '默认项目目录已更新',

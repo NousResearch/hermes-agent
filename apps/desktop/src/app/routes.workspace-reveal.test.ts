@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { host } from '@/sdk'
 
 import {
   $workspaceIsPage,
@@ -122,14 +123,15 @@ describe('syncWorkspaceRoute', () => {
     expect(fronted()).toBe(true)
   })
 
-  it('fronts on a contributed page route', () => {
+  it('leaves the workspace alone on a contributed route — that lands as a route tile, not a page', () => {
     const dispose = contributeRoute()
 
     try {
       syncWorkspaceRoute(CONTRIBUTED_ROUTE)
 
       expect(appViewForPath(CONTRIBUTED_ROUTE)).toBe('extension')
-      expect(fronted()).toBe(true)
+      expect($workspaceIsPage.get()).toBe(false)
+      expect(revealTreePane).not.toHaveBeenCalled()
     } finally {
       dispose()
     }
@@ -195,12 +197,10 @@ describe('navigateToWorkspacePage', () => {
  * like the sidebar does.
  */
 describe('host.navigate', () => {
-  it('fronts the workspace pane even when already on the contributed page', async () => {
+  it('fronts the centered route tile even when already on the contributed page', () => {
     const dispose = contributeRoute()
 
     try {
-      const { host } = await import('@/sdk')
-
       window.location.hash = `#${CONTRIBUTED_ROUTE}`
       vi.mocked(revealTreePane).mockClear()
       vi.mocked(noteActiveTreeGroup).mockClear()
@@ -208,15 +208,23 @@ describe('host.navigate', () => {
       host.navigate(CONTRIBUTED_ROUTE)
 
       expect(window.location.hash).toBe(`#${CONTRIBUTED_ROUTE}`)
-      expect(fronted()).toBe(true)
+      expect(revealTreePane).toHaveBeenCalledWith(`route-tile:${CONTRIBUTED_ROUTE}`)
+      expect($workspaceIsPage.get()).toBe(false)
+      expect(noteActiveTreeGroup).not.toHaveBeenCalled()
     } finally {
       dispose()
     }
   })
 
-  it('does not front the pane for a chat route', async () => {
-    const { host } = await import('@/sdk')
+  it('preserves normal workspace-page navigation', () => {
+    host.navigate(SKILLS_ROUTE)
 
+    expect(window.location.hash).toBe(`#${SKILLS_ROUTE}`)
+    expect($workspaceIsPage.get()).toBe(true)
+    expect(fronted()).toBe(true)
+  })
+
+  it('does not front the pane for a chat route', () => {
     host.navigate(sessionRoute('sess-a'))
 
     expect(revealTreePane).not.toHaveBeenCalled()

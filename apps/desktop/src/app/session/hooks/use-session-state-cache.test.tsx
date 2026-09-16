@@ -12,6 +12,7 @@ import {
   $currentServiceTier,
   $messages,
   $turnStartedAt,
+  _resetSessionOwnerHintsForTests,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentFastMode,
@@ -19,11 +20,14 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSelectedStoredSessionId,
+  setSessionOwnerHint,
   setTurnStartedAt
 } from '@/store/session'
 import {
   $sessionStates,
   clearAllSessionStates,
+  prepareSessionOwnerRetarget,
   reconcileBusyStatesOnReconnect,
   type SessionTileDelegate,
   setSessionTileDelegate
@@ -84,6 +88,93 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     expect($activeSessionStoredIdRotation.get()).toBeNull()
     expect(cache.runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
     expect(cache.runtimeIdByStoredSessionIdRef.current.get('stored-A-next')).toBe('runtime-A')
+  })
+})
+
+describe('useSessionStateCache — source-qualified runtime binding', () => {
+  afterEach(() => {
+    cleanup()
+    _resetSessionOwnerHintsForTests()
+    clearAllSessionStates()
+    setSelectedStoredSessionId(null)
+  })
+
+  it('refuses to relabel a late owner-A runtime after owner B claimed the stored id', () => {
+    let cache!: Cache
+    const routeA = { connectionId: 'source-a', profile: 'profile-a', targetProfile: 'profile-a' }
+    const routeB = { connectionId: 'source-b', profile: 'profile-b', targetProfile: 'profile-b' }
+
+    setSessionOwnerHint('shared-id', routeA)
+    setSessionOwnerHint('shared-id', routeB)
+    setSelectedStoredSessionId('shared-id')
+    prepareSessionOwnerRetarget('shared-id', routeB, true)
+    render(
+      <Harness activeSessionId="runtime-b" onReady={value => (cache = value)} selectedStoredSessionId="shared-id" />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-b', state => ({ ...state }), 'shared-id', routeB)
+      cache.updateSessionState('runtime-a', state => ({ ...state, busy: true }), 'shared-id', routeA)
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('shared-id')).toBe('runtime-b')
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-b')).toMatchObject({
+      storedSessionId: 'shared-id',
+      busy: false
+    })
+    expect(cache.sessionStateByRuntimeIdRef.current.get('runtime-a')).toBeUndefined()
+    expect($sessionStates.get()).not.toHaveProperty('runtime-a')
+  })
+
+  it('rejects a source target mismatch even when the Desktop route name matches', () => {
+    let cache!: Cache
+
+    const canonicalRoute = {
+      connectionId: 'source-a',
+      profile: 'desktop-alias',
+      targetProfile: 'backend-a'
+    }
+
+    const mismatchedSource = {
+      connectionId: 'source-a',
+      profile: 'desktop-alias',
+      targetProfile: 'backend-b'
+    }
+
+    setSelectedStoredSessionId('shared-id')
+    prepareSessionOwnerRetarget('shared-id', canonicalRoute, true)
+    render(
+      <Harness activeSessionId="runtime-a" onReady={value => (cache = value)} selectedStoredSessionId="shared-id" />
+    )
+
+    act(() => {
+      cache.updateSessionState(
+        'runtime-wrong-target',
+        state => ({ ...state, busy: true }),
+        'shared-id',
+        mismatchedSource
+      )
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.has('shared-id')).toBe(false)
+    expect(cache.sessionStateByRuntimeIdRef.current.has('runtime-wrong-target')).toBe(false)
+  })
+
+  it('keeps legacy untagged single-source binding when no exact owner conflicts', () => {
+    let cache!: Cache
+    render(
+      <Harness
+        activeSessionId="runtime-legacy"
+        onReady={value => (cache = value)}
+        selectedStoredSessionId="legacy-id"
+      />
+    )
+
+    act(() => {
+      cache.updateSessionState('runtime-legacy', state => ({ ...state }), 'legacy-id')
+    })
+
+    expect(cache.runtimeIdByStoredSessionIdRef.current.get('legacy-id')).toBe('runtime-legacy')
   })
 })
 

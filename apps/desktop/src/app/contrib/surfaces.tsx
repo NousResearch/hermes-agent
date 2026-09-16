@@ -8,14 +8,14 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
-import { Navigate, Route, Routes, useParams } from 'react-router'
+import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useEffect, useMemo, useRef } from 'react'
+import { Navigate, Route, Routes, useNavigate, useNavigationType, useParams } from 'react-router'
 
-import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $activeConnectionId } from '@/store/connections'
 import { $gateway } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { openRouteTile } from '@/store/route-tiles'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 
 import { ChatView } from '../chat'
@@ -107,6 +107,39 @@ export const StatusbarSurface = memo(function StatusbarSurface({
   return <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
 })
 
+/** Landing the ROUTER on a contributed (plugin) route opens that page as a
+ *  route TILE — a closeable tab stacked into the workspace strip — and puts the
+ *  router back where it was, so the workspace pane never shows a plugin page
+ *  full-screen. One choke point for every entry that isn't the sidebar row:
+ *  `host.navigate` (a plugin's titlebar widget / palette row), a deep link,
+ *  back/forward, and a legacy remembered route. A pushed entry steps back to
+ *  what the user was looking at; a replaced or initial entry has nothing behind
+ *  it, so it lands on the new chat. */
+function RouteTileRedirect({ path }: { path: string }) {
+  const navigate = useNavigate()
+  const navigationType = useNavigationType()
+  // StrictMode re-runs effects: a second `navigate(-1)` would step back twice.
+  const redirected = useRef(false)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    if (redirected.current) {
+      return
+    }
+
+    redirected.current = true
+    openRouteTile(path, 'center')
+
+    if (navigationType === 'PUSH') {
+      navigate(-1)
+    } else {
+      navigate(NEW_CHAT_ROUTE, { replace: true })
+    }
+  }, [navigate, navigationType, path])
+
+  return null
+}
+
 /** The workspace pane: the real route table (chat + full-page views + plugin
  *  routes). Subscribes to the gateway instance/state and ROUTES_AREA itself;
  *  the voice cap arrives as a prop. ChatView subscribes to its own session
@@ -193,19 +226,12 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={null} path="settings" />
       <Route element={null} path="starmap" />
       <Route element={null} path="webhooks" />
-      {/* Registry-contributed pages (core features + plugins) render in the
-          workspace pane like any built-in view — behind the same blast wall
-          as every other contribution mount. */}
+      {/* Registry-contributed pages (plugins) never render HERE: the route
+          exists so the path is reachable, and landing on it opens the page as
+          a route tile (RouteTilePane mounts the contribution, behind the same
+          blast wall as every other contribution mount). */}
       {routeContributions.map(route => (
-        <Route
-          element={page(
-            <ContribBoundary id={route.key}>
-              <ContribRender render={route.render} />
-            </ContribBoundary>
-          )}
-          key={route.key}
-          path={route.path.slice(1)}
-        />
+        <Route element={<RouteTileRedirect path={route.path} />} key={route.key} path={route.path.slice(1)} />
       ))}
       <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
       <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />

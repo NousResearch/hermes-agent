@@ -66,7 +66,12 @@ export function sessionOwnerRouteFromRow(
 const normKey = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
 export const isSessionOwnerRoute = (owner: SessionOwnerScope): owner is SessionOwnerRoute =>
-  Boolean(owner && typeof owner === 'object' && 'connectionId' in owner)
+  Boolean(
+    owner &&
+    typeof owner === 'object' &&
+    typeof (owner as Partial<SessionOwnerRoute>).connectionId === 'string' &&
+    typeof (owner as Partial<SessionOwnerRoute>).profile === 'string'
+  )
 
 const isRoute = isSessionOwnerRoute
 

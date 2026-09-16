@@ -1,6 +1,7 @@
 """LuxTTS provider contracts: one resident runtime and 48 kHz sentence streaming."""
 
 import json
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -60,6 +61,66 @@ def test_warm_and_repeated_sentences_share_model_and_encoded_prompt(monkeypatch,
     assert first.shape == second.shape == (3,)
     assert tts_tool_lifecycle.release_tts_provider("luxtts") == {"released": 1}
     assert tts_tool_local._luxtts_runtime_cache == {}
+
+
+def test_final_lease_release_waits_for_inflight_luxtts_load(monkeypatch, tmp_path):
+    ref_audio = tmp_path / "voice.wav"
+    ref_audio.write_bytes(b"RIFF-test")
+    load_started = threading.Event()
+    allow_load = threading.Event()
+    release_started = threading.Event()
+    accelerator_released = threading.Event()
+
+    class BlockedLuxTTS:
+        def __init__(self, model, **kwargs):
+            load_started.set()
+            assert allow_load.wait(timeout=5)
+
+        def encode_prompt(self, path, **kwargs):
+            return "encoded-prompt"
+
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)),
+    )
+    monkeypatch.setattr(tts_tool, "_import_luxtts", lambda: BlockedLuxTTS)
+    monkeypatch.setattr(tts_tool, "_import_torch", lambda: fake_torch)
+    monkeypatch.setattr(
+        tts_tool_lifecycle, "_release_luxtts_accelerator_cache",
+        accelerator_released.set,
+    )
+    release_cache = tts_tool_lifecycle._release_luxtts_runtime_cache
+
+    def release_after_load():
+        release_started.set()
+        return release_cache()
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_release_luxtts_runtime_cache", release_after_load)
+    tts_tool_local._luxtts_runtime_cache.clear()
+    results = {}
+
+    loader = threading.Thread(
+        target=lambda: results.setdefault(
+            "acquire", tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts", _config(ref_audio))))
+    loader.start()
+    assert load_started.wait(timeout=5)
+
+    releaser = threading.Thread(
+        target=lambda: results.setdefault(
+            "release", tts_tool_lifecycle.release_tts_lease("cli:voice-tts")))
+    releaser.start()
+    assert release_started.wait(timeout=5)
+    assert releaser.is_alive()
+
+    allow_load.set()
+    loader.join(timeout=5)
+    releaser.join(timeout=5)
+
+    assert not loader.is_alive()
+    assert not releaser.is_alive()
+    assert results["release"] == {"leases": 0, "released": 1}
+    assert tts_tool_local._luxtts_runtime_cache == {}
+    assert accelerator_released.is_set()
 
 
 def test_public_tool_speed_overrides_luxtts_config_without_mutation(monkeypatch, tmp_path):

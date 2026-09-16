@@ -23,7 +23,8 @@ from tools.tts_command_provider import (
 from tools.tts_tool_delivery import _origin
 from tools.tts_tool_local import (
     _LOCAL_TTS_MODEL_CACHES, _load_kittentts_model_for_config, _load_luxtts_runtime_for_config,
-    _load_piper_voice_for_config, _release_luxtts_accelerator_cache)
+    _load_piper_voice_for_config, _release_luxtts_accelerator_cache,
+    _release_luxtts_runtime_cache)
 from tools.tts_tool_plugins import _lookup_plugin_provider
 
 logger = logging.getLogger("tools.tts_tool")
@@ -135,8 +136,11 @@ def release_tts_provider(provider: Optional[str] = None) -> Dict[str, Any]:
     released = 0
     for cache_name, cache in _LOCAL_TTS_MODEL_CACHES.items():
         if not name or cache_name == name:
-            released += len(cache)
-            cache.clear()
+            if cache_name == "luxtts":
+                released += _release_luxtts_runtime_cache()
+            else:
+                released += len(cache)
+                cache.clear()
     if released:
         if not name or name == "luxtts":
             _release_luxtts_accelerator_cache()

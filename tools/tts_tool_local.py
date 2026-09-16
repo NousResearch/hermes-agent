@@ -277,6 +277,14 @@ def _load_luxtts_runtime_for_config(tts_config: Dict[str, Any]) -> Tuple[_LuxTTS
     return runtime, cfg
 
 
+def _release_luxtts_runtime_cache() -> int:
+    """Wait for an in-flight load, then drop the resident LuxTTS runtime."""
+    with _luxtts_cache_lock:
+        released = len(_luxtts_runtime_cache)
+        _luxtts_runtime_cache.clear()
+    return released
+
+
 def _generate_luxtts_waveform(text: str, tts_config: Dict[str, Any]):
     runtime, cfg = _load_luxtts_runtime_for_config(tts_config)
     with runtime.lock:

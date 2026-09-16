@@ -97,8 +97,24 @@ test('a group reply renders its code block inside the message and its MEDIA: lin
   await composer.fill('@writer CODE_BLOCK_REPRO')
   await composer.press('Enter')
 
-  const code = page.getByText(/veryLongIdentifierNameForTheGroupChatCodeBlockRepro/).filter({ visible: true }).first()
-  await expect(code).toBeVisible({ timeout: 90_000 })
+  // A bot created moments ago runs its intro turn in the background; when it
+  // lands, the roster fronts that bot's chat tab and yanks the center away
+  // from the room. Re-select the room and read the reply from a room body.
+  const roomTab = page.getByRole('tab', { name: /Writer, Editor Close/ })
+
+  const code = page
+    .locator('[data-selectable-text="true"]')
+    .getByText(/veryLongIdentifierNameForTheGroupChatCodeBlockRepro/)
+    .filter({ visible: true })
+    .first()
+
+  await expect(async () => {
+    if ((await roomTab.getAttribute('aria-selected')) !== 'true') {
+      await roomTab.click()
+    }
+
+    await expect(code).toBeVisible({ timeout: 5_000 })
+  }).toPass({ timeout: 90_000 })
   await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0, { timeout: 60_000 })
   await page.screenshot({ path: path.join(SHOT_DIR, 'group-chat-code-media.png') })
 
@@ -126,6 +142,7 @@ test('a group reply renders its code block inside the message and its MEDIA: lin
     const clippedWithoutScroll = chain.filter(
       box => box.scrollWidth > box.clientWidth + 1 && !['auto', 'scroll'].includes(box.overflowX)
     )
+
     const scrollingPre = chain.find(
       box => box.tag === 'pre' && box.scrollWidth > box.clientWidth + 1 && ['auto', 'scroll'].includes(box.overflowX)
     )

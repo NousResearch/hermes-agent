@@ -42,6 +42,7 @@ import {
   $botMeta,
   $lastRoster,
   botHandle,
+  botMentionTag,
   botMetaV2Active,
   botSourceStatus,
   noteBotMetaWrite,
@@ -80,6 +81,7 @@ import {
   groupWorkspaceOwnerKey,
   liveGroupChatNames
 } from './group-membership'
+import { groupMentionComponents, groupMentionText } from './group-mention-text'
 import {
   clearGroupComposerDraft,
   closeGroupChatMainTab,
@@ -973,6 +975,35 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     </Button>
   )
 
+  // #91359: recognized @mentions render as inline references; recomputed
+  // only when the roster changes since the classifier consults the members.
+  const mentionComponents = useMemo(() => groupMentionComponents(members), [members])
+  const mentionText = useMemo(() => groupMentionText(members), [members])
+
+  // #89883: answer ONE bot from its message. Seeds `@tag ` into the composer
+  // that owns this entry's thread — the open reply box when it is this
+  // thread's, else the main composer — so parseGroupChatMentions routes the
+  // next turn to that member only. Insert-only: the user still sends.
+  const replyToMember = (entry: GroupMessage, member: GroupMember | null) => {
+    const tag = String(botMentionTag(member || { name: entry.from.name }) || botHandle(entry.from.name, member || undefined)).trim()
+
+    if (!tag) {
+      return
+    }
+
+    const seed = (current: string) => (current.includes(`@${tag}`) ? current : `@${tag} ${current}`.replace(/\s+$/, ' '))
+    const thread = groupThreadOf(entry)
+
+    if (replyThread === thread) {
+      setReplyDrafts(prev => ({
+        ...prev,
+        [thread]: seed(prev[thread] || '')
+      }))
+    } else {
+      setDraft(seed)
+    }
+  }
+
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
@@ -1054,9 +1085,22 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               </Button>
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
-            {entry.text.trim() ? (
-              <div className="ml-auto shrink-0 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
-                <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} />
+            {entry.text.trim() || !isUser ? (
+              <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+                {isUser ? null : (
+                  <Tip label={`Reply to @${botMentionTag(member || { name: entry.from.name }) || botHandle(entry.from.name, member || undefined)}`}>
+                    <Button
+                      aria-label={`Reply to ${display}`}
+                      className="text-(--ui-text-tertiary) hover:text-foreground"
+                      onClick={() => replyToMember(entry, member)}
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <Codicon name="reply" />
+                    </Button>
+                  </Tip>
+                )}
+                {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
               </div>
             ) : null}
           </div>
@@ -1066,9 +1110,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             data-selectable-text="true"
           >
             {MessageTextContent ? (
-              <MessageTextContent media={!member?.remoteSource} text={entry.text} />
+              <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
             ) : Streamdown ? (
-              <Streamdown>{entry.text}</Streamdown>
+              <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
             ) : (
               entry.text
             )}

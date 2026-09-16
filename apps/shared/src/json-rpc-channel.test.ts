@@ -72,6 +72,7 @@ describe('JsonRpcRequestChannel', () => {
       const slow = expect(channel.requestUntyped('a.slow', {}, 1_000)).rejects.toThrow(
         'request timed out after 1s: a.slow'
       )
+
       const untilDetach = channel.requestUntyped('b.wait', {})
 
       await vi.advanceTimersByTimeAsync(1_000)
@@ -229,28 +230,39 @@ describe('JsonRpcRequestChannel', () => {
     expect(unhandled).toEqual(['not.declared'])
   })
 
-  it('refuses a clarify without the kind discriminator (-32602) instead of handing it to a typed handler', () => {
+  it('stamps the kind on a contract-7 clarify (no discriminator) so a current-main backend is still answered', () => {
     const channel = new JsonRpcRequestChannel()
     const { sent, transport } = spyTransport()
-    const seen: string[] = []
+    const seen: unknown[] = []
 
     channel.attach(transport)
-    channel.onServerRequest('clarify', req => void seen.push(req.params.kind))
+    channel.onServerRequest('clarify', req => {
+      seen.push(req.params)
+      req.respond(req.params.kind === 'batch' ? { answers: { q1: 'a' }, timed_out: false } : { answer: 'yes' })
+    })
 
     channel.handleFrame(
       JSON.stringify({
-        id: 'srq-old',
+        id: 'srq-old-batch',
         jsonrpc: '2.0',
         method: 'clarify',
         params: { questions: [{ qid: 'q1', question: 'Which?', choices: [], multi_select: false }], session_id: 's1' }
       })
     )
+    channel.handleFrame(
+      JSON.stringify({ id: 'srq-old-single', jsonrpc: '2.0', method: 'clarify', params: { question: 'Go?', session_id: 's1' } })
+    )
+    channel.handleFrame(JSON.stringify({ id: 'srq-bad', jsonrpc: '2.0', method: 'clarify', params: 'nope' }))
 
-    const [frame] = sent.map(f => JSON.parse(f) as { id: string; error?: { code: number } })
+    const frames = sent.map(f => JSON.parse(f) as { id: string; result?: unknown; error?: { code: number } })
 
-    expect(seen).toEqual([])
-    expect(frame.id).toBe('srq-old')
-    expect(frame.error?.code).toBe(-32602)
+    expect(seen).toEqual([
+      { answers: null, kind: 'batch', questions: [{ choices: [], multi_select: false, qid: 'q1', question: 'Which?' }], session_id: 's1' },
+      { choices: null, kind: 'single', multi_select: false, question: 'Go?', session_id: 's1' }
+    ])
+    expect(frames[0]).toEqual({ id: 'srq-old-batch', jsonrpc: '2.0', result: { answers: { q1: 'a' }, timed_out: false } })
+    expect(frames[1]).toEqual({ id: 'srq-old-single', jsonrpc: '2.0', result: { answer: 'yes' } })
+    expect(frames[2].error?.code).toBe(-32602)
   })
 
   it('re-delivers open_requests through their generated method, tagged replayed', async () => {

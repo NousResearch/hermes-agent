@@ -82,6 +82,17 @@ const isJsonObject = (value: JsonValue): value is Record<string, JsonValue> =>
 const isServerRequestMethod = (method: string): method is keyof ServerRequestMap =>
   SERVER_REQUEST_METHODS.some(serverRequestMethod => serverRequestMethod === method)
 
+/** Contract-7 adapter: a clarify without `kind` is a batch when it carries `questions`, else a single. */
+const withClarifyKind = (params: Record<string, JsonValue>): Record<string, JsonValue> => {
+  if (params.kind === 'single' || params.kind === 'batch') {return params}
+
+  if (Array.isArray(params.questions)) {
+    return { ...params, kind: 'batch', answers: params.answers ?? null }
+  }
+
+  return { ...params, kind: 'single', choices: params.choices ?? null, multi_select: params.multi_select ?? false }
+}
+
 const decodeServerRequest = <M extends keyof ServerRequestMap>(
   id: string,
   method: M,
@@ -477,14 +488,20 @@ export class JsonRpcRequestChannel {
       return false
     }
 
-    // The one discriminated server request: a backend from before `kind` existed sends a clarify
-    // that no typed handler can read; refusing it fails the blocking tool fast instead of a silent skip.
-    if (method === 'clarify' && !(isJsonObject(rawParams) && (rawParams.kind === 'single' || rawParams.kind === 'batch'))) {
-      this.sendServerRequestResponse(id, {
-        error: { code: JSON_RPC_INVALID_PARAMS, message: 'clarify request has no kind discriminator' }
-      })
+    // The one discriminated server request. A contract-7 backend (current `main`) sends a clarify with no
+    // `kind` — `{questions}` for a batch, `{question, choices, multi_select?}` for a single — and it shares
+    // the contract number with this client, so no update toast fires: stamp the discriminator here rather
+    // than refuse every question of a mixed-version pair. Anything that is not an object stays refused.
+    if (method === 'clarify') {
+      if (!isJsonObject(rawParams)) {
+        this.sendServerRequestResponse(id, {
+          error: { code: JSON_RPC_INVALID_PARAMS, message: 'clarify request params must be an object' }
+        })
 
-      return false
+        return false
+      }
+
+      return this.deliverDecodedServerRequest(decodeServerRequest(id, method, withClarifyKind(rawParams), replayed))
     }
 
     return this.deliverDecodedServerRequest(decodeServerRequest(id, method, rawParams, replayed))

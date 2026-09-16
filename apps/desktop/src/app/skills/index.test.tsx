@@ -391,6 +391,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     fireEvent.click(screen.getByRole('button', { name: 'Install' }))
     const pending = screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' })
     expect(pending.disabled).toBe(true)
+    expect(pending.querySelector('svg.animate-spin')).not.toBeNull()
     fireEvent.click(pending)
     expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(identifier, {
       connectionId: 'homelab', profile: 'researcher'

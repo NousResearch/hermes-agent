@@ -1,6 +1,7 @@
 import { memo, type ReactNode, useDeferredValue, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
+import { ActionStatus } from '@/components/ui/action-status'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -101,8 +102,13 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
     return (
       <Button disabled={installed || installing || (kind === 'skills' && !entry.installIdentifier)} onClick={() => onInstall(entry)} size="sm" variant={installed ? 'secondary' : 'default'}>
-        <Codicon name={installed ? 'check' : 'cloud-download'} />
-        {installed ? c.installed : installing ? t.skills.hub.installing : t.skills.hub.install}
+        <ActionStatus
+          busy={t.skills.hub.installing}
+          done={c.installed}
+          idle={t.skills.hub.install}
+          idleIcon={<Codicon name="cloud-download" />}
+          state={installed ? 'done' : installing ? 'saving' : 'idle'}
+        />
       </Button>
     )
   }

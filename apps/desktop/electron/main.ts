@@ -3342,7 +3342,30 @@ function describeUpdateCheckFailure(error) {
   return `api.github.com: ${error?.message || String(error)}`
 }
 
+/**
+ * Resolve a GitHub token for authenticated API calls. Unauthenticated requests
+ * are capped at 60/h per IP; authenticated requests get 5,000/h. The update
+ * check fires twice on a fresh launch (branch tip + compare) and the 403 from
+ * an exhausted unauthenticated budget is cached for an hour, so passive checks
+ * effectively never recover on shared-NAT or multi-device setups without auth.
+ *
+ * Resolution order: explicit env (`GITHUB_TOKEN` / `GH_TOKEN`), then the `gh`
+ * CLI's stored token (works out of the box for users with `gh auth login`).
+ * Returns '' when neither is available — the call stays unauthenticated, which
+ * is fine for the common single-device case.
+ */
+function resolveGitHubToken(): string {
+  const fromEnv = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+  if (fromEnv) return fromEnv.trim()
+  try {
+    return execFileSync('gh', ['auth', 'token'], { encoding: 'utf8', timeout: 3_000 }).trim()
+  } catch {
+    return ''
+  }
+}
+
 function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
+  const ghToken = resolveGitHubToken()
   return new Promise((resolve, reject) => {
     const req = https.get(
       url,
@@ -3350,7 +3373,8 @@ function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
         headers: {
           Accept: accept,
           // GitHub requires a UA on api.github.com; requests without one 403.
-          'User-Agent': 'hermes-desktop-update-check'
+          'User-Agent': 'hermes-desktop-update-check',
+          ...(ghToken ? { Authorization: `Bearer ${ghToken}` } : {})
         },
         timeout: 10_000
       },

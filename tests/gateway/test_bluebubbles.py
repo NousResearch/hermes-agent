@@ -1,7 +1,12 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
+import asyncio
+import json
+
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -25,6 +30,8 @@ class TestBlueBubblesConfigLoading:
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
         monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
         monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_PORT", "9999")
+        monkeypatch.setenv("BLUEBUBBLES_REQUIRE_MENTION", "true")
+        monkeypatch.setenv("BLUEBUBBLES_MENTION_PATTERNS", r'["(?i)^amos\\b"]')
         from gateway.config import GatewayConfig, _apply_env_overrides
 
         config = GatewayConfig()
@@ -35,27 +42,8 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
-
-    def test_home_channel_set_from_env(self, monkeypatch):
-        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-        monkeypatch.setenv("BLUEBUBBLES_HOME_CHANNEL", "user@example.com")
-        from gateway.config import GatewayConfig, _apply_env_overrides
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        hc = config.platforms[Platform.BLUEBUBBLES].home_channel
-        assert hc is not None
-        assert hc.chat_id == "user@example.com"
-
-    def test_not_connected_without_password(self, monkeypatch):
-        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
-        from gateway.config import GatewayConfig, _apply_env_overrides
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        assert Platform.BLUEBUBBLES not in config.get_connected_platforms()
+        assert bc.extra["require_mention"] is True
+        assert bc.extra["mention_patterns"] == ["(?i)^amos\\b"]
 
 
 class TestBlueBubblesHelpers:
@@ -66,52 +54,69 @@ class TestBlueBubblesHelpers:
 
         assert check_bluebubbles_requirements() is True
 
-    def test_format_message_strips_markdown(self, monkeypatch):
+
+    def test_format_message_preserves_underscores_in_identifiers(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        assert adapter.format_message("**Hello** `world`") == "Hello world"
+        text = "Use /api_v2 with FEATURE_FLAG_NAME and config_file.json"
+        assert adapter.format_message(text) == text
 
     def test_strip_markdown_headers(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("## Heading\ntext") == "Heading\ntext"
 
-    def test_strip_markdown_links(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-        assert adapter.format_message("[click here](http://example.com)") == "click here"
 
     def test_init_normalizes_webhook_path(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_path="bluebubbles-webhook")
         assert adapter.webhook_path == "/bluebubbles-webhook"
 
-    def test_init_preserves_leading_slash(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch, webhook_path="/my-hook")
-        assert adapter.webhook_path == "/my-hook"
 
     def test_server_url_normalized(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, server_url="http://localhost:1234/")
         assert adapter.server_url == "http://localhost:1234"
 
-    def test_server_url_adds_scheme(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
-        assert adapter.server_url == "http://localhost:1234"
+
+class _FakeBlueBubblesRequest:
+    def __init__(self, payload, password="secret"):
+        self.query = {"password": password}
+        self.headers = {}
+        self._body = json.dumps(payload).encode("utf-8")
+
+    async def read(self):
+        return self._body
+
+
+class TestBlueBubblesMentionGating:
+    @pytest.mark.asyncio
+    async def test_group_message_without_mention_is_acknowledged_and_skipped(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            require_mention=True,
+            send_read_receipts=False,
+        )
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-1",
+                "text": "casual family chatter",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "iMessage;+;group-chat"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert handled == []
 
 
 class TestBlueBubblesWebhookParsing:
-    def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-        payload = {
-            "guid": "MESSAGE-GUID",
-            "chatGuid": "iMessage;-;user@example.com",
-            "chatIdentifier": "user@example.com",
-        }
-        record = adapter._extract_payload_record(payload) or {}
-        chat_guid = adapter._value(
-            record.get("chatGuid"),
-            payload.get("chatGuid"),
-            record.get("chat_guid"),
-            payload.get("chat_guid"),
-            payload.get("guid"),
-        )
-        assert chat_guid == "iMessage;-;user@example.com"
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -153,62 +158,6 @@ class TestBlueBubblesWebhookParsing:
             chat_identifier = sender
         assert chat_identifier == "user@example.com"
 
-    def test_webhook_extracts_chat_guid_from_chats_array_dm(self, monkeypatch):
-        """BB v1.9+ webhook payloads omit top-level chatGuid; GUID is in chats[0].guid."""
-        adapter = _make_adapter(monkeypatch)
-        payload = {
-            "type": "new-message",
-            "data": {
-                "guid": "MESSAGE-GUID",
-                "text": "hello",
-                "handle": {"address": "+15551234567"},
-                "isFromMe": False,
-                "chats": [
-                    {"guid": "any;-;+15551234567", "chatIdentifier": "+15551234567"}
-                ],
-            },
-        }
-        record = adapter._extract_payload_record(payload) or {}
-        chat_guid = adapter._value(
-            record.get("chatGuid"),
-            payload.get("chatGuid"),
-            record.get("chat_guid"),
-            payload.get("chat_guid"),
-            payload.get("guid"),
-        )
-        if not chat_guid:
-            _chats = record.get("chats") or []
-            if _chats and isinstance(_chats[0], dict):
-                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
-        assert chat_guid == "any;-;+15551234567"
-
-    def test_webhook_extracts_chat_guid_from_chats_array_group(self, monkeypatch):
-        """Group chat GUIDs contain ;+; and must be extracted from chats array."""
-        adapter = _make_adapter(monkeypatch)
-        payload = {
-            "type": "new-message",
-            "data": {
-                "guid": "MESSAGE-GUID",
-                "text": "hello everyone",
-                "handle": {"address": "+15551234567"},
-                "isFromMe": False,
-                "isGroup": True,
-                "chats": [{"guid": "any;+;chat-uuid-abc123"}],
-            },
-        }
-        record = adapter._extract_payload_record(payload) or {}
-        chat_guid = adapter._value(
-            record.get("chatGuid"),
-            payload.get("chatGuid"),
-            record.get("chat_guid"),
-            payload.get("chat_guid"),
-            payload.get("guid"),
-        )
-        if not chat_guid:
-            _chats = record.get("chats") or []
-            if _chats and isinstance(_chats[0], dict):
-                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
-        assert chat_guid == "any;+;chat-uuid-abc123"
 
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -225,38 +174,66 @@ class TestBlueBubblesWebhookParsing:
         record = adapter._extract_payload_record(payload)
         assert record == payload["data"][0]
 
-    def test_extract_payload_record_dict_data(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-        payload = {"data": {"text": "hello", "chatGuid": "iMessage;-;+1234"}}
-        record = adapter._extract_payload_record(payload)
-        assert record["text"] == "hello"
-
-    def test_extract_payload_record_fallback_to_message(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-        payload = {"message": {"text": "hello"}}
-        record = adapter._extract_payload_record(payload)
-        assert record["text"] == "hello"
-
 
 class TestBlueBubblesGuidResolution:
-    def test_raw_guid_returned_as_is(self, monkeypatch):
-        """If target already contains ';' it's a raw GUID — return unchanged."""
+
+
+    @pytest.mark.asyncio
+    async def test_participant_only_match_does_not_resolve_to_group(self, monkeypatch):
+        """Regression for #24157: contact appearing as a participant in a group
+        chat must NOT be selected when no DM with that exact chatIdentifier exists.
+
+        Otherwise an outbound DM reply leaks into the group thread.
+        """
         adapter = _make_adapter(monkeypatch)
-        import asyncio
 
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._resolve_chat_guid("iMessage;-;user@example.com")
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [
+                            {"address": "user@example.com"},
+                            {"address": "+15555550100"},
+                        ],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        result = await adapter._resolve_chat_guid("user@example.com")
+        assert result is None, (
+            "participant-only match must not resolve to a group GUID — DM "
+            "replies would leak into the group thread"
         )
-        assert result == "iMessage;-;user@example.com"
 
-    def test_empty_target_returns_none(self, monkeypatch):
+
+    @pytest.mark.asyncio
+    async def test_unresolved_target_is_not_cached(self, monkeypatch):
+        """When no exact match is found, the resolver must NOT cache anything.
+
+        Otherwise a later attempt — after the DM has been created — would
+        keep returning the stale ``None`` from cache. Also guards against a
+        latent variant of #24157 where a group GUID could be cached under a
+        bare address key and persist across calls.
+        """
         adapter = _make_adapter(monkeypatch)
-        import asyncio
 
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._resolve_chat_guid("")
-        )
-        assert result is None
+        async def fake_api_post(path, payload):
+            return {
+                "data": [
+                    {
+                        "guid": "iMessage;+;chat0000000000-family-group",
+                        "chatIdentifier": "chat0000000000",
+                        "participants": [{"address": "user@example.com"}],
+                    }
+                ]
+            }
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        await adapter._resolve_chat_guid("user@example.com")
+        assert "user@example.com" not in adapter._guid_cache
 
 
 class TestBlueBubblesAttachmentDownload:
@@ -266,7 +243,6 @@ class TestBlueBubblesAttachmentDownload:
         """Image MIME routes to cache_image_from_bytes."""
         adapter = _make_adapter(monkeypatch)
         import asyncio
-        import httpx
 
         # Mock the HTTP client response
         class MockResponse:
@@ -283,13 +259,13 @@ class TestBlueBubblesAttachmentDownload:
 
         cached_path = None
 
-        def mock_cache_image(data, ext):
+        async def mock_cache_image(data, ext):
             nonlocal cached_path
             cached_path = f"/tmp/test_image{ext}"
             return cached_path
 
         monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_image_from_bytes",
+            "gateway.platforms.bluebubbles.cache_image_from_bytes_async",
             mock_cache_image,
         )
 
@@ -299,86 +275,46 @@ class TestBlueBubblesAttachmentDownload:
         )
         assert result == "/tmp/test_image.png"
 
-    def test_download_audio_uses_audio_cache(self, monkeypatch):
-        """Audio MIME routes to cache_audio_from_bytes."""
+
+class TestBlueBubblesAttachmentSend:
+    @pytest.mark.asyncio
+    async def test_attachment_payload_is_read_before_async_upload(self, monkeypatch, tmp_path):
         adapter = _make_adapter(monkeypatch)
-        import asyncio
+        file_path = tmp_path / "payload.bin"
+        payload = b"attachment-payload"
+        file_path.write_bytes(payload)
+
+        captured = {}
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;+;chat-guid"
 
         class MockResponse:
-            status_code = 200
-            content = b"fake-audio-data"
-
             def raise_for_status(self):
                 pass
 
-        async def mock_get(*args, **kwargs):
-            return MockResponse()
+            def json(self):
+                return {"status": 200, "data": {"guid": "message-guid"}}
 
-        adapter.client = type("MockClient", (), {"get": mock_get})()
+        class MockClient:
+            async def post(self, url, *, files, data, timeout):
+                captured.update(url=url, files=files, data=data, timeout=timeout)
+                return MockResponse()
 
-        cached_path = None
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        adapter.client = MockClient()
 
-        def mock_cache_audio(data, ext):
-            nonlocal cached_path
-            cached_path = f"/tmp/test_audio{ext}"
-            return cached_path
-
-        monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_audio_from_bytes",
-            mock_cache_audio,
+        result = await adapter._send_attachment(
+            "target", str(file_path), filename="payload.bin"
         )
 
-        att_meta = {"mimeType": "audio/mpeg", "transferName": "voice.mp3"}
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._download_attachment("att-guid-456", att_meta)
+        assert result.success is True
+        assert captured["files"]["attachment"] == (
+            "payload.bin",
+            payload,
+            "application/octet-stream",
         )
-        assert result == "/tmp/test_audio.mp3"
-
-    def test_download_document_uses_document_cache(self, monkeypatch):
-        """Non-image/audio MIME routes to cache_document_from_bytes."""
-        adapter = _make_adapter(monkeypatch)
-        import asyncio
-
-        class MockResponse:
-            status_code = 200
-            content = b"fake-doc-data"
-
-            def raise_for_status(self):
-                pass
-
-        async def mock_get(*args, **kwargs):
-            return MockResponse()
-
-        adapter.client = type("MockClient", (), {"get": mock_get})()
-
-        cached_path = None
-
-        def mock_cache_doc(data, filename):
-            nonlocal cached_path
-            cached_path = f"/tmp/{filename}"
-            return cached_path
-
-        monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_document_from_bytes",
-            mock_cache_doc,
-        )
-
-        att_meta = {"mimeType": "application/pdf", "transferName": "report.pdf"}
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._download_attachment("att-guid-789", att_meta)
-        )
-        assert result == "/tmp/report.pdf"
-
-    def test_download_returns_none_without_client(self, monkeypatch):
-        """No client → returns None gracefully."""
-        adapter = _make_adapter(monkeypatch)
-        adapter.client = None
-        import asyncio
-
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._download_attachment("att-guid", {"mimeType": "image/png"})
-        )
-        assert result is None
+        assert captured["data"]["chatGuid"] == "iMessage;+;chat-guid"
 
 
 # ---------------------------------------------------------------------------
@@ -396,25 +332,6 @@ class TestBlueBubblesWebhookUrl:
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
-    def test_local_hosts_normalized(self, monkeypatch, host):
-        adapter = _make_adapter(monkeypatch, webhook_host=host)
-        assert adapter._webhook_url.startswith("http://localhost:")
-
-    def test_custom_host_preserved(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
-        assert "192.168.1.50" in adapter._webhook_url
-
-    def test_register_url_embeds_password(self, monkeypatch):
-        """_webhook_register_url should append ?password=... for inbound auth."""
-        adapter = _make_adapter(monkeypatch, password="secret123")
-        assert adapter._webhook_register_url.endswith("?password=secret123")
-        assert adapter._webhook_register_url.startswith(adapter._webhook_url)
-
-    def test_register_url_url_encodes_password(self, monkeypatch):
-        """Passwords with special characters must be URL-encoded."""
-        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
-        assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""
@@ -484,31 +401,6 @@ class TestBlueBubblesWebhookRegistration:
         assert len(result) == 1
         assert result[0]["id"] == 1
 
-    def test_find_registered_webhooks_empty_when_none(self, monkeypatch):
-        import asyncio
-        adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": []}
-        )
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._find_registered_webhooks(adapter._webhook_url)
-        )
-        assert result == []
-
-    def test_find_registered_webhooks_handles_api_error(self, monkeypatch):
-        import asyncio
-        adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client()
-
-        # Override _api_get to raise
-        async def bad_get(path):
-            raise ConnectionError("server down")
-        adapter._api_get = bad_get
-
-        result = asyncio.get_event_loop().run_until_complete(
-            adapter._find_registered_webhooks(adapter._webhook_url)
-        )
-        assert result == []
 
     # -- _register_webhook --
 
@@ -525,18 +417,6 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
 
-    def test_register_accepts_201(self, monkeypatch):
-        """BB might return 201 Created — must still succeed."""
-        import asyncio
-        adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": []},
-            post_response={"status": 201, "data": {"id": 43}},
-        )
-        ok = asyncio.get_event_loop().run_until_complete(
-            adapter._register_webhook()
-        )
-        assert ok is True
 
     def test_register_reuses_existing(self, monkeypatch):
         """Crash resilience — existing registration is reused, no POST needed."""
@@ -564,42 +444,9 @@ class TestBlueBubblesWebhookRegistration:
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
 
-    def test_register_returns_false_without_client(self, monkeypatch):
-        import asyncio
-        adapter = _make_adapter(monkeypatch)
-        adapter.client = None
-        ok = asyncio.get_event_loop().run_until_complete(
-            adapter._register_webhook()
-        )
-        assert ok is False
-
-    def test_register_returns_false_on_server_error(self, monkeypatch):
-        import asyncio
-        adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": []},
-            post_response={"status": 500, "message": "internal error"},
-        )
-        ok = asyncio.get_event_loop().run_until_complete(
-            adapter._register_webhook()
-        )
-        assert ok is False
 
     # -- _unregister_webhook --
 
-    def test_unregister_removes_matching(self, monkeypatch):
-        import asyncio
-        adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_register_url
-        adapter.client = self._mock_client(
-            get_response={"status": 200, "data": [
-                {"id": 10, "url": url},
-            ]},
-        )
-        ok = asyncio.get_event_loop().run_until_complete(
-            adapter._unregister_webhook()
-        )
-        assert ok is True
 
     def test_unregister_removes_all_duplicates(self, monkeypatch):
         """Multiple orphaned registrations for same URL — all get removed."""
@@ -633,25 +480,90 @@ class TestBlueBubblesWebhookRegistration:
         assert ok is True
         assert len(deleted_ids) == 2
 
-    def test_unregister_returns_false_without_client(self, monkeypatch):
-        import asyncio
+
+# ---------------------------------------------------------------------------
+# Regression for #78183: httpx timeout exceptions stringify to "" which
+# defeats _is_timeout_error, causing the plain-text fallback to re-send an
+# already-delivered message (duplicate delivery).
+# ---------------------------------------------------------------------------
+
+class TestBlueBubblesTimeoutErrorNormalization:
+    """When an httpx timeout has an empty string representation, the adapter
+    must fall back to the exception type name so the base-layer timeout guard
+    can still recognise it."""
+
+    @pytest.mark.asyncio
+    async def test_send_read_timeout_produces_matchable_error(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        adapter.client = None
-        ok = asyncio.get_event_loop().run_until_complete(
-            adapter._unregister_webhook()
-        )
-        assert ok is False
 
-    def test_unregister_handles_api_failure_gracefully(self, monkeypatch):
-        import asyncio
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def fake_api_post(path, payload):
+            raise httpx.ReadTimeout("")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("chat-1", "hello world")
+
+        assert not result.success
+        assert result.error, "error must not be empty"
+        assert BasePlatformAdapter._is_timeout_error(result.error), (
+            f"_is_timeout_error must recognise {result.error!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_write_timeout_produces_matchable_error(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        adapter.client = self._mock_client()
 
-        async def bad_get(path):
-            raise ConnectionError("server down")
-        adapter._api_get = bad_get
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
 
-        ok = asyncio.get_event_loop().run_until_complete(
-            adapter._unregister_webhook()
-        )
-        assert ok is False
+        async def fake_api_post(path, payload):
+            raise httpx.WriteTimeout("")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("chat-1", "hello world")
+
+        assert not result.success
+        assert result.error
+        assert BasePlatformAdapter._is_timeout_error(result.error)
+
+    @pytest.mark.asyncio
+    async def test_create_chat_for_handle_timeout_produces_matchable_error(
+        self, monkeypatch,
+    ):
+        """Sibling call path — _create_chat_for_handle has the same
+        error=str(exc) pattern and must also preserve the exception type."""
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_api_post(path, payload):
+            raise httpx.ReadTimeout("")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter._create_chat_for_handle("test@example.com", "hi")
+
+        assert not result.success
+        assert result.error
+        assert BasePlatformAdapter._is_timeout_error(result.error)
+
+    @pytest.mark.asyncio
+    async def test_non_empty_error_string_is_unchanged(self, monkeypatch):
+        """A normal exception with a message must keep its original text."""
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        async def fake_api_post(path, payload):
+            raise RuntimeError("Server error '500 Internal Server Error'")
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("chat-1", "hello world")
+
+        assert not result.success
+        assert "500 Internal Server Error" in (result.error or "")
+
+

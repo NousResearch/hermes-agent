@@ -8,9 +8,16 @@ description: "Set up Hermes Agent as an email assistant via IMAP/SMTP"
 
 Hermes can receive and reply to emails using standard IMAP and SMTP protocols. Send an email to the agent's address and it replies in-thread — no special client or bot API needed. Works with Gmail, Outlook, Yahoo, Fastmail, or any provider that supports IMAP/SMTP.
 
-:::info No External Dependencies
-The Email adapter uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required.
+:::info Gateway adapter only: no external dependencies
+This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
 :::
+
+This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills/bundled/email/email-himalaya), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
+
+| Use case | What to configure | External dependency |
+|---|---|---|
+| Let people email the Hermes agent and receive replies | Email gateway adapter on this page | None beyond an IMAP/SMTP email account |
+| Let the agent inspect, compose, move, and manage mailbox messages from terminal tools | Himalaya email skill | `himalaya` CLI and `~/.config/himalaya/config.toml` |
 
 ---
 
@@ -40,6 +47,31 @@ Most email providers support IMAP/SMTP. Check your provider's documentation for:
 - IMAP host and port (usually port 993 with SSL)
 - SMTP host and port (usually port 587 with STARTTLS)
 - Whether app passwords are required
+
+### Proton Mail Bridge / local relays
+
+Proton Mail Bridge (and similar local relays such as a self-hosted MTA) listen on
+loopback with **STARTTLS** and a self-signed certificate, so the defaults
+(implicit TLS on IMAP 993, verified certificates) won't connect. Override the
+transport in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  email:
+    enabled: true
+    extra:
+      imap_host: 127.0.0.1
+      imap_security: starttls     # tls (default) | starttls | plain
+      imap_tls_verify: false      # Bridge uses a self-signed cert
+      smtp_host: 127.0.0.1
+      smtp_security: starttls     # default: tls on port 465, starttls otherwise
+      smtp_tls_verify: false
+```
+
+and set `EMAIL_IMAP_PORT=1143` / `EMAIL_SMTP_PORT=1025` alongside your Bridge
+credentials in `~/.hermes/.env`. Unknown `*_security` values log a warning and
+fall back to the secure default. Only disable `*_tls_verify` for loopback hosts —
+Hermes logs a warning when verification is off for any other host.
 
 ---
 
@@ -135,14 +167,15 @@ When enabled, attachment and inline parts are skipped before payload decoding. T
 
 ## Access Control
 
-Email access follows the same pattern as all other Hermes platforms:
+Email access is stricter by default than chat-style platforms:
 
 1. **`EMAIL_ALLOWED_USERS` set** → only emails from those addresses are processed
-2. **No allowlist set** → unknown senders get a pairing code
+2. **No allowlist set** → unknown senders are ignored silently
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → any sender is accepted (use with caution)
+4. **`platforms.email.unauthorized_dm_behavior: pair`** → unknown senders receive a pairing code
 
 :::warning
-**Always configure `EMAIL_ALLOWED_USERS`.** Without it, anyone who knows the agent's email address could send commands. The agent has terminal access by default.
+**Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
 :::
 
 ---

@@ -19,16 +19,16 @@ describe('syntax highlighter', () => {
   it('paints a whole-line comment dim', () => {
     const tokens = highlightLine('// hello', 'ts', t)
 
-    expect(tokens).toEqual([[t.color.dim, '// hello']])
+    expect(tokens).toEqual([[t.color.muted, '// hello']])
   })
 
   it('paints keywords, strings, and numbers in a ts line', () => {
     const tokens = highlightLine(`const x = 'hi' + 42`, 'ts', t)
     const colors = tokens.map(tok => tok[0])
 
-    expect(colors).toContain(t.color.bronze) // const
-    expect(colors).toContain(t.color.amber) // 'hi'
-    expect(colors).toContain(t.color.cornsilk) // 42
+    expect(colors).toContain(t.color.border) // const
+    expect(colors).toContain(t.color.accent) // 'hi'
+    expect(colors).toContain(t.color.text) // 42
   })
 
   it('falls through unchanged for unknown langs', () => {
@@ -40,6 +40,6 @@ describe('syntax highlighter', () => {
   it('treats `#` as a python comment, not a selector', () => {
     const tokens = highlightLine('# comment', 'py', t)
 
-    expect(tokens).toEqual([[t.color.dim, '# comment']])
+    expect(tokens).toEqual([[t.color.muted, '# comment']])
   })
 })

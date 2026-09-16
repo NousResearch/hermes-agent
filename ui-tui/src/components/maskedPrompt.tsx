@@ -14,11 +14,18 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: Maske
         {icon} {label}
       </Text>
 
-      {sub && <Text color={t.color.dim}> {sub}</Text>}
+      {sub && <Text color={t.color.muted}> {sub}</Text>}
 
       <Box>
         <Text color={t.color.label}>{'> '}</Text>
-        <TextInput columns={Math.max(20, cols - 6)} mask="*" onChange={setValue} onSubmit={onSubmit} value={value} />
+        <TextInput
+          color={t.color.text}
+          columns={Math.max(20, cols - 6)}
+          mask="*"
+          onChange={setValue}
+          onSubmit={onSubmit}
+          value={value}
+        />
       </Box>
     </Box>
   )

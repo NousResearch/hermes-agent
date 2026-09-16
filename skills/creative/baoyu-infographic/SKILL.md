@@ -1,9 +1,10 @@
 ---
 name: baoyu-infographic
-description: Generate professional infographics with 21 layout types and 21 visual styles. Analyzes content, recommends layout×style combinations, and generates publication-ready infographics. Use when user asks to create "infographic", "visual summary", "信息图", "可视化", or "高密度信息大图".
+description: "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
 version: 1.56.1
 author: 宝玉 (JimLiu)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [infographic, visual-summary, creative, image-generation]

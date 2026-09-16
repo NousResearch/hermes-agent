@@ -6,12 +6,17 @@ description: "Real-world automation patterns using Hermes cron — monitoring, r
 
 # Automate Anything with Cron
 
-The [daily briefing bot tutorial](/docs/guides/daily-briefing-bot) covers the basics. This guide goes further — five real-world automation patterns you can adapt for your own workflows.
+The [daily briefing bot tutorial](/guides/daily-briefing-bot) covers the basics. This guide goes further — five real-world automation patterns you can adapt for your own workflows.
 
-For the full feature reference, see [Scheduled Tasks (Cron)](/docs/user-guide/features/cron).
+For the full feature reference, see [Scheduled Tasks (Cron)](/user-guide/features/cron).
 
 :::info Key Concept
 Cron jobs run in fresh agent sessions with no memory of your current chat. Prompts must be **completely self-contained** — include everything the agent needs to know.
+:::
+
+:::tip Don't need the LLM? You have two zero-token options.
+- **Recurring watchdog** where the script already produces the exact message (memory alerts, disk alerts, heartbeats): use [script-only cron jobs](/guides/cron-script-only). Same scheduler, no LLM. You can ask Hermes to set one up for you in chat — the `cronjob` tool knows when to pick `no_agent=True` and writes the script for you.
+- **One-shot from a script that's already running** (CI step, post-commit hook, deploy script, externally-scheduled monitor): use [`hermes send`](/guides/pipe-script-output) to pipe stdout or a file straight to Telegram / Discord / Slack / etc. without setting up a cron entry.
 :::
 
 ---
@@ -66,7 +71,11 @@ Set up the cron job:
 ```
 
 :::tip The [SILENT] Trick
-When the agent's final response contains `[SILENT]`, delivery is suppressed. This means you only get notified when something actually happens — no spam on quiet hours.
+For cron monitoring jobs, instruct the agent to respond with only `[SILENT]` when nothing changed. Cron delivery treats `[SILENT]` as the quiet marker, so you only get notified when something actually happens — no spam on quiet hours.
+:::
+
+:::tip Keeping failure notices out of shared channels
+`[SILENT]` only applies to successful runs — when a job hard-fails, the engine posts a `⚠️ Cron 'X' failed…` notice to the job's delivery target. For jobs that deliver into busy shared channels, set `--failure-deliver local` to suppress those notices entirely (run state stays visible in `hermes cron list` and run history), or point failures at an ops channel with `--failure-deliver slack:C_OPS`. Same grammar as `--deliver`; omit it and failures follow `--deliver` as before.
 :::
 
 ---
@@ -118,7 +127,7 @@ Otherwise, provide a concise summary of the activity." --name "Repo watcher" --d
 ```
 
 :::warning Self-Contained Prompts
-Notice how the prompt includes the exact `gh` commands. The cron agent has no memory of previous runs or your preferences — spell everything out.
+Notice how the prompt includes the exact `gh` commands. The cron agent has no conversation history from previous runs — spell everything out. (Persistent memory does load, so durable preferences saved to MEMORY.md carry over, but don't rely on it for job-critical details.)
 :::
 
 ---
@@ -241,6 +250,28 @@ The `--deliver` flag controls where results go:
 | `slack` | `--deliver slack` | Your Slack home channel |
 | Specific chat | `--deliver telegram:-1001234567890` | A specific Telegram group |
 | Threaded | `--deliver telegram:-1001234567890:17585` | A specific Telegram topic thread |
+| Bot Chat | `--deliver bot-chat` | Inject output into this profile's canonical Bot Chat — the bot reads it and responds |
+| Bot Chat (named) | `--deliver bot-chat:research` | Another local profile's Bot Chat |
+
+### Bot Chat delivery
+
+`bot-chat` targets deliver the job's output **into a profile's canonical "Bot
+Chat" session as a real message** — the bot receives it like any other message,
+acts on anything that needs action, and responds in that chat. This is the
+target to use when you want a bot to *see and react to* scheduled output
+instead of just having it archived in Run history.
+
+Things to know:
+
+- **Machine-local.** The profile must exist on the machine running the
+  scheduler (`hermes profile list`). Names are validated at create time;
+  profiles on other gateways/machines cannot be targeted.
+- **Costs a bot turn.** Each delivery runs a full agent turn in the target
+  bot's Bot Chat — budget accordingly for high-frequency jobs.
+- **Combinable.** `--deliver bot-chat,telegram` posts to the bot AND your
+  Telegram home channel. The `all` token never expands to bot-chat targets.
+- The delivered message is prefixed so the bot knows it came from a scheduled
+  job, not from you.
 
 ---
 
@@ -248,7 +279,7 @@ The `--deliver` flag controls where results go:
 
 **Make prompts self-contained.** The agent in a cron job has no memory of your conversations. Include URLs, repo names, format preferences, and delivery instructions directly in the prompt.
 
-**Use `[SILENT]` liberally.** For monitoring jobs, always include instructions like "if nothing changed, respond with `[SILENT]`." This prevents notification noise.
+**Use `[SILENT]` deliberately.** For monitoring jobs, include instructions like "if nothing changed, respond with only `[SILENT]`." Do not ask the agent to explain the token in quiet cases — cron treats `[SILENT]` as the delivery-suppression marker.
 
 **Use scripts for data collection.** The `script` parameter lets a Python script handle the boring parts (HTTP requests, file I/O, state tracking). The agent only sees the script's stdout and applies reasoning to it. This is cheaper and more reliable than having the agent do the fetching itself.
 
@@ -258,4 +289,4 @@ The `--deliver` flag controls where results go:
 
 ---
 
-*For the complete cron reference — all parameters, edge cases, and internals — see [Scheduled Tasks (Cron)](/docs/user-guide/features/cron).*
+*For the complete cron reference — all parameters, edge cases, and internals — see [Scheduled Tasks (Cron)](/user-guide/features/cron).*

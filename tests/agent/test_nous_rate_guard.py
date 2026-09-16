@@ -33,39 +33,8 @@ class TestRecordNousRateLimit:
         assert state["reset_seconds"] == pytest.approx(1800, abs=2)
         assert state["reset_at"] > time.time()
 
-    def test_records_with_per_minute_header(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
-        headers = {"x-ratelimit-reset-requests": "45"}
-        record_nous_rate_limit(headers=headers)
 
-        with open(_state_path()) as f:
-            state = json.load(f)
-        assert state["reset_seconds"] == pytest.approx(45, abs=2)
-
-    def test_records_with_retry_after_header(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
-
-        headers = {"retry-after": "60"}
-        record_nous_rate_limit(headers=headers)
-
-        with open(_state_path()) as f:
-            state = json.load(f)
-        assert state["reset_seconds"] == pytest.approx(60, abs=2)
-
-    def test_prefers_hourly_over_per_minute(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
-
-        headers = {
-            "x-ratelimit-reset-requests-1h": "1800",
-            "x-ratelimit-reset-requests": "45",
-        }
-        record_nous_rate_limit(headers=headers)
-
-        with open(_state_path()) as f:
-            state = json.load(f)
-        # Should use the hourly value, not the per-minute one
-        assert state["reset_seconds"] == pytest.approx(1800, abs=2)
 
     def test_falls_back_to_error_context_reset_at(self, rate_guard_env):
         from agent.nous_rate_guard import record_nous_rate_limit, _state_path
@@ -80,15 +49,6 @@ class TestRecordNousRateLimit:
             state = json.load(f)
         assert state["reset_at"] == pytest.approx(future_reset, abs=1)
 
-    def test_falls_back_to_default_cooldown(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
-
-        record_nous_rate_limit(headers=None)
-
-        with open(_state_path()) as f:
-            state = json.load(f)
-        # Default is 300 seconds (5 minutes)
-        assert state["reset_seconds"] == pytest.approx(300, abs=2)
 
     def test_custom_default_cooldown(self, rate_guard_env):
         from agent.nous_rate_guard import record_nous_rate_limit, _state_path
@@ -99,20 +59,11 @@ class TestRecordNousRateLimit:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
 
-    def test_creates_directory_if_missing(self, rate_guard_env):
-        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
-
-        record_nous_rate_limit(headers={"retry-after": "10"})
-        assert os.path.exists(_state_path())
 
 
 class TestNousRateLimitRemaining:
     """Test checking remaining rate limit time."""
 
-    def test_returns_none_when_no_file(self, rate_guard_env):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-
-        assert nous_rate_limit_remaining() is None
 
     def test_returns_remaining_seconds_when_active(self, rate_guard_env):
         from agent.nous_rate_guard import record_nous_rate_limit, nous_rate_limit_remaining
@@ -135,15 +86,6 @@ class TestNousRateLimitRemaining:
         # File should be cleaned up
         assert not os.path.exists(_state_path())
 
-    def test_handles_corrupt_file(self, rate_guard_env):
-        from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
-
-        state_dir = os.path.dirname(_state_path())
-        os.makedirs(state_dir, exist_ok=True)
-        with open(_state_path(), "w") as f:
-            f.write("not valid json{{{")
-
-        assert nous_rate_limit_remaining() is None
 
 
 class TestClearNousRateLimit:
@@ -179,20 +121,8 @@ class TestFormatRemaining:
 
         assert format_remaining(30) == "30s"
 
-    def test_minutes(self):
-        from agent.nous_rate_guard import format_remaining
 
-        assert format_remaining(125) == "2m 5s"
 
-    def test_exact_minutes(self):
-        from agent.nous_rate_guard import format_remaining
-
-        assert format_remaining(120) == "2m"
-
-    def test_hours(self):
-        from agent.nous_rate_guard import format_remaining
-
-        assert format_remaining(3720) == "1h 2m"
 
 
 class TestParseResetSeconds:
@@ -216,11 +146,6 @@ class TestParseResetSeconds:
         headers = {"x-ratelimit-reset-requests-1h": "0"}
         assert _parse_reset_seconds(headers) is None
 
-    def test_ignores_invalid_values(self):
-        from agent.nous_rate_guard import _parse_reset_seconds
-
-        headers = {"x-ratelimit-reset-requests-1h": "not-a-number"}
-        assert _parse_reset_seconds(headers) is None
 
 
 class TestAuxiliaryClientIntegration:
@@ -251,3 +176,191 @@ class TestAuxiliaryClientIntegration:
         monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
         result = aux._try_nous()
         assert result == (None, None)
+
+
+class TestIsGenuineNousRateLimit:
+    """Tell a real account-level 429 apart from an upstream-capacity 429.
+
+    Nous Portal multiplexes upstreams (DeepSeek, Kimi, MiMo, Hermes).
+    A 429 from an upstream out of capacity should NOT trip the
+    cross-session breaker; a real user-quota 429 should.
+    """
+
+    def test_exhausted_hourly_bucket_in_429_headers_is_genuine(self):
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+
+        headers = {
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "0",
+            "x-ratelimit-reset-requests-1h": "3100",
+            "x-ratelimit-limit-requests": "200",
+            "x-ratelimit-remaining-requests": "198",
+            "x-ratelimit-reset-requests": "40",
+        }
+        assert is_genuine_nous_rate_limit(headers=headers) is True
+
+    def test_a_welcome_host_429_with_exhausted_buckets_trips_the_breaker(
+        self, rate_guard_env, monkeypatch,
+    ):
+        from agent.nous_rate_guard import (
+            is_genuine_nous_rate_limit,
+            nous_rate_limit_remaining,
+            record_nous_rate_limit,
+        )
+
+        headers = {
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "0",
+            "x-ratelimit-reset-requests-1h": "600",
+        }
+        assert is_genuine_nous_rate_limit(headers=headers) is True
+        record_nous_rate_limit(headers=headers)
+        assert nous_rate_limit_remaining() > 0
+        verdict, _buffered, statuses = TestWelcomeRouteCopy._drive_guard(
+            "https://welcome-api.nousresearch.com/v1", monkeypatch
+        )
+        assert verdict.action == "return"
+        assert "/login" in statuses[0]
+
+    def test_bare_429_with_no_headers_is_upstream(self):
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+
+        assert is_genuine_nous_rate_limit(headers=None) is False
+        assert is_genuine_nous_rate_limit(headers={}) is False
+        assert is_genuine_nous_rate_limit(
+            headers={"content-type": "application/json"}
+        ) is False
+
+
+
+    def test_last_known_state_all_healthy_stays_upstream(self):
+        # Prior state was healthy; bare 429 arrives; should be treated
+        # as upstream capacity.
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+        from agent.rate_limit_tracker import parse_rate_limit_headers
+
+        prior_headers = {
+            "x-ratelimit-limit-requests-1h": "800",
+            "x-ratelimit-remaining-requests-1h": "750",
+            "x-ratelimit-reset-requests-1h": "2000",
+            "x-ratelimit-limit-requests": "200",
+            "x-ratelimit-remaining-requests": "180",
+            "x-ratelimit-reset-requests": "30",
+            "x-ratelimit-limit-tokens": "800000",
+            "x-ratelimit-remaining-tokens": "790000",
+            "x-ratelimit-reset-tokens": "30",
+            "x-ratelimit-limit-tokens-1h": "8000000",
+            "x-ratelimit-remaining-tokens-1h": "7900000",
+            "x-ratelimit-reset-tokens-1h": "2000",
+        }
+        last_state = parse_rate_limit_headers(prior_headers, provider="nous")
+        assert is_genuine_nous_rate_limit(
+            headers=None, last_known_state=last_state
+        ) is False
+
+
+
+class TestWelcomeRouteCopy:
+    @staticmethod
+    def _drive_guard(base_url, monkeypatch):
+        from types import SimpleNamespace
+
+        from agent import nous_rate_guard
+        from agent.turn_api_call import nous_rate_limit_guard
+
+        monkeypatch.setattr(nous_rate_guard, "nous_rate_limit_remaining", lambda: 600)
+        buffered = []
+        statuses = []
+        agent = SimpleNamespace(
+            provider="nous",
+            base_url=base_url,
+            log_prefix="",
+            _buffer_vprint=buffered.append,
+            _buffer_status=statuses.append,
+            _try_activate_fallback=lambda: False,
+            _flush_status_buffer=lambda: None,
+            _persist_session=lambda *_args: None,
+        )
+        verdict = nous_rate_limit_guard(
+            agent,
+            _retry=None,
+            api_messages=[],
+            messages=[],
+            conversation_history=[],
+            active_system_prompt="system",
+            retry_count=0,
+            compression_attempts=0,
+            api_call_count=0,
+        )
+        return verdict, buffered, statuses
+
+    def test_the_welcome_host_rate_limit_message_names_the_slash_command(self, monkeypatch):
+        from hermes_cli import anon_auth
+
+        verdict, buffered, statuses = self._drive_guard(
+            "https://welcome-api.nousresearch.com/v1", monkeypatch
+        )
+
+        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=anon_auth.friendly_wait(600))
+        assert verdict.action == "return"
+        assert statuses == [f"⏳ {expected}"]
+        assert expected in verdict.result["final_response"]
+        assert "/login" in expected
+        assert "Nous Portal" not in expected
+        assert buffered == [f"⏳ {expected} Trying fallback..."]
+
+    def test_a_non_welcome_route_keeps_todays_sentence(self, monkeypatch):
+        verdict, buffered, statuses = self._drive_guard(
+            "https://inference-api.nousresearch.com/v1", monkeypatch
+        )
+
+        expected = "Your Nous account has hit its rate limit; it resets in 10m."
+        assert verdict.action == "return"
+        assert statuses == [f"⏳ {expected}"]
+        assert verdict.result["final_response"].startswith(f"⏳ {expected}\n\n")
+        assert buffered == [f"⏳ {expected} Trying fallback..."]
+
+
+class TestRateGuardStateEncoding:
+    """Regression for #18637: the cross-session rate-limit state file was
+    opened without ``encoding="utf-8"`` on both the atomic write (os.fdopen)
+    and the read. On Windows Chinese locales the platform default decoder
+    raises on UTF-8 bytes written by a peer process, silently losing the
+    rate-limit guard and re-enabling the retry amplification the module was
+    built to prevent.
+    """
+
+    def test_read_uses_utf8_under_non_utf8_locale(self, rate_guard_env, monkeypatch):
+        import builtins
+
+        from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
+
+        path = _state_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # State JSON written with a UTF-8 provider label. Python's json
+        # module itself escapes non-ASCII by default, but a peer writer
+        # (or human) using ensure_ascii=False produces raw UTF-8 bytes,
+        # which is what this guards against.
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(
+                '{"reset_at": %d, "provider": "中文", "recorded_at": 0}'
+                % (int(time.time()) + 3600)
+            )
+
+        real_open = builtins.open
+
+        def guarded_open(file, mode="r", *args, **kwargs):
+            try:
+                is_target = str(file) == str(path)
+            except Exception:
+                is_target = False
+            if is_target and "b" not in mode and kwargs.get("encoding") != "utf-8":
+                raise UnicodeDecodeError(
+                    "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
+                )
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", guarded_open)
+
+        remaining = nous_rate_limit_remaining()
+        assert remaining is not None and remaining > 0

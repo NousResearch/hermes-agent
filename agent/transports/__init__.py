@@ -1,14 +1,21 @@
-"""Transport layer types and registry for provider response normalization.
-
-Usage:
-    from agent.transports import get_transport
+"""Transport registry for provider response normalization.
     transport = get_transport("anthropic_messages")
-    result = transport.normalize_response(raw_response)
-"""
+    result = transport.normalize_response(raw_response)"""
 
-from agent.transports.types import NormalizedResponse, ToolCall, Usage, build_tool_call, map_finish_reason  # noqa: F401
+import contextlib
+import importlib
+
+from agent.transports.types import (  # noqa: F401
+    NormalizedResponse,
+    ToolCall,
+    Usage,
+    build_tool_call,
+    map_finish_reason,
+)
 
 _REGISTRY: dict = {}
+_discovered: bool = False
+_TRANSPORT_MODULES = ("anthropic", "codex", "chat_completions", "bedrock")
 
 
 def register_transport(api_mode: str, transport_cls: type) -> None:
@@ -17,35 +24,18 @@ def register_transport(api_mode: str, transport_cls: type) -> None:
 
 
 def get_transport(api_mode: str):
-    """Get a transport instance for the given api_mode.
-
-    Returns None if no transport is registered for this api_mode.
-    This allows gradual migration — call sites can check for None
-    and fall back to the legacy code path.
-    """
-    if not _REGISTRY:
+    """Return a transport instance for ``api_mode``, or None so callers can fall back to the legacy path."""
+    # A directly-imported transport leaves the registry partial; (re)discover on first use and on misses.
+    if not _discovered or api_mode not in _REGISTRY:
         _discover_transports()
     cls = _REGISTRY.get(api_mode)
-    if cls is None:
-        return None
-    return cls()
+    return None if cls is None else cls()
 
 
 def _discover_transports() -> None:
     """Import all transport modules to trigger auto-registration."""
-    try:
-        import agent.transports.anthropic  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        import agent.transports.codex  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        import agent.transports.chat_completions  # noqa: F401
-    except ImportError:
-        pass
-    try:
-        import agent.transports.bedrock  # noqa: F401
-    except ImportError:
-        pass
+    global _discovered
+    _discovered = True
+    for name in _TRANSPORT_MODULES:
+        with contextlib.suppress(ImportError):
+            importlib.import_module(f"agent.transports.{name}")

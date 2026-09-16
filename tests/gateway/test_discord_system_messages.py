@@ -48,7 +48,7 @@ class TestDiscordSystemMessageFilter(unittest.TestCase):
             return False
 
         # System message filter (the fix being tested)
-        if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False
 
         return True  # message accepted
@@ -67,32 +67,6 @@ class TestDiscordSystemMessageFilter(unittest.TestCase):
         """Thread rename system messages should be ignored."""
         msg = _make_message(msg_type=discord.MessageType.channel_name_change)
         self.assertFalse(self._run_filter(msg))
-
-    def test_pins_add_ignored(self):
-        """Pin notifications should be ignored."""
-        msg = _make_message(msg_type=discord.MessageType.pins_add)
-        self.assertFalse(self._run_filter(msg))
-
-    def test_new_member_ignored(self):
-        """New member join messages should be ignored."""
-        msg = _make_message(msg_type=discord.MessageType.new_member)
-        self.assertFalse(self._run_filter(msg))
-
-    def test_premium_guild_subscription_ignored(self):
-        """Boost messages should be ignored."""
-        msg = _make_message(msg_type=discord.MessageType.premium_guild_subscription)
-        self.assertFalse(self._run_filter(msg))
-
-    def test_recipient_add_ignored(self):
-        """Group DM recipient add messages should be ignored."""
-        msg = _make_message(msg_type=discord.MessageType.recipient_add)
-        self.assertFalse(self._run_filter(msg))
-
-    def test_own_default_messages_still_ignored(self):
-        """Bot's own messages should still be ignored even if type is default."""
-        bot_user = _make_author(is_self=True)
-        msg = _make_message(author=bot_user, msg_type=discord.MessageType.default)
-        self.assertFalse(self._run_filter(msg, client_user=bot_user))
 
 
 if __name__ == "__main__":

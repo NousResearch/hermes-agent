@@ -27,33 +27,139 @@ class TestInterruptModule:
         set_interrupt(False)
         assert not is_interrupted()
 
-    def test_thread_safety(self):
-        """Set from one thread targeting another thread's ident."""
-        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
-        set_interrupt(False)
-        # Clear any stale thread idents left by prior tests in this worker.
+    def test_is_thread_interrupted_checks_target_tid_not_caller(self):
+        from tools.interrupt import (
+            set_interrupt, is_interrupted, is_thread_interrupted, _interrupted_threads, _lock,
+        )
         with _lock:
             _interrupted_threads.clear()
+        other_tid = threading.get_ident() + 1
+        set_interrupt(True, thread_id=other_tid)
+        assert not is_interrupted()
+        assert is_thread_interrupted(other_tid)
+        assert is_thread_interrupted(None) is False
+        set_interrupt(False, thread_id=other_tid)
+        assert not is_thread_interrupted(other_tid)
 
-        seen = {"value": False}
 
-        def _checker():
-            while not is_interrupted():
-                time.sleep(0.01)
-            seen["value"] = True
+    def test_clear_current_thread_interrupt_leaves_other_threads(self):
+        """clear_current_thread_interrupt only touches the calling thread."""
+        from tools.interrupt import (
+            set_interrupt, is_interrupted, clear_current_thread_interrupt,
+            _interrupted_threads, _lock,
+        )
+        with _lock:
+            _interrupted_threads.clear()
+        other_tid = threading.get_ident() + 1  # an ident that isn't us
+        set_interrupt(True, thread_id=other_tid)
+        set_interrupt(True)  # current thread
+        assert is_interrupted()
 
-        t = threading.Thread(target=_checker, daemon=True)
-        t.start()
+        clear_current_thread_interrupt()
 
-        time.sleep(0.05)
-        assert not seen["value"]
+        assert not is_interrupted()  # ours cleared
+        with _lock:
+            assert other_tid in _interrupted_threads  # other thread untouched
+            _interrupted_threads.discard(other_tid)
 
-        # Target the checker thread's ident so it sees the interrupt
-        set_interrupt(True, thread_id=t.ident)
-        t.join(timeout=1)
-        assert seen["value"]
+    def test_run_if_not_interrupted_skips_callback_when_already_interrupted(self):
+        from tools.interrupt import run_if_not_interrupted, set_interrupt
 
-        set_interrupt(False, thread_id=t.ident)
+        callbacks = []
+        set_interrupt(True)
+        try:
+            assert run_if_not_interrupted(lambda: callbacks.append("claimed")) is False
+        finally:
+            set_interrupt(False)
+
+        assert callbacks == []
+
+    @pytest.mark.parametrize("callback_should_fail", [False, True])
+    def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(
+        self, callback_should_fail, monkeypatch
+    ):
+        import tools.interrupt as interrupt
+
+        class CallbackFailure(Exception):
+            pass
+
+        original_lock = interrupt._lock
+        attempting_interrupt_lock = threading.Event()
+        interrupt_published = threading.Event()
+        publisher_lock_contention = []
+        callback_observations = []
+        setters = []
+        setter_tids = []
+
+        class ObservedLock:
+            def __enter__(self):
+                if (
+                    threading.current_thread() in setters
+                    and not attempting_interrupt_lock.is_set()
+                ):
+                    acquired = original_lock.acquire(blocking=False)
+                    publisher_lock_contention.append(not acquired)
+                    attempting_interrupt_lock.set()
+                    if acquired:
+                        return self
+                original_lock.acquire()
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                original_lock.release()
+
+        interrupt.set_interrupt(False)
+        with original_lock:
+            baseline = (
+                set(interrupt._interrupted_threads),
+                dict(interrupt._interrupt_reasons),
+            )
+        monkeypatch.setattr(interrupt, "_lock", ObservedLock())
+
+        def publish_interrupt():
+            setter_tids.append(threading.get_ident())
+            try:
+                interrupt.set_interrupt(True)
+                interrupt_published.set()
+            finally:
+                interrupt.set_interrupt(False)
+
+        def callback():
+            setter = threading.Thread(target=publish_interrupt)
+            setters.append(setter)
+            setter.start()
+            assert attempting_interrupt_lock.wait(5)
+            assert publisher_lock_contention == [True]
+            callback_observations.append(interrupt_published.is_set())
+            if callback_should_fail:
+                raise CallbackFailure
+
+        try:
+            if callback_should_fail:
+                with pytest.raises(CallbackFailure):
+                    interrupt.run_if_not_interrupted(callback)
+            else:
+                assert interrupt.run_if_not_interrupted(callback) is True
+            assert interrupt_published.wait(5)
+        finally:
+            for setter in setters:
+                if setter.ident is not None:
+                    setter.join(timeout=5)
+            interrupt.set_interrupt(False)
+
+        assert setters
+        assert all(not setter.is_alive() for setter in setters)
+        assert setter_tids
+        assert callback_observations == [False]
+        assert interrupt_published.is_set()
+        with original_lock:
+            final_state = (
+                set(interrupt._interrupted_threads),
+                dict(interrupt._interrupt_reasons),
+            )
+        assert final_state == baseline
+        assert all(setter_tid not in final_state[0] for setter_tid in setter_tids)
+        assert all(setter_tid not in final_state[1] for setter_tid in setter_tids)
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +171,7 @@ class TestPreToolCheck:
 
     def test_all_tools_skipped_when_interrupted(self):
         """Mock an interrupted agent and verify no tools execute."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         # Build a fake assistant_message with 3 tool calls
         tc1 = MagicMock()
@@ -93,6 +199,11 @@ class TestPreToolCheck:
         agent._interrupt_requested = True
         agent.log_prefix = ""
         agent._persist_session = MagicMock()
+        # PR #72425: execute_tool_calls_* read _incremental_persistence_failed
+        # via getattr at loop top. A bare MagicMock auto-creates a truthy value
+        # for any attribute access, which would short-circuit the interrupt
+        # skip path before any cancelled-tool messages are appended.
+        agent._incremental_persistence_failed = False
 
         # Import and call the method
         import types
@@ -201,6 +312,83 @@ class TestSIGKILLEscalation:
         assert result_holder["value"] is not None
         assert result_holder["value"]["returncode"] == 130
         assert "interrupted" in result_holder["value"]["output"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Regression: _run_tool cleanup on BaseException (issue #35309)
+# ---------------------------------------------------------------------------
+
+class TestRunToolCleanupOnBaseException:
+    """Verify that _run_tool cleans up _interrupted_threads even when
+    _invoke_tool raises a BaseException (e.g. CancelledError).
+
+    Regression test for #35309: without the finally block, a BaseException
+    bypasses ``except Exception``, leaking the worker tid into
+    _interrupted_threads.  ThreadPoolExecutor recycles tids, so the next
+    tool scheduled on the same thread is instantly "interrupted".
+    """
+
+    def test_cleanup_on_base_exception(self):
+        from unittest.mock import MagicMock, patch
+        import types
+        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
+
+        # Clear global state
+        with _lock:
+            _interrupted_threads.clear()
+
+        # Build a minimal mock agent with the attributes _run_tool needs
+        agent = MagicMock()
+        agent._interrupt_requested = False
+        agent._tool_worker_threads = set()
+        agent._tool_worker_threads_lock = threading.Lock()
+
+        # _set_interrupt delegates to the real module
+        def _mock_set_interrupt(active, tid=None):
+            set_interrupt(active, tid)
+        agent._set_interrupt = _mock_set_interrupt
+
+        # _invoke_tool raises BaseException (simulating CancelledError)
+        agent._invoke_tool = MagicMock(side_effect=BaseException("simulated CancelledError"))
+
+        # Bind the real concurrent method so we get _run_tool
+        from run_agent import AIAgent
+        agent._execute_tool_calls_concurrent = types.MethodType(
+            AIAgent._execute_tool_calls_concurrent, agent
+        )
+
+        # Build a single tool call
+        tc = MagicMock()
+        tc.id = "tc_base_exc"
+        tc.function.name = "dummy_tool"
+        tc.function.arguments = "{}"
+
+        assistant_msg = MagicMock()
+        assistant_msg.tool_calls = [tc]
+
+        # _execute_tool_calls_concurrent will submit _run_tool to a
+        # ThreadPoolExecutor.  The BaseException propagates out of the
+        # worker, but the finally block should still clean up.
+        try:
+            agent._execute_tool_calls_concurrent(assistant_msg, [], "default")
+        except Exception:
+            pass  # ThreadPoolExecutor may re-raise
+
+        # After the worker finishes (even with BaseException), the worker
+        # tid should have been removed from _interrupted_threads and
+        # _tool_worker_threads.
+        assert len(agent._tool_worker_threads) == 0, (
+            f"_tool_worker_threads not cleaned up: {agent._tool_worker_threads}"
+        )
+
+        # Verify no stale tid is left in the global interrupt set.  The
+        # worker thread is recycled by ThreadPoolExecutor, so a leaked tid
+        # would poison the next task on that thread.  We cleared the set at
+        # the start and never set any interrupt ourselves, so a leak from
+        # _run_tool is the only way an entry could land here.
+        with _lock:
+            leaked = set(_interrupted_threads)
+        assert leaked == set(), f"leaked tids in _interrupted_threads: {leaked}"
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides
+from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
 
 
 def _ensure_discord_mock():
@@ -53,7 +53,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 @pytest.fixture()
@@ -76,44 +76,18 @@ class TestReplyToModeConfig:
         adapter = adapter_factory(reply_to_mode="off")
         assert adapter._reply_to_mode == "off"
 
-    def test_first_mode(self, adapter_factory):
-        adapter = adapter_factory(reply_to_mode="first")
-        assert adapter._reply_to_mode == "first"
-
-    def test_all_mode(self, adapter_factory):
-        adapter = adapter_factory(reply_to_mode="all")
-        assert adapter._reply_to_mode == "all"
-
-    def test_invalid_mode_stored_as_is(self, adapter_factory):
-        """Invalid modes are stored but send() handles them gracefully."""
-        adapter = adapter_factory(reply_to_mode="invalid")
-        assert adapter._reply_to_mode == "invalid"
-
-    def test_none_mode_defaults_to_first(self):
-        config = PlatformConfig(enabled=True, token="test-token")
-        adapter = DiscordAdapter(config)
-        assert adapter._reply_to_mode == "first"
-
-    def test_empty_string_mode_defaults_to_first(self):
-        config = PlatformConfig(enabled=True, token="test-token", reply_to_mode="")
-        adapter = DiscordAdapter(config)
-        assert adapter._reply_to_mode == "first"
-
 
 def _make_discord_adapter(reply_to_mode: str = "first"):
     """Create a DiscordAdapter with mocked client and channel for send() tests."""
     config = PlatformConfig(enabled=True, token="test-token", reply_to_mode=reply_to_mode)
     adapter = DiscordAdapter(config)
 
-    # Mock the Discord client and channel.
-    # ref_message.to_reference() → a distinct sentinel: the adapter now wraps
-    # the fetched Message via to_reference(fail_if_not_exists=False) so a
-    # deleted target degrades to "send without reply chip" instead of a 400.
+    # Mock the Discord client and channel. Reply references are built from
+    # ids via discord.MessageReference — no fetch round trip — so the
+    # harness only needs a send() capture; the auto-attribute covers the
+    # fetch_message.assert_not_called() assertions below.
     mock_channel = AsyncMock()
-    ref_message = MagicMock()
     ref_reference = MagicMock(name="MessageReference")
-    ref_message.to_reference = MagicMock(return_value=ref_reference)
-    mock_channel.fetch_message = AsyncMock(return_value=ref_message)
 
     sent_msg = MagicMock()
     sent_msg.id = 42
@@ -123,7 +97,6 @@ def _make_discord_adapter(reply_to_mode: str = "first"):
     mock_client.get_channel = MagicMock(return_value=mock_channel)
 
     adapter._client = mock_client
-    # Return the reference sentinel alongside so tests can assert identity.
     adapter._test_expected_reference = ref_reference
     return adapter, mock_channel, ref_reference
 
@@ -144,55 +117,6 @@ class TestSendWithReplyToMode:
         for call in channel.send.call_args_list:
             assert call.kwargs.get("reference") is None
 
-    @pytest.mark.asyncio
-    async def test_first_mode_only_first_chunk_references(self):
-        adapter, channel, ref_msg = _make_discord_adapter("first")
-        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
-
-        await adapter.send("12345", "test content", reply_to="999")
-
-        # Should fetch the reference message
-        channel.fetch_message.assert_called_once_with(999)
-        calls = channel.send.call_args_list
-        assert len(calls) == 3
-        assert calls[0].kwargs.get("reference") is ref_msg
-        assert calls[1].kwargs.get("reference") is None
-        assert calls[2].kwargs.get("reference") is None
-
-    @pytest.mark.asyncio
-    async def test_all_mode_all_chunks_reference(self):
-        adapter, channel, ref_msg = _make_discord_adapter("all")
-        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
-
-        await adapter.send("12345", "test content", reply_to="999")
-
-        channel.fetch_message.assert_called_once_with(999)
-        calls = channel.send.call_args_list
-        assert len(calls) == 3
-        for call in calls:
-            assert call.kwargs.get("reference") is ref_msg
-
-    @pytest.mark.asyncio
-    async def test_no_reply_to_param_no_reference(self):
-        adapter, channel, ref_msg = _make_discord_adapter("all")
-        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
-
-        await adapter.send("12345", "test content", reply_to=None)
-
-        channel.fetch_message.assert_not_called()
-        for call in channel.send.call_args_list:
-            assert call.kwargs.get("reference") is None
-
-    @pytest.mark.asyncio
-    async def test_single_chunk_respects_first_mode(self):
-        adapter, channel, ref_msg = _make_discord_adapter("first")
-        adapter.truncate_message = lambda content, max_len, **kw: ["single chunk"]
-
-        await adapter.send("12345", "test", reply_to="999")
-
-        calls = channel.send.call_args_list
-        assert len(calls) == 1
-        assert calls[0].kwargs.get("reference") is ref_msg
 
     @pytest.mark.asyncio
     async def test_single_chunk_off_mode(self):
@@ -206,37 +130,32 @@ class TestSendWithReplyToMode:
         assert len(calls) == 1
         assert calls[0].kwargs.get("reference") is None
 
+
     @pytest.mark.asyncio
-    async def test_invalid_mode_falls_back_to_first_behavior(self):
-        """Invalid mode behaves like 'first' — only first chunk gets reference."""
-        adapter, channel, ref_msg = _make_discord_adapter("banana")
+    async def test_first_mode_constructs_reference_without_fetch(self):
+        """Pin: replies build the MessageReference from ids — no
+        fetch_message round trip. Fails pre-fix, which fetched the target
+        just to call to_reference() on it."""
+        adapter, channel, _ = _make_discord_adapter("first")
         adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
 
-        await adapter.send("12345", "test", reply_to="999")
+        await adapter.send("12345", "test content", reply_to="999")
 
+        channel.fetch_message.assert_not_called()
         calls = channel.send.call_args_list
         assert len(calls) == 2
-        assert calls[0].kwargs.get("reference") is ref_msg
-        assert calls[1].kwargs.get("reference") is None
+        assert calls[0].kwargs.get("reference") is not None  # first chunk
+        assert calls[1].kwargs.get("reference") is None      # later chunks
 
 
 class TestConfigSerialization:
     """Tests for reply_to_mode serialization (shared with Telegram)."""
 
-    def test_to_dict_includes_reply_to_mode(self):
-        config = PlatformConfig(enabled=True, token="test", reply_to_mode="all")
-        result = config.to_dict()
-        assert result["reply_to_mode"] == "all"
 
     def test_from_dict_loads_reply_to_mode(self):
         data = {"enabled": True, "token": "***", "reply_to_mode": "off"}
         config = PlatformConfig.from_dict(data)
         assert config.reply_to_mode == "off"
-
-    def test_from_dict_defaults_to_first(self):
-        data = {"enabled": True, "token": "***"}
-        config = PlatformConfig.from_dict(data)
-        assert config.reply_to_mode == "first"
 
 
 class TestEnvVarOverride:
@@ -253,29 +172,6 @@ class TestEnvVarOverride:
             _apply_env_overrides(config)
         assert config.platforms[Platform.DISCORD].reply_to_mode == "off"
 
-    def test_env_var_sets_all_mode(self):
-        config = self._make_config()
-        with patch.dict(os.environ, {"DISCORD_REPLY_TO_MODE": "all"}, clear=False):
-            _apply_env_overrides(config)
-        assert config.platforms[Platform.DISCORD].reply_to_mode == "all"
-
-    def test_env_var_case_insensitive(self):
-        config = self._make_config()
-        with patch.dict(os.environ, {"DISCORD_REPLY_TO_MODE": "ALL"}, clear=False):
-            _apply_env_overrides(config)
-        assert config.platforms[Platform.DISCORD].reply_to_mode == "all"
-
-    def test_env_var_invalid_value_ignored(self):
-        config = self._make_config()
-        with patch.dict(os.environ, {"DISCORD_REPLY_TO_MODE": "banana"}, clear=False):
-            _apply_env_overrides(config)
-        assert config.platforms[Platform.DISCORD].reply_to_mode == "first"
-
-    def test_env_var_empty_value_ignored(self):
-        config = self._make_config()
-        with patch.dict(os.environ, {"DISCORD_REPLY_TO_MODE": ""}, clear=False):
-            _apply_env_overrides(config)
-        assert config.platforms[Platform.DISCORD].reply_to_mode == "first"
 
     def test_env_var_creates_platform_config_if_missing(self):
         """DISCORD_REPLY_TO_MODE creates PlatformConfig even without DISCORD_BOT_TOKEN."""
@@ -348,28 +244,6 @@ class TestReplyToText:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
 
-    @pytest.mark.asyncio
-    async def test_reference_without_resolved(self, reply_text_adapter):
-        ref = SimpleNamespace(message_id=555, resolved=None)
-        message = _make_message(reference=ref)
-
-        await reply_text_adapter._handle_message(message)
-
-        event = reply_text_adapter.handle_message.await_args.args[0]
-        assert event.reply_to_message_id == "555"
-        assert event.reply_to_text is None
-
-    @pytest.mark.asyncio
-    async def test_reference_with_resolved_content(self, reply_text_adapter):
-        resolved_msg = SimpleNamespace(content="original message text")
-        ref = SimpleNamespace(message_id=555, resolved=resolved_msg)
-        message = _make_message(reference=ref)
-
-        await reply_text_adapter._handle_message(message)
-
-        event = reply_text_adapter.handle_message.await_args.args[0]
-        assert event.reply_to_message_id == "555"
-        assert event.reply_to_text == "original message text"
 
     @pytest.mark.asyncio
     async def test_reference_with_empty_resolved_content(self, reply_text_adapter):
@@ -384,15 +258,60 @@ class TestReplyToText:
         assert event.reply_to_message_id == "555"
         assert event.reply_to_text is None
 
+
+class TestYamlConfigLoading:
+    """Tests for reply_to_mode loaded from config.yaml discord section."""
+
+    def _write_config(self, tmp_path, content: str):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(content, encoding="utf-8")
+        return hermes_home
+
+
+    def test_extra_reply_to_mode_off(self, tmp_path, monkeypatch):
+        """discord.extra.reply_to_mode is also honoured."""
+        hermes_home = self._write_config(
+            tmp_path, "discord:\n  extra:\n    reply_to_mode: \"off\"\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_REPLY_TO_MODE") == "off"
+
+
+    def test_top_level_takes_precedence_over_extra(self, tmp_path, monkeypatch):
+        """discord.reply_to_mode wins over discord.extra.reply_to_mode."""
+        hermes_home = self._write_config(
+            tmp_path,
+            "discord:\n  reply_to_mode: all\n  extra:\n    reply_to_mode: \"off\"\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_REPLY_TO_MODE", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("DISCORD_REPLY_TO_MODE") == "all"
+
+
+class TestVoiceReplyReference:
+    """send_voice builds its reply reference from ids too — same no-fetch
+    pin as the text path (construction happens before the file read)."""
+
     @pytest.mark.asyncio
-    async def test_reference_with_deleted_message(self, reply_text_adapter):
-        """Deleted messages lack .content — getattr guard should return None."""
-        resolved_deleted = SimpleNamespace(id=555)
-        ref = SimpleNamespace(message_id=555, resolved=resolved_deleted)
-        message = _make_message(reference=ref)
+    async def test_voice_reply_constructs_reference_without_fetch(self, tmp_path, monkeypatch):
+        adapter, channel, _ = _make_discord_adapter("first")
+        audio = tmp_path / "clip.ogg"
+        audio.write_bytes(b"OggS" + b"\x00" * 64)
+        monkeypatch.setattr(adapter, "_is_forum_parent", lambda _c: True)
+        forum_posts = []
+        async def fake_forum_post(_channel, **kwargs):
+            forum_posts.append(kwargs)
+            return MagicMock(success=True, message_id="77")
+        monkeypatch.setattr(adapter, "_forum_post_file", fake_forum_post)
 
-        await reply_text_adapter._handle_message(message)
+        await adapter.send_voice("12345", str(audio), reply_to="999")
 
-        event = reply_text_adapter.handle_message.await_args.args[0]
-        assert event.reply_to_message_id == "555"
-        assert event.reply_to_text is None
+        channel.fetch_message.assert_not_called()

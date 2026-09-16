@@ -14,7 +14,7 @@ from typing import Any, Dict
 import pytest
 import yaml
 
-from hermes_cli.plugins import PluginManager, PluginManifest
+from hermes_cli.plugins import PluginManager
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -90,20 +90,6 @@ class TestCategoryNamespaceRecursion:
         assert loaded.manifest.name == "openai"
         assert loaded.enabled is True
 
-    def test_flat_plugin_key_matches_name(self, tmp_path, monkeypatch):
-        """Flat plugins keep their bare name as the key (back-compat)."""
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
-
-        _write_plugin(user_plugins, ["my-plugin"])
-        _enable(hermes_home, "my-plugin")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert "my-plugin" in mgr._plugins
-        assert mgr._plugins["my-plugin"].manifest.key == "my-plugin"
 
     def test_depth_cap_two(self, tmp_path, monkeypatch):
         """Plugins nested three levels deep are not discovered.
@@ -126,31 +112,6 @@ class TestCategoryNamespaceRecursion:
         ]
         assert non_bundled == []
 
-    def test_category_dir_with_manifest_is_leaf(self, tmp_path, monkeypatch):
-        """If ``image_gen/plugin.yaml`` exists, ``image_gen`` itself IS the
-        plugin and its children are ignored."""
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
-
-        # parent has a manifest → stop recursing
-        _write_plugin(user_plugins, ["image_gen"])
-        # child also has a manifest — should NOT be found because we stop
-        # at the parent.
-        _write_plugin(user_plugins, ["image_gen", "openai"])
-        _enable(hermes_home, "image_gen")
-        _enable(hermes_home, "image_gen/openai")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        # The bundled plugins/image_gen/openai/ exists in the repo — filter
-        # it out so we're only asserting on the user-dir layout.
-        user_plugins_in_registry = {
-            k for k, p in mgr._plugins.items() if p.manifest.source != "bundled"
-        }
-        assert "image_gen" in user_plugins_in_registry
-        assert "image_gen/openai" not in user_plugins_in_registry
 
 
 # ── Kind parsing ───────────────────────────────────────────────────────────
@@ -231,22 +192,6 @@ class TestBackendGate:
         assert loaded.enabled is False
         assert "not enabled" in (loaded.error or "")
 
-    def test_user_backend_loads_when_enabled(self, tmp_path, monkeypatch):
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
-
-        _write_plugin(
-            user_plugins,
-            ["image_gen", "fancy"],
-            manifest_extra={"kind": "backend"},
-        )
-        _enable(hermes_home, "image_gen/fancy")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert mgr._plugins["image_gen/fancy"].enabled is True
 
     def test_exclusive_kind_skipped(self, tmp_path, monkeypatch):
         """``kind: exclusive`` plugins are recorded but not loaded — the

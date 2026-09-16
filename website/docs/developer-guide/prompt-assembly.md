@@ -26,18 +26,34 @@ Primary files:
 
 ## Cached system prompt layers
 
-The cached system prompt is assembled in roughly this order:
+The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
-1. agent identity — `SOUL.md` from `HERMES_HOME` when available, otherwise falls back to `DEFAULT_AGENT_IDENTITY` in `prompt_builder.py`
-2. tool-aware behavior guidance
-3. Honcho static block (when active)
-4. optional system message
-5. frozen MEMORY snapshot
-6. frozen USER profile snapshot
-7. skills index
-8. context files (`AGENTS.md`, `.cursorrules`, `.cursor/rules/*.mdc`) — SOUL.md is **not** included here when it was already loaded as the identity in step 1
-9. timestamp / optional session ID
-10. platform hint
+1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, coding operating brief
+2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot, operator instructions and platform hints
+3. **volatile** — skills index, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
+
+The final system prompt is then joined as: `stable` → `context` → `volatile`.
+
+This ordering matters for precedence discussions:
+- skills are part of the **stable** tier
+- memory/profile snapshots are part of the **volatile** tier
+- both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
+
+Inside the context tier the shared project files come **before** anything naming the current worktree.
+Sessions of one project running in different git worktrees then share a prompt prefix covering the whole
+context block, instead of stopping at the first cwd-dependent line — that prefix is what a longest-prefix
+provider cache reuses. A session with no workspace snapshot keeps its trailing guidance in the stable
+tier; the runtime environment block always ends the volatile tier.
+
+Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conversation_loop.py`) reads
+the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
+closing marker at the absolute end distinguishing this layout from legacy prose quoting the heading.
+The runtime boundary follows all project, operator, memory and plugin text, so examples in those
+blocks do not masquerade as the runtime cwd. Model/provider are read before the runtime boundary,
+excluding embedder descriptions. `Platform:` is deliberately not an identity field: a surface switch
+(desktop ↔ TUI) keeps the stored bytes and delivers the current surface's guidance as a one-shot note on
+the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). Legacy prompts retain their original
+host-before-context anchor, so prompts persisted before the reorder still validate.
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
 
@@ -53,10 +69,10 @@ You value correctness, clarity, and efficiency.
 ...
 
 # Layer 2: Tool-aware behavior guidance
-You have persistent memory across sessions. Save durable facts using
-the memory tool: user preferences, environment details, tool quirks,
-and stable conventions. Memory is injected into every turn, so keep
-it compact and focused on facts that will still matter later.
+Task-learned procedures, pitfalls, and task-specific preferences belong
+in skills. Memory is the narrow exception for facts that apply to EVERY
+session regardless of task. Skill-writing instructions appear here only
+when skill_manage is available; its absence does not widen memory's scope.
 ...
 When the user references something from a past conversation or you
 suspect relevant cross-session context exists, use session_search
@@ -116,6 +132,43 @@ You are a CLI AI Agent. Try not to use markdown but simple text
 renderable inside a terminal.
 ```
 
+## Customizing platform hints
+
+The platform hint (Layer 10 above) is the per-surface guidance Hermes
+injects for Telegram, WhatsApp, Slack, CLI, and other platforms — for
+example "you are on a terminal, avoid Markdown." The built-in defaults
+live in `PLATFORM_HINTS` (`agent/system_prompt.py`); plugin-provided
+platforms supply theirs through the platform registry.
+
+An administrator can append to or replace a single platform's hint from
+`config.yaml` via the top-level `platform_hints` key, without touching
+any other platform:
+
+```yaml
+platform_hints:
+  whatsapp:
+    append: >
+      When tabular output would be useful, invoke the table_formatting
+      skill instead of emitting a Markdown table.
+  slack:
+    replace: "You are on Slack. Keep responses tight and avoid wide tables."
+  telegram: "Prefer short messages; split long answers."   # shorthand = append
+```
+
+- `append` — keep the built-in hint and add the extra text after it.
+- `replace` — substitute the built-in hint entirely.
+- A bare string — shorthand for `append`.
+- `replace` wins over `append` when both are present.
+- A malformed entry is ignored defensively and falls back to the
+  unmodified default, so a bad config value can never break prompt
+  assembly or leak across platforms.
+
+The override is resolved when the system prompt is built (session start,
+and again on compaction since that rebuilds the prompt). It produces a
+byte-stable hint for a fixed config, so it lives in the **stable** tier
+alongside the built-in hint and does not break prompt caching — it is
+not a live mid-session mutation of a frozen prompt.
+
 ## How SOUL.md appears in the prompt
 
 `SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:
@@ -128,7 +181,7 @@ def load_soul_md() -> Optional[str]:
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
     content = _scan_context_content(content, "SOUL.md")  # Security scan
-    content = _truncate_content(content, "SOUL.md")       # Cap at 20k chars
+    content = _truncate_content(content, "SOUL.md")       # Cap scales with model context window (20k floor); config override wins
     return content
 ```
 
@@ -137,13 +190,16 @@ When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_
 If `SOUL.md` doesn't exist, the system falls back to:
 
 ```
-You are Hermes Agent, an intelligent AI assistant created by Nous Research.
-You are helpful, knowledgeable, and direct. You assist users with a wide
-range of tasks including answering questions, writing and editing code,
-analyzing information, creative work, and executing actions via your tools.
-You communicate clearly, admit uncertainty when appropriate, and prioritize
-being genuinely useful over being verbose unless otherwise directed below.
-Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length
+of your reply to the weight of the ask — a one-line question gets a
+one-line answer, and finished work gets a short report of what changed,
+what's verified, and what's left, never a replay of the process. No
+filler ("Great question," "I'd be happy to"), no restating the request
+back, no re-summarizing what you already said, no narrating tool calls
+the user can see. Plain claims over adjectives; when unsure, say so
+plainly. Agree because it's right, not because the user said it. Depth
+is earned — give it when the user asks for detail, teaches, or the
+stakes demand it, not by default.
 ```
 
 ## How context files are injected
@@ -195,7 +251,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 All context files are:
 - **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts)
-- **Truncated** — capped at 20,000 characters using 70/20 head/tail ratio with a truncation marker
+- **Truncated** — capped at `context_file_max_chars` characters using a 70/20 head/tail split with a truncation marker. The cap scales with the model's context window (20,000-char floor, 500K ceiling); an explicit `context_file_max_chars` in `config.yaml` always wins.
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
 ## API-call-time-only layers
@@ -205,13 +261,15 @@ These are intentionally *not* persisted as part of the cached system prompt:
 - `ephemeral_system_prompt`
 - prefill messages
 - gateway-derived session context overlays
-- later-turn Honcho recall injected into the current-turn user message
+- later-turn Honcho/external recall injected into the current-turn user message
+
+`pre_llm_call` plugin context also lands in this API-call-time path: it is appended to the current turn's **user message**, not written into the cached system prompt. When multiple plugins return context, Hermes concatenates those context blocks (see [Hooks → `pre_llm_call`](../user-guide/features/hooks.md#pre_llm_call)).
 
 This separation keeps the stable prefix stable for caching.
 
 ## Memory snapshots
 
-Local memory and user profile data are injected as frozen snapshots at session start. Mid-session writes update disk state but do not mutate the already-built system prompt until a new session or forced rebuild occurs.
+Local memory and user profile data are captured in the system prompt's **volatile tier**. Mid-session writes update disk state but do not mutate the already-built cached system prompt until a rebuild path runs (new session, or explicit invalidation/rebuild flow such as compression-triggered rebuild).
 
 ## Context files
 
@@ -229,6 +287,30 @@ Long files are truncated before injection.
 ## Skills index
 
 The skills system contributes a compact skills index to the prompt when skills tooling is available.
+
+## Supported prompt customization surfaces
+
+Most users should treat `agent/prompt_builder.py` as implementation code, not a configuration surface. The supported customization path is to change the prompt inputs Hermes already loads, rather than editing Python templates in place.
+
+### Use these surfaces first
+
+- `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
+- `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
+- Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
+- Skills — package reusable workflows and references without editing core prompt code.
+- Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.
+- Ephemeral overlays such as `HERMES_EPHEMERAL_SYSTEM_PROMPT` or prefill messages — add turn-scoped guidance that should not become part of the cached prompt prefix.
+
+### When to edit code instead
+
+Edit `agent/prompt_builder.py` only if you are intentionally maintaining a fork or contributing upstream behavior changes. That file assembles the prompt plumbing, cache boundaries, and injection order for every session. Direct edits there are global product changes, not per-user prompt customization.
+
+In other words:
+
+- if you want a different assistant identity, edit `SOUL.md`
+- if you want different repo rules, edit project context files
+- if you want reusable operating procedures, add or modify skills
+- if you want to change how Hermes assembles prompts for everyone, change Python and treat it as a code contribution
 
 ## Why prompt assembly is split this way
 

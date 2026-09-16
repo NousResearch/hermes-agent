@@ -4,18 +4,18 @@ Tests for mcp_serve — Hermes MCP server.
 Three layers of tests:
 1. Unit tests — helpers, content extraction, attachment parsing
 2. EventBridge tests — queue mechanics, cursors, waiters, concurrency
-3. End-to-end tests — call actual MCP tools through FastMCP's tool manager
+3. End-to-end tests — call actual MCP tools through the MCPServer's public API
    with real session data in SQLite and sessions.json
 """
 
 import asyncio
+import inspect
 import json
 import os
 import sqlite3
 import time
 import threading
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -207,6 +207,67 @@ def mock_session_db(tmp_path, populated_sessions_dir):
     return TestSessionDB()
 
 
+class _FakeTool:
+    def __init__(self, fn):
+        self.name = fn.__name__
+        self.description = inspect.getdoc(fn) or ""
+        self.fn = fn
+
+
+class _FakeToolManager:
+    def __init__(self):
+        self._tools = {}
+
+    def add_tool(self, fn):
+        self._tools[fn.__name__] = _FakeTool(fn)
+
+    async def call_tool(self, name, args=None):
+        return self._tools[name].fn(**(args or {}))
+
+    def list_tools(self):
+        return list(self._tools.values())
+
+
+class _FakeMCPServer:
+    """Stand-in for ``mcp.server.MCPServer`` (``FastMCP`` before mcp 2.0)."""
+
+    def __init__(self, *args, **kwargs):
+        self._tool_manager = _FakeToolManager()
+
+    def tool(self):
+        def decorator(fn):
+            self._tool_manager.add_tool(fn)
+            return fn
+
+        return decorator
+
+    async def call_tool(self, name, args=None):
+        """Dispatch straight to the handler, with no schema validation.
+
+        Mirrors ``MCPServer.call_tool``'s name so ``_run_tool`` works against
+        either server, but deliberately skips the SDK's pydantic coercion:
+        the parameter-coercion tests exist to prove the handlers' own
+        ``_coerce_int`` guards hold when a client sends a wrongly-typed value,
+        which the real server would reject before the handler ever ran.
+        """
+        return await self._tool_manager.call_tool(name, args)
+
+
+@pytest.fixture
+def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
+    monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
+    monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "MCPServer", _FakeMCPServer)
+
+    bridge = mcp_serve.EventBridge()
+    server = mcp_serve.create_mcp_server(event_bridge=bridge)
+    return server, bridge
+
+
 # ---------------------------------------------------------------------------
 # 1. UNIT TESTS — helpers, extraction, attachments
 # ---------------------------------------------------------------------------
@@ -224,10 +285,32 @@ class TestImports:
 
 
 class TestHelpers:
+    def test_load_session_messages_closes_database_on_error(self, monkeypatch):
+        import mcp_serve
+
+        db = MagicMock()
+        db.get_messages.side_effect = RuntimeError("read failed")
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+
+        messages, error = mcp_serve._load_session_messages("s1")
+
+        assert messages is None
+        assert "read failed" in error
+        db.close.assert_called_once()
+
     def test_get_sessions_dir(self, tmp_path):
         from mcp_serve import _get_sessions_dir
         result = _get_sessions_dir()
         assert result == tmp_path / "sessions"
+
+    def test_coerce_int_handles_invalid_and_out_of_range_values(self):
+        from mcp_serve import _coerce_int
+
+        assert _coerce_int(None, default=50, minimum=1, maximum=200) == 50
+        assert _coerce_int("20", default=50, minimum=1, maximum=200) == 20
+        assert _coerce_int("bad", default=50, minimum=1, maximum=200) == 50
+        assert _coerce_int(999, default=50, minimum=1, maximum=200) == 200
+        assert _coerce_int(-5, default=50, minimum=1, maximum=200) == 1
 
     def test_load_sessions_index_empty(self, sessions_dir, monkeypatch):
         import mcp_serve
@@ -435,7 +518,7 @@ class TestEventBridge:
 
 
 # ---------------------------------------------------------------------------
-# 3. END-TO-END TESTS — call MCP tools through FastMCP server
+# 3. END-TO-END TESTS — call MCP tools through the MCP server
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -453,11 +536,24 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
 
 
 def _run_tool(server, name, args=None):
-    """Call an MCP tool through FastMCP's tool manager and return parsed JSON."""
+    """Call an MCP tool through the server's public API and return parsed JSON.
+
+    Goes through ``MCPServer.call_tool`` rather than the private
+    ``_tool_manager`` the FastMCP-era version reached into: mcp 2.0's
+    ``ToolManager.call_tool`` gained a required ``context`` argument, and the
+    public method is what an actual MCP client exercises anyway. It returns a
+    ``CallToolResult``, so unwrap the text content block our tools produce.
+    """
     result = asyncio.get_event_loop().run_until_complete(
-        server._tool_manager.call_tool(name, args or {})
+        server.call_tool(name, args or {})
     )
-    return json.loads(result) if isinstance(result, str) else result
+    if isinstance(result, str):  # FastMCP-era shape
+        return json.loads(result)
+    text = "".join(
+        block.text for block in (getattr(result, "content", None) or [])
+        if getattr(block, "text", None)
+    )
+    return json.loads(text) if text else result
 
 
 @pytest.fixture
@@ -689,6 +785,49 @@ class TestE2EEventsWait:
         result = _run_tool(server, "events_wait", {"timeout_ms": 999999})
         assert result["event"] is not None
 
+class TestMCPToolParameterCoercion:
+    def test_conversations_list_coerces_string_limit(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(server, "conversations_list", {"limit": "2"})
+        assert result["count"] == 2
+
+    def test_messages_read_coerces_string_limit(self, fake_mcp_server, _event_loop):
+        server, _ = fake_mcp_server
+        result = _run_tool(
+            server,
+            "messages_read",
+            {"session_key": "agent:main:telegram:dm:123456", "limit": "2"},
+        )
+        assert result["count"] == 2
+
+    def test_events_poll_coerces_string_cursor_and_limit(self, fake_mcp_server, _event_loop):
+        from mcp_serve import QueueEvent
+
+        server, bridge = fake_mcp_server
+        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="a"))
+        bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="b"))
+
+        result = _run_tool(server, "events_poll", {"after_cursor": "0", "limit": "1"})
+        assert len(result["events"]) == 1
+        assert result["next_cursor"] == 1
+
+    def test_events_wait_coerces_invalid_timeout(self, fake_mcp_server, _event_loop):
+        from mcp_serve import QueueEvent
+
+        server, bridge = fake_mcp_server
+        bridge._enqueue(
+            QueueEvent(
+                cursor=0,
+                type="message",
+                session_key="test",
+                data={"content": "waiting for this"},
+            )
+        )
+
+        result = _run_tool(server, "events_wait", {"after_cursor": "0", "timeout_ms": "bad"})
+        assert result["event"] is not None
+        assert result["event"]["content"] == "waiting for this"
+
 
 class TestE2EMessagesSend:
     def test_send_missing_args(self, mcp_server_e2e, _event_loop):
@@ -727,18 +866,45 @@ class TestE2EChannelsList:
         assert result["channels"][0]["target"] == "slack:C1234"
 
     def test_channels_with_directory(self, mcp_server_e2e, _event_loop, monkeypatch):
+        """Populated channel_directory.json should be unwrapped via the 'platforms' key.
+
+        Regression test for issue #21474: the writer wraps platforms under
+        {"updated_at": ..., "platforms": {...}} but the reader was iterating
+        directory.items() directly, so channels_list always returned 0.
+        """
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {
-            "telegram": [
-                {"id": "123456", "name": "Alice", "type": "dm"},
-                {"id": "-100999", "name": "Dev Group", "type": "group"},
-            ],
+            "updated_at": "2026-05-07T12:00:00",
+            "platforms": {
+                "telegram": [
+                    {"id": "123456", "name": "Alice", "type": "dm"},
+                    {"id": "-100999", "name": "Dev Group", "type": "group"},
+                ],
+                "discord": [
+                    {"id": "789", "name": "general", "type": "text"},
+                ],
+            },
         })
-        # Need to recreate server to pick up the new mock
-        server, bridge = mcp_server_e2e
-        # The tool closure already captured the old mock, so test the function directly
-        directory = mcp_serve._load_channel_directory()
-        assert len(directory["telegram"]) == 2
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "channels_list")
+        assert result["count"] == 3
+        targets = {c["target"] for c in result["channels"]}
+        assert targets == {"telegram:123456", "telegram:-100999", "discord:789"}
+
+    def test_channels_with_directory_platform_filter(self, mcp_server_e2e, _event_loop, monkeypatch):
+        """Platform filter should work against the wrapped 'platforms' payload."""
+        import mcp_serve
+        monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {
+            "updated_at": "2026-05-07T12:00:00",
+            "platforms": {
+                "telegram": [{"id": "123456", "name": "Alice", "type": "dm"}],
+                "discord": [{"id": "789", "name": "general", "type": "text"}],
+            },
+        })
+        server, _ = mcp_server_e2e
+        result = _run_tool(server, "channels_list", {"platform": "discord"})
+        assert result["count"] == 1
+        assert result["channels"][0]["target"] == "discord:789"
 
 
 class TestE2EPermissions:
@@ -1104,6 +1270,155 @@ class TestEventBridgePollE2E:
         r2 = bridge.poll_events(after_cursor=r1["next_cursor"])
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
+
+    def test_poll_picks_up_new_conversation_on_db_change(
+        self, tmp_path, monkeypatch
+    ):
+        """A brand-new conversation must be picked up on the tick where
+        state.db changes.
+
+        Since #9006 the routing index lives IN state.db (session rows carry
+        session_key/origin metadata), so a new conversation's registration and
+        its first message land in the same file — a single mtime check covers
+        both and the old dual-file (sessions.json + state.db) race (#8925) is
+        structurally impossible. This test asserts the index is refreshed on a
+        db-mtime bump, so a conversation the bridge has never seen before is
+        emitted on the same tick.
+        """
+        import mcp_serve
+
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
+
+        # _poll_once reads <HERMES_HOME>/state.db for its mtime gate; the autouse
+        # fixture points HERMES_HOME at tmp_path.
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+
+        session_id = "20260329_150000_late_register"
+        # The routing index now comes from _load_sessions_index() (state.db
+        # primary, sessions.json fallback). Stub it to return the new
+        # conversation, simulating the gateway having just written the
+        # session row + first message in one state.db transaction.
+        monkeypatch.setattr(
+            mcp_serve, "_load_sessions_index",
+            lambda: {
+                "agent:main:telegram:dm:late": {
+                    "session_id": session_id,
+                    "platform": "telegram",
+                    "origin": {"platform": "telegram", "chat_id": "late"},
+                }
+            },
+        )
+
+        class DB:
+            def get_messages(self, sid):
+                return [{
+                    "id": 1, "role": "user",
+                    "content": "Hello from a freshly-registered conversation",
+                    "timestamp": "2026-03-29T15:00:00",
+                }]
+
+        bridge = mcp_serve.EventBridge()
+        # Bridge has never seen this db state (mtime differs) and has an
+        # empty cached index — exactly the state after a new conversation's
+        # first write.
+        bridge._state_db_mtime = 0.0
+        assert bridge._cached_sessions_index == {}
+
+        bridge._poll_once(DB())
+
+        result = bridge.poll_events(after_cursor=0)
+        assert len(result["events"]) == 1
+        assert result["events"][0]["session_key"] == "agent:main:telegram:dm:late"
+        assert result["events"][0]["content"].startswith("Hello from a freshly")
+
+    def test_startup_baseline_suppresses_historical_replay(self, tmp_path, monkeypatch):
+        """start()'s baseline records existing history without emitting it, so a
+        fresh EventBridge does not replay stored messages on startup; only
+        messages written after the baseline are delivered."""
+        import mcp_serve
+
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+        session_id = "20260329_150000_history"
+        monkeypatch.setattr(
+            mcp_serve, "_load_sessions_index",
+            lambda: {
+                "agent:main:telegram:dm:hist": {
+                    "session_id": session_id,
+                    "platform": "telegram",
+                    "origin": {"platform": "telegram", "chat_id": "hist"},
+                }
+            },
+        )
+        store = [{
+            "id": 1, "role": "user", "content": "pre-existing history",
+            "timestamp": "2026-03-29T15:00:00",
+        }]
+
+        class DB:
+            def get_messages(self, sid):
+                return list(store)
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: DB())
+
+        bridge = mcp_serve.EventBridge()
+        bridge._establish_baseline()
+        # Messages that existed before start() are not replayed.
+        assert bridge.poll_events(after_cursor=0)["events"] == []
+
+        # A message written after the baseline IS delivered on the next tick.
+        store.append({
+            "id": 2, "role": "assistant", "content": "arrived after start",
+            "timestamp": "2026-03-29T15:05:00",
+        })
+        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        bridge._poll_once(DB())
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert len(events) == 1
+        assert events[0]["content"] == "arrived after start"
+
+    def test_new_conversation_after_baseline_is_delivered(self, tmp_path, monkeypatch):
+        """A conversation that first appears AFTER the startup baseline is still
+        delivered on its state.db-change tick — sessions absent from the
+        baseline default to last_seen=0.0."""
+        import mcp_serve
+
+        db_path = tmp_path / "state.db"
+        db_path.write_text("placeholder")
+        index: dict = {}
+        messages: dict = {}
+        monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: dict(index))
+
+        class DB:
+            def get_messages(self, sid):
+                return list(messages.get(sid, []))
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: DB())
+
+        bridge = mcp_serve.EventBridge()
+        bridge._establish_baseline()  # no conversations exist yet
+
+        # The gateway registers a brand-new conversation + its first message.
+        sid = "20260329_150000_fresh"
+        index["agent:main:telegram:dm:fresh"] = {
+            "session_id": sid,
+            "platform": "telegram",
+            "origin": {"platform": "telegram", "chat_id": "fresh"},
+        }
+        messages[sid] = [{
+            "id": 1, "role": "user", "content": "hello after baseline",
+            "timestamp": "2026-03-29T15:10:00",
+        }]
+        os.utime(db_path, None)
+        bridge._poll_once(DB())
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert len(events) == 1
+        assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
+        assert events[0]["content"] == "hello after baseline"
 
     def test_poll_interval_is_200ms(self):
         """Verify the poll interval constant."""

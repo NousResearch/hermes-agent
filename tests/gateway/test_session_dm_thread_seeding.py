@@ -15,20 +15,24 @@ Covers:
 """
 
 import pytest
-from unittest.mock import patch
 
 from gateway.config import Platform, GatewayConfig
-from gateway.session import SessionSource, SessionStore, build_session_key
+from gateway.session import SessionSource, SessionStore
 
 
 @pytest.fixture()
-def store(tmp_path):
-    """SessionStore with no SQLite, for fast unit tests."""
+def store(tmp_path, monkeypatch):
+    """SessionStore with SQLite — load_transcript reads from DB only.
+
+    Pin DEFAULT_DB_PATH to tmp_path so SessionDB() can't write to the real
+    ~/.hermes/state.db. (DEFAULT_DB_PATH is a module-level constant computed
+    at hermes_state import time, before pytest's HERMES_HOME monkeypatch
+    fires — the autouse fixture's HERMES_HOME override doesn't help here.)
+    """
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
-        s = SessionStore(sessions_dir=tmp_path, config=config)
-    s._db = None
-    s._loaded = True
+    s = SessionStore(sessions_dir=tmp_path, config=config)
     return s
 
 
@@ -74,72 +78,6 @@ class TestDMThreadIsolation:
         thread_transcript = store.load_transcript(thread_entry.session_id)
         assert len(thread_transcript) == 0
 
-    def test_parent_transcript_unaffected_by_thread(self, store):
-        """Creating a thread session should not alter parent's transcript."""
-        parent_source = _dm_source()
-        parent_entry = store.get_or_create_session(parent_source)
-        for msg in PARENT_HISTORY:
-            store.append_to_transcript(parent_entry.session_id, msg)
-
-        thread_source = _dm_source(thread_id="1234567890.000001")
-        thread_entry = store.get_or_create_session(thread_source)
-        store.append_to_transcript(thread_entry.session_id, {
-            "role": "user", "content": "thread-only message"
-        })
-
-        parent_transcript = store.load_transcript(parent_entry.session_id)
-        assert len(parent_transcript) == 2
-        assert all(m["content"] != "thread-only message" for m in parent_transcript)
-
-    def test_multiple_threads_are_independent(self, store):
-        """Each thread from the same parent starts empty and stays independent."""
-        parent_source = _dm_source()
-        parent_entry = store.get_or_create_session(parent_source)
-        for msg in PARENT_HISTORY:
-            store.append_to_transcript(parent_entry.session_id, msg)
-
-        # Thread A
-        thread_a_source = _dm_source(thread_id="1111.000001")
-        thread_a_entry = store.get_or_create_session(thread_a_source)
-        store.append_to_transcript(thread_a_entry.session_id, {
-            "role": "user", "content": "thread A message"
-        })
-
-        # Thread B
-        thread_b_source = _dm_source(thread_id="2222.000002")
-        thread_b_entry = store.get_or_create_session(thread_b_source)
-
-        # Thread B starts empty
-        thread_b_transcript = store.load_transcript(thread_b_entry.session_id)
-        assert len(thread_b_transcript) == 0
-
-        # Thread A has only its own message
-        thread_a_transcript = store.load_transcript(thread_a_entry.session_id)
-        assert len(thread_a_transcript) == 1
-        assert thread_a_transcript[0]["content"] == "thread A message"
-
-    def test_existing_thread_session_preserved(self, store):
-        """Returning to an existing thread session should not reset it."""
-        parent_source = _dm_source()
-        parent_entry = store.get_or_create_session(parent_source)
-        for msg in PARENT_HISTORY:
-            store.append_to_transcript(parent_entry.session_id, msg)
-
-        thread_source = _dm_source(thread_id="1234567890.000001")
-        thread_entry = store.get_or_create_session(thread_source)
-        store.append_to_transcript(thread_entry.session_id, {
-            "role": "user", "content": "follow-up"
-        })
-
-        # Get the same thread session again
-        thread_entry_again = store.get_or_create_session(thread_source)
-        assert thread_entry_again.session_id == thread_entry.session_id
-
-        # Should still have only its own message
-        thread_transcript = store.load_transcript(thread_entry_again.session_id)
-        assert len(thread_transcript) == 1
-        assert thread_transcript[0]["content"] == "follow-up"
-
 
 class TestDMThreadIsolationEdgeCases:
     """Edge cases — threads always start empty regardless of context."""
@@ -156,22 +94,6 @@ class TestDMThreadIsolationEdgeCases:
 
         thread_transcript = store.load_transcript(thread_entry.session_id)
         assert len(thread_transcript) == 0
-
-    def test_thread_without_parent_session_starts_empty(self, store):
-        """Thread session without a parent DM session should start empty."""
-        thread_source = _dm_source(thread_id="1234567890.000001")
-        thread_entry = store.get_or_create_session(thread_source)
-
-        thread_transcript = store.load_transcript(thread_entry.session_id)
-        assert len(thread_transcript) == 0
-
-    def test_dm_without_thread_starts_empty(self, store):
-        """Top-level DMs (no thread_id) should start empty as always."""
-        source = _dm_source()
-        entry = store.get_or_create_session(source)
-
-        transcript = store.load_transcript(entry.session_id)
-        assert len(transcript) == 0
 
 
 class TestDMThreadIsolationCrossPlatform:

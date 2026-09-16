@@ -1,13 +1,17 @@
-import { THINKING_COT_MAX } from '../config/limits.js'
+import { stripAnsi } from '@hermes/shared/ansi'
+import { compactNumber } from '@hermes/shared/format'
+
+import {
+  LIVE_RENDER_MAX_CHARS,
+  LIVE_RENDER_MAX_LINES,
+  THINKING_COT_MAX,
+  VERBOSE_TRAIL_MAX_CHARS,
+  VERBOSE_TRAIL_MAX_LINES
+} from '../config/limits.js'
+import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
-const ESC = String.fromCharCode(27)
-const ANSI_RE = new RegExp(`${ESC}\\[[0-9;]*m`, 'g')
 const WS_RE = /\s+/g
-
-export const stripAnsi = (s: string) => s.replace(ANSI_RE, '')
-
-export const hasAnsi = (s: string) => s.includes(`${ESC}[`) || s.includes(`${ESC}]`)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -60,20 +64,103 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
 
   if (!preview) {
-    return `[[ [${fmtK(lineCount)} lines] ]]`
+    return `[[ [${compactNumber(lineCount)} lines] ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
   return tail
-    ? `[[ ${head.trimEnd()}.. [${fmtK(lineCount)} lines] .. ${tail.trimStart()} ]]`
-    : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
+    ? `[[ ${head.trimEnd()}.. [${compactNumber(lineCount)} lines] .. ${tail.trimStart()} ]]`
+    : `[[ ${preview} [${compactNumber(lineCount)} lines] ]]`
 }
 
+const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
+const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|')})\\.{0,3}\\s*`, 'giu')
+
+export const cleanThinkingText = (reasoning: string) =>
+  reasoning
+    .split('\n')
+    .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
+    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
+    .join('\n')
+    .replace(/([^\n])(?=\*\*[^*\n][^\n]*?\*\*)/g, '$1\n\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+// cleanThinkingText runs several full-string regex passes (split/map/filter/join/replace).
+// reasoning grows on every streamed token, so without a pre-bound this re-cleans the whole
+// accumulated string on every chunk — O(n) work per token, O(n^2) over a stream. Only the
+// tail is ever displayed (boundedLiveRenderText caps it further downstream), so bound the
+// input here first. Headroom over LIVE_RENDER_MAX_CHARS keeps line-boundary trimming inside
+// cleanThinkingText accurate even after slicing mid-line.
+const THINKING_CLEAN_TAIL_BOUND = LIVE_RENDER_MAX_CHARS * 1.5
+
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
-  const raw = reasoning.trim()
+  const bounded = reasoning.length > THINKING_CLEAN_TAIL_BOUND ? reasoning.slice(-THINKING_CLEAN_TAIL_BOUND) : reasoning
+  const raw = cleanThinkingText(bounded)
 
   return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
+}
+
+export const boundedLiveRenderText = (
+  text: string,
+  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
+) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+
+const boundedRenderText = (
+  text: string,
+  labelPrefix: string,
+  { maxChars, maxLines }: { maxChars: number; maxLines: number }
+) => {
+  if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
+    return text
+  }
+
+  let start = 0
+  let idx = text.length
+
+  for (let seen = 0; seen < maxLines && idx > 0; seen++) {
+    idx = text.lastIndexOf('\n', idx - 1)
+    start = idx < 0 ? 0 : idx + 1
+
+    if (idx < 0) {
+      break
+    }
+  }
+
+  const lineStart = start
+  start = Math.max(lineStart, text.length - maxChars)
+
+  if (start > lineStart) {
+    const nextBreak = text.indexOf('\n', start)
+
+    if (nextBreak >= 0 && nextBreak < text.length - 1) {
+      start = nextBreak + 1
+    }
+  }
+
+  const tail = text.slice(start).trimStart()
+  const omittedLines = countNewlines(text, start)
+  const omittedChars = Math.max(0, text.length - tail.length)
+
+  const label =
+    omittedLines > 0
+      ? `[${labelPrefix}; omitted ${compactNumber(omittedLines)} lines / ${compactNumber(omittedChars)} chars]\n`
+      : `[${labelPrefix}; omitted ${compactNumber(omittedChars)} chars]\n`
+
+  return `${label}${tail}`
+}
+
+const countNewlines = (text: string, end: number) => {
+  let count = 0
+
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      count++
+    }
+  }
+
+  return count
 }
 
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
@@ -92,10 +179,49 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string) => {
+export const buildToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  note?: string,
+  duration?: number
+) => {
   const detail = compactPreview(note ?? '', 72)
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? ' ✗' : ' ✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+}
+
+const verboseToolBlock = (label: string, text?: string) => {
+  const body = (text ?? '').trim()
+
+  // Persisted trail blocks are kept all session and rendered expanded by
+  // default — cap to a small readable preview (NOT the 16KB live-render
+  // budget) so a large tool output can't balloon the Ink render tree and
+  // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
+  return body
+    ? `${label}:\n${boundedLiveRenderText(body, {
+        maxChars: VERBOSE_TRAIL_MAX_CHARS,
+        maxLines: VERBOSE_TRAIL_MAX_LINES
+      })}`
+    : ''
+}
+
+export const buildVerboseToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  duration?: number,
+  argsText?: string,
+  resultText?: string
+) => {
+  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+    .filter(Boolean)
+    .join('\n')
+
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
+
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
@@ -107,10 +233,10 @@ export const parseToolTrailResultLine = (line: string) => {
 
   const mark = line.endsWith(' ✗') ? '✗' : '✓'
   const body = line.slice(0, -2)
-  const [call, detail] = body.split(' :: ', 2)
+  const sep = body.indexOf(' :: ')
 
-  if (detail != null) {
-    return { call, detail, mark }
+  if (sep >= 0) {
+    return { call: body.slice(0, sep), detail: body.slice(sep + 4), mark }
   }
 
   const legacy = body.indexOf(': ')
@@ -120,6 +246,12 @@ export const parseToolTrailResultLine = (line: string) => {
   }
 
   return { call: body, detail: '', mark }
+}
+
+export const splitToolDuration = (call: string) => {
+  const match = call.match(/^(.*?)( \(\d+(?:\.\d)?s\))$/)
+
+  return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
@@ -185,11 +317,66 @@ export const estimateRows = (text: string, w: number, compact = false) => {
   return Math.max(1, rows)
 }
 
+/**
+ * Render an unanswered clarify prompt (timed out, or cancelled with Esc/Ctrl+C)
+ * as a persistent transcript block.  The live `ClarifyPrompt` overlay is torn
+ * down the moment the turn settles, so without this the question + options
+ * vanish from the screen while the agent's follow-up still refers to "the
+ * options above".  Mirrors the option formatting in ClarifyPrompt (the same
+ * 1-based numbered list) so the persisted record reads identically to what was
+ * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
+ */
+export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
+  const head = `ask ${question.trim()}`
+  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
+
+  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
+}
+
+/**
+ * Batch counterpart of `formatAbandonedClarify`: every question on its own
+ * line, answered ones keeping their locked answer (partials survive a
+ * timeout server-side, so the record must show what was actually sent).
+ */
+export const formatAbandonedClarifyBatch = (
+  questions: { qid: string; question: string }[],
+  answers: Record<string, string>,
+  reason: string
+) => {
+  const lines = questions.map(q => {
+    const answer = answers[q.qid]
+
+    return answer ? `  ✓ ${q.question} → ${answer}` : `  · ${q.question} (no answer)`
+  })
+
+  return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
+}
+
+/**
+ * Cursor/draft restore for re-visiting an answered batch clarify question
+ * (Tab/Shift-Tab): a choice answer puts the cursor back on its row; an
+ * answer that matches no choice was typed via Other, so the cursor lands on
+ * the Other row (index = choices.length) with the text staged for editing.
+ * Unanswered questions restore to a clean cursor.
+ */
+export const clarifyBatchRevisitState = (
+  choices: readonly string[],
+  answer: string | undefined
+): { custom: string; sel: number } => {
+  if (answer === undefined || answer === '') {
+    return { custom: '', sel: 0 }
+  }
+
+  const choiceIndex = choices.indexOf(answer)
+
+  if (choiceIndex >= 0) {
+    return { custom: '', sel: choiceIndex }
+  }
+
+  return { custom: answer, sel: choices.length > 0 ? choices.length : 0 }
+}
+
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
-
-const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
-
-export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 

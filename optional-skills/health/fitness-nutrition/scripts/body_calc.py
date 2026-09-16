@@ -29,10 +29,10 @@ def bmi(weight_kg, height_cm):
     print(f"BMI: {val:.1f} — {cat}")
     print()
     print("Ranges:")
-    print(f"  Underweight : < 18.5")
-    print(f"  Normal      : 18.5 – 24.9")
-    print(f"  Overweight  : 25.0 – 29.9")
-    print(f"  Obese       : 30.0+")
+    print("  Underweight : < 18.5")
+    print("  Normal      : 18.5 – 24.9")
+    print("  Overweight  : 25.0 – 29.9")
+    print("  Obese       : 30.0+")
 
 
 def tdee(weight_kg, height_cm, age, sex, activity):
@@ -95,11 +95,11 @@ def one_rep_max(weight, reps):
 
 def macros(tdee_kcal, goal):
     goal = goal.lower()
-    if goal in ("cut", "lose", "deficit"):
+    if goal in {"cut", "lose", "deficit"}:
         cals = tdee_kcal - 500
         p, f, c = 0.40, 0.30, 0.30
         label = "Fat Loss (-500 kcal)"
-    elif goal in ("bulk", "gain", "surplus"):
+    elif goal in {"bulk", "gain", "surplus"}:
         cals = tdee_kcal + 400
         p, f, c = 0.30, 0.25, 0.45
         label = "Lean Bulk (+400 kcal)"
@@ -160,7 +160,7 @@ def bodyfat(sex, neck_cm, waist_cm, hip_cm, height_cm):
             break
 
     print(f"Category: {cat}")
-    print(f"Method: US Navy circumference formula")
+    print("Method: US Navy circumference formula")
 
 
 def usage():
@@ -184,7 +184,7 @@ def main():
                 int(sys.argv[4]), sys.argv[5], int(sys.argv[6]),
             )
 
-        elif cmd in ("1rm", "orm"):
+        elif cmd in {"1rm", "orm"}:
             one_rep_max(float(sys.argv[2]), int(sys.argv[3]))
 
         elif cmd == "macros":

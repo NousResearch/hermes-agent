@@ -44,11 +44,14 @@ const DA2_RE = /^\x1b\[>([\d;]*)c$/
 // (private ? marker distinguishes from CSI u key events)
 // eslint-disable-next-line no-control-regex
 const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/
-// DECXCPR cursor position: CSI ? row ; col R
-// The ? marker disambiguates from modified F3 keys (Shift+F3 = CSI 1;2 R,
-// Ctrl+F3 = CSI 1;5 R, etc.) — plain CSI row;col R is genuinely ambiguous.
+// Cursor position report: CSI [?] row ; col R
+// DECXCPR (CSI ? row;col R) is unambiguous and always matched.
+// Standard DSR (CSI row;col R, no ?) is also matched, but only when
+// row > 1 — modified F3 keys use CSI 1;modifier R (Shift+F3 = CSI 1;2 R,
+// Ctrl+F3 = CSI 1;5 R, etc.), and F3 always has row 1. Reports at row 1
+// without the ? marker fall through to parseKeypress to preserve F3.
 // eslint-disable-next-line no-control-regex
-const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/
+const CURSOR_POSITION_RE = /^\x1b\[(\??)(\d+);(\d+)R$/
 // OSC response: OSC code ; data (BEL|ST)
 // eslint-disable-next-line no-control-regex
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
@@ -145,10 +148,23 @@ function parseTerminalResponse(s: string): TerminalResponse | null {
     }
 
     if ((m = CURSOR_POSITION_RE.exec(s))) {
+      const hasPrivateMarker = m[1] === '?'
+      const row = parseInt(m[2]!, 10)
+
+      // Without the DEC-private '?' marker, CSI row;col R is ambiguous with
+      // modified F3 keys (Shift+F3 = CSI 1;2 R, etc.). F3 always uses row 1,
+      // so only treat the standard form as a cursor position report when
+      // row > 1. Row <= 1 reports without '?' fall through to parseKeypress:
+      // row 1 preserves F3, and row 0 is an invalid DSR report (terminal
+      // coordinates are 1-indexed) that should remain unclassified.
+      if (!hasPrivateMarker && row <= 1) {
+        return null
+      }
+
       return {
         type: 'cursorPosition',
-        row: parseInt(m[1]!, 10),
-        col: parseInt(m[2]!, 10)
+        row,
+        col: parseInt(m[3]!, 10)
       }
     }
 
@@ -182,6 +198,58 @@ function splitNumericParams(params: string): number[] {
   }
 
   return params.split(';').map(p => parseInt(p, 10))
+}
+
+// A text token can carry stray control bytes fused with printable input —
+// most commonly when a third-party IME (Vietnamese Telex via OpenKey/Unikey/
+// EVKey, etc.) recomposes a syllable by emitting an erase control byte
+// immediately followed by the finished character(s) in a single stdin read
+// (e.g. "\x7fô", "ab\bç"). parseKeypress only recognizes a control key when
+// the WHOLE string is exactly that control byte, so a mixed chunk falls
+// through every branch and returns name:"" with a non-printable sequence,
+// which the composer's PRINTABLE gate then discards — taking the surrounding
+// letters down with it. Split the token so every control byte becomes its own
+// keypress and the printable runs between them survive.
+//
+// CR (\r) and LF (\n) are deliberately NOT treated as split points: a lone
+// Enter already arrives as its own read, while a newline embedded in a text
+// token only happens for non-bracketed paste, where peeling it into a
+// `return` keypress would prematurely submit the composer. Leaving them in
+// the token preserves the existing paste/return handling byte-for-byte.
+function isControlChar(ch: string): boolean {
+  const code = ch.charCodeAt(0)
+
+  if (code === 0x0a || code === 0x0d) {
+    return false
+  }
+
+  return code < 0x20 || code === 0x7f
+}
+
+function parseTextKeypresses(text: string): ParsedKey[] {
+  const keys: ParsedKey[] = []
+  let textStart = 0
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
+
+    if (!isControlChar(ch)) {
+      continue
+    }
+
+    if (i > textStart) {
+      keys.push(parseKeypress(text.slice(textStart, i)))
+    }
+
+    keys.push(parseKeypress(ch))
+    textStart = i + 1
+  }
+
+  if (textStart < text.length) {
+    keys.push(parseKeypress(text.slice(textStart)))
+  }
+
+  return keys
 }
 
 export type KeyParseState = {
@@ -224,7 +292,7 @@ export function parseMultipleKeypresses(
   const inputString = isFlush ? '' : inputToString(input)
 
   // Get or create tokenizer
-  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true })
+  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true, legacyAltEnter: true })
 
   // Tokenize the input
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
@@ -267,30 +335,30 @@ export function parseMultipleKeypresses(
     } else if (token.type === 'text') {
       if (inPaste) {
         pasteBuffer += token.value
-      } else if (/^\[<\d+;\d+;\d+[Mm]$/.test(token.value) || /^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
-        // Orphaned SGR/X10 mouse tail (fullscreen only — mouse tracking is off
-        // otherwise). A heavy render blocked the event loop past App's 50ms
-        // flush timer, so the buffered ESC was flushed as a lone Escape and
-        // the continuation `[<btn;col;rowM` arrived as text. Re-synthesize
-        // with the ESC prefix so the scroll event still fires instead of
-        // leaking into the prompt. The spurious Escape is gone; App.tsx's
-        // readableLength check prevents it. The X10 Cb slot is narrowed to
-        // the wheel range [\x60-\x7f] (0x40|modifiers + 32) — a full [\x20-]
-        // range would match typed input like `[MAX]` batched into one read
-        // and silently drop it as a phantom click. Click/drag orphans leak
-        // as visible garbage instead; deletable garbage beats silent loss.
+      } else if (/^\[M[\x60-\x7f][\x20-\uffff]{2}$/.test(token.value)) {
+        // Orphaned X10 wheel tail (legacy 1000/1002 terminals, fullscreen
+        // only). If the buffered ESC was flushed as a lone Escape and the X10
+        // payload (`[M` + 3 bytes) arrived as the next text token, re-synthesize
+        // with ESC so the scroll event still fires instead of leaking. SGR mouse
+        // reports no longer reach this branch — the tokenizer keeps an
+        // incomplete CSI buffered across a flush and reassembles it (see
+        // termio/tokenize.ts), so the old fragment/burst recovery is gone.
         const resynthesized = '\x1b' + token.value
-        const mouse = parseMouseEvent(resynthesized)
-        keys.push(mouse ?? parseKeypress(resynthesized))
+        keys.push(parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        keys.push(...parseTextKeypresses(token.value))
       }
     }
   }
 
-  // If flushing and still in paste mode, emit what we have
-  if (isFlush && inPaste && pasteBuffer) {
-    keys.push(createPasteKey(pasteBuffer))
+  // If a terminal drops the paste-end marker, the App watchdog flushes the
+  // partial paste and returns to normal input instead of swallowing all future
+  // keystrokes as paste content.
+  if (isFlush && inPaste) {
+    if (pasteBuffer) {
+      keys.push(createPasteKey(pasteBuffer))
+    }
+
     inPaste = false
     pasteBuffer = ''
   }
@@ -692,16 +760,17 @@ function parseKeypress(s: string = ''): ParsedKey {
   // never reach here. Mask with 0x43 (bits 6+1+0) to check wheel-flag
   // + direction while ignoring modifier bits (Shift=0x04, Meta=0x08,
   // Ctrl=0x10) — modified wheel events (e.g. Ctrl+scroll, button=80)
-  // should still be recognized as wheelup/wheeldown.
+  // should still be recognized as wheelup/wheeldown. Preserve those
+  // modifier bits for callers that bind modified wheel gestures.
   if ((match = SGR_MOUSE_RE.exec(s))) {
     const button = parseInt(match[1]!, 10)
 
     if ((button & 0x43) === 0x40) {
-      return createNavKey(s, 'wheelup', false)
+      return createWheelKey(s, 'wheelup', button)
     }
 
     if ((button & 0x43) === 0x41) {
-      return createNavKey(s, 'wheeldown', false)
+      return createWheelKey(s, 'wheeldown', button)
     }
 
     // Shouldn't reach here (parseMouseEvent catches non-wheel) but be safe
@@ -717,19 +786,20 @@ function parseKeypress(s: string = ''): ParsedKey {
     const button = s.charCodeAt(3) - 32
 
     if ((button & 0x43) === 0x40) {
-      return createNavKey(s, 'wheelup', false)
+      return createWheelKey(s, 'wheelup', button)
     }
 
     if ((button & 0x43) === 0x41) {
-      return createNavKey(s, 'wheeldown', false)
+      return createWheelKey(s, 'wheeldown', button)
     }
 
     return createNavKey(s, 'mouse', false)
   }
 
-  if (s === '\r' || s === '\n') {
+  if (s === '\r' || s === '\n' || s === '\x1b\r' || s === '\x1b\n') {
     key.raw = undefined
     key.name = 'return'
+    key.meta = s.startsWith('\x1b')
   } else if (s === '\t') {
     key.name = 'tab'
   } else if (s === '\b' || s === '\x1b\b') {
@@ -821,6 +891,22 @@ function createNavKey(s: string, name: string, ctrl: boolean): ParsedKey {
     ctrl,
     meta: false,
     shift: false,
+    option: false,
+    super: false,
+    fn: false,
+    sequence: s,
+    raw: s,
+    isPasted: false
+  }
+}
+
+function createWheelKey(s: string, name: 'wheelup' | 'wheeldown', button: number): ParsedKey {
+  return {
+    kind: 'key',
+    name,
+    ctrl: !!(button & 0x10),
+    meta: !!(button & 0x08),
+    shift: !!(button & 0x04),
     option: false,
     super: false,
     fn: false,

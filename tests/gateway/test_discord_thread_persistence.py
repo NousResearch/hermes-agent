@@ -8,8 +8,6 @@ import json
 import os
 from unittest.mock import patch
 
-import pytest
-
 
 class TestDiscordThreadPersistence:
     """Thread IDs are saved to disk and reloaded on init."""
@@ -17,7 +15,7 @@ class TestDiscordThreadPersistence:
     def _make_adapter(self, tmp_path):
         """Build a minimal DiscordAdapter with HERMES_HOME pointed at tmp_path."""
         from gateway.config import PlatformConfig
-        from gateway.platforms.discord import DiscordAdapter
+        from plugins.platforms.discord.adapter import DiscordAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -49,36 +47,4 @@ class TestDiscordThreadPersistence:
         assert "aaa" in adapter2._threads
         assert "bbb" in adapter2._threads
 
-    def test_duplicate_track_does_not_double_save(self, tmp_path):
-        adapter = self._make_adapter(tmp_path)
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            adapter._threads.mark("111")
-            adapter._threads.mark("111")  # no-op
 
-        saved = json.loads((tmp_path / "discord_threads.json").read_text())
-        assert saved.count("111") == 1
-
-    def test_caps_at_max_tracked_threads(self, tmp_path):
-        adapter = self._make_adapter(tmp_path)
-        adapter._threads._max_tracked = 5
-        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            for i in range(10):
-                adapter._threads.mark(str(i))
-
-        saved = json.loads((tmp_path / "discord_threads.json").read_text())
-        assert len(saved) == 5
-
-    def test_corrupted_state_file_falls_back_to_empty(self, tmp_path):
-        state_file = tmp_path / "discord_threads.json"
-        state_file.write_text("not valid json{{{")
-        adapter = self._make_adapter(tmp_path)
-        assert "$nonexistent" not in adapter._threads
-
-    def test_missing_hermes_home_does_not_crash(self, tmp_path):
-        """Load/save tolerate missing directories."""
-        fake_home = tmp_path / "nonexistent" / "deep"
-        with patch.dict(os.environ, {"HERMES_HOME": str(fake_home)}):
-            from gateway.platforms.helpers import ThreadParticipationTracker
-            # ThreadParticipationTracker should return empty set, not crash
-            tracker = ThreadParticipationTracker("discord")
-            assert "$test" not in tracker

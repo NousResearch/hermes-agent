@@ -2,7 +2,7 @@
 """Build the Hermes Skills Index — a centralized JSON catalog of all skills.
 
 This script crawls every skill source (skills.sh, GitHub taps, official,
-clawhub, lobehub, claude-marketplace) and writes a JSON index with resolved
+clawhub, lobehub) and writes a JSON index with resolved
 GitHub paths. The index is served as a static file on the docs site so that
 `hermes skills search/install` can use it without hitting the GitHub API.
 
@@ -28,24 +28,20 @@ from datetime import datetime, timezone
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure HERMES_HOME is set (needed by tools/skills_hub.py imports)
+# Ensure HERMES_HOME is set (needed by tools/skills_hub*.py imports)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from tools.skills_hub import (
-    GitHubAuth,
-    GitHubSource,
-    SkillsShSource,
-    OptionalSkillSource,
-    WellKnownSkillSource,
-    ClawHubSource,
-    ClaudeMarketplaceSource,
-    LobeHubSource,
-    SkillMeta,
-)
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_models import SkillMeta
+from tools.skills_hub_official import OptionalSkillSource
+from tools.skills_hub_skillssh import SkillsShSource
+from tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
 import httpx
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
 INDEX_VERSION = 1
+CLAWHUB_ENRICH_BUDGET_SECONDS = 480
 
 
 def _meta_to_dict(meta: SkillMeta) -> dict:
@@ -79,30 +75,27 @@ def crawl_source(source, source_name: str, limit: int) -> list:
 
 
 def crawl_skills_sh(source: SkillsShSource) -> list:
-    """Crawl skills.sh using popular queries for broad coverage."""
-    print("  Crawling skills.sh (popular queries)...", flush=True)
+    """Crawl skills.sh via its sitemap to enumerate the full catalog (~20k entries).
+
+    Previously walked a hardcoded list of ~28 popular keywords (each capped at
+    50 results) which yielded ~850 unique skills — about 4% of the real catalog.
+    The SkillsShSource.search("") path now hits the sitemap directly, returning
+    the full 20k-entry catalog deduplicated by canonical identifier.
+    """
+    print("  Crawling skills.sh (sitemap)...", flush=True)
     start = time.time()
 
-    queries = [
-        "",  # featured
-        "react", "python", "web", "api", "database", "docker",
-        "testing", "scraping", "design", "typescript", "git",
-        "aws", "security", "data", "ml", "ai", "devops",
-        "frontend", "backend", "mobile", "cli", "documentation",
-        "kubernetes", "terraform", "rust", "go", "java",
-    ]
+    try:
+        results = source.search("", limit=0)  # 0 = no cap, return the whole catalog
+    except Exception as e:
+        print(f"    Warning: skills.sh sitemap walk failed: {e}", file=sys.stderr)
+        results = []
 
     all_skills: dict[str, dict] = {}
-    for query in queries:
-        try:
-            results = source.search(query, limit=50)
-            for meta in results:
-                entry = _meta_to_dict(meta)
-                if entry["identifier"] not in all_skills:
-                    all_skills[entry["identifier"]] = entry
-        except Exception as e:
-            print(f"    Warning: skills.sh search '{query}' failed: {e}",
-                  file=sys.stderr)
+    for meta in results:
+        entry = _meta_to_dict(meta)
+        if entry["identifier"] not in all_skills:
+            all_skills[entry["identifier"]] = entry
 
     elapsed = time.time() - start
     print(f"  skills.sh: {len(all_skills)} unique skills ({elapsed:.1f}s)",
@@ -147,7 +140,7 @@ def batch_resolve_paths(skills: list, auth: GitHubAuth) -> list:
     4. Match skills to their resolved paths
     """
     # Filter to skills.sh entries that need resolution
-    skills_sh = [s for s in skills if s["source"] in ("skills.sh", "skills-sh")]
+    skills_sh = [s for s in skills if s["source"] in {"skills.sh", "skills-sh"}]
     if not skills_sh:
         return skills
 
@@ -258,8 +251,8 @@ def main():
         "well-known": WellKnownSkillSource(),
         "github": GitHubSource(auth=auth),
         "clawhub": ClawHubSource(),
-        "claude-marketplace": ClaudeMarketplaceSource(auth=auth),
         "lobehub": LobeHubSource(),
+        "browse-sh": BrowseShSource(),
     }
 
     all_skills: list[dict] = []
@@ -267,11 +260,28 @@ def main():
     # Crawl skills.sh
     all_skills.extend(crawl_skills_sh(skills_sh_source))
 
-    # Crawl other sources in parallel
+    # Crawl other sources in parallel.
+    # Per-source soft caps — sources stop returning when they run out, so these
+    # are ceilings, not targets.  ClawHub has 20k+ skills; bumping to 100k
+    # (well above current catalog size) lets the full catalog land in the
+    # index instead of being truncated at an arbitrary build-time limit.
+    SOURCE_LIMITS = {
+        # 0 = unbounded catalog walk (max_items=0 in ClawHubSource). A positive
+        # limit bounds the walk and also enables the interactive 12s budget.
+        "clawhub": 0,
+        "lobehub": 100_000,
+        "browse-sh": 5_000,
+        "github": 5_000,
+        "well-known": 5_000,
+        "official": 5_000,
+    }
+    DEFAULT_SOURCE_LIMIT = 500
+
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {}
         for name, source in sources.items():
-            futures[pool.submit(crawl_source, source, name, 500)] = name
+            limit = SOURCE_LIMITS.get(name, DEFAULT_SOURCE_LIMIT)
+            futures[pool.submit(crawl_source, source, name, limit)] = name
         for future in as_completed(futures):
             try:
                 all_skills.extend(future.result())
@@ -280,6 +290,61 @@ def main():
 
     # Batch resolve GitHub paths for skills.sh entries
     all_skills = batch_resolve_paths(all_skills, auth)
+
+    # Enrich ClawHub skills with owner handles. The listing API does not
+    # include owner info, so we fetch each skill's detail page concurrently.
+    # This is needed to build valid "View source" URLs on the Skills Hub page:
+    # https://clawhub.ai/{owner}/skills/{slug}. Without the owner segment the
+    # URL leads to a 404.
+    clawhub_skills = [s for s in all_skills if s["source"] == "clawhub"]
+    if clawhub_skills:
+        # Convert dicts back to SkillMeta for enrichment, then update in place.
+        clawhub_metas = []
+        for s in clawhub_skills:
+            meta = SkillMeta(
+                name=s["name"],
+                description=s["description"],
+                source=s["source"],
+                identifier=s["identifier"],
+                trust_level=s["trust_level"],
+                repo=s.get("repo") or None,
+                path=s.get("path") or None,
+                tags=s.get("tags") or [],
+                extra=dict(s.get("extra") or {}),
+            )
+            clawhub_metas.append(meta)
+
+        print(f"  Enriching {len(clawhub_metas)} ClawHub skills with owner handles...",
+              flush=True)
+        enrich_start = time.time()
+        # Best-effort: ~2s per detail call means the full catalog would take >1h;
+        # the un-enriched remainder ships without an owner link (see enrich_owners).
+        enriched = sources["clawhub"].enrich_owners(
+            clawhub_metas, max_workers=30, budget_seconds=CLAWHUB_ENRICH_BUDGET_SECONDS)
+        # Write enriched owner back into the index dicts.
+        meta_by_id = {m.identifier: m for m in clawhub_metas}
+        for s in clawhub_skills:
+            meta = meta_by_id.get(s["identifier"])
+            if meta and meta.extra.get("owner"):
+                s.setdefault("extra", {})["owner"] = meta.extra["owner"]
+        enrich_elapsed = time.time() - enrich_start
+        print(f"  Enriched {enriched}/{len(clawhub_metas)} ClawHub owners "
+              f"({enrich_elapsed:.1f}s)", flush=True)
+
+    # Collect which sources hit a GitHub API rate limit during the crawl.
+    # github / well-known both read api.github.com, so a rate-limited token
+    # zeroes both at once — surfaced below so the failure message names the
+    # real cause instead of "source returned 0".
+    rate_limited_sources = {
+        name for name, source in sources.items()
+        if getattr(source, "is_rate_limited", False)
+    }
+    if rate_limited_sources:
+        print(
+            "  WARNING: GitHub API rate limit hit for: "
+            + ", ".join(sorted(rate_limited_sources)),
+            file=sys.stderr,
+        )
 
     # Deduplicate by identifier
     seen: dict[str, dict] = {}
@@ -292,33 +357,101 @@ def main():
     # Sort
     source_order = {"official": 0, "skills-sh": 1, "skills.sh": 1,
                     "github": 2, "well-known": 3, "clawhub": 4,
-                    "claude-marketplace": 5, "lobehub": 6}
+                    "browse-sh": 5, "lobehub": 6}
     deduped.sort(key=lambda s: (source_order.get(s["source"], 99), s["name"]))
 
-    # Build index
+    from collections import Counter
+    by_source = Counter(s["source"] for s in deduped)
+    print(f"\nCrawled {len(deduped)} skills in {time.time() - overall_start:.0f}s")
+    for src, count in sorted(by_source.items(), key=lambda x: -x[1]):
+        resolved = sum(1 for s in deduped
+                       if s["source"] == src and s.get("resolved_github_id"))
+        extra = f" ({resolved} resolved)" if resolved else ""
+        print(f"  {src}: {count}{extra}")
+
+    # Health check: catch silent breakage early. Every source listed below
+    # has historically returned at least `floor` entries; a zero (or near-
+    # zero) result almost certainly means a tap path moved, an API changed,
+    # or rate limiting kicked in.  Failing here forces a human look before
+    # the broken index reaches the live docs.
+    EXPECTED_FLOORS = {
+        # skills.sh now uses the sitemap walker (~20k catalog as of May 2026).
+        # Anything under 10k means the sitemap shape changed or fetches failed
+        # — better to fail loudly than ship a regression to the 858-skill
+        # popular-queries era.
+        "skills.sh": 10000,
+        "lobehub": 100,
+        # ClawHub had 49,698+ skills as of May 2026 — anything under 20k means
+        # pagination broke or the API surface changed.  Fail loudly rather
+        # than ship a degenerate index (we shipped 200/50000 silently for
+        # weeks because the floor was 50).
+        "clawhub": 20000,
+        "official": 50,
+        "github": 30,        # collapsed across all GitHub taps
+        "browse-sh": 50,
+    }
+    health_errors = []
+    for src, floor in EXPECTED_FLOORS.items():
+        # 'skills-sh' and 'skills.sh' are the same source; both labels exist.
+        count = by_source.get(src, 0)
+        if src == "skills.sh":
+            count = by_source.get("skills.sh", 0) + by_source.get("skills-sh", 0)
+        if count < floor:
+            health_errors.append(f"  {src}: {count} < expected floor {floor}")
+
+    MIN_TOTAL = 1500
+    if len(deduped) < MIN_TOTAL:
+        health_errors.append(
+            f"  total: {len(deduped)} < expected floor {MIN_TOTAL}"
+        )
+
+    if health_errors:
+        print(
+            "\nERROR: skills index health check failed — refusing to ship "
+            "a degenerate index. Investigate the following sources:",
+            file=sys.stderr,
+        )
+        for line in health_errors:
+            print(line, file=sys.stderr)
+        if rate_limited_sources:
+            print(
+                "\nGitHub API rate limit was hit during this crawl for: "
+                + ", ".join(sorted(rate_limited_sources))
+                + ". This is the usual cause of an all-GitHub-tap collapse "
+                "(github / well-known dropping to zero together). "
+                "Re-run with a higher-quota GITHUB_TOKEN.",
+                file=sys.stderr,
+            )
+        print(
+            "\nIf the drop is expected (e.g. a hub is genuinely shutting "
+            "down), lower the floor in scripts/build_skills_index.py "
+            "EXPECTED_FLOORS in the same PR.",
+            file=sys.stderr,
+        )
+        # IMPORTANT: do NOT write OUTPUT_PATH on failure. The index file is
+        # gitignored, so a fresh deploy checkout has no copy on disk — leaving
+        # it absent lets website/scripts/extract-skills.py fall back to the
+        # legacy snapshot cache (or skip the unified index) instead of reading
+        # a degenerate file. Writing-then-exiting-2 was the bug that shipped an
+        # index with every GitHub-API source dropped to zero: deploy-site.yml
+        # swallows the exit code with `|| echo non-fatal`, and the partial file
+        # was already on disk for extract-skills to pick up.
+        sys.exit(2)
+
+    # Healthy — only now write the index out for the docs build to consume.
     index = {
         "version": INDEX_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "skill_count": len(deduped),
         "skills": deduped,
     }
-
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w") as f:
+    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         json.dump(index, f, separators=(",", ":"), ensure_ascii=False)
-
-    elapsed = time.time() - overall_start
     file_size = os.path.getsize(OUTPUT_PATH)
-    print(f"\nDone! {len(deduped)} skills indexed in {elapsed:.0f}s")
+    print(f"\nDone! {len(deduped)} skills indexed in "
+          f"{time.time() - overall_start:.0f}s")
     print(f"Output: {OUTPUT_PATH} ({file_size / 1024:.0f} KB)")
-
-    from collections import Counter
-    by_source = Counter(s["source"] for s in deduped)
-    for src, count in sorted(by_source.items(), key=lambda x: -x[1]):
-        resolved = sum(1 for s in deduped
-                       if s["source"] == src and s.get("resolved_github_id"))
-        extra = f" ({resolved} resolved)" if resolved else ""
-        print(f"  {src}: {count}{extra}")
 
 
 if __name__ == "__main__":

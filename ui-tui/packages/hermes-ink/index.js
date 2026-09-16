@@ -1,1 +1,1 @@
-export * from './dist/ink-bundle.js'
+export * from './dist/entry-exports.js'

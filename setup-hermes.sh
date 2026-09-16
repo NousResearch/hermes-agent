@@ -29,6 +29,10 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Prevent uv from discovering config files (uv.toml, pyproject.toml) from the
+# wrong user's home directory when running under sudo -u <user>.  See #21269.
+export UV_NO_CONFIG=1
+
 PYTHON_VERSION="3.11"
 
 is_termux() {
@@ -52,7 +56,7 @@ get_command_link_display_dir() {
 }
 
 echo ""
-echo -e "${CYAN}⚕ Hermes Agent Setup${NC}"
+echo -e "${CYAN}☤ Hermes Agent Setup${NC}"
 echo ""
 
 # ============================================================================
@@ -78,7 +82,22 @@ else
         echo -e "${GREEN}✓${NC} uv found ($UV_VERSION)"
     else
         echo -e "${CYAN}→${NC} Installing uv..."
-        if curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null; then
+        # Capture installer output so a failure shows the user WHY
+        # (network, glibc mismatch on old distros, missing curl, disk
+        # full, etc.) instead of "✗ Failed to install uv" with zero
+        # diagnostic.  Two-stage to avoid `curl | sh` masking curl
+        # failures (sh exits 0 on empty stdin under no pipefail).
+        _uv_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
+        _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+        if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_log"; then
+            echo -e "${RED}✗${NC} Failed to download uv installer."
+            sed 's/^/    /' "$_uv_log" >&2
+            echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
+            exit 1
+        fi
+        if sh "$_uv_installer" >>"$_uv_log" 2>&1; then
+            rm -f "$_uv_installer"
             if [ -x "$HOME/.local/bin/uv" ]; then
                 UV_CMD="$HOME/.local/bin/uv"
             elif [ -x "$HOME/.cargo/bin/uv" ]; then
@@ -86,14 +105,22 @@ else
             fi
 
             if [ -n "$UV_CMD" ]; then
+                rm -f "$_uv_log"
                 UV_VERSION=$($UV_CMD --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
             else
-                echo -e "${RED}✗${NC} uv installed but not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${RED}✗${NC} uv installer reported success but binary not found. Add ~/.local/bin to PATH and retry."
+                echo -e "${CYAN}→${NC} Installer output:"
+                sed 's/^/    /' "$_uv_log" >&2
+                rm -f "$_uv_log"
                 exit 1
             fi
         else
-            echo -e "${RED}✗${NC} Failed to install uv. Visit https://docs.astral.sh/uv/"
+            echo -e "${RED}✗${NC} Failed to install uv."
+            echo -e "${CYAN}→${NC} Installer output:"
+            sed 's/^/    /' "$_uv_log" >&2
+            echo -e "${CYAN}→${NC} Install manually: https://docs.astral.sh/uv/"
+            rm -f "$_uv_log" "$_uv_installer"
             exit 1
         fi
     fi
@@ -106,19 +133,32 @@ fi
 echo -e "${CYAN}→${NC} Checking Python $PYTHON_VERSION..."
 
 if is_termux; then
-    if command -v python >/dev/null 2>&1; then
-        PYTHON_PATH="$(command -v python)"
-        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-            PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
-            echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
-        else
-            echo -e "${RED}✗${NC} Termux Python must be 3.11+"
-            echo "    Run: pkg install python"
-            exit 1
+    # Hermes currently declares requires-python >=3.11,<3.14. Termux can expose
+    # a newer default `python` before dependencies have compatible wheels, so
+    # prefer explicit compatible minors and verify the upper bound before using
+    # the interpreter to create the venv.
+    for python_cmd in python3.11 python3.12 python3.13 python; do
+        if command -v "$python_cmd" >/dev/null 2>&1; then
+            CANDIDATE_PATH="$(command -v "$python_cmd")"
+            if "$CANDIDATE_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                PYTHON_PATH="$CANDIDATE_PATH"
+                PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
+                echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
+                break
+            fi
         fi
-    else
-        echo -e "${RED}✗${NC} Python not found in Termux"
-        echo "    Run: pkg install python"
+    done
+
+    if [ -z "${PYTHON_PATH:-}" ]; then
+        if command -v python >/dev/null 2>&1; then
+            PYTHON_FOUND_VERSION="$(python --version 2>/dev/null || true)"
+            echo -e "${RED}✗${NC} Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+            echo "    Install a supported interpreter and re-run this script:"
+            echo "      pkg install tur-repo && pkg install python3.13"
+        else
+            echo -e "${RED}✗${NC} Python not found in Termux"
+            echo "    Run: pkg install python"
+        fi
         exit 1
     fi
 else
@@ -161,6 +201,30 @@ SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
 # Dependencies
 # ============================================================================
 
+run_locked_uv_sync() {
+    # Bootstrap uv calls stay isolated from ambient config via UV_NO_CONFIG
+    # (#21269). A locked project sync is different: uv.lock records resolver
+    # settings from this checkout's [tool.uv], so hiding pyproject.toml makes
+    # uv 0.12+ reject the valid lock. Re-enable project discovery only for
+    # this subprocess while redirecting user/system config lookups to an empty
+    # directory. Keep HOME unchanged so caches, credentials, and git continue
+    # to work normally.
+    local project_env="$1"
+    local isolated_uv_config
+    local sync_rc
+    isolated_uv_config="$(mktemp -d)" || return 1
+
+    (
+        unset UV_NO_CONFIG UV_CONFIG_FILE
+        export XDG_CONFIG_HOME="$isolated_uv_config"
+        export XDG_CONFIG_DIRS="$isolated_uv_config"
+        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+    )
+    sync_rc=$?
+    rmdir "$isolated_uv_config" 2>/dev/null || true
+    return "$sync_rc"
+}
+
 echo -e "${CYAN}→${NC} Installing dependencies..."
 
 if is_termux; then
@@ -179,37 +243,67 @@ if is_termux; then
 else
     # Prefer uv sync with lockfile (hash-verified installs) when available,
     # fall back to pip install for compatibility or when lockfile is stale.
+    #
+    # Multi-tier pip fallback. Goal: ONE compromised PyPI package
+    # (mistralai 2.4.6 in May 2026 → quarantined) shouldn't silently demote
+    # a fresh setup to "core only". Edit _BROKEN_EXTRAS when a transitive
+    # breaks; users keep voice / honcho / google / slack / matrix etc. even
+    # if mistral can't resolve.
+    _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
+    _ALL_EXTRAS=(
+        modal daytona vercel messaging matrix cron cli dev tts-premium slack
+        pty honcho mcp homeassistant sms acp voice dingtalk feishu google
+        bedrock web youtube
+    )
+    _SAFE_EXTRAS=()
+    for _e in "${_ALL_EXTRAS[@]}"; do
+        _skip=false
+        for _b in "${_BROKEN_EXTRAS[@]}"; do
+            [ "$_e" = "$_b" ] && _skip=true && break
+        done
+        [ "$_skip" = false ] && _SAFE_EXTRAS+=("$_e")
+    done
+    _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
+    _try_install() {
+        $UV_CMD pip install -e ".[all]" \
+            || $UV_CMD pip install -e "$_SAFE_SPEC" \
+            || $UV_CMD pip install -e "."
+    }
+
     if [ -f "uv.lock" ]; then
+        # Hash-verified install (preferred). The lockfile records SHA256
+        # hashes for every transitive — a compromised transitive would have
+        # a different hash and be REJECTED by uv. This is the only path
+        # that protects against transitive-package supply-chain attacks
+        # (the direct deps in pyproject.toml are exact-pinned, but
+        # `uv pip install` re-resolves transitives fresh from PyPI).
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
-        UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
-            echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
-            echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
-            $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
-            echo -e "${GREEN}✓${NC} Dependencies installed"
-        }
+        echo -e "${CYAN}→${NC} (first run on a fresh venv can take 1-5 minutes; uv prints progress below)"
+        # Critical flag choice: `--extra all`, NOT `--all-extras`. The
+        # latter installs every [project.optional-dependencies] key,
+        # bypassing the curated [all] extra and pulling backends like
+        # [matrix] (python-olm needs make on Windows) and [rl] (git+https
+        # deps that fail offline). See pyproject.toml's [all] for the
+        # curated set, and tools/lazy_deps.py for backends that install
+        # at first use.
+        # Also: stream stderr through directly so the user sees uv's
+        # progress UI instead of staring at a frozen prompt.
+        if run_locked_uv_sync "$SCRIPT_DIR/venv"; then
+            echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
+        else
+            echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."
+            echo -e "${YELLOW}⚠${NC} Falling back to PyPI resolve — transitives will NOT be hash-verified."
+            _try_install
+            echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
+        fi
     else
-        $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
-        echo -e "${GREEN}✓${NC} Dependencies installed"
+        echo -e "${YELLOW}⚠${NC} uv.lock not found — installing without hash verification of transitives."
+        _try_install
+        echo -e "${GREEN}✓${NC} Dependencies installed (transitives re-resolved, not hash-verified)"
     fi
 fi
 
 # ============================================================================
-# Submodules (terminal backend + RL training)
-# ============================================================================
-
-echo -e "${CYAN}→${NC} Installing optional submodules..."
-
-# tinker-atropos (RL training backend)
-if is_termux; then
-    echo -e "${CYAN}→${NC} Skipping tinker-atropos on Termux (not part of the tested Android path)"
-elif [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-    $UV_CMD pip install -e "./tinker-atropos" && \
-        echo -e "${GREEN}✓${NC} tinker-atropos installed" || \
-        echo -e "${YELLOW}⚠${NC} tinker-atropos install failed (RL tools may not work)"
-else
-    echo -e "${YELLOW}⚠${NC} tinker-atropos not found (run: git submodule update --init --recursive)"
-fi
-
 # ============================================================================
 # Optional: ripgrep (for faster file search)
 # ============================================================================
@@ -272,9 +366,15 @@ fi
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
+        # .env holds API keys — restrict to owner-only access (matches
+        # scripts/install.sh which already chmods 600 after creation).
+        chmod 600 .env 2>/dev/null || true
         echo -e "${GREEN}✓${NC} Created .env from template"
     fi
 else
+    # Tighten an existing .env's perms in case it was created elsewhere
+    # under a permissive umask.
+    chmod 600 .env 2>/dev/null || true
     echo -e "${GREEN}✓${NC} .env exists"
 fi
 

@@ -38,6 +38,31 @@ BLUEBUBBLES_SERVER_URL=http://192.168.1.10:1234
 BLUEBUBBLES_PASSWORD=your-server-password
 ```
 
+#### Optional: Require mentions in group chats
+
+By default, Hermes responds to every authorized BlueBubbles/iMessage DM or group message. To make group chats opt-in, enable mention gating:
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    extra:
+      require_mention: true
+```
+
+With `require_mention: true`, DMs still work normally, but group-chat messages are ignored unless they match a mention pattern. If you do not configure custom patterns, Hermes uses conservative defaults for `Hermes` and `@Hermes agent` variants.
+
+For a custom agent name, set regex patterns:
+
+```yaml
+platforms:
+  bluebubbles:
+    extra:
+      require_mention: true
+      mention_patterns:
+        - '(?<![\w@])@?amos\b[,:\-]?'
+```
+
 ### 4. Authorize Users
 
 Choose one approach:
@@ -90,7 +115,10 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 | `BLUEBUBBLES_HOME_CHANNEL` | No | — | Phone/email for cron delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | No | — | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | No | `false` | Allow all users |
-| `BLUEBUBBLES_SEND_READ_RECEIPTS` | No | `true` | Auto-mark messages as read |
+| `BLUEBUBBLES_REQUIRE_MENTION` | No | `false` | Require a mention pattern before responding in group chats |
+| `BLUEBUBBLES_MENTION_PATTERNS` | No | Hermes wake words | JSON array, newline-separated, or comma-separated regex patterns for group mention matching |
+
+Auto-marking messages as read is controlled by the `send_read_receipts` key under `platforms.bluebubbles.extra` in `~/.hermes/config.yaml` (default: `true`). There is no corresponding environment variable.
 
 ## Features
 

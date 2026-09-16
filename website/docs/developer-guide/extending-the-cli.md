@@ -6,7 +6,7 @@ description: "Build wrapper CLIs that extend the Hermes TUI with custom widgets,
 
 # Extending the CLI
 
-Hermes exposes protected extension hooks on `HermesCLI` so wrapper CLIs can add widgets, keybindings, and layout customizations without overriding the 1000+ line `run()` method. This keeps your extension decoupled from internal changes.
+Hermes exposes protected extension hooks on `HermesCLI` so wrapper CLIs can add widgets, keybindings, and layout customizations without overriding the `run()` method or the TUI construction in `hermes_cli/cli_tui_mixin.py` (where these hooks are defined; `HermesCLI` in `cli.py` mixes it in). This keeps your extension decoupled from internal changes.
 
 ## Extension points
 
@@ -141,12 +141,13 @@ Override this only when you need full control over widget ordering. Most extensi
 
 ```python
 def _build_tui_layout_children(self, *, sudo_widget, secret_widget,
-    approval_widget, clarify_widget, spinner_widget, spacer,
-    status_bar, input_rule_top, image_bar, input_area,
-    input_rule_bot, voice_status_bar, completions_menu) -> list:
+    approval_widget, clarify_widget, model_picker_widget=None,
+    spinner_widget=None, spacer, status_bar, input_rule_top,
+    image_bar, input_area, input_rule_bot, voice_status_bar,
+    completions_menu) -> list:
 ```
 
-The default implementation returns:
+The default implementation returns (any `None` widgets are filtered out):
 
 ```python
 [
@@ -155,6 +156,7 @@ The default implementation returns:
     secret_widget,          # secret input prompt (conditional)
     approval_widget,        # dangerous command approval (conditional)
     clarify_widget,         # clarify question UI (conditional)
+    model_picker_widget,    # model picker overlay (conditional)
     spinner_widget,         # thinking spinner (conditional)
     spacer,                 # fills remaining vertical space
     *self._get_extra_tui_widgets(),  # YOUR WIDGETS GO HERE

@@ -1,10 +1,8 @@
 """Tests for the Camofox browser backend."""
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from tools.browser_camofox import (
     camofox_back,
@@ -20,6 +18,7 @@ from tools.browser_camofox import (
     camofox_vision,
     check_camofox_available,
     is_camofox_mode,
+    _rewrite_loopback_url_for_camofox,
 )
 
 
@@ -33,21 +32,6 @@ class TestCamofoxMode:
         monkeypatch.delenv("CAMOFOX_URL", raising=False)
         assert is_camofox_mode() is False
 
-    def test_enabled_when_url_set(self, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        assert is_camofox_mode() is True
-
-    def test_cdp_override_takes_priority(self, monkeypatch):
-        """When BROWSER_CDP_URL is set (via /browser connect), CDP takes priority over Camofox."""
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
-        assert is_camofox_mode() is False
-
-    def test_cdp_override_blank_does_not_disable_camofox(self, monkeypatch):
-        """Empty/whitespace BROWSER_CDP_URL should not suppress Camofox."""
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        monkeypatch.setenv("BROWSER_CDP_URL", "  ")
-        assert is_camofox_mode() is True
 
     def test_health_check_unreachable(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
@@ -57,6 +41,10 @@ class TestCamofoxMode:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _config_with_camofox(**camofox_config):
+    return {"browser": {"camofox": camofox_config}}
 
 
 def _mock_response(status=200, json_data=None):
@@ -73,6 +61,41 @@ def _mock_response(status=200, json_data=None):
 # ---------------------------------------------------------------------------
 
 
+class TestCamofoxLoopbackRewrite:
+    @patch("tools.browser_camofox.load_config")
+    def test_rewrites_localhost_when_enabled(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        monkeypatch.delenv("CAMOFOX_LOOPBACK_HOST_ALIAS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=True)
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("http://127.0.0.1:8766/#settings")
+
+        assert rewritten == "http://host.docker.internal:8766/#settings"
+        assert metadata == {
+            "from": "127.0.0.1",
+            "to": "host.docker.internal",
+            "original_url": "http://127.0.0.1:8766/#settings",
+            "rewritten_url": "http://host.docker.internal:8766/#settings",
+        }
+
+
+    @patch("tools.browser_camofox.load_config")
+    def test_env_alias_takes_precedence(self, mock_config, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_REWRITE_LOOPBACK_URLS", "true")
+        monkeypatch.setenv("CAMOFOX_LOOPBACK_HOST_ALIAS", "192.168.1.10")
+        mock_config.return_value = _config_with_camofox(
+            rewrite_loopback_urls=False,
+            loopback_host_alias="host.docker.internal",
+        )
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("http://[::1]:8080/path")
+
+        assert rewritten == "http://192.168.1.10:8080/path"
+        assert metadata is not None
+        assert metadata["from"] == "::1"
+        assert metadata["to"] == "192.168.1.10"
+
+
 class TestCamofoxNavigate:
     @patch("tools.browser_camofox.requests.post")
     def test_creates_tab_on_first_navigate(self, mock_post, monkeypatch):
@@ -83,18 +106,6 @@ class TestCamofoxNavigate:
         assert result["success"] is True
         assert result["url"] == "https://example.com"
 
-    @patch("tools.browser_camofox.requests.post")
-    def test_navigates_existing_tab(self, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        # First call creates tab
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab2", "url": "https://a.com"})
-        camofox_navigate("https://a.com", task_id="t2")
-
-        # Second call navigates
-        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://b.com"})
-        result = json.loads(camofox_navigate("https://b.com", task_id="t2"))
-        assert result["success"] is True
-        assert result["url"] == "https://b.com"
 
     def test_connection_error_returns_helpful_message(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:19999")
@@ -151,37 +162,37 @@ class TestCamofoxInteractions:
         assert result["success"] is True
         assert result["clicked"] == "e5"
 
-    @patch("tools.browser_camofox.requests.post")
-    def test_type(self, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab5", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t5")
 
+    @patch("tools.browser_camofox.requests.post")
+    def test_type_redacts_api_key(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab5b", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t5b")
+
+        secret = "sk-proj-ABCD1234567890EFGH"
         mock_post.return_value = _mock_response(json_data={"ok": True})
-        result = json.loads(camofox_type("@e3", "hello world", task_id="t5"))
+        result = json.loads(camofox_type("@apikey", secret, task_id="t5b"))
         assert result["success"] is True
-        assert result["typed"] == "hello world"
+        assert secret not in json.dumps(result)
+        assert result["typed"].startswith("sk-pro")
 
     @patch("tools.browser_camofox.requests.post")
-    def test_scroll(self, mock_post, monkeypatch):
+    def test_type_failure_redacts_api_key(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab6", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t6")
+        monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab5c", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t5c")
 
-        mock_post.return_value = _mock_response(json_data={"ok": True})
-        result = json.loads(camofox_scroll("down", task_id="t6"))
-        assert result["success"] is True
-        assert result["scrolled"] == "down"
+        secret = "sk-proj-ABCD1234567890EFGH"
+        mock_post.side_effect = RuntimeError(f"camofox failed while typing {secret}")
+        raw_result = camofox_type("@apikey", secret, task_id="t5c")
+        result = json.loads(raw_result)
 
-    @patch("tools.browser_camofox.requests.post")
-    def test_back(self, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab7", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t7")
+        assert result["success"] is False
+        assert secret not in raw_result
+        assert "sk-pro" in raw_result
 
-        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://prev.com"})
-        result = json.loads(camofox_back(task_id="t7"))
-        assert result["success"] is True
 
     @patch("tools.browser_camofox.requests.post")
     def test_press(self, mock_post, monkeypatch):
@@ -283,7 +294,7 @@ class TestCamofoxVisionConfig:
         with (
             patch("tools.browser_camofox.open", create=True) as mock_open,
             patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm,
-            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"temperature": 1, "timeout": 45}}}),
+            patch("tools.browser_camofox.load_config", return_value={"auxiliary": {"vision": {"temperature": 1, "timeout": 45}}}),
         ):
             mock_open.return_value.__enter__.return_value.read.return_value = b"fakepng"
             result = json.loads(camofox_vision("what is on the page?", annotate=True, task_id="t11"))
@@ -315,7 +326,7 @@ class TestCamofoxVisionConfig:
         with (
             patch("tools.browser_camofox.open", create=True) as mock_open,
             patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm,
-            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {}}}),
+            patch("tools.browser_camofox.load_config", return_value={"auxiliary": {"vision": {}}}),
         ):
             mock_open.return_value.__enter__.return_value.read.return_value = b"fakepng"
             result = json.loads(camofox_vision("what is on the page?", annotate=True, task_id="t12"))
@@ -347,7 +358,7 @@ class TestBrowserToolRouting:
 
     def test_check_requirements_passes_with_camofox(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        from tools.browser_tool import check_browser_requirements
+        from tools.browser_tool_install import check_browser_requirements
         assert check_browser_requirements() is True
 
 

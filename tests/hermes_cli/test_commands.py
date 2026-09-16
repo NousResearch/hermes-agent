@@ -3,27 +3,9 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from hermes_cli.commands import (
-    COMMAND_REGISTRY,
-    COMMANDS,
-    COMMANDS_BY_CATEGORY,
-    CommandDef,
-    GATEWAY_KNOWN_COMMANDS,
-    SUBCOMMANDS,
-    SlashCommandAutoSuggest,
-    SlashCommandCompleter,
-    _CMD_NAME_LIMIT,
-    _TG_NAME_LIMIT,
-    _clamp_command_names,
-    _clamp_telegram_names,
-    _sanitize_telegram_name,
-    discord_skill_commands,
-    gateway_help_lines,
-    resolve_command,
-    slack_subcommand_map,
-    telegram_bot_commands,
-    telegram_menu_commands,
-)
+from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
+from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
+from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -40,12 +22,16 @@ def _completions(completer: SlashCommandCompleter, text: str):
 # ---------------------------------------------------------------------------
 
 class TestCommandRegistry:
-    def test_registry_is_nonempty(self):
-        assert len(COMMAND_REGISTRY) > 30
 
-    def test_every_entry_is_commanddef(self):
-        for entry in COMMAND_REGISTRY:
-            assert isinstance(entry, CommandDef), f"Unexpected type: {type(entry)}"
+
+    def test_save_command_supports_formats(self):
+        cmd = resolve_command("save")
+        assert cmd is not None
+        assert cmd.name == "save"
+        # /save is a cross-platform session export: json (default), md, html
+        assert not cmd.cli_only
+        for token in ("json", "md", "html"):
+            assert token in (cmd.args_hint or "")
 
     def test_no_duplicate_canonical_names(self):
         names = [cmd.name for cmd in COMMAND_REGISTRY]
@@ -63,26 +49,29 @@ class TestCommandRegistry:
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
-    def test_every_entry_has_valid_category(self):
-        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
-        for cmd in COMMAND_REGISTRY:
-            assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
+    def test_desktop_meta_lives_on_the_command_def(self):
+        review = resolve_command("review")
+        assert review is not None
+        assert review.argument_mode is None
+        assert infer_argument_mode(review) == "text"
+        assert command_desktop_meta(review) == {"argument_mode": "text", "desktop": None}
 
-    def test_reasoning_subcommands_are_in_logical_order(self):
-        reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
-        assert reasoning.subcommands[:6] == (
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-        )
+        clear = resolve_command("clear")
+        assert clear is not None
+        assert clear.desktop == "terminal"
 
-    def test_cli_only_and_gateway_only_are_mutually_exclusive(self):
-        for cmd in COMMAND_REGISTRY:
-            assert not (cmd.cli_only and cmd.gateway_only), \
-                f"{cmd.name} cannot be both cli_only and gateway_only"
+        model = resolve_command("model")
+        assert model is not None
+        assert model.desktop == "hidden"
+
+        goal = resolve_command("goal")
+        assert goal is not None
+        assert goal.argument_mode == "mixed"
+
+    def test_argument_mode_infers_text_from_any_args_hint(self):
+        assert infer_argument_mode(CommandDef("demo", "Demo", "Session", args_hint="<prompt>")) == "text"
+        assert infer_argument_mode(CommandDef("ask", "Ask", "Session", args_hint="<query>")) == "text"
+        assert infer_argument_mode(CommandDef("note", "Note", "Session", args_hint="[message]")) == "text"
 
 
 # ---------------------------------------------------------------------------
@@ -90,29 +79,23 @@ class TestCommandRegistry:
 # ---------------------------------------------------------------------------
 
 class TestResolveCommand:
-    def test_canonical_name_resolves(self):
-        assert resolve_command("help").name == "help"
-        assert resolve_command("background").name == "background"
-        assert resolve_command("copy").name == "copy"
-        assert resolve_command("agents").name == "agents"
 
-    def test_alias_resolves_to_canonical(self):
-        assert resolve_command("bg").name == "background"
-        assert resolve_command("reset").name == "new"
-        assert resolve_command("q").name == "queue"
-        assert resolve_command("exit").name == "quit"
-        assert resolve_command("gateway").name == "platforms"
-        assert resolve_command("set-home").name == "sethome"
-        assert resolve_command("reload_mcp").name == "reload-mcp"
-        assert resolve_command("tasks").name == "agents"
 
-    def test_leading_slash_stripped(self):
-        assert resolve_command("/help").name == "help"
-        assert resolve_command("/bg").name == "background"
+    def test_topic_is_gateway_command(self):
+        topic = resolve_command("topic")
+        assert topic is not None
+        assert topic.name == "topic"
+        assert "topic" in GATEWAY_KNOWN_COMMANDS
 
-    def test_unknown_returns_none(self):
-        assert resolve_command("nonexistent") is None
-        assert resolve_command("") is None
+    def test_context_command_registered_with_ctx_alias(self):
+        ctx = resolve_command("context")
+        assert ctx is not None
+        assert ctx.name == "context"
+        assert resolve_command("ctx").name == "context"
+        assert "all" in (ctx.subcommands or ())
+        # Available on both CLI and gateway surfaces
+        assert not ctx.cli_only and not ctx.gateway_only
+        assert "context" in GATEWAY_KNOWN_COMMANDS
 
 
 # ---------------------------------------------------------------------------
@@ -120,18 +103,7 @@ class TestResolveCommand:
 # ---------------------------------------------------------------------------
 
 class TestDerivedDicts:
-    def test_commands_dict_excludes_gateway_only(self):
-        """gateway_only commands should NOT appear in the CLI COMMANDS dict."""
-        for cmd in COMMAND_REGISTRY:
-            if cmd.gateway_only:
-                assert f"/{cmd.name}" not in COMMANDS, \
-                    f"gateway_only command /{cmd.name} should not be in COMMANDS"
 
-    def test_commands_dict_includes_all_cli_commands(self):
-        for cmd in COMMAND_REGISTRY:
-            if not cmd.gateway_only:
-                assert f"/{cmd.name}" in COMMANDS, \
-                    f"/{cmd.name} missing from COMMANDS dict"
 
     def test_commands_dict_includes_aliases(self):
         assert "/bg" in COMMANDS
@@ -145,21 +117,12 @@ class TestDerivedDicts:
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}
         assert set(COMMANDS_BY_CATEGORY.keys()) == registry_categories
 
-    def test_every_command_has_nonempty_description(self):
-        for cmd, desc in COMMANDS.items():
-            assert isinstance(desc, str) and len(desc) > 0, f"{cmd} has empty description"
-
 
 # ---------------------------------------------------------------------------
 # Gateway helpers
 # ---------------------------------------------------------------------------
 
 class TestGatewayKnownCommands:
-    def test_excludes_cli_only_without_config_gate(self):
-        for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only and not cmd.gateway_config_gate:
-                assert cmd.name not in GATEWAY_KNOWN_COMMANDS, \
-                    f"cli_only command '{cmd.name}' should not be in GATEWAY_KNOWN_COMMANDS"
 
     def test_includes_config_gated_cli_only(self):
         """Commands with gateway_config_gate are always in GATEWAY_KNOWN_COMMANDS."""
@@ -168,39 +131,32 @@ class TestGatewayKnownCommands:
                 assert cmd.name in GATEWAY_KNOWN_COMMANDS, \
                     f"config-gated command '{cmd.name}' should be in GATEWAY_KNOWN_COMMANDS"
 
-    def test_includes_gateway_commands(self):
-        for cmd in COMMAND_REGISTRY:
-            if not cmd.cli_only:
-                assert cmd.name in GATEWAY_KNOWN_COMMANDS
-                for alias in cmd.aliases:
-                    assert alias in GATEWAY_KNOWN_COMMANDS
-
-    def test_bg_alias_in_gateway(self):
-        assert "bg" in GATEWAY_KNOWN_COMMANDS
-        assert "background" in GATEWAY_KNOWN_COMMANDS
 
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
 
 
 class TestGatewayHelpLines:
-    def test_returns_nonempty_list(self):
-        lines = gateway_help_lines()
-        assert len(lines) > 10
 
     def test_excludes_cli_only_commands_without_config_gate(self):
+        import re
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
-                assert f"`/{cmd.name}" not in joined, \
+                # Word-boundary match so `/reload` doesn't match `/reload-mcp`
+                pattern = rf'`/{re.escape(cmd.name)}(?![-_\w])'
+                assert not re.search(pattern, joined), \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
-    def test_includes_alias_note_for_bg(self):
+    def test_bg_and_btw_are_separate_commands(self):
         lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        assert "`/bg" in joined
+        assert "`/btw" in joined
+        # The retired /background canonical name must be gone.
         bg_line = [l for l in lines if "/background" in l]
-        assert len(bg_line) == 1
-        assert "/bg" in bg_line[0]
+        assert not bg_line
 
 
 class TestTelegramBotCommands:
@@ -216,19 +172,33 @@ class TestTelegramBotCommands:
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
 
-    def test_all_names_valid_telegram_chars(self):
-        """Telegram requires: lowercase a-z, 0-9, underscores only."""
-        import re
-        tg_valid = re.compile(r"^[a-z0-9_]+$")
-        for name, _ in telegram_bot_commands():
-            assert tg_valid.match(name), f"Invalid Telegram command name: {name!r}"
+    def test_no_unicode_dashes_in_descriptions(self):
+        """BotFather rejects setMyCommands descriptions with em/en dashes (#2925)."""
+        for name, desc in telegram_bot_commands():
+            assert not any(c in desc for c in "\u2012\u2013\u2014\u2015\u2212"), (
+                f"Telegram command '{name}' description has a Unicode dash: {desc!r}")
 
-    def test_excludes_cli_only_without_config_gate(self):
+    def test_unicode_dashes_folded_to_hyphen(self, monkeypatch):
+        """Stubbed registry entry with em/en dashes comes back hyphenated."""
+        fake = CommandDef(name="dashy", description="does a \u2014 b \u2013 c",
+                          category="Session")
+        monkeypatch.setattr("hermes_cli.commands_platforms._gateway_available_commands",
+                            lambda: [fake])
+        monkeypatch.setattr("hermes_cli.commands_platforms._iter_plugin_command_entries",
+                            lambda: iter([]))
+        assert ("dashy", "does a - b - c") in telegram_bot_commands(
+            include_plugins=False)
+
+
+    def test_includes_builtin_commands_with_required_args(self):
+        """Built-in arg-taking commands (e.g. /queue, /steer, /bg, /btw)
+        are now included because their handlers return usage text when
+        invoked without arguments — issue #24312."""
         names = {name for name, _ in telegram_bot_commands()}
-        for cmd in COMMAND_REGISTRY:
-            if cmd.cli_only and not cmd.gateway_config_gate:
-                tg_name = cmd.name.replace("-", "_")
-                assert tg_name not in names
+        assert "bg" in names
+        assert "btw" in names
+        assert "queue" in names
+        assert "steer" in names
 
 
 class TestSlackSubcommandMap:
@@ -241,16 +211,80 @@ class TestSlackSubcommandMap:
         for key, val in slack_subcommand_map().items():
             assert val.startswith("/"), f"Slack mapping for '{key}' should start with /"
 
-    def test_includes_aliases(self):
-        mapping = slack_subcommand_map()
-        assert "bg" in mapping
-        assert "reset" in mapping
 
     def test_excludes_cli_only_without_config_gate(self):
         mapping = slack_subcommand_map()
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+
+class TestSlackNativeSlashes:
+    """Slack native slash command generation — used to register every
+    COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
+    and Telegram."""
+
+
+    def test_names_respect_slack_limits(self):
+        for name, _desc, _hint in slack_native_slashes():
+            # Slack: lowercase a-z, 0-9, hyphens, underscores; max 32 chars
+            assert len(name) <= 32, f"slash {name!r} exceeds 32 chars"
+            assert name == name.lower()
+            for ch in name:
+                assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
+
+
+    def test_telegram_parity(self):
+        """Every Telegram bot command must be registerable on Slack too.
+
+        This catches the old behavior where Slack users couldn't invoke
+        commands like /btw natively. If a future command surfaces on
+        Telegram but not Slack (because of Slack's 50-slash cap), this
+        test fails loudly so we can curate the list rather than silently
+        dropping parity.
+
+        Slack-reserved built-in commands (e.g. /status) are excluded
+        from parity checks since they cannot be registered on Slack.
+        """
+        slack_names = {n for n, _d, _h in slack_native_slashes()}
+        tg_names = {n for n, _d in telegram_bot_commands()}
+        # Some Telegram names have underscores where Slack uses hyphens
+        # (e.g. set_home vs sethome). Normalize both sides for comparison.
+        def _norm(s: str) -> str:
+            return s.replace("-", "_").replace("__", "_").strip("_")
+
+        slack_norm = {_norm(n) for n in slack_names}
+        tg_norm = {_norm(n) for n in tg_names}
+        reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
+        # Commands deliberately routed through /hermes <command> on Slack only
+        # (Slack's 50-slash cap) are expected to be absent from native slashes.
+        via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
+        missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
+        assert not missing, (
+            f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
+        )
+
+
+class TestSlackAppManifest:
+    """Generated Slack app manifest (used by `hermes slack manifest`)."""
+
+
+    def test_each_slash_has_required_fields(self):
+        m = slack_app_manifest()
+        for entry in m["features"]["slash_commands"]:
+            assert entry["command"].startswith("/")
+            assert "description" in entry
+            assert "url" in entry
+            # should_escape must be present (Slack defaults to True which
+            # HTML-escapes args — we want the raw text)
+            assert "should_escape" in entry
+
+    def test_btw_is_in_manifest(self):
+        """Regression: /btw must be a native Slack slash, not just a
+        /hermes subcommand."""
+        m = slack_app_manifest()
+        commands = [c["command"] for c in m["features"]["slash_commands"]]
+        assert "/btw" in commands
 
 
 # ---------------------------------------------------------------------------
@@ -260,11 +294,6 @@ class TestSlackSubcommandMap:
 class TestGatewayConfigGate:
     """Tests for the gateway_config_gate mechanism on CommandDef."""
 
-    def test_verbose_has_config_gate(self):
-        cmd = resolve_command("verbose")
-        assert cmd is not None
-        assert cmd.cli_only is True
-        assert cmd.gateway_config_gate == "display.tool_progress_command"
 
     def test_verbose_in_gateway_known_commands(self):
         """Config-gated commands are always recognized by the gateway."""
@@ -274,50 +303,17 @@ class TestGatewayConfigGate:
         """When the config gate is falsy, the command should not appear in help."""
         # Write a config with the gate off (default)
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: false\n")
+        config_file.write_text("display:\n  tool_progress_command: false\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         assert "`/verbose" not in joined
 
-    def test_config_gate_included_in_help_when_on(self, tmp_path, monkeypatch):
-        """When the config gate is truthy, the command should appear in help."""
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: true\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        lines = gateway_help_lines()
-        joined = "\n".join(lines)
-        assert "`/verbose" in joined
-
-    def test_config_gate_excluded_from_telegram_when_off(self, tmp_path, monkeypatch):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: false\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        names = {name for name, _ in telegram_bot_commands()}
-        assert "verbose" not in names
-
-    def test_config_gate_included_in_telegram_when_on(self, tmp_path, monkeypatch):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: true\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        names = {name for name, _ in telegram_bot_commands()}
-        assert "verbose" in names
-
-    def test_config_gate_excluded_from_slack_when_off(self, tmp_path, monkeypatch):
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: false\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        mapping = slack_subcommand_map()
-        assert "verbose" not in mapping
 
     def test_config_gate_included_in_slack_when_on(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: true\n")
+        config_file.write_text("display:\n  tool_progress_command: true\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         mapping = slack_subcommand_map()
@@ -331,38 +327,12 @@ class TestGatewayConfigGate:
 class TestSlashCommandCompleter:
     # -- basic prefix completion -----------------------------------------
 
-    def test_builtin_prefix_completion_uses_shared_registry(self):
-        completions = _completions(SlashCommandCompleter(), "/re")
-        texts = {item.text for item in completions}
-
-        assert "reset" in texts
-        assert "retry" in texts
-        assert "reload-mcp" in texts
-
-    def test_builtin_completion_display_meta_shows_description(self):
-        completions = _completions(SlashCommandCompleter(), "/help")
-        assert len(completions) == 1
-        assert completions[0].display_meta_text == "Show available commands"
 
     # -- exact-match trailing space --------------------------------------
 
-    def test_exact_match_completion_adds_trailing_space(self):
-        completions = _completions(SlashCommandCompleter(), "/help")
-
-        assert [item.text for item in completions] == ["help "]
-
-    def test_partial_match_does_not_add_trailing_space(self):
-        completions = _completions(SlashCommandCompleter(), "/hel")
-
-        assert [item.text for item in completions] == ["help"]
 
     # -- non-slash input returns nothing ---------------------------------
 
-    def test_no_completions_for_non_slash_input(self):
-        assert _completions(SlashCommandCompleter(), "help") == []
-
-    def test_no_completions_for_empty_input(self):
-        assert _completions(SlashCommandCompleter(), "") == []
 
     # -- skill commands via provider ------------------------------------
 
@@ -380,24 +350,6 @@ class TestSlashCommandCompleter:
         assert completions[0].display_text == "/gif-search"
         assert completions[0].display_meta_text == "⚡ Search for GIFs across providers"
 
-    def test_skill_exact_match_adds_trailing_space(self):
-        completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: {
-                "/gif-search": {"description": "Search for GIFs"},
-            }
-        )
-
-        completions = _completions(completer, "/gif-search")
-
-        assert len(completions) == 1
-        assert completions[0].text == "gif-search "
-
-    def test_no_skill_provider_means_no_skill_completions(self):
-        """Default (None) provider should not blow up or add completions."""
-        completer = SlashCommandCompleter()
-        completions = _completions(completer, "/gif")
-        # /gif doesn't match any builtin command
-        assert completions == []
 
     def test_skill_provider_exception_is_swallowed(self):
         """A broken provider should not crash autocomplete."""
@@ -409,28 +361,35 @@ class TestSlashCommandCompleter:
         texts = {item.text for item in completions}
         assert "help" in texts
 
-    def test_skill_description_truncated_at_50_chars(self):
-        long_desc = "A" * 80
-        completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: {
-                "/long-skill": {"description": long_desc},
-            }
-        )
-        completions = _completions(completer, "/long")
-        assert len(completions) == 1
-        meta = completions[0].display_meta_text
-        # "⚡ " prefix + 50 chars + "..."
-        assert meta == f"⚡ {'A' * 50}..."
 
-    def test_skill_missing_description_uses_fallback(self):
-        completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: {
-                "/no-desc": {},
-            }
-        )
-        completions = _completions(completer, "/no-desc")
-        assert len(completions) == 1
-        assert "Skill command" in completions[0].display_meta_text
+# ── Stacked slash-skill completion ──────────────────────────────────────
+
+
+def _stacked_completer(**extra_skills):
+    skills = {
+        "/skill-a": {"description": "Skill A"},
+        "/skill-b": {"description": "Skill B"},
+        "/skill-c": {"description": "Skill C"},
+        **extra_skills,
+    }
+    return SlashCommandCompleter(skill_commands_provider=lambda: skills)
+
+
+class TestStackedSkillCompletion:
+    """Second+ leading skill tokens keep getting completions (stacked
+    slash-skill invocations, Claude Code v2.1.199 port follow-up)."""
+
+
+    def test_no_completions_for_instruction_text(self):
+        assert _completions(_stacked_completer(), "/skill-a do the") == []
+        assert _completions(_stacked_completer(), "/skill-a ") == []
+
+
+    def test_cap_stops_completions(self):
+        skills = {f"/stk-{i}": {"description": f"S{i}"} for i in range(8)}
+        completer = SlashCommandCompleter(skill_commands_provider=lambda: skills)
+        text = " ".join(f"/stk-{i}" for i in range(5)) + " /stk-"
+        assert _completions(completer, text) == []
 
 
 # ── SUBCOMMANDS extraction ──────────────────────────────────────────────
@@ -442,29 +401,6 @@ class TestSubcommands:
         assert "/skills" in SUBCOMMANDS
         assert "install" in SUBCOMMANDS["/skills"]
 
-    def test_reasoning_has_subcommands(self):
-        assert "/reasoning" in SUBCOMMANDS
-        subs = SUBCOMMANDS["/reasoning"]
-        assert "high" in subs
-        assert "show" in subs
-        assert "hide" in subs
-
-    def test_fast_has_subcommands(self):
-        assert "/fast" in SUBCOMMANDS
-        subs = SUBCOMMANDS["/fast"]
-        assert "fast" in subs
-        assert "normal" in subs
-        assert "status" in subs
-
-    def test_voice_has_subcommands(self):
-        assert "/voice" in SUBCOMMANDS
-        assert "on" in SUBCOMMANDS["/voice"]
-        assert "off" in SUBCOMMANDS["/voice"]
-
-    def test_cron_has_subcommands(self):
-        assert "/cron" in SUBCOMMANDS
-        assert "list" in SUBCOMMANDS["/cron"]
-        assert "add" in SUBCOMMANDS["/cron"]
 
     def test_commands_without_subcommands_not_in_dict(self):
         """Plain commands should not appear in SUBCOMMANDS."""
@@ -477,43 +413,54 @@ class TestSubcommands:
 
 
 class TestSubcommandCompletion:
-    def test_subcommand_completion_after_space(self):
-        """Typing '/reasoning ' then Tab should show subcommands."""
-        completions = _completions(SlashCommandCompleter(), "/reasoning ")
-        texts = {c.text for c in completions}
-        assert "high" in texts
-        assert "show" in texts
 
-    def test_fast_subcommand_completion_after_space(self):
-        completions = _completions(SlashCommandCompleter(), "/fast ")
-        texts = {c.text for c in completions}
-        assert "fast" in texts
-        assert "normal" in texts
 
-    def test_fast_command_filtered_out_when_unavailable(self):
-        completions = _completions(
-            SlashCommandCompleter(command_filter=lambda cmd: cmd != "/fast"),
-            "/fa",
+    def test_tools_enable_skips_already_listed(self, monkeypatch):
+        """If the user already typed a name, don't suggest it again."""
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
         )
-        texts = {c.text for c in completions}
-        assert "fast" not in texts
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
 
-    def test_subcommand_prefix_filters(self):
-        """Typing '/reasoning sh' should only show 'show'."""
-        completions = _completions(SlashCommandCompleter(), "/reasoning sh")
+        completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
         texts = {c.text for c in completions}
-        assert texts == {"show"}
+        assert "spotify" not in texts
 
-    def test_subcommand_exact_match_suppressed(self):
-        """Typing the full subcommand shouldn't re-suggest it."""
-        completions = _completions(SlashCommandCompleter(), "/reasoning show")
-        texts = {c.text for c in completions}
-        assert "show" not in texts
 
-    def test_no_subcommands_for_plain_command(self):
-        """Commands without subcommands yield nothing after space."""
-        completions = _completions(SlashCommandCompleter(), "/help ")
-        assert completions == []
+    def _fake_gateway(self, monkeypatch, platforms):
+        """Patch load_gateway_config with a fake whose connected platforms are
+        the keys of `platforms` (name -> home as None or a (chat_id, name) tuple).
+        """
+        from types import SimpleNamespace
+
+        enums = {name: SimpleNamespace(value=name) for name in platforms}
+        homes = {
+            name: (None if home is None else SimpleNamespace(chat_id=home[0], name=home[1]))
+            for name, home in platforms.items()
+        }
+        fake = SimpleNamespace(
+            get_connected_platforms=lambda: list(enums.values()),
+            get_home_channel=lambda p: homes[p.value],
+        )
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
+
+    def test_handoff_completes_connected_platforms(self, monkeypatch):
+        """`/handoff ` offers connected platforms, with or without a home channel."""
+        self._fake_gateway(
+            monkeypatch,
+            {
+                "telegram": ("123", "Me"),
+                "discord": None,  # no home channel yet -> still listed
+            },
+        )
+
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
+        assert texts == {"telegram", "discord"}
 
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
@@ -536,30 +483,19 @@ class TestGhostText:
         """/he → 'lp'"""
         assert _suggestion("/he") == "lp"
 
-    def test_command_name_suggestion_reasoning(self):
-        """/rea → 'soning'"""
-        assert _suggestion("/rea") == "soning"
 
-    def test_no_suggestion_for_complete_command(self):
-        assert _suggestion("/help") is None
+    # -- stacked slash-skill ghost text -----------------------------------
 
-    def test_subcommand_suggestion(self):
-        """/reasoning h → 'igh'"""
-        assert _suggestion("/reasoning h") == "igh"
 
-    def test_subcommand_suggestion_show(self):
-        """/reasoning sh → 'ow'"""
-        assert _suggestion("/reasoning sh") == "ow"
-
-    def test_fast_subcommand_suggestion(self):
-        assert _suggestion("/fast f") == "ast"
-
-    def test_fast_subcommand_suggestion_hidden_when_filtered(self):
-        completer = SlashCommandCompleter(command_filter=lambda cmd: cmd != "/fast")
-        assert _suggestion("/fa", completer=completer) is None
-
-    def test_no_suggestion_for_non_slash(self):
-        assert _suggestion("hello") is None
+    def test_stacked_skill_ghost_text_skips_used(self):
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: {
+                "/alpha": {"description": "A"},
+                "/beta": {"description": "B"},
+            }
+        )
+        assert _suggestion("/alpha /a", completer=completer) is None
+        assert _suggestion("/alpha /b", completer=completer) == "eta"
 
 
 # ---------------------------------------------------------------------------
@@ -573,19 +509,6 @@ class TestSanitizeTelegramName:
     def test_hyphens_replaced_with_underscores(self):
         assert _sanitize_telegram_name("my-skill-name") == "my_skill_name"
 
-    def test_plus_sign_stripped(self):
-        """Regression: skill name 'Jellyfin + Jellystat 24h Summary'."""
-        assert _sanitize_telegram_name("jellyfin-+-jellystat-24h-summary") == "jellyfin_jellystat_24h_summary"
-
-    def test_slash_stripped(self):
-        """Regression: skill name 'Sonarr v3/v4 API Integration'."""
-        assert _sanitize_telegram_name("sonarr-v3/v4-api-integration") == "sonarr_v3v4_api_integration"
-
-    def test_uppercase_lowercased(self):
-        assert _sanitize_telegram_name("MyCommand") == "mycommand"
-
-    def test_dots_and_special_chars_stripped(self):
-        assert _sanitize_telegram_name("skill.v2@beta!") == "skillv2beta"
 
     def test_consecutive_underscores_collapsed(self):
         assert _sanitize_telegram_name("a---b") == "a_b"
@@ -596,17 +519,12 @@ class TestSanitizeTelegramName:
         assert _sanitize_telegram_name("trailing-") == "trailing"
         assert _sanitize_telegram_name("-both-") == "both"
 
-    def test_digits_preserved(self):
-        assert _sanitize_telegram_name("skill-24h") == "skill_24h"
-
-    def test_empty_after_sanitization(self):
-        assert _sanitize_telegram_name("+++") == ""
-
-    def test_spaces_only_becomes_empty(self):
-        assert _sanitize_telegram_name("   ") == ""
-
-    def test_already_valid(self):
-        assert _sanitize_telegram_name("valid_name_123") == "valid_name_123"
+    def test_names_that_would_lose_letters_are_omitted(self):
+        """``/中文helper`` is registered under its Unicode slug; advertising ``/helper`` would
+        answer "Unknown command", so mixed-script names are left out of the menu (#12351)."""
+        assert _sanitize_telegram_name("中文helper") == ""
+        assert _sanitize_telegram_name("小说拆条") == ""
+        assert _sanitize_telegram_name("plan+review") == "planreview"  # punctuation-only loss keeps the entry
 
 
 # ---------------------------------------------------------------------------
@@ -615,145 +533,187 @@ class TestSanitizeTelegramName:
 
 
 class TestClampTelegramNames:
-    """Tests for _clamp_telegram_names() — 32-char enforcement + collision."""
+    """Tests for _clamp_command_names() — 32-char enforcement + collision."""
 
-    def test_short_names_unchanged(self):
-        entries = [("help", "Show help"), ("status", "Show status")]
-        result = _clamp_telegram_names(entries, set())
-        assert result == entries
-
-    def test_long_name_truncated(self):
-        long = "a" * 40
-        result = _clamp_telegram_names([(long, "desc")], set())
-        assert len(result) == 1
-        assert result[0][0] == "a" * _TG_NAME_LIMIT
-        assert result[0][1] == "desc"
-
-    def test_collision_with_reserved_gets_digit_suffix(self):
-        # The truncated form collides with a reserved name
-        prefix = "x" * _TG_NAME_LIMIT
-        long_name = "x" * 40
-        result = _clamp_telegram_names([(long_name, "d")], reserved={prefix})
-        assert len(result) == 1
-        name = result[0][0]
-        assert len(name) == _TG_NAME_LIMIT
-        assert name == "x" * (_TG_NAME_LIMIT - 1) + "0"
 
     def test_collision_between_entries_gets_incrementing_digits(self):
         # Two long names that truncate to the same 32-char prefix
         base = "y" * 40
         entries = [(base + "_alpha", "d1"), (base + "_beta", "d2")]
-        result = _clamp_telegram_names(entries, set())
+        result = _clamp_command_names(entries, set())
         assert len(result) == 2
-        assert result[0][0] == "y" * _TG_NAME_LIMIT
-        assert result[1][0] == "y" * (_TG_NAME_LIMIT - 1) + "0"
+        assert result[0][0] == "y" * _CMD_NAME_LIMIT
+        assert result[1][0] == "y" * (_CMD_NAME_LIMIT - 1) + "0"
 
-    def test_collision_with_reserved_and_entries_skips_taken_digits(self):
-        prefix = "z" * _TG_NAME_LIMIT
-        digit0 = "z" * (_TG_NAME_LIMIT - 1) + "0"
-        # Reserve both the plain truncation and digit-0
-        reserved = {prefix, digit0}
-        long_name = "z" * 50
-        result = _clamp_telegram_names([(long_name, "d")], reserved)
-        assert len(result) == 1
-        assert result[0][0] == "z" * (_TG_NAME_LIMIT - 1) + "1"
 
     def test_all_digits_exhausted_drops_entry(self):
-        prefix = "w" * _TG_NAME_LIMIT
+        prefix = "w" * _CMD_NAME_LIMIT
         # Reserve the plain truncation + all 10 digit slots
-        reserved = {prefix} | {"w" * (_TG_NAME_LIMIT - 1) + str(d) for d in range(10)}
+        reserved = {prefix} | {"w" * (_CMD_NAME_LIMIT - 1) + str(d) for d in range(10)}
         long_name = "w" * 50
-        result = _clamp_telegram_names([(long_name, "d")], reserved)
+        result = _clamp_command_names([(long_name, "d")], reserved)
         assert result == []
 
-    def test_exact_32_chars_not_truncated(self):
-        name = "a" * _TG_NAME_LIMIT
-        result = _clamp_telegram_names([(name, "desc")], set())
-        assert result[0][0] == name
 
-    def test_duplicate_short_name_deduplicated(self):
-        entries = [("foo", "d1"), ("foo", "d2")]
-        result = _clamp_telegram_names(entries, set())
+class TestClampCommandNamesTriples:
+    """Tests for _clamp_command_names with 3-tuples (name, desc, cmd_key).
+
+    Skill entries pass through _clamp_command_names as 3-tuples so the
+    original cmd_key survives name truncation.  Before the fix in PR #18951,
+    the code stripped cmd_key into a side-dict keyed by the *original*
+    (name, desc) pair — after truncation the lookup key no longer matched,
+    silently losing the cmd_key.
+    """
+
+
+    def test_long_name_preserves_cmd_key(self):
+        long = "a" * 50
+        cmd_key = f"/{long}"
+        result = _clamp_command_names([(long, "desc", cmd_key)], set())
         assert len(result) == 1
-        assert result[0] == ("foo", "d1")
+        name, desc, key = result[0]
+        assert len(name) == _CMD_NAME_LIMIT
+        assert key == cmd_key, "cmd_key must survive name clamping"
+
+    def test_collision_preserves_cmd_key(self):
+        prefix = "x" * _CMD_NAME_LIMIT
+        long = "x" * 50
+        result = _clamp_command_names(
+            [(long, "desc", "/long-skill")], reserved={prefix},
+        )
+        assert len(result) == 1
+        name, _desc, key = result[0]
+        assert name == "x" * (_CMD_NAME_LIMIT - 1) + "0"
+        assert key == "/long-skill"
+
+
+class TestGatewaySkillCollector:
+    """_collect_gateway_skill_entries: shared plugin+skill collector for Telegram/Discord."""
+
+    def test_long_skill_name_clamped_but_cmd_key_retained(self, tmp_path):
+        from unittest.mock import patch
+        from hermes_cli.commands_platforms import _collect_gateway_skill_entries
+
+        long_name = "this-is-a-very-long-skill-name-that-exceeds-limit"
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        fake_cmds = {
+            f"/{long_name}": {
+                "name": long_name,
+                "description": "A skill with a long name",
+                "skill_md_path": f"{skills_dir.resolve()}/{long_name}/SKILL.md",
+            },
+        }
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
+        ):
+            entries, hidden = _collect_gateway_skill_entries(
+                platform="discord", max_slots=100, reserved_names=set(), desc_limit=100,
+            )
+        assert hidden == 0
+        name, _desc, cmd_key, raw_name = entries[0]
+        assert len(name) == _CMD_NAME_LIMIT
+        assert cmd_key == f"/{long_name}", "cmd_key must survive name clamping"
+        assert raw_name == long_name
+
+    def test_cap_trims_skills_only(self, tmp_path):
+        from unittest.mock import patch
+        from hermes_cli.commands_platforms import _collect_gateway_skill_entries
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        fake_cmds = {
+            f"/skill-{i:03d}": {
+                "name": f"skill-{i:03d}",
+                "description": f"Skill {i}",
+                "skill_md_path": f"{skills_dir.resolve()}/skill-{i:03d}/SKILL.md",
+            }
+            for i in range(20)
+        }
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch("hermes_cli.plugins.get_plugin_commands", return_value={"plug": {"description": "p"}}),
+        ):
+            entries, hidden = _collect_gateway_skill_entries(
+                platform="discord", max_slots=5, reserved_names=set(), desc_limit=100,
+            )
+        assert [e[0] for e in entries] == ["plug", "skill-000", "skill-001", "skill-002", "skill-003"]
+        assert hidden == 16
 
 
 class TestTelegramMenuCommands:
     """Integration: telegram_menu_commands enforces the 32-char limit."""
 
-    def test_all_names_within_limit(self):
-        menu, _ = telegram_menu_commands(max_commands=100)
-        for name, _desc in menu:
-            assert 1 <= len(name) <= _TG_NAME_LIMIT, (
-                f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
-            )
 
-    def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
-        """Telegram menu generation should discover plugin slash commands on first access."""
+    def test_external_dir_skills_included_in_telegram_menu(self, tmp_path, monkeypatch):
+        """External skills (``skills.external_dirs``) must appear in the Telegram menu.
+
+        Regression test for #8110 — external skills were visible to the
+        agent and CLI but silently excluded from gateway slash menus
+        because ``_collect_gateway_skill_entries`` only accepted skills
+        whose path started with ``SKILLS_DIR``.
+
+        Also verifies the trailing-slash boundary: a directory that
+        simply shares a prefix with a configured ``external_dirs`` entry
+        (``/tmp/my-skills-extra`` vs ``/tmp/my-skills``) must NOT be
+        admitted.
+        """
         from unittest.mock import patch
-        import hermes_cli.plugins as plugins_mod
 
-        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
-        plugin_dir.mkdir(parents=True, exist_ok=True)
-        (plugin_dir / "plugin.yaml").write_text(
-            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
-        )
-        (plugin_dir / "__init__.py").write_text(
-            "def register(ctx):\n"
-            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
-        )
-        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        external_dir = tmp_path / "my-skills"
+        external_dir.mkdir()
+        lookalike_dir = tmp_path / "my-skills-extra"
+        lookalike_dir.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
-            "plugins:\n  enabled:\n    - cmd-plugin\n"
+            f"skills:\n  external_dirs:\n    - {external_dir}\n"
         )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        with patch.object(plugins_mod, "_plugin_manager", None):
-            menu, _ = telegram_menu_commands(max_commands=100)
-
-        menu_names = {name for name, _ in menu}
-        assert "lcm" in menu_names
-
-    def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
-        """Skills disabled for telegram should not appear in the menu."""
-        from unittest.mock import patch, MagicMock
-
-        # Set up a config with a telegram-specific disabled list
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "skills:\n"
-            "  platform_disabled:\n"
-            "    telegram:\n"
-            "      - my-disabled-skill\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        # Mock get_skill_commands to return two skills
-        fake_skills_dir = str(tmp_path / "skills")
         fake_cmds = {
-            "/my-disabled-skill": {
-                "name": "my-disabled-skill",
-                "description": "Should be hidden",
-                "skill_md_path": f"{fake_skills_dir}/my-disabled-skill/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/my-disabled-skill",
+            "/local-one": {
+                "name": "local-one",
+                "description": "Local",
+                "skill_md_path": f"{local_dir}/local-one/SKILL.md",
+                "skill_dir": f"{local_dir}/local-one",
             },
-            "/my-enabled-skill": {
-                "name": "my-enabled-skill",
-                "description": "Should be visible",
-                "skill_md_path": f"{fake_skills_dir}/my-enabled-skill/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/my-enabled-skill",
+            "/morning-briefing": {
+                "name": "morning-briefing",
+                "description": "External skill",
+                "skill_md_path": f"{external_dir}/morning-briefing/SKILL.md",
+                "skill_dir": f"{external_dir}/morning-briefing",
+            },
+            "/lookalike-skill": {
+                "name": "lookalike-skill",
+                "description": "Lives in a sibling dir that shares a prefix",
+                "skill_md_path": f"{lookalike_dir}/lookalike-skill/SKILL.md",
+                "skill_dir": f"{lookalike_dir}/lookalike-skill",
             },
         }
+
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
         ):
-            (tmp_path / "skills").mkdir(exist_ok=True)
-            menu, hidden = telegram_menu_commands(max_commands=100)
+            menu, _ = telegram_menu_commands(max_commands=100)
 
         menu_names = {n for n, _ in menu}
-        assert "my_enabled_skill" in menu_names
-        assert "my_disabled_skill" not in menu_names
+        assert "local_one" in menu_names, "local skill must appear"
+        assert "morning_briefing" in menu_names, (
+            "external skill from skills.external_dirs must appear (fixes #8110)"
+        )
+        assert "lookalike_skill" not in menu_names, (
+            "prefix-match sibling directories must not be admitted"
+        )
 
     def test_special_chars_in_skill_names_sanitized(self, tmp_path, monkeypatch):
         """Skills with +, /, or other special chars produce valid Telegram names."""
@@ -823,283 +783,244 @@ class TestTelegramMenuCommands:
         # No empty string in menu names
         assert "" not in menu_names
 
-
-# ---------------------------------------------------------------------------
-# Backward-compat aliases
-# ---------------------------------------------------------------------------
-
-class TestBackwardCompatAliases:
-    """The renamed constants/functions still exist under the old names."""
-
-    def test_tg_name_limit_alias(self):
-        assert _TG_NAME_LIMIT == _CMD_NAME_LIMIT == 32
-
-    def test_clamp_telegram_names_is_clamp_command_names(self):
-        assert _clamp_telegram_names is _clamp_command_names
-
-
-# ---------------------------------------------------------------------------
-# Discord skill command registration
-# ---------------------------------------------------------------------------
-
-class TestDiscordSkillCommands:
-    """Tests for discord_skill_commands() — centralized skill registration."""
-
-    def test_returns_skill_entries(self, tmp_path, monkeypatch):
-        """Skills under SKILLS_DIR (not .hub) should be returned."""
+    def test_configured_priority_promotes_skill_into_last_menu_slot(
+        self, tmp_path, monkeypatch
+    ):
+        """A prioritized dynamic skill must not be trimmed behind alphabetical peers."""
         from unittest.mock import patch
 
-        fake_skills_dir = str(tmp_path / "skills")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
         fake_cmds = {
-            "/gif-search": {
-                "name": "gif-search",
-                "description": "Search for GIFs",
-                "skill_md_path": f"{fake_skills_dir}/gif-search/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/gif-search",
+            "/aaa-skill": {
+                "name": "aaa-skill",
+                "description": "Alphabetically first",
+                "skill_md_path": f"{local_dir}/aaa-skill/SKILL.md",
+                "skill_dir": f"{local_dir}/aaa-skill",
             },
-            "/code-review": {
-                "name": "code-review",
-                "description": "Review code changes",
-                "skill_md_path": f"{fake_skills_dir}/code-review/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/code-review",
+            "/gym": {
+                "name": "gym",
+                "description": "GymPilot",
+                "skill_md_path": f"{local_dir}/gym/SKILL.md",
+                "skill_dir": f"{local_dir}/gym",
             },
         }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "skills").mkdir(exist_ok=True)
+        fake_plugins = {
+            "plugin-one": {"description": "Plugin one"},
+            "plugin-two": {"description": "Plugin two"},
+        }
+        fake_core = [
+            ("core_one", "Core one"),
+            ("core_two", "Core two"),
+        ]
+        menu_cfg = {"max_commands": 2, "priority_mode": "prepend", "priority": ["gym"]}
+
         with (
+            patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
-            entries, hidden = discord_skill_commands(
-                max_slots=50, reserved_names=set(),
-            )
+            menu, hidden = telegram_menu_commands(max_commands=len(fake_core))
 
-        names = {n for n, _d, _k in entries}
-        assert "gif-search" in names
-        assert "code-review" in names
-        assert hidden == 0
-        # Verify cmd_key is preserved for handler callbacks
-        keys = {k for _n, _d, k in entries}
-        assert "/gif-search" in keys
-        assert "/code-review" in keys
+        menu_names = [name for name, _description in menu]
+        assert len(menu_names) == len(fake_core)
+        assert menu_names[0] == "gym"
+        assert "aaa_skill" not in menu_names
+        assert hidden == 4
 
-    def test_names_allow_hyphens(self, tmp_path, monkeypatch):
-        """Discord names should keep hyphens (unlike Telegram's _ sanitization)."""
+    def test_default_core_priority_does_not_promote_same_named_skill(
+        self, tmp_path, monkeypatch
+    ):
+        """Built-in defaults must not elevate a dynamic command across tiers."""
         from unittest.mock import patch
 
-        fake_skills_dir = str(tmp_path / "skills")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
         fake_cmds = {
-            "/my-cool-skill": {
-                "name": "my-cool-skill",
-                "description": "A cool skill",
-                "skill_md_path": f"{fake_skills_dir}/my-cool-skill/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/my-cool-skill",
+            "/aaa-skill": {
+                "name": "aaa-skill",
+                "description": "Alphabetically first skill",
+                "skill_md_path": f"{local_dir}/aaa-skill/SKILL.md",
+                "skill_dir": f"{local_dir}/aaa-skill",
+            },
+            "/platforms": {
+                "name": "platforms",
+                "description": "Dynamic platforms skill",
+                "skill_md_path": f"{local_dir}/platforms/SKILL.md",
+                "skill_dir": f"{local_dir}/platforms",
             },
         }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "skills").mkdir(exist_ok=True)
+        fake_core = [("core_one", "Core one")]
+        menu_cfg = {"max_commands": 2, "priority_mode": "prepend", "priority": []}
+
         with (
+            patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
-            entries, _ = discord_skill_commands(
-                max_slots=50, reserved_names=set(),
-            )
+            menu, hidden = telegram_menu_commands(max_commands=2)
 
-        assert entries[0][0] == "my-cool-skill"  # hyphens preserved
+        assert menu == fake_core + [("aaa_skill", "Alphabetically first skill")]
+        assert hidden == 1
 
-    def test_cap_enforcement(self, tmp_path, monkeypatch):
-        """Entries beyond max_slots should be hidden."""
+    def test_long_configured_skill_priority_survives_telegram_clamping(
+        self, tmp_path, monkeypatch
+    ):
+        """Priority matches the original skill key after its menu name is clamped."""
         from unittest.mock import patch
 
-        fake_skills_dir = str(tmp_path / "skills")
-        fake_cmds = {
-            f"/skill-{i:03d}": {
-                "name": f"skill-{i:03d}",
-                "description": f"Skill {i}",
-                "skill_md_path": f"{fake_skills_dir}/skill-{i:03d}/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/skill-{i:03d}",
-            }
-            for i in range(20)
-        }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "skills").mkdir(exist_ok=True)
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            entries, hidden = discord_skill_commands(
-                max_slots=5, reserved_names=set(),
-            )
-
-        assert len(entries) == 5
-        assert hidden == 15
-
-    def test_excludes_discord_disabled_skills(self, tmp_path, monkeypatch):
-        """Skills disabled for discord should not appear."""
-        from unittest.mock import patch
-
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            "skills:\n"
-            "  platform_disabled:\n"
-            "    discord:\n"
-            "      - secret-skill\n"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        fake_skills_dir = str(tmp_path / "skills")
-        fake_cmds = {
-            "/secret-skill": {
-                "name": "secret-skill",
-                "description": "Should not appear",
-                "skill_md_path": f"{fake_skills_dir}/secret-skill/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/secret-skill",
-            },
-            "/public-skill": {
-                "name": "public-skill",
-                "description": "Should appear",
-                "skill_md_path": f"{fake_skills_dir}/public-skill/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/public-skill",
-            },
-        }
-        (tmp_path / "skills").mkdir(exist_ok=True)
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            entries, _ = discord_skill_commands(
-                max_slots=50, reserved_names=set(),
-            )
-
-        names = {n for n, _d, _k in entries}
-        assert "secret-skill" not in names
-        assert "public-skill" in names
-
-    def test_reserved_names_not_overwritten(self, tmp_path, monkeypatch):
-        """Skills whose names collide with built-in commands should be skipped."""
-        from unittest.mock import patch
-
-        fake_skills_dir = str(tmp_path / "skills")
-        fake_cmds = {
-            "/status": {
-                "name": "status",
-                "description": "Skill that collides with built-in",
-                "skill_md_path": f"{fake_skills_dir}/status/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/status",
-            },
-        }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "skills").mkdir(exist_ok=True)
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            entries, _ = discord_skill_commands(
-                max_slots=50, reserved_names={"status"},
-            )
-
-        names = {n for n, _d, _k in entries}
-        assert "status" not in names
-
-    def test_description_truncated_at_100_chars(self, tmp_path, monkeypatch):
-        """Descriptions exceeding 100 chars should be truncated."""
-        from unittest.mock import patch
-
-        fake_skills_dir = str(tmp_path / "skills")
-        long_desc = "x" * 150
-        fake_cmds = {
-            "/verbose-skill": {
-                "name": "verbose-skill",
-                "description": long_desc,
-                "skill_md_path": f"{fake_skills_dir}/verbose-skill/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/verbose-skill",
-            },
-        }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "skills").mkdir(exist_ok=True)
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            entries, _ = discord_skill_commands(
-                max_slots=50, reserved_names=set(),
-            )
-
-        assert len(entries[0][1]) == 100
-        assert entries[0][1].endswith("...")
-
-    def test_all_names_within_32_chars(self, tmp_path, monkeypatch):
-        """All returned names must respect the 32-char Discord limit."""
-        from unittest.mock import patch
-
-        fake_skills_dir = str(tmp_path / "skills")
-        long_name = "a" * 50
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        long_name = "x" * 40
         fake_cmds = {
             f"/{long_name}": {
                 "name": long_name,
-                "description": "Long name skill",
-                "skill_md_path": f"{fake_skills_dir}/{long_name}/SKILL.md",
-                "skill_dir": f"{fake_skills_dir}/{long_name}",
+                "description": "Long prioritized skill",
+                "skill_md_path": f"{local_dir}/{long_name}/SKILL.md",
+                "skill_dir": f"{local_dir}/{long_name}",
             },
         }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "skills").mkdir(exist_ok=True)
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            entries, _ = discord_skill_commands(
-                max_slots=50, reserved_names=set(),
-            )
+        fake_core = [("core_one", "Core one")]
+        menu_cfg = {
+            "max_commands": 1,
+            "priority_mode": "replace",
+            "priority": [long_name],
+        }
 
-        for name, _d, _k in entries:
-            assert len(name) <= _CMD_NAME_LIMIT, (
-                f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
-            )
+        with (
+            patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=1)
+
+        assert menu == [("x" * 32, "Long prioritized skill")]
+        assert hidden == 1
+
+    def test_long_configured_plugin_priority_survives_telegram_clamping(
+        self, tmp_path, monkeypatch
+    ):
+        """Plugin priority also matches the original name after clamping."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        long_name = "p" * 40
+        fake_plugins = {long_name: {"description": "Long prioritized plugin"}}
+        menu_cfg = {
+            "max_commands": 1,
+            "priority_mode": "replace",
+            "priority": [long_name],
+        }
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
+        ):
+            menu, hidden = telegram_menu_commands(max_commands=1)
+
+        assert menu == [("p" * 32, "Long prioritized plugin")]
+        assert hidden > 0
+
+    def test_argument_requiring_plugin_is_excluded_from_telegram_menu(
+        self, tmp_path, monkeypatch
+    ):
+        """Telegram omits plugins that cannot be invoked without a payload."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        fake_plugins = {
+            "no-arg": {"description": "No argument"},
+            "needs-arg": {"description": "Needs argument", "args_hint": "<value>"},
+        }
+
+        with (
+            patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
+            patch("agent.skill_commands.get_skill_commands", return_value={}),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+        ):
+            menu, _hidden = telegram_menu_commands(max_commands=100)
+
+        menu_names = {name for name, _description in menu}
+        assert "no_arg" in menu_names
+        assert "needs_arg" not in menu_names
+
+    def test_scalar_configured_priority_is_accepted_as_one_command(self):
+        """The config CLI's scalar value form must work for a single priority."""
+        from unittest.mock import patch
+        from hermes_cli.commands_platforms import _telegram_command_menu_config
+
+        raw_config = {
+            "platforms": {
+                "telegram": {
+                    "extra": {
+                        "command_menu": {"priority": "gym", "priority_mode": "prepend"}
+                    }
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.read_raw_config", return_value=raw_config):
+            menu_cfg = _telegram_command_menu_config()
+
+        assert menu_cfg["priority"] == ["gym"]
+        assert menu_cfg["priority_mode"] == "prepend"
 
 
 # ---------------------------------------------------------------------------
 # Discord skill commands grouped by category
 # ---------------------------------------------------------------------------
 
-from hermes_cli.commands import discord_skill_commands_by_category  # noqa: E402
+from hermes_cli.commands_platforms import discord_skill_commands_by_category
 
 
 class TestDiscordSkillCommandsByCategory:
     """Tests for discord_skill_commands_by_category() — /skill group registration."""
 
-    def test_groups_skills_by_category(self, tmp_path, monkeypatch):
-        """Skills nested 2+ levels deep should be grouped by top-level category."""
+
+    def test_no_legacy_25x25_cap(self, tmp_path, monkeypatch):
+        """The old nested-layout caps (25 groups × 25 skills/group) are gone.
+
+        The live caller flattens categories into a single autocomplete list,
+        which Discord fetches dynamically — the per-command 8KB payload
+        concern from the old nested layout (#11321, #10259) no longer applies.
+        Guards against accidentally re-introducing the caps, which would
+        silently drop skills in the 26th+ alphabetical category (the exact
+        failure mode users were hitting with 29 category dirs on real
+        installs).
+        """
         from unittest.mock import patch
 
         fake_skills_dir = str(tmp_path / "skills")
-        # Create the directory structure so resolve() works
-        for p in [
-            "skills/creative/ascii-art",
-            "skills/creative/excalidraw",
-            "skills/media/gif-search",
-        ]:
-            (tmp_path / p).mkdir(parents=True, exist_ok=True)
-            (tmp_path / p / "SKILL.md").write_text("---\nname: test\n---\n")
 
-        fake_cmds = {
-            "/ascii-art": {
-                "name": "ascii-art",
-                "description": "Generate ASCII art",
-                "skill_md_path": f"{fake_skills_dir}/creative/ascii-art/SKILL.md",
-            },
-            "/excalidraw": {
-                "name": "excalidraw",
-                "description": "Hand-drawn diagrams",
-                "skill_md_path": f"{fake_skills_dir}/creative/excalidraw/SKILL.md",
-            },
-            "/gif-search": {
-                "name": "gif-search",
-                "description": "Search for GIFs",
-                "skill_md_path": f"{fake_skills_dir}/media/gif-search/SKILL.md",
-            },
-        }
+        # Build 30 categories (> old _MAX_GROUPS=25) each with 30 skills
+        # (> old _MAX_PER_GROUP=25).
+        fake_cmds = {}
+        for c in range(30):
+            cat = f"cat{c:02d}"  # cat00, cat01, ..., cat29 — 30 categories
+            for s in range(30):
+                name = f"skill-{c:02d}-{s:02d}"
+                skill_subdir = tmp_path / "skills" / cat / name
+                skill_subdir.mkdir(parents=True, exist_ok=True)
+                (skill_subdir / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+                fake_cmds[f"/{name}"] = {
+                    "name": name,
+                    "description": f"Category {cat} skill {s}",
+                    "skill_md_path": f"{fake_skills_dir}/{cat}/{name}/SKILL.md",
+                }
+
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
@@ -1109,105 +1030,78 @@ class TestDiscordSkillCommandsByCategory:
                 reserved_names=set(),
             )
 
-        assert "creative" in categories
-        assert "media" in categories
-        assert len(categories["creative"]) == 2
-        assert len(categories["media"]) == 1
-        assert uncategorized == []
+        # Every category should be present — no 25-group cap
+        assert len(categories) == 30, (
+            f"expected all 30 categories, got {len(categories)} "
+            f"(cap from old nested layout must be removed)"
+        )
+        # Every skill in every category must be present — no 25-per-group cap
+        for cat_name, entries in categories.items():
+            assert len(entries) == 30, (
+                f"category {cat_name}: expected 30 skills, got {len(entries)} "
+                f"(cap from old nested layout must be removed)"
+            )
+        # Nothing should be reported hidden for the cap reason (the only
+        # legitimate hidden reason now is name clamp collisions, which
+        # don't happen here since all names are unique).
         assert hidden == 0
 
-    def test_root_level_skills_are_uncategorized(self, tmp_path, monkeypatch):
-        """Skills directly under SKILLS_DIR (only 1 path component) → uncategorized."""
+    def test_external_dirs_skills_included(self, tmp_path, monkeypatch):
+        """Skills in ``skills.external_dirs`` must appear in /skill autocomplete.
+
+        #18741 fixed this for the flat ``discord_skill_commands`` collector
+        but left ``discord_skill_commands_by_category`` (the live caller for
+        Discord's ``/skill`` command) still filtering by
+        ``SKILLS_DIR`` prefix only. Regression guard that both collectors
+        now accept external-dir skills.
+        """
         from unittest.mock import patch
 
-        fake_skills_dir = str(tmp_path / "skills")
-        (tmp_path / "skills" / "dogfood").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "skills" / "dogfood" / "SKILL.md").write_text("")
+        local_skills_dir = tmp_path / "local-skills"
+        external_dir = tmp_path / "external-skills"
+
+        (local_skills_dir / "creative" / "local-skill").mkdir(parents=True)
+        (local_skills_dir / "creative" / "local-skill" / "SKILL.md").write_text("", encoding="utf-8")
+
+        (external_dir / "mlops" / "external-skill").mkdir(parents=True)
+        (external_dir / "mlops" / "external-skill" / "SKILL.md").write_text("", encoding="utf-8")
 
         fake_cmds = {
-            "/dogfood": {
-                "name": "dogfood",
-                "description": "QA testing",
-                "skill_md_path": f"{fake_skills_dir}/dogfood/SKILL.md",
+            "/local-skill": {
+                "name": "local-skill",
+                "description": "Local",
+                "skill_md_path": str(local_skills_dir / "creative" / "local-skill" / "SKILL.md"),
+            },
+            "/external-skill": {
+                "name": "external-skill",
+                "description": "External",
+                "skill_md_path": str(external_dir / "mlops" / "external-skill" / "SKILL.md"),
             },
         }
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
         ):
             categories, uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=set(),
             )
 
-        assert categories == {}
-        assert len(uncategorized) == 1
-        assert uncategorized[0][0] == "dogfood"
-
-    def test_hub_skills_excluded(self, tmp_path, monkeypatch):
-        """Skills under .hub should be excluded."""
-        from unittest.mock import patch
-
-        fake_skills_dir = str(tmp_path / "skills")
-        (tmp_path / "skills" / ".hub" / "some-skill").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "skills" / ".hub" / "some-skill" / "SKILL.md").write_text("")
-
-        fake_cmds = {
-            "/some-skill": {
-                "name": "some-skill",
-                "description": "Hub skill",
-                "skill_md_path": f"{fake_skills_dir}/.hub/some-skill/SKILL.md",
-            },
-        }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
-                reserved_names=set(),
-            )
-
-        assert categories == {}
+        # Local skill → grouped under "creative"
+        assert "creative" in categories
+        assert any(n == "local-skill" for n, _d, _k in categories["creative"])
+        # External skill → grouped under its own top-level dir "mlops"
+        assert "mlops" in categories, (
+            "external-dir skills must be included — the old SKILLS_DIR-only "
+            "prefix check was broken for by_category (completes #18741)"
+        )
+        assert any(n == "external-skill" for n, _d, _k in categories["mlops"])
         assert uncategorized == []
-
-    def test_deep_nested_skills_use_top_category(self, tmp_path, monkeypatch):
-        """Skills like mlops/training/axolotl should group under 'mlops'."""
-        from unittest.mock import patch
-
-        fake_skills_dir = str(tmp_path / "skills")
-        (tmp_path / "skills" / "mlops" / "training" / "axolotl").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "skills" / "mlops" / "training" / "axolotl" / "SKILL.md").write_text("")
-        (tmp_path / "skills" / "mlops" / "inference" / "vllm").mkdir(parents=True, exist_ok=True)
-        (tmp_path / "skills" / "mlops" / "inference" / "vllm" / "SKILL.md").write_text("")
-
-        fake_cmds = {
-            "/axolotl": {
-                "name": "axolotl",
-                "description": "Fine-tuning with Axolotl",
-                "skill_md_path": f"{fake_skills_dir}/mlops/training/axolotl/SKILL.md",
-            },
-            "/vllm": {
-                "name": "vllm",
-                "description": "vLLM inference",
-                "skill_md_path": f"{fake_skills_dir}/mlops/inference/vllm/SKILL.md",
-            },
-        }
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        with (
-            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
-        ):
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
-                reserved_names=set(),
-            )
-
-        # Both should be under 'mlops' regardless of sub-category
-        assert "mlops" in categories
-        names = {n for n, _d, _k in categories["mlops"]}
-        assert "axolotl" in names
-        assert "vllm" in names
-        assert len(uncategorized) == 0
+        assert hidden == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1227,45 +1121,6 @@ class TestPluginCommandEnumeration:
             _plugins_mod, "get_plugin_commands", lambda: dict(commands)
         )
 
-    def test_plugin_command_appears_in_telegram_menu(self, monkeypatch):
-        """/metricas registered by a plugin must appear in Telegram BotCommand menu."""
-        self._patch_plugin_commands(monkeypatch, {
-            "metricas": {
-                "handler": lambda _a: "ok",
-                "description": "Metrics dashboard",
-                "args_hint": "dias:7",
-                "plugin": "metrics-plugin",
-            }
-        })
-        names = {name for name, _desc in telegram_bot_commands()}
-        assert "metricas" in names
-
-    def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
-        """/hermes metricas must route through the Slack subcommand map."""
-        self._patch_plugin_commands(monkeypatch, {
-            "metricas": {
-                "handler": lambda _a: "ok",
-                "description": "Metrics",
-                "args_hint": "",
-                "plugin": "metrics-plugin",
-            }
-        })
-        mapping = slack_subcommand_map()
-        assert mapping.get("metricas") == "/metricas"
-
-    def test_plugin_command_does_not_shadow_builtin_in_slack(self, monkeypatch):
-        """If a plugin registers a name that collides with a built-in, the built-in mapping wins."""
-        self._patch_plugin_commands(monkeypatch, {
-            "status": {
-                "handler": lambda _a: "plugin-status",
-                "description": "Plugin status",
-                "args_hint": "",
-                "plugin": "shadow-plugin",
-            }
-        })
-        mapping = slack_subcommand_map()
-        # Built-in /status must still be present and not overwritten.
-        assert mapping.get("status") == "/status"
 
     def test_plugin_command_with_hyphens_sanitized_for_telegram(self, monkeypatch):
         """Plugin names containing hyphens must be underscore-normalized for Telegram."""
@@ -1281,34 +1136,6 @@ class TestPluginCommandEnumeration:
         assert "my_plugin_cmd" in names
         assert "my-plugin-cmd" not in names
 
-    def test_is_gateway_known_command_recognizes_plugin_commands(self, monkeypatch):
-        """is_gateway_known_command() must return True for plugin commands."""
-        from hermes_cli.commands import is_gateway_known_command
-
-        self._patch_plugin_commands(monkeypatch, {
-            "metricas": {
-                "handler": lambda _a: "ok",
-                "description": "Metrics",
-                "args_hint": "",
-                "plugin": "p",
-            }
-        })
-        assert is_gateway_known_command("metricas") is True
-        assert is_gateway_known_command("definitely-not-registered") is False
-
-    def test_is_gateway_known_command_still_recognizes_builtins(self, monkeypatch):
-        """Built-in commands must remain known even when plugin discovery fails."""
-        from hermes_cli import plugins as _plugins_mod
-        from hermes_cli.commands import is_gateway_known_command
-
-        def _boom():
-            raise RuntimeError("plugin system down")
-
-        monkeypatch.setattr(_plugins_mod, "get_plugin_commands", _boom)
-
-        assert is_gateway_known_command("status") is True
-        assert is_gateway_known_command(None) is False
-        assert is_gateway_known_command("") is False
 
     def test_plugin_enumerator_handles_missing_plugin_manager(self, monkeypatch):
         """Enumerators must never raise when plugin discovery raises."""

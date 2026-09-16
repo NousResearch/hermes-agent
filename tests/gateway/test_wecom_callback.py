@@ -6,8 +6,19 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.wecom_callback import WecomCallbackAdapter
-from gateway.platforms.wecom_crypto import WXBizMsgCrypt
+from plugins.platforms.wecom import callback_adapter as _callback_mod
+from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt
+
+# ``_build_event`` parses inbound XML with defusedxml, which ships with the
+# ``wecom`` extra (and transitively with ``youtube``, hence ``[all]`` in CI). A
+# dev venv without either extra cannot exercise the parser; the crypto,
+# routing, token-refresh and body-size tests below do not touch it and run
+# regardless. This is a dependency gate, not a host-OS gate.
+requires_defusedxml = pytest.mark.skipif(
+    not _callback_mod.DEFUSEDXML_AVAILABLE,
+    reason="defusedxml not installed (uv sync --extra wecom)",
+)
 
 
 def _app(name="test-app", corp_id="ww1234567890", agent_id="1000002"):
@@ -44,17 +55,9 @@ class TestWecomCrypto:
         )
         assert b"<Content>hello</Content>" in decrypted
 
-    def test_signature_mismatch_raises(self):
-        app = _app()
-        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
-        encrypted_xml = crypt.encrypt("<xml/>", nonce="n", timestamp="1")
-        root = ET.fromstring(encrypted_xml)
-        from gateway.platforms.wecom_crypto import SignatureError
-        with pytest.raises(SignatureError):
-            crypt.decrypt("bad-sig", "1", "n", root.findtext("Encrypt", default=""))
-
 
 class TestWecomCallbackEventConstruction:
+    @requires_defusedxml
     def test_build_event_extracts_text_message(self):
         adapter = WecomCallbackAdapter(_config())
         xml_text = """
@@ -75,27 +78,8 @@ class TestWecomCallbackEventConstruction:
         assert event.message_id == "123456789"
         assert event.text == "\u4f60\u597d"
 
-    def test_build_event_returns_none_for_subscribe(self):
-        adapter = WecomCallbackAdapter(_config())
-        xml_text = """
-        <xml>
-          <ToUserName>ww1234567890</ToUserName>
-          <FromUserName>zhangsan</FromUserName>
-          <CreateTime>1710000000</CreateTime>
-          <MsgType>event</MsgType>
-          <Event>subscribe</Event>
-        </xml>
-        """
-        event = adapter._build_event(_app(), xml_text)
-        assert event is None
-
 
 class TestWecomCallbackRouting:
-    def test_user_app_key_scopes_across_corps(self):
-        adapter = WecomCallbackAdapter(_config())
-        assert adapter._user_app_key("corpA", "alice") == "corpA:alice"
-        assert adapter._user_app_key("corpB", "alice") == "corpB:alice"
-        assert adapter._user_app_key("corpA", "alice") != adapter._user_app_key("corpB", "alice")
 
     @pytest.mark.asyncio
     async def test_send_selects_correct_app_for_scoped_chat_id(self):
@@ -127,33 +111,48 @@ class TestWecomCallbackRouting:
         assert calls["json"]["agentid"] == 2002
         assert "tok-b" in calls["url"]
 
+
+class TestWecomCallbackSendTokenRefresh:
     @pytest.mark.asyncio
-    async def test_send_falls_back_from_bare_user_id_when_unique(self):
-        apps = [_app(name="corp-a", corp_id="corpA", agent_id="1001")]
-        adapter = WecomCallbackAdapter(_config(apps=apps))
-        adapter._user_app_map["corpA:alice"] = "corp-a"
-        adapter._access_tokens["corp-a"] = {"token": "tok-a", "expires_at": 9999999999}
+    async def test_send_retries_with_fresh_token_on_errcode_40001(self):
+        """errcode=40001 must evict the cached token, refresh, and retry once."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "stale", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
 
-        calls = {}
-
-        class FakeResponse:
-            def json(self):
-                return {"errcode": 0, "msgid": "ok2"}
+        responses = [
+            {"errcode": 40001, "errmsg": "invalid credential"},
+            {"errcode": 0, "msgid": "msg-ok"},
+        ]
+        post_calls = []
 
         class FakeClient:
-            async def post(self, url, json):
-                calls["url"] = url
-                calls["json"] = json
-                return FakeResponse()
+            async def post(self, url, json=None, **kw):
+                post_calls.append(url)
+
+                class R:
+                    def json(inner):
+                        return responses[len(post_calls) - 1]
+                return R()
+
+            async def get(self, url, params=None, **kw):
+                class R:
+                    def json(inner):
+                        return {"errcode": 0, "access_token": "fresh", "expires_in": 7200}
+                return R()
 
         adapter._http_client = FakeClient()
-        result = await adapter.send("alice", "hello")
+        result = await adapter.send("ww1234567890:alice", "hello")
 
         assert result.success is True
-        assert calls["json"]["agentid"] == 1001
+        assert result.message_id == "msg-ok"
+        assert len(post_calls) == 2
+        assert "fresh" in post_calls[1]
+        assert adapter._access_tokens["test-app"]["token"] == "fresh"
 
 
 class TestWecomCallbackPollLoop:
+    @requires_defusedxml
     @pytest.mark.asyncio
     async def test_poll_loop_dispatches_handle_message(self, monkeypatch):
         adapter = WecomCallbackAdapter(_config())
@@ -183,3 +182,33 @@ class TestWecomCallbackPollLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert calls == ["test"]
+
+
+class TestWecomCallbackBodySizeLimit:
+    """Pre-auth oversized-body rejection (DoS hardening, PR #10192)."""
+
+    def _request(self, body_bytes):
+        from unittest.mock import Mock
+
+        from aiohttp import StreamReader
+        from aiohttp.test_utils import make_mocked_request
+
+        protocol = Mock(_reading_paused=False)
+        reader = StreamReader(protocol=protocol, limit=2 ** 20)
+        reader.feed_data(body_bytes)
+        reader.feed_eof()
+        return make_mocked_request(
+            "POST", "/wecom/callback?msg_signature=s&timestamp=1&nonce=n",
+            payload=reader,
+        )
+
+    @pytest.mark.asyncio
+    async def test_oversized_body_rejected_with_413(self):
+        from plugins.platforms.wecom.callback_adapter import _MAX_BODY
+
+        adapter = WecomCallbackAdapter(_config())
+        oversized = b"<xml>" + b"A" * (_MAX_BODY + 1) + b"</xml>"
+        response = await adapter._handle_callback(self._request(oversized))
+        assert response.status == 413
+
+

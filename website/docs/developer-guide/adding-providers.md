@@ -34,9 +34,14 @@ A built-in provider has to line up across a few layers:
 The important abstraction is `api_mode`.
 
 - Most providers use `chat_completions`.
-- Codex uses `codex_responses`.
+- Codex and Meta Model API (`api.meta.ai` — Muse Spark) use `codex_responses` (auto-sends `prompt_cache_retention: 24h` for prompt caching; `api.meta.ai` achieves 93–99% cache hits only on `/v1/responses`).
+- Ramp Router (`api.router.com`) also uses `codex_responses` — Responses is Router's native wire (`/v1/chat/completions` is only a minimal compatibility shim), and it validates `reasoning.effort` per model, which the router profile handles by declaring each model's vocabulary from the live catalog (`ProviderProfile.supported_reasoning_efforts`).
 - Anthropic uses `anthropic_messages`.
 - A new non-OpenAI protocol usually means adding a new adapter and a new `api_mode` branch.
+
+### Tool-call wire format
+
+Hermes stores conversation history in the OpenAI chat-completions shape internally, so the `chat_completions` transport's `convert_messages` / `convert_tools` (`agent/transports/chat_completions.py`) are near-identity, and every other transport converts *from* that shape into its native protocol. The canonical reference for the shape — `tools` definitions with JSON-schema `parameters`, assistant `tool_calls` entries with stringified `function.arguments`, and `role: "tool"` result messages keyed by `tool_call_id` — is the [OpenAI chat completions API reference](https://platform.openai.com/docs/api-reference/chat/create). When you write a native adapter, that page defines the input side of your conversion; your provider's docs define the output side.
 
 ## Choose the implementation path first
 
@@ -61,7 +66,7 @@ Use this when the provider does not behave like OpenAI chat completions.
 
 Examples in-tree today:
 
-- `codex_responses`
+- `codex_responses` (OpenAI Codex, xAI Grok, Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h` — and Ramp Router via `api.router.com`)
 - `anthropic_messages`
 
 This path includes everything from Path A plus:
@@ -93,6 +98,46 @@ This path includes everything from Path A plus:
 11. `run_agent.py`
 12. `pyproject.toml` if a provider SDK is required
 
+## Fast path: Simple API-key providers
+
+If your provider is just an OpenAI-compatible endpoint that authenticates with a single API key, you do not need to touch `auth.py`, `runtime_provider.py`, `main.py`, or any of the other files in the full checklist below.
+
+All you need is:
+
+1. A plugin directory under `plugins/model-providers/<your-provider>/` containing:
+   - `__init__.py` — calls `register_provider(profile)` at module-level
+   - `plugin.yaml` — manifest (name, kind: model-provider, version, description)
+2. That's it. Provider plugins auto-load the first time anything calls `get_provider_profile()` or `list_providers()` — bundled plugins (this repo) and user plugins at `$HERMES_HOME/plugins/model-providers/` both get picked up.
+
+When you add a plugin and it calls `register_provider()`, the following wire up automatically:
+
+1. `PROVIDER_REGISTRY` entry in `auth.py` (credential resolution, env-var lookup)
+2. `api_mode` set to `chat_completions`
+3. `base_url` sourced from the config or the declared env var
+4. `env_vars` checked in priority order for the API key
+5. `fallback_models` list registered for the provider
+6. `--provider` CLI flag accepts the provider id
+7. `hermes model` menu includes the provider
+8. `hermes setup` wizard delegates to `main.py` automatically
+9. `provider:model` alias syntax works
+10. Runtime resolver returns the correct `base_url` and `api_key`
+11. `--provider <name>` CLI flag accepts the provider id
+12. Fallback model activation can switch into the provider cleanly
+
+User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
+
+See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](/developer-guide/model-provider-plugin) for field reference, hook idioms, and end-to-end examples.
+
+## Full path: OAuth and complex providers
+
+Use the full checklist below when your provider needs any of the following:
+
+- OAuth or token refresh (Nous Portal, Codex, Qwen Portal, Copilot)
+- A non-OpenAI API shape that requires a new adapter (Anthropic Messages, Codex Responses)
+- Custom endpoint detection or multi-region probing (z.ai, Kimi)
+- A curated static model catalog or live `/models` fetch
+- Provider-specific `hermes model` menu entries with bespoke auth flows
+
 ## Step 1: Pick one canonical provider id
 
 Choose a single provider id and use it everywhere.
@@ -106,8 +151,8 @@ Examples from the repo:
 That same id should appear in:
 
 - `PROVIDER_REGISTRY` in `hermes_cli/auth.py`
-- `_PROVIDER_LABELS` in `hermes_cli/models.py`
-- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models.py`
+- `_PROVIDER_LABELS` in `hermes_cli/models_catalog_static.py` (re-exported by `hermes_cli/models.py`)
+- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models_catalog_static.py`
 - CLI `--provider` choices in `hermes_cli/main.py`
 - setup / model selection branches
 - auxiliary-model defaults
@@ -281,13 +326,13 @@ At minimum, touch the tests that guard provider wiring.
 
 Common places:
 
-- `tests/test_runtime_provider_resolution.py`
-- `tests/test_cli_provider_resolution.py`
-- `tests/test_cli_model_command.py`
-- `tests/test_setup_model_selection.py`
-- `tests/test_provider_parity.py`
-- `tests/test_run_agent.py`
-- `tests/test_<provider>_adapter.py` for a native provider
+- `tests/hermes_cli/test_runtime_provider_resolution.py`
+- `tests/hermes_cli/test_cli_provider_resolution.py`
+- `tests/hermes_cli/test_model_switch_custom_providers.py` (and adjacent `tests/hermes_cli/test_model_switch_*.py`)
+- `tests/hermes_cli/test_setup_model_provider.py`
+- `tests/agent/test_provider_parity.py`
+- `tests/agent/test_run_agent.py`
+- `tests/agent/test_<provider>_adapter.py` for a native provider
 
 For docs-only examples, the exact file set may differ. The point is to cover:
 
@@ -298,11 +343,11 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 - provider:model parsing
 - any adapter-specific message conversion
 
-Run tests with xdist disabled:
+Run the targeted tests (or use `scripts/run_tests.sh`, which runs each file in its own subprocess):
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
+python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/hermes_cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/agent/test_provider_parity.py -q
 ```
 
 For deeper changes, run the full suite before pushing:

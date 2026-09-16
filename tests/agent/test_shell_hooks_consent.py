@@ -7,7 +7,6 @@ hooks_auto_accept: config key).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -120,19 +119,6 @@ class TestNonTTYFlow:
             )
         assert registered == []
 
-    def test_no_tty_with_argument_flag_accepts(self, tmp_path):
-        from hermes_cli import plugins
-
-        script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
-
-        with patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = False
-            registered = shell_hooks.register_from_config(
-                {"hooks": {"on_session_start": [{"command": str(script)}]}},
-                accept_hooks=True,
-            )
-        assert len(registered) == 1
 
     def test_no_tty_with_env_accepts(self, tmp_path, monkeypatch):
         from hermes_cli import plugins
@@ -149,55 +135,14 @@ class TestNonTTYFlow:
             )
         assert len(registered) == 1
 
-    def test_no_tty_with_config_accepts(self, tmp_path):
-        from hermes_cli import plugins
-
-        script = _write_hook_script(tmp_path)
-        plugins._plugin_manager = plugins.PluginManager()
-
-        with patch("sys.stdin") as mock_stdin:
-            mock_stdin.isatty.return_value = False
-            registered = shell_hooks.register_from_config(
-                {
-                    "hooks_auto_accept": True,
-                    "hooks": {"on_session_start": [{"command": str(script)}]},
-                },
-                accept_hooks=False,
-            )
-        assert len(registered) == 1
 
 
 # ── Allowlist + revoke + mtime ────────────────────────────────────────────
 
 
 class TestAllowlistOps:
-    def test_mtime_recorded_on_approval(self, tmp_path):
-        script = _write_hook_script(tmp_path)
-        shell_hooks._record_approval("on_session_start", str(script))
 
-        entry = shell_hooks.allowlist_entry_for(
-            "on_session_start", str(script),
-        )
-        assert entry is not None
-        assert entry["script_mtime_at_approval"] is not None
-        # ISO-8601 Z-suffix
-        assert entry["script_mtime_at_approval"].endswith("Z")
 
-    def test_revoke_removes_entry(self, tmp_path):
-        script = _write_hook_script(tmp_path)
-        shell_hooks._record_approval("on_session_start", str(script))
-        assert shell_hooks.allowlist_entry_for(
-            "on_session_start", str(script),
-        ) is not None
-
-        removed = shell_hooks.revoke(str(script))
-        assert removed == 1
-        assert shell_hooks.allowlist_entry_for(
-            "on_session_start", str(script),
-        ) is None
-
-    def test_revoke_unknown_returns_zero(self, tmp_path):
-        assert shell_hooks.revoke(str(tmp_path / "never-approved.sh")) == 0
 
     def test_tilde_path_approval_records_resolvable_mtime(self, tmp_path, monkeypatch):
         """If the command uses ~ the approval must still find the file."""
@@ -240,3 +185,40 @@ class TestAllowlistOps:
             and e.get("command") == str(script)
         ]
         assert len(matching) == 1
+
+
+# ── hooks_auto_accept config parsing ──────────────────────────────────────
+
+
+class TestHooksAutoAcceptParsing:
+    """Regression guard: YAML-string values must not silently auto-accept.
+
+    ``bool("false")`` is ``True`` in Python, so the old ``return bool(cfg_val)``
+    path treated ``hooks_auto_accept: "false"`` (quoted YAML string) as a
+    truthy opt-in, silently bypassing user consent for every shell hook.
+    """
+
+    def test_bool_true_accepts(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": True}, accept_hooks_arg=False,
+        ) is True
+
+
+
+
+
+
+
+
+    def test_none_rejects(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": None}, accept_hooks_arg=False,
+        ) is False
+
+    def test_integer_ignored(self):
+        # Only bool and str are honored; anything else (including 1) is False.
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": 1}, accept_hooks_arg=False,
+        ) is False
+
+

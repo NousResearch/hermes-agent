@@ -21,20 +21,23 @@ Agent workflow:
   6. Run --check to verify. Done.
 """
 
+from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
+
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+from importlib.metadata import version as _distribution_version
 from pathlib import Path
 
-try:
-    from hermes_constants import display_hermes_home, get_hermes_home
-except ModuleNotFoundError:
-    HERMES_AGENT_ROOT = Path(__file__).resolve().parents[4]
-    if HERMES_AGENT_ROOT.exists():
-        sys.path.insert(0, str(HERMES_AGENT_ROOT))
-    from hermes_constants import display_hermes_home, get_hermes_home
+# Ensure sibling modules (_hermes_home) are importable when run standalone.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from _hermes_home import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -46,13 +49,26 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/documents",
 ]
 
-REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
+# Exact pins: keep in sync with pyproject.toml [project.optional-dependencies].google
+# and tools/lazy_deps.py LAZY_DEPS['skill.google_workspace'].
+# Pinning all protects against version drift and ensures the security floors
+# (httplib2 GHSA-j5g9-f88f-gfj3, stale pyasn1/google-auth) are honoured
+# regardless of install path.
+REQUIRED_PACKAGES = [
+    "google-api-python-client==2.194.0",
+    "google-auth==2.55.1",
+    "google-auth-oauthlib==1.3.1",
+    "google-auth-httplib2==0.3.1",
+    # GHSA-j5g9-f88f-gfj3 — Decompression Bomb DoS via unbounded gzip/deflate
+    "httplib2==0.32.0",
+    "pyasn1==0.6.4",
+]
 
 # OAuth redirect for "out of band" manual code copy flow.
 # Google deprecated OOB, so we use a localhost redirect and tell the user to
@@ -69,7 +85,7 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 def _load_token_payload(path: Path = TOKEN_PATH) -> dict:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
@@ -91,41 +107,115 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
+def _missing_required_packages() -> list[str]:
+    """Return exact requirements absent or stale in this interpreter.
+
+    All REQUIRED_PACKAGES entries are exact ``name==version`` pins, so a
+    direct version comparison is sufficient — no ``packaging`` dependency
+    needed in this standalone script.
+    """
+    missing = []
+    for spec in REQUIRED_PACKAGES:
+        name, _, wanted = spec.partition("==")
+        try:
+            if _distribution_version(name) != wanted:
+                missing.append(spec)
+        except Exception:
+            missing.append(spec)
+    return missing
+
+
 def install_deps():
-    """Install Google API packages if missing. Returns True on success."""
-    try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
+    """Install missing or stale Google API packages. Returns True on success."""
+    missing = _missing_required_packages()
+    if not missing:
         print("Dependencies already installed.")
         return True
-    except ImportError:
-        pass
 
     print("Installing Google API dependencies...")
+
+    # First choice: pip in the current interpreter. Works for most installs.
     try:
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
+            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
             stdout=subprocess.DEVNULL,
         )
+        remaining = _missing_required_packages()
+        if remaining:
+            print(f"ERROR: Dependencies remain stale after pip install: {' '.join(remaining)}")
+            return False
         print("Dependencies installed.")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to install dependencies: {e}")
-        print(f"Try manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
-        return False
+        pip_error = e
+
+    # Fallback: the interpreter has no pip (the Hermes Docker image's venv is
+    # built with `uv sync`, which does not bootstrap pip). `uv pip install
+    # --python <interpreter>` installs into that exact interpreter without
+    # needing pip present. Targeting sys.executable keeps us on the venv the
+    # script is actually running under, rather than guessing.
+    uv = shutil.which("uv")
+    if uv:
+        try:
+            subprocess.check_call(
+                [uv, "pip", "install", "--python", sys.executable, "--quiet"]
+                + missing,
+                stdout=subprocess.DEVNULL,
+            )
+            remaining = _missing_required_packages()
+            if remaining:
+                print(f"ERROR: Dependencies remain stale after uv install: {' '.join(remaining)}")
+                return False
+            print("Dependencies installed.")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Failed to install dependencies via uv: {e}")
+            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
+            return False
+
+    print(f"ERROR: Failed to install dependencies: {pip_error}")
+    print(
+        "On environments without pip (e.g. Nix, or the Hermes Docker image's "
+        "uv-managed venv), install the optional extra instead:"
+    )
+    print("  hermes setup")
+    print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+    return False
 
 
 def _ensure_deps():
-    """Check deps are available, install if not, exit on failure."""
+    """Check exact dependency versions, install if stale, exit on failure."""
+    if _missing_required_packages() and not install_deps():
+        sys.exit(1)
+
+
+def check_auth_live():
+    """Check auth with a real API call to detect disabled_client/account issues."""
+    # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
+    # final status line reflects the live-call outcome (OK or FAILED).
+    if not check_auth(quiet=True):
+        return False
     try:
-        import googleapiclient  # noqa: F401
-        import google_auth_oauthlib  # noqa: F401
-    except ImportError:
-        if not install_deps():
-            sys.exit(1)
+        from googleapiclient.discovery import build
+        from google.oauth2.credentials import Credentials
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
+        service = build("calendar", "v3", credentials=creds)
+        service.calendarList().list(maxResults=1).execute()
+        print("LIVE_CHECK_OK: Real API call succeeded.")
+        return True
+    except Exception as e:
+        err_str = str(e).lower()
+        if "disabled_client" in err_str or "invalid_client" in err_str:
+            print(f"LIVE_CHECK_FAILED: OAuth client or account disabled: {e}")
+            print("  1. Check Google Cloud Console for disabled OAuth client")
+            print("  2. Check myaccount.google.com for account status")
+            print("  3. Do NOT retry with a disabled account")
+        else:
+            print(f"LIVE_CHECK_FAILED: {e}")
+        return False
 
 
-def check_auth():
+def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
@@ -152,7 +242,8 @@ def check_auth():
             print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes:")
             for s in missing_scopes:
                 print(f"  - {s}")
-        print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
+        if not quiet:
+            print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
 
     if creds.expired and creds.refresh_token:
@@ -162,17 +253,32 @@ def check_auth():
                 json.dumps(
                     _normalize_authorized_user_payload(json.loads(creds.to_json())),
                     indent=2,
-                )
+                ), encoding="utf-8"
             )
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH))
             if missing_scopes:
                 print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
                 for s in missing_scopes:
                     print(f"  - {s}")
-            print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
+            if not quiet:
+                print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:
-            print(f"REFRESH_FAILED: {e}")
+            err_str = str(e).lower()
+            if "disabled_client" in err_str or "invalid_client" in err_str:
+                print(f"OAUTH_CLIENT_DISABLED: {e}")
+                print("  The OAuth client or Google account has been disabled.")
+                print("  Steps to resolve:")
+                print("    1. Check your Google Cloud Console — verify the OAuth client is not disabled")
+                print("    2. Check if your Google account itself has been disabled at myaccount.google.com")
+                print("    3. If the account is disabled, you can appeal at accounts.google.com/signin/recovery")
+                print("    4. Do NOT retry API calls with a disabled account — this may worsen the situation")
+                print("    5. If the OAuth client is disabled, create a new one in Google Cloud Console")
+            elif "token_revoked" in err_str or "invalid_grant" in err_str:
+                print(f"TOKEN_REVOKED: {e}")
+                print("  Re-run setup to re-authenticate.")
+            else:
+                print(f"REFRESH_FAILED: {e}")
             return False
 
     print("TOKEN_INVALID: Re-run setup.")
@@ -187,7 +293,7 @@ def store_client_secret(path: str):
         sys.exit(1)
 
     try:
-        data = json.loads(src.read_text())
+        data = json.loads(src.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         print("ERROR: File is not valid JSON.")
         sys.exit(1)
@@ -197,7 +303,7 @@ def store_client_secret(path: str):
         print("Download the correct file from: https://console.cloud.google.com/apis/credentials")
         sys.exit(1)
 
-    CLIENT_SECRET_PATH.write_text(json.dumps(data, indent=2))
+    CLIENT_SECRET_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
     print(f"OK: Client secret saved to {CLIENT_SECRET_PATH}")
 
 
@@ -211,7 +317,7 @@ def _save_pending_auth(*, state: str, code_verifier: str):
                 "redirect_uri": REDIRECT_URI,
             },
             indent=2,
-        )
+        ), encoding="utf-8"
     )
 
 
@@ -222,7 +328,7 @@ def _load_pending_auth() -> dict:
         sys.exit(1)
 
     try:
-        data = json.loads(PENDING_AUTH_PATH.read_text())
+        data = json.loads(PENDING_AUTH_PATH.read_text(encoding="utf-8"))
     except Exception as e:
         print(f"ERROR: Could not read pending OAuth session: {e}")
         print("Run --auth-url again to start a fresh OAuth session.")
@@ -284,6 +390,7 @@ def exchange_auth_code(code: str):
         sys.exit(1)
 
     pending_auth = _load_pending_auth()
+    raw_callback = code
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
@@ -293,19 +400,13 @@ def exchange_auth_code(code: str):
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
-    # Extract granted scopes from the callback URL if present
-    if returned_state and "scope" in parse_qs(urlparse(code).query if isinstance(code, str) and code.startswith("http") else {}):
-        granted_scopes = parse_qs(urlparse(code).query)["scope"][0].split()
-    else:
-        # Try to extract from code_or_url parameter
-        if isinstance(code, str) and code.startswith("http"):
-            params = parse_qs(urlparse(code).query)
-            if "scope" in params:
-                granted_scopes = params["scope"][0].split()
-            else:
-                granted_scopes = SCOPES
-        else:
-            granted_scopes = SCOPES
+    # Extract granted scopes from the callback URL if the user pasted the full redirect URL.
+    granted_scopes = list(SCOPES)
+    if isinstance(raw_callback, str) and raw_callback.startswith("http"):
+        params = parse_qs(urlparse(raw_callback).query)
+        scope_val = (params.get("scope") or [""])[0].strip()
+        if scope_val:
+            granted_scopes = scope_val.split()
 
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
@@ -342,7 +443,7 @@ def exchange_auth_code(code: str):
         print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
         print("Some services may not be available.")
 
-    TOKEN_PATH.write_text(json.dumps(token_payload, indent=2))
+    TOKEN_PATH.write_text(json.dumps(token_payload, indent=2), encoding="utf-8")
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")
     print(f"Profile-scoped token location: {display_hermes_home()}/google_token.json")
@@ -369,7 +470,8 @@ def revoke():
                 f"https://oauth2.googleapis.com/revoke?token={creds.token}",
                 method="POST",
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
+            ),
+            timeout=15,
         )
         print("Token revoked with Google.")
     except Exception as e:
@@ -384,6 +486,7 @@ def main():
     parser = argparse.ArgumentParser(description="Google Workspace OAuth setup for Hermes")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true", help="Check if auth is valid (exit 0=yes, 1=no)")
+    group.add_argument("--check-live", action="store_true", help="Check auth with a real API call (detects disabled_client)")
     group.add_argument("--client-secret", metavar="PATH", help="Store OAuth client_secret.json")
     group.add_argument("--auth-url", action="store_true", help="Print OAuth URL for user to visit")
     group.add_argument("--auth-code", metavar="CODE", help="Exchange auth code for token")
@@ -393,6 +496,8 @@ def main():
 
     if args.check:
         sys.exit(0 if check_auth() else 1)
+    if getattr(args, "check_live", False):
+        sys.exit(0 if check_auth_live() else 1)
     elif args.client_secret:
         store_client_secret(args.client_secret)
     elif args.auth_url:

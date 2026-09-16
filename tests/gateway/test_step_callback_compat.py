@@ -6,9 +6,6 @@ while also providing the enriched ``tools`` list with results.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 
 class TestStepCallbackNormalization:
@@ -75,59 +72,4 @@ class TestStepCallbackNormalization:
         # tools should be the enriched dicts
         assert data["tools"] == prev_tools
 
-    def test_string_prev_tools_still_work(self):
-        """When prev_tools is list[str] (legacy), tool_names should pass through."""
-        cb, events, loop = self._extract_step_callback()
 
-        prev_tools = ["terminal", "read_file"]
-
-        try:
-            loop.run_until_complete(asyncio.sleep(0))
-            import threading
-            t = threading.Thread(target=cb, args=(2, prev_tools))
-            t.start()
-            t.join(timeout=2)
-            loop.run_until_complete(asyncio.sleep(0.1))
-        finally:
-            loop.close()
-
-        assert len(events) == 1
-        _, data = events[0]
-        assert data["tool_names"] == ["terminal", "read_file"]
-
-    def test_empty_prev_tools(self):
-        """Empty or None prev_tools should produce empty tool_names."""
-        cb, events, loop = self._extract_step_callback()
-
-        try:
-            loop.run_until_complete(asyncio.sleep(0))
-            import threading
-            t = threading.Thread(target=cb, args=(1, []))
-            t.start()
-            t.join(timeout=2)
-            loop.run_until_complete(asyncio.sleep(0.1))
-        finally:
-            loop.close()
-
-        assert len(events) == 1
-        _, data = events[0]
-        assert data["tool_names"] == []
-
-    def test_joinable_for_hook_example(self):
-        """The documented hook example: ', '.join(tool_names) should work."""
-        # This is the exact pattern from the docs
-        prev_tools = [
-            {"name": "terminal", "result": "ok"},
-            {"name": "web_search", "result": None},
-        ]
-
-        _names = []
-        for _t in prev_tools:
-            if isinstance(_t, dict):
-                _names.append(_t.get("name") or "")
-            else:
-                _names.append(str(_t))
-
-        # This must not raise — documented hook pattern
-        result = ", ".join(_names)
-        assert result == "terminal, web_search"

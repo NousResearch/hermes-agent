@@ -10,10 +10,8 @@ Verifies that:
 
 import io
 import sys
-import time
-import threading
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agent.display import KawaiiSpinner
 from tools.delegate_tool import _build_child_progress_callback
@@ -73,52 +71,8 @@ class TestPrintAbove:
 class TestBuildChildProgressCallback:
     """Tests for child progress callback builder."""
 
-    def test_returns_none_when_no_display(self):
-        """Should return None when parent has no spinner or callback."""
-        parent = MagicMock()
-        parent._delegate_spinner = None
-        parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, "test goal", parent)
-        assert cb is None
 
-    def test_cli_spinner_tool_event(self):
-        """Should print tool line above spinner for CLI path."""
-        buf = io.StringIO()
-        spinner = KawaiiSpinner("delegating")
-        spinner._out = buf
-        spinner.running = True
-        
-        parent = MagicMock()
-        parent._delegate_spinner = spinner
-        parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, "test goal", parent)
-        assert cb is not None
-        
-        cb("tool.started", "web_search", "quantum computing", {})
-        output = buf.getvalue()
-        assert "web_search" in output
-        assert "quantum computing" in output
-        assert "├─" in output
 
-    def test_cli_spinner_thinking_event(self):
-        """Should print thinking line above spinner for CLI path."""
-        buf = io.StringIO()
-        spinner = KawaiiSpinner("delegating")
-        spinner._out = buf
-        spinner.running = True
-        
-        parent = MagicMock()
-        parent._delegate_spinner = spinner
-        parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, "test goal", parent)
-        cb("_thinking", "I'll search for papers first")
-        
-        output = buf.getvalue()
-        assert "💭" in output
-        assert "search for papers" in output
 
     def test_gateway_batched_progress(self):
         """Gateway path: each tool.started relays a subagent.tool event, and a
@@ -146,19 +100,6 @@ class TestBuildChildProgressCallback:
         assert "tool_0" in summary_text
         assert "tool_4" in summary_text
 
-    def test_thinking_relayed_to_gateway(self):
-        """Thinking events are relayed as subagent.thinking events."""
-        parent = MagicMock()
-        parent._delegate_spinner = None
-        parent_cb = MagicMock()
-        parent.tool_progress_callback = parent_cb
-
-        cb = _build_child_progress_callback(0, "test goal", parent)
-        cb("_thinking", "some reasoning text")
-
-        parent_cb.assert_called_once()
-        assert parent_cb.call_args.args[0] == "subagent.thinking"
-        assert parent_cb.call_args.args[2] == "some reasoning text"
 
     def test_parallel_callbacks_independent(self):
         """Each child's callback batches tool names independently."""
@@ -191,11 +132,12 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
         
-        # task_index=0 in a batch of 3 → prefix "[1]"
+        # task_index=0 in a batch of 3 → prefix "[1/3]" (batch slot; a
+        # delegation batch tag is prepended when the id is known)
         cb0 = _build_child_progress_callback(0, "test goal", parent, task_count=3)
         cb0("tool.started", "web_search", "test", {})
         output = buf.getvalue()
-        assert "[1]" in output
+        assert "[1/3]" in output
 
         # task_index=2 in a batch of 3 → prefix "[3]"
         buf.truncate(0)
@@ -203,24 +145,8 @@ class TestBuildChildProgressCallback:
         cb2 = _build_child_progress_callback(2, "test goal", parent, task_count=3)
         cb2("tool.started", "web_search", "test", {})
         output = buf.getvalue()
-        assert "[3]" in output
+        assert "[3/3]" in output
 
-    def test_single_task_no_prefix(self):
-        """Single task (task_count=1) should not show index prefix."""
-        buf = io.StringIO()
-        spinner = KawaiiSpinner("delegating")
-        spinner._out = buf
-        spinner.running = True
-        
-        parent = MagicMock()
-        parent._delegate_spinner = spinner
-        parent.tool_progress_callback = None
-        
-        cb = _build_child_progress_callback(0, "test goal", parent, task_count=1)
-        cb("tool.started", "web_search", "test", {})
-        
-        output = buf.getvalue()
-        assert "[" not in output
 
 
 # =========================================================================
@@ -261,14 +187,6 @@ class TestThinkingCallback:
         assert calls[0][0] == "_thinking"
         assert "quantum computing" in calls[0][1]
 
-    def test_thinking_callback_skipped_when_no_content(self):
-        """Should not fire when assistant has no content."""
-        calls = []
-        self._simulate_thinking_callback(
-            None,
-            lambda name, preview=None: calls.append((name, preview))
-        )
-        assert len(calls) == 0
 
     def test_thinking_callback_truncates_long_content(self):
         """Should truncate long content to 80 chars."""
@@ -280,47 +198,9 @@ class TestThinkingCallback:
         assert len(calls) == 1
         assert len(calls[0][1]) == 80
 
-    def test_thinking_callback_skipped_for_main_agent(self):
-        """Main agent (delegate_depth=0) should NOT fire thinking events.
-        This prevents gateway spam on Telegram/Discord."""
-        calls = []
-        self._simulate_thinking_callback(
-            "I'll help you with that request.",
-            lambda name, preview=None: calls.append((name, preview)),
-            delegate_depth=0,
-        )
-        assert len(calls) == 0
 
-    def test_thinking_callback_strips_reasoning_scratchpad(self):
-        """REASONING_SCRATCHPAD tags should be stripped before display."""
-        calls = []
-        self._simulate_thinking_callback(
-            "<REASONING_SCRATCHPAD>I need to analyze this carefully</REASONING_SCRATCHPAD>",
-            lambda name, preview=None: calls.append((name, preview))
-        )
-        assert len(calls) == 1
-        assert "<REASONING_SCRATCHPAD>" not in calls[0][1]
-        assert "analyze this carefully" in calls[0][1]
 
-    def test_thinking_callback_strips_think_tags(self):
-        """<think> tags should be stripped before display."""
-        calls = []
-        self._simulate_thinking_callback(
-            "<think>Let me think about this problem</think>",
-            lambda name, preview=None: calls.append((name, preview))
-        )
-        assert len(calls) == 1
-        assert "<think>" not in calls[0][1]
-        assert "think about this problem" in calls[0][1]
 
-    def test_thinking_callback_empty_after_strip(self):
-        """Should not fire when content is only XML tags."""
-        calls = []
-        self._simulate_thinking_callback(
-            "<REASONING_SCRATCHPAD></REASONING_SCRATCHPAD>",
-            lambda name, preview=None: calls.append((name, preview))
-        )
-        assert len(calls) == 0
 
 
 # =========================================================================

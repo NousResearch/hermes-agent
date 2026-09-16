@@ -8,6 +8,8 @@ description: "Connect Hermes Agent to WeCom via the AI Bot WebSocket gateway"
 
 Connect Hermes to [WeCom](https://work.weixin.qq.com/) (企业微信), Tencent's enterprise messaging platform. The adapter uses WeCom's AI Bot WebSocket gateway for real-time bidirectional communication — no public endpoint or webhook needed.
 
+See also: [WeCom Callback](./wecom-callback.md) for inbound webhook setup.
+
 ## Prerequisites
 
 - A WeCom organization account
@@ -90,8 +92,17 @@ hermes gateway
 - **AES-encrypted media** — automatic decryption for inbound attachments
 - **Quote context** — preserves reply threading
 - **Markdown rendering** — rich text responses
-- **Reply-mode streaming** — correlates responses to inbound message context
+- **Reply correlation** — responses are correlated to the inbound message context
 - **Auto-reconnect** — exponential backoff on connection drops
+
+:::note Streaming and typing indicators
+The WeCom adapter streams responses natively over WeCom's `msgtype: "stream"`
+protocol: the client shows a thinking/typing bubble as soon as a turn starts,
+and the reply renders token-by-token in a single bubble as the model
+generates it. Tool-call progress is folded into the same bubble. Native
+streaming is enabled by default (`display.platforms.wecom.streaming: true` in
+`config.yaml`); set it to `false` to restore single-shot delivery.
+:::
 
 ## Configuration Options
 
@@ -107,6 +118,9 @@ Set these in `config.yaml` under `platforms.wecom.extra`:
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
 | `groups` | `{}` | Per-group configuration (see below) |
+| `stream_keepalive_enabled` | `false` | Send periodic keepalive frames to refresh WeCom's ~6-minute reply-stream window on long turns |
+| `stream_keepalive_interval_seconds` | `120` | Keepalive frame cadence when enabled |
+| `stream_safe_duration_seconds` | `330` | Stream age after which finalize prefers the reliable proactive send |
 
 ## Access Policies
 
@@ -224,11 +238,11 @@ No configuration is needed — decryption happens transparently when encrypted m
 
 Files exceeding the absolute 20 MB limit are rejected with an informational message sent to the chat.
 
-## Reply-Mode Stream Responses
+## Reply-Mode Responses
 
-When the bot receives a message via the WeCom callback, the adapter remembers the inbound request ID. If a response is sent while the request context is still active, the adapter uses WeCom's reply-mode (`aibot_respond_msg`) with streaming to correlate the response directly to the inbound message. This provides a more natural conversation experience in the WeCom client.
+When the bot receives a message via the WeCom callback, the adapter remembers the inbound request ID. If a response is sent while the request context is still active, the adapter uses WeCom's reply-mode (`aibot_respond_msg`) to correlate the response directly to the inbound message. This provides a more natural conversation experience in the WeCom client.
 
-If the inbound request context has expired or is unavailable, the adapter falls back to proactive message sending via `aibot_send_msg`.
+When a native reply stream is active, the response streams incrementally through reply-mode `msgtype: "stream"` frames. If the inbound request context has expired or is unavailable (or a stream frame fails), the adapter falls back to proactive message sending via `aibot_send_msg`.
 
 Reply-mode also works for media: uploaded media can be sent as a reply to the originating message.
 

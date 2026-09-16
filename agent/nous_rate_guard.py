@@ -1,159 +1,100 @@
 """Cross-session rate limit guard for Nous Portal.
 
-Writes rate limit state to a shared file so all sessions (CLI, gateway,
-cron, auxiliary) can check whether Nous Portal is currently rate-limited
-before making requests.  Prevents retry amplification when RPH is tapped.
-
-Each 429 from Nous triggers up to 9 API calls per conversation turn
-(3 SDK retries x 3 Hermes retries), and every one of those calls counts
-against RPH.  By recording the rate limit state on first 429 and checking
-it before subsequent attempts, we eliminate the amplification effect.
+Writes rate limit state to a shared file so all sessions (CLI, gateway, cron,
+auxiliary) can check whether Nous Portal is currently rate-limited before making
+requests. Without it each 429 fans out into up to 9 calls per turn (3 SDK
+retries x 3 Hermes retries), all counted against RPH.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
-import tempfile
 import time
 from typing import Any, Mapping, Optional
+from utils import atomic_write_text
+from agent.retry_utils import parse_retry_after_seconds
+from agent.rate_limit_tracker import (
+    _BUCKET_TAGS, _fmt_seconds, _safe_float, _safe_int, has_rate_limit_headers, lower_headers,
+)
 
 logger = logging.getLogger(__name__)
 
-_STATE_SUBDIR = "rate_limits"
-_STATE_FILENAME = "nous.json"
+# Reset windows shorter than this are transient upstream jitter, not a quota
+# exhaustion worth a cross-session breaker trip.
+_MIN_RESET_FOR_BREAKER_SECONDS = 60.0
+# The welcome tier's structured ``rate_limited`` refusal: a reset at or above this is an exhausted
+# allowance (stop, tell the user when it refreshes and that signing in lifts it); below it the
+# turn simply waits it out. The gateway's fairshare bucket names honest resets from a few seconds
+# up to a minute, so the split sits where a quiet wait stops being quiet.
+WELCOME_LONG_WAIT_SECONDS = 20.0
+
+format_remaining = _fmt_seconds
 
 
 def _state_path() -> str:
-    """Return the path to the Nous rate limit state file."""
+    """Path to the Nous rate limit state file."""
     try:
         from hermes_constants import get_hermes_home
         base = get_hermes_home()
     except ImportError:
         base = os.path.join(os.path.expanduser("~"), ".hermes")
-    return os.path.join(base, _STATE_SUBDIR, _STATE_FILENAME)
+    return os.path.join(base, "rate_limits", "nous.json")
 
 
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:
-    """Extract the best available reset-time estimate from response headers.
-
-    Priority:
-      1. x-ratelimit-reset-requests-1h  (hourly RPH window — most useful)
-      2. x-ratelimit-reset-requests     (per-minute RPM window)
-      3. retry-after                     (generic HTTP header)
-
-    Returns seconds-from-now, or None if no usable header found.
-    """
-    if not headers:
-        return None
-
-    lowered = {k.lower(): v for k, v in headers.items()}
-
-    for key in (
-        "x-ratelimit-reset-requests-1h",
-        "x-ratelimit-reset-requests",
-        "retry-after",
-    ):
-        raw = lowered.get(key)
-        if raw is not None:
-            try:
-                val = float(raw)
-                if val > 0:
-                    return val
-            except (TypeError, ValueError):
-                pass
-
-    return None
+    """Best reset estimate (seconds from now) from hourly, per-minute, then retry-after headers."""
+    lowered = lower_headers(headers)
+    for key in ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests"):
+        val = _safe_float(lowered.get(key), 0.0)
+        if val > 0:
+            return val
+    retry_after = parse_retry_after_seconds(lowered.get("retry-after"))
+    return retry_after if retry_after else None
 
 
 def record_nous_rate_limit(
-    *,
-    headers: Optional[Mapping[str, str]] = None,
-    error_context: Optional[dict[str, Any]] = None,
+    *, headers: Optional[Mapping[str, str]] = None, error_context: Optional[dict[str, Any]] = None,
     default_cooldown: float = 300.0,
 ) -> None:
-    """Record that Nous Portal is rate-limited.
+    """Record that Nous Portal is rate-limited in the shared state file.
 
-    Parses the reset time from response headers or error context.
-    Falls back to ``default_cooldown`` (5 minutes) if no reset info
-    is available.  Writes to a shared file that all sessions can read.
-
-    Args:
-        headers: HTTP response headers from the 429 error.
-        error_context: Structured error context from _extract_api_error_context().
-        default_cooldown: Fallback cooldown in seconds when no header data.
+    Reset time comes from headers, then ``error_context["reset_at"]`` (body
+    parsing), then ``default_cooldown``.
     """
     now = time.time()
     reset_at = None
-
-    # Try headers first (most accurate)
     header_seconds = _parse_reset_seconds(headers)
     if header_seconds is not None:
         reset_at = now + header_seconds
-
-    # Try error_context reset_at (from body parsing)
     if reset_at is None and isinstance(error_context, dict):
         ctx_reset = error_context.get("reset_at")
         if isinstance(ctx_reset, (int, float)) and ctx_reset > now:
             reset_at = float(ctx_reset)
-
-    # Default cooldown
     if reset_at is None:
         reset_at = now + default_cooldown
 
-    path = _state_path()
+    state = {"reset_at": reset_at, "recorded_at": now, "reset_seconds": reset_at - now}
     try:
-        state_dir = os.path.dirname(path)
-        os.makedirs(state_dir, exist_ok=True)
-
-        state = {
-            "reset_at": reset_at,
-            "recorded_at": now,
-            "reset_seconds": reset_at - now,
-        }
-
-        # Atomic write: write to temp file + rename
-        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(state, f)
-            os.replace(tmp_path, path)
-        except Exception:
-            # Clean up temp file on failure
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-
-        logger.info(
-            "Nous rate limit recorded: resets in %.0fs (at %.0f)",
-            reset_at - now, reset_at,
-        )
+        atomic_write_text(_state_path(), json.dumps(state))
+        logger.info("Nous rate limit recorded: resets in %.0fs (at %.0f)", reset_at - now, reset_at)
     except Exception as exc:
         logger.debug("Failed to write Nous rate limit state: %s", exc)
 
 
 def nous_rate_limit_remaining() -> Optional[float]:
-    """Check if Nous Portal is currently rate-limited.
-
-    Returns:
-        Seconds remaining until reset, or None if not rate-limited.
-    """
+    """Seconds remaining until reset, or None if not rate-limited (expired state is removed)."""
     path = _state_path()
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             state = json.load(f)
-        reset_at = state.get("reset_at", 0)
-        remaining = reset_at - time.time()
+        remaining = state.get("reset_at", 0) - time.time()
         if remaining > 0:
             return remaining
-        # Expired — clean up
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(path)
-        except OSError:
-            pass
         return None
     except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
         return None
@@ -169,14 +110,98 @@ def clear_nous_rate_limit() -> None:
         logger.debug("Failed to clear Nous rate limit state: %s", exc)
 
 
-def format_remaining(seconds: float) -> str:
-    """Format seconds remaining into human-readable duration."""
-    s = max(0, int(seconds))
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        m, sec = divmod(s, 60)
-        return f"{m}m {sec}s" if sec else f"{m}m"
-    h, remainder = divmod(s, 3600)
-    m = remainder // 60
-    return f"{h}h {m}m" if m else f"{h}h"
+def _is_exhausted(remaining: Optional[int], reset: Optional[float]) -> bool:
+    """remaining == 0 AND a reset window long enough to be a real quota exhaustion."""
+    return (
+        remaining is not None
+        and remaining <= 0
+        and reset is not None
+        and reset >= _MIN_RESET_FOR_BREAKER_SECONDS
+    )
+
+
+def is_genuine_nous_rate_limit(
+    *, headers: Optional[Mapping[str, str]] = None, last_known_state: Optional[Any] = None,
+) -> bool:
+    """Decide whether a 429 from Nous Portal is a real account rate limit.
+
+    Nous multiplexes upstream providers behind one key, so a 429 may be one
+    upstream model out of capacity (clears in seconds) rather than our quota;
+    tripping the breaker on that would block every Nous model for minutes.
+    Only an exhausted bucket (remaining == 0 with reset >= 60s) in the 429's
+    own headers, or in the last-known-good ``RateLimitState``, is genuine.
+    """
+    if _has_exhausted_bucket(_parse_buckets_from_headers(headers)):
+        return True
+    return last_known_state is not None and _has_exhausted_bucket_in_object(last_known_state)
+
+
+def is_long_welcome_rate_limit(error_context: Any) -> bool:
+    """True for a Nous welcome-tier ``rate_limited`` refusal whose reset is long enough to be an
+    exhausted allowance (``WELCOME_LONG_WAIT_SECONDS``), as parsed into ``error_context``
+    (``welcome_refusal`` from ``hermes_cli.anon_auth.parse_welcome_refusal``). Capacity refusals
+    (``at_capacity`` / ``admission_closed``) are never this: they are retried in place."""
+    if not isinstance(error_context, dict):
+        return False
+    refusal = error_context.get("welcome_refusal")
+    if not isinstance(refusal, dict) or refusal.get("reason") != "rate_limited":
+        return False
+    return _safe_float(refusal.get("retry_after"), 0.0) >= WELCOME_LONG_WAIT_SECONDS
+
+
+def _parse_buckets_from_headers(
+    headers: Optional[Mapping[str, str]],
+) -> dict[str, tuple[Optional[int], Optional[float]]]:
+    """(remaining, reset_seconds) per bucket from x-ratelimit-* headers ({} if none)."""
+    lowered = lower_headers(headers)
+    if not has_rate_limit_headers(lowered):
+        return {}
+    result: dict[str, tuple[Optional[int], Optional[float]]] = {}
+    for _attr, tag in _BUCKET_TAGS:
+        remaining = _safe_int(lowered.get(f"x-ratelimit-remaining-{tag}"), None)
+        reset = _safe_float(lowered.get(f"x-ratelimit-reset-{tag}"), None)
+        if remaining is not None or reset is not None:
+            result[tag] = (remaining, reset)
+    return result
+
+
+def _has_exhausted_bucket(buckets: Mapping[str, tuple[Optional[int], Optional[float]]]) -> bool:
+    return any(_is_exhausted(remaining, reset) for remaining, reset in buckets.values())
+
+
+def _has_exhausted_bucket_in_object(state: Any) -> bool:
+    """Check a RateLimitState-like object (duck-typed; missing attrs are skipped)."""
+    for attr, _tag in _BUCKET_TAGS:
+        bucket = getattr(state, attr, None)
+        if bucket is None or (getattr(bucket, "limit", 0) or 0) <= 0:
+            continue
+        remaining = getattr(bucket, "remaining", 0) or 0
+        reset = getattr(bucket, "remaining_seconds_now", None)
+        if reset is None:
+            reset = getattr(bucket, "reset_seconds", 0.0) or 0.0
+        if _is_exhausted(remaining, reset):
+            return True
+    return False
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import tempfile  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'atomic_replace': ('utils', 'atomic_replace'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

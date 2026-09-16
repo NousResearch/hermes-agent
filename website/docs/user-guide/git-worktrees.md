@@ -21,7 +21,7 @@ This page shows how to combine worktrees with Hermes so each session has a clean
 Hermes treats the **current working directory** as the project root:
 
 - CLI: the directory where you run `hermes` or `hermes chat`
-- Messaging gateways: the directory set by `MESSAGING_CWD`
+- Messaging gateways: the directory set by `terminal.cwd` in `~/.hermes/config.yaml`
 
 If you run multiple agents in the **same checkout**, their changes can interfere with each other:
 
@@ -36,6 +36,25 @@ With worktrees, each agent gets:
 See also: [Checkpoints and /rollback](./checkpoints-and-rollback.md).
 
 ## Quick Start: Creating a Worktree
+
+### From inside a session: `/worktree new`
+
+The fastest path (inspired by Copilot CLI's `/worktree new`): from an
+interactive CLI session, run
+
+```
+/worktree new my-experiment
+```
+
+Hermes creates `.worktrees/my-experiment/` inside the repo (branch
+`hermes/my-experiment`, based on the freshly-fetched remote tip unless
+`worktree_sync: false`), and retargets the session's terminal and file tools
+into it — no restart needed. Omit the name to get a random `hermes-<id>`
+tree. `/worktree` alone shows the active tree; `/worktree list` lists all of
+them. On exit the tree is kept only if it has unpushed commits, exactly like
+`hermes -w`.
+
+### Manually with git
 
 From your main repository (containing `.git/`), create a new worktree for a feature branch:
 
@@ -155,7 +174,7 @@ Hermes will:
 This is the easiest way to get worktree isolation. You can also combine it with a single query:
 
 ```bash
-hermes -w -q "Fix issue #123"
+hermes -w -z "Fix issue #123"
 ```
 
 For parallel agents, open multiple terminals and run `hermes -w` in each — every invocation gets its own worktree and branch automatically.
@@ -172,3 +191,6 @@ This combination gives you:
 - Fast iteration cycles with easy recovery from bad edits.
 - Clean, reviewable pull requests.
 
+## Developing the UI surfaces across worktrees
+
+The TypeScript surfaces (`ui-tui/`, `apps/desktop/`) each need a `node_modules`, which a fresh `npm ci` per worktree duplicates across every branch. If you hack on the TUI or desktop app from multiple worktrees, see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md) for the `htui` / `hgui` helpers that share one install by symlink.

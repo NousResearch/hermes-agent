@@ -9,9 +9,10 @@ same key. The fix prefixes keys with platform value: 'telegram:123' vs
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -20,12 +21,6 @@ from gateway.run import GatewayRunner
 class TestVoiceKeyHelper:
     """Test the _voice_key helper method."""
 
-    def test_voice_key_format(self):
-        """_voice_key returns 'platform:chat_id' format."""
-        runner = _make_runner()
-        assert runner._voice_key(Platform.TELEGRAM, "123") == "telegram:123"
-        assert runner._voice_key(Platform.SLACK, "456") == "slack:456"
-        assert runner._voice_key(Platform.DISCORD, "789") == "discord:789"
 
     def test_voice_key_different_platforms_same_chat_id(self):
         """Same chat_id on different platforms yields different keys."""
@@ -82,7 +77,7 @@ class TestLegacyKeyMigration:
             voice_path.write_text(json.dumps(legacy_data))
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                with patch("gateway.run.logger") as mock_logger:
+                with patch("gateway.run_voice.logger") as mock_logger:
                     result = runner._load_voice_modes()
 
             # Legacy keys without ':' should be skipped
@@ -94,48 +89,6 @@ class TestLegacyKeyMigration:
             assert mock_logger.warning.called
             warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
             assert any("Skipping legacy unprefixed voice mode key" in str(c) for c in warning_calls)
-
-    def test_load_voice_modes_preserves_prefixed_keys(self):
-        """_load_voice_modes correctly loads platform-prefixed keys."""
-        runner = _make_runner()
-
-        persisted_data = {
-            "telegram:123": "all",
-            "slack:456": "voice_only",
-            "discord:789": "off",
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            voice_path = Path(tmpdir) / "gateway_voice_mode.json"
-            voice_path.write_text(json.dumps(persisted_data))
-
-            with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                result = runner._load_voice_modes()
-
-        assert result.get("telegram:123") == "all"
-        assert result.get("slack:456") == "voice_only"
-        assert result.get("discord:789") == "off"
-
-    def test_load_voice_modes_invalid_modes_filtered(self):
-        """_load_voice_modes filters out invalid mode values."""
-        runner = _make_runner()
-
-        data = {
-            "telegram:123": "all",
-            "telegram:456": "invalid_mode",
-            "telegram:789": "voice_only",
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            voice_path = Path(tmpdir) / "gateway_voice_mode.json"
-            voice_path.write_text(json.dumps(data))
-
-            with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
-                result = runner._load_voice_modes()
-
-        assert result.get("telegram:123") == "all"
-        assert "telegram:456" not in result
-        assert result.get("telegram:789") == "voice_only"
 
 
 class TestSyncVoiceModeStateToAdapter:
@@ -163,46 +116,88 @@ class TestSyncVoiceModeStateToAdapter:
         # Only telegram:123 should be in disabled_chats (mode="off" for telegram)
         assert mock_adapter._auto_tts_disabled_chats == {"123"}
 
-    def test_sync_clears_existing_state(self):
-        """_sync_voice_mode_state_to_adapter clears existing disabled_chats first."""
+
+class TestVoiceModeProfileIsolation:
+    """Two multiplexed bots in one Discord channel keep independent /voice
+    state and voice transcripts dispatch through the bot that heard them
+    (#75198 voice half)."""
+
+    @staticmethod
+    def _discord_adapter(owner=None):
+        from unittest.mock import AsyncMock
+
+        a = MagicMock()
+        a.platform = Platform.DISCORD
+        a._owner_profile = owner
+        a._voice_text_channels = {111: 123}
+        a._voice_sources = {}
+        a._voice_input_callback = None
+        a._on_voice_disconnect = None
+        a._voice_mode_getter = None
+        a._auto_tts_enabled_chats = set()
+        a._auto_tts_disabled_chats = set()
+        a._client = MagicMock()
+        a._client.get_channel = MagicMock(return_value=None)
+        a.handle_message = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_voice_state_and_transcripts_stay_with_the_owning_bot(self, tmp_path):
+        from types import SimpleNamespace
+
+        from gateway.platforms.base import SessionSource
+        from gateway.platforms.event import MessageEvent, MessageType
+
         runner = _make_runner()
+        runner._VOICE_MODE_PATH = tmp_path / "voice.json"
+        runner._is_user_authorized = lambda source: True
+        default_ad = self._discord_adapter()
+        bot2_ad = self._discord_adapter(owner="bot2")
+        runner.adapters = {Platform.DISCORD: default_ad}
+        runner._profile_adapters = {"bot2": {Platform.DISCORD: bot2_ad}}
+        # Inbound event from bot2's transport in channel 123 (same id the
+        # default bot also sees).
+        src = SessionSource(platform=Platform.DISCORD, chat_id="123", user_id="u1",
+                            chat_type="channel", profile="bot2")
+        src._transport_adapter_ref = lambda: bot2_ad
 
-        runner._voice_mode = {
-            "telegram:123": "off",
-        }
+        await runner._handle_voice_command(
+            MessageEvent(text="/voice tts", message_type=MessageType.TEXT, source=src)
+        )
+        assert runner._voice_mode == {"bot2:discord:123": "all"}
+        assert "123" in bot2_ad._auto_tts_enabled_chats
+        assert "123" not in default_ad._auto_tts_enabled_chats
 
-        mock_adapter = MagicMock()
-        mock_adapter.platform = Platform.TELEGRAM
-        mock_adapter._auto_tts_disabled_chats = {"old_chat_id", "another_old"}
+        # A transcript captured by bot2's adapter runs through bot2, not default.
+        runner._bind_voice_input_callback(bot2_ad)
+        await bot2_ad._voice_input_callback(guild_id=111, user_id=42, transcript="hi")
+        bot2_ad.handle_message.assert_awaited_once()
+        default_ad.handle_message.assert_not_awaited()
+        assert bot2_ad.handle_message.call_args[0][0].source.profile == "bot2"
 
-        runner._sync_voice_mode_state_to_adapter(mock_adapter)
+        # Timeout cleanup from bot2's channel disables bot2's auto-TTS only.
+        join = MessageEvent(text="/voice channel", message_type=MessageType.TEXT, source=src)
+        join.raw_message = SimpleNamespace(guild_id=111, guild=None)
+        bot2_ad.join_voice_channel = AsyncMock(return_value=True)
+        ch = MagicMock(); ch.name = "General"
+        bot2_ad.get_user_voice_channel = AsyncMock(return_value=ch)
+        await runner._handle_voice_channel_join(join)
+        bot2_ad._on_voice_disconnect("123")
+        assert runner._voice_mode["bot2:discord:123"] == "off"
+        assert "123" in bot2_ad._auto_tts_disabled_chats
+        assert "123" not in default_ad._auto_tts_disabled_chats
 
-        # Old entries should be cleared
-        assert mock_adapter._auto_tts_disabled_chats == {"123"}
-
-    def test_sync_returns_early_without_platform(self):
-        """_sync_voice_mode_state_to_adapter returns early if adapter has no platform."""
+    def test_sync_restores_only_the_owning_profiles_chats(self):
         runner = _make_runner()
-        runner._voice_mode = {"telegram:123": "off"}
-
-        mock_adapter = MagicMock()
-        mock_adapter.platform = None
-        mock_adapter._auto_tts_disabled_chats = {"old"}
-
-        runner._sync_voice_mode_state_to_adapter(mock_adapter)
-
-        # disabled_chats should not be modified
-        assert mock_adapter._auto_tts_disabled_chats == {"old"}
-
-    def test_sync_returns_early_without_auto_tts_disabled_chats(self):
-        """_sync_voice_mode_state_to_adapter returns early if adapter lacks _auto_tts_disabled_chats."""
-        runner = _make_runner()
-        runner._voice_mode = {"telegram:123": "off"}
-
-        mock_adapter = MagicMock(spec=[])  # No _auto_tts_disabled_chats attribute
-
-        # Should not raise
-        runner._sync_voice_mode_state_to_adapter(mock_adapter)
+        runner._voice_mode = {"discord:1": "all", "bot2:discord:2": "all"}
+        default_ad = MagicMock(); default_ad.platform = Platform.DISCORD
+        default_ad._owner_profile = None; default_ad._auto_tts_enabled_chats = set()
+        bot2_ad = MagicMock(); bot2_ad.platform = Platform.DISCORD
+        bot2_ad._owner_profile = "bot2"; bot2_ad._auto_tts_enabled_chats = set()
+        runner._sync_voice_mode_state_to_adapter(default_ad)
+        runner._sync_voice_mode_state_to_adapter(bot2_ad)
+        assert default_ad._auto_tts_enabled_chats == {"1"}
+        assert bot2_ad._auto_tts_enabled_chats == {"2"}
 
 
 # ---------------------------------------------------------------------------

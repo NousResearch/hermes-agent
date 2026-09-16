@@ -25,7 +25,58 @@ export type TerminalSetupResult = {
 }
 
 const DEFAULT_FILE_OPS: FileOps = { copyFile, mkdir, readFile, writeFile }
-const MULTILINE_SEQUENCE = '\\\r\n'
+const COPY_SEQUENCE = '\u001b[99;13u'
+// Kitty keyboard protocol CSI u sequences for modified Enter keys.
+// Codepoint 13 = Enter; modifier encoding: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0) + (super?8:0).
+// These are recognized by Ink's parse-keypress CSI u handler and produce
+// key.return=true with the correct modifier flags, so textInput.tsx's
+// existing k.return && (k.shift || k.ctrl || ...) branch inserts a newline.
+const SHIFT_ENTER_SEQUENCE = '\u001b[13;2u' // modifier 2 = shift
+const CTRL_ENTER_SEQUENCE = '\u001b[13;5u' // modifier 5 = ctrl
+const SUPER_ENTER_SEQUENCE = '\u001b[13;9u' // modifier 9 = super (Cmd on macOS)
+
+// Legacy multiline sequence used before CSI u migration. Old keybindings
+// that still send this will be auto-replaced on next terminal setup.
+const LEGACY_MULTILINE_SEQUENCE = '\\\r\n'
+
+/**
+ * Migrate legacy keybindings that used the old \\\r\n escape sequence
+ * for modified Enter keys.  Those sequences arrived at Ink as separate
+ * key events (backslash + return), causing unintended submissions.
+ * The replacement CSI u sequences are parsed correctly by Ink's
+ * parse-keypress handler and produce the proper modifier flags.
+ */
+function migrateLegacyBindings(keybindings: unknown[]): number {
+  let migrated = 0
+
+  const replacements: Map<string, string> = new Map([
+    ['shift+enter', SHIFT_ENTER_SEQUENCE],
+    ['ctrl+enter', CTRL_ENTER_SEQUENCE],
+    ['cmd+enter', SUPER_ENTER_SEQUENCE]
+  ])
+
+  for (let i = 0; i < keybindings.length; i++) {
+    const entry = keybindings[i]
+
+    if (!isKeybinding(entry)) {
+      continue
+    }
+
+    const replacement = replacements.get(entry.key ?? '')
+
+    if (
+      replacement &&
+      entry.command === 'workbench.action.terminal.sendSequence' &&
+      entry.when === 'terminalFocus' &&
+      entry.args?.text === LEGACY_MULTILINE_SEQUENCE
+    ) {
+      keybindings[i] = { ...entry, args: { text: replacement } }
+      migrated += 1
+    }
+  }
+
+  return migrated
+}
 
 const TERMINAL_META: Record<SupportedTerminal, { appName: string; label: string }> = {
   vscode: { appName: 'Code', label: 'VS Code' },
@@ -33,24 +84,31 @@ const TERMINAL_META: Record<SupportedTerminal, { appName: string; label: string 
   windsurf: { appName: 'Windsurf', label: 'Windsurf' }
 }
 
-const TARGET_BINDINGS: Keybinding[] = [
+const MAC_COPY_BINDING: Keybinding = {
+  key: 'cmd+c',
+  command: 'workbench.action.terminal.sendSequence',
+  when: 'terminalFocus && terminalTextSelected',
+  args: { text: COPY_SEQUENCE }
+}
+
+const BASE_BINDINGS: Keybinding[] = [
   {
     key: 'shift+enter',
     command: 'workbench.action.terminal.sendSequence',
     when: 'terminalFocus',
-    args: { text: MULTILINE_SEQUENCE }
+    args: { text: SHIFT_ENTER_SEQUENCE }
   },
   {
     key: 'ctrl+enter',
     command: 'workbench.action.terminal.sendSequence',
     when: 'terminalFocus',
-    args: { text: MULTILINE_SEQUENCE }
+    args: { text: CTRL_ENTER_SEQUENCE }
   },
   {
     key: 'cmd+enter',
     command: 'workbench.action.terminal.sendSequence',
     when: 'terminalFocus',
-    args: { text: MULTILINE_SEQUENCE }
+    args: { text: SUPER_ENTER_SEQUENCE }
   },
   {
     key: 'cmd+z',
@@ -65,6 +123,9 @@ const TARGET_BINDINGS: Keybinding[] = [
     args: { text: '\u001b[122;10u' }
   }
 ]
+
+const targetBindings = (platform: NodeJS.Platform): Keybinding[] =>
+  platform === 'darwin' ? [MAC_COPY_BINDING, ...BASE_BINDINGS] : BASE_BINDINGS
 
 export function detectVSCodeLikeTerminal(env: NodeJS.ProcessEnv = process.env): null | SupportedTerminal {
   const askpass = env['VSCODE_GIT_ASKPASS_MAIN']?.toLowerCase() ?? ''
@@ -172,6 +233,90 @@ function sameBinding(a: Keybinding, b: Keybinding): boolean {
   return a.key === b.key && a.command === b.command && a.when === b.when && a.args?.text === b.args?.text
 }
 
+type WhenRequirements = {
+  forbidden: Set<string>
+  required: Set<string>
+}
+
+const WHEN_TOKEN_RE = /!?[A-Za-z_][\w.]*/g
+
+function parseWhenRequirements(when: string): WhenRequirements {
+  const required = new Set<string>()
+  const forbidden = new Set<string>()
+
+  for (const [token] of when.matchAll(WHEN_TOKEN_RE)) {
+    if (token.startsWith('!')) {
+      forbidden.add(token.slice(1))
+    } else {
+      required.add(token)
+    }
+  }
+
+  return { forbidden, required }
+}
+
+function requirementsContradict(a: WhenRequirements, b: WhenRequirements): boolean {
+  for (const token of a.required) {
+    if (b.forbidden.has(token)) {
+      return true
+    }
+  }
+
+  for (const token of b.required) {
+    if (a.forbidden.has(token)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function whensOverlap(a: string, b: string): boolean {
+  if (a === b) {
+    return true
+  }
+
+  // Empty when = global, overlaps every context.
+  if (!a || !b) {
+    return true
+  }
+
+  const left = parseWhenRequirements(a)
+  const right = parseWhenRequirements(b)
+
+  if (requirementsContradict(left, right)) {
+    return false
+  }
+
+  // This intentionally avoids a full VS Code when-clause parser. If two
+  // same-key bindings share a positive context token and don't explicitly
+  // contradict each other, they can fire together in that context.
+  for (const token of left.required) {
+    if (right.required.has(token)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+// VS Code allows multiple bindings on the same key as long as their `when`
+// clauses don't overlap. We flag a conflict when the contexts overlap but
+// the bindings differ — e.g. existing `terminalFocus` cmd+c overlaps with
+// our `terminalFocus && terminalTextSelected`, so the existing binding
+// would shadow ours when text isn't selected.
+function bindingsConflict(existing: Keybinding, target: Keybinding): boolean {
+  if (existing.key !== target.key) {
+    return false
+  }
+
+  if (!whensOverlap(existing.when ?? '', target.when ?? '')) {
+    return false
+  }
+
+  return !sameBinding(existing, target)
+}
+
 async function backupFile(filePath: string, ops: FileOps): Promise<void> {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   await ops.copyFile(filePath, `${filePath}.backup.${stamp}`)
@@ -240,10 +385,11 @@ export async function configureTerminalKeybindings(
       }
     }
 
-    const conflicts = TARGET_BINDINGS.filter(target =>
-      keybindings.some(
-        existing => isKeybinding(existing) && existing.key === target.key && !sameBinding(existing, target)
-      )
+    const migrated = migrateLegacyBindings(keybindings)
+    const targets = targetBindings(platform)
+
+    const conflicts = targets.filter(target =>
+      keybindings.some(existing => isKeybinding(existing) && bindingsConflict(existing, target))
     )
 
     if (conflicts.length) {
@@ -256,7 +402,7 @@ export async function configureTerminalKeybindings(
 
     let added = 0
 
-    for (const target of TARGET_BINDINGS.slice().reverse()) {
+    for (const target of targets.slice().reverse()) {
       const exists = keybindings.some(existing => isKeybinding(existing) && sameBinding(existing, target))
 
       if (!exists) {
@@ -265,23 +411,33 @@ export async function configureTerminalKeybindings(
       }
     }
 
-    if (!added) {
+    if (!added && !migrated) {
       return {
         success: true,
         message: `${meta.label} terminal keybindings already configured.`
       }
     }
 
-    if (hasExistingFile) {
+    if (hasExistingFile && (added || migrated)) {
       await backupFile(keybindingsFile, ops)
     }
 
     await ops.writeFile(keybindingsFile, `${JSON.stringify(keybindings, null, 2)}\n`, 'utf8')
 
+    const parts: string[] = []
+
+    if (added) {
+      parts.push(`Added ${added} ${meta.label} terminal keybinding${added === 1 ? '' : 's'}`)
+    }
+
+    if (migrated) {
+      parts.push(`migrated ${migrated} legacy binding${migrated === 1 ? '' : 's'} to CSI u encoding`)
+    }
+
     return {
       success: true,
       requiresRestart: true,
-      message: `Added ${added} ${meta.label} terminal keybinding${added === 1 ? '' : 's'} in ${keybindingsFile}`
+      message: `${parts.join(', ')} in ${keybindingsFile}`
     }
   } catch (error) {
     return {
@@ -340,7 +496,7 @@ export async function shouldPromptForTerminalSetup(options?: {
       return true
     }
 
-    return TARGET_BINDINGS.some(
+    return targetBindings(platform).some(
       target => !parsed.some(existing => isKeybinding(existing) && sameBinding(existing, target))
     )
   } catch {

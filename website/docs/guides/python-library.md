@@ -12,23 +12,15 @@ Hermes isn't just a CLI tool. You can import `AIAgent` directly and use it progr
 
 ## Installation
 
-Install Hermes directly from the repository:
+Clone Hermes and create its supported editable development environment:
 
 ```bash
-pip install git+https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+uv sync
 ```
 
-Or with [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv pip install git+https://github.com/NousResearch/hermes-agent.git
-```
-
-You can also pin it in your `requirements.txt`:
-
-```text
-hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git
-```
+Run your application with `uv run python your_app.py` from that checkout. Hermes does not publish a supported wheel or source distribution for `requirements.txt` installs.
 
 :::tip
 The same environment variables used by the CLI are required when using Hermes as a library. At minimum, set `OPENROUTER_API_KEY` (or `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` if using direct provider access).
@@ -44,7 +36,7 @@ The simplest way to use Hermes is the `chat()` method — pass a message, get a 
 from run_agent import AIAgent
 
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     quiet_mode=True,
 )
 response = agent.chat("What is the capital of France?")
@@ -65,7 +57,7 @@ For more control over the conversation, use `run_conversation()` directly. It re
 
 ```python
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     quiet_mode=True,
 )
 
@@ -81,7 +73,8 @@ print(f"Messages exchanged: {len(result['messages'])}")
 The returned dictionary contains:
 - **`final_response`** — The agent's final text reply
 - **`messages`** — The complete message history (system, user, assistant, tool calls)
-- **`task_id`** — The task identifier used for VM isolation
+
+(The `task_id` you pass in is stored on the agent instance for VM isolation but isn't echoed back in the return dict.)
 
 You can also pass a custom system message that overrides the ephemeral system prompt for that call:
 
@@ -101,14 +94,14 @@ Control which toolsets the agent has access to using `enabled_toolsets` or `disa
 ```python
 # Only enable web tools (browsing, search)
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     enabled_toolsets=["web"],
     quiet_mode=True,
 )
 
 # Enable everything except terminal access
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     disabled_toolsets=["terminal"],
     quiet_mode=True,
 )
@@ -126,7 +119,7 @@ Maintain conversation state across multiple turns by passing the message history
 
 ```python
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     quiet_mode=True,
 )
 
@@ -152,7 +145,7 @@ Enable trajectory saving to capture conversations in ShareGPT format — useful 
 
 ```python
 agent = AIAgent(
-    model="anthropic/claude-sonnet-4",
+    model="anthropic/claude-sonnet-4.6",
     save_trajectories=True,
     quiet_mode=True,
 )
@@ -310,13 +303,13 @@ print(review)
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `model` | `str` | `"anthropic/claude-opus-4.6"` | Model in OpenRouter format |
+| `model` | `str` | `""` | Model in OpenRouter format (defaults to empty; resolved from your hermes config at runtime) |
 | `quiet_mode` | `bool` | `False` | Suppress CLI output |
 | `enabled_toolsets` | `List[str]` | `None` | Whitelist specific toolsets |
 | `disabled_toolsets` | `List[str]` | `None` | Blacklist specific toolsets |
 | `save_trajectories` | `bool` | `False` | Save conversations to JSONL |
 | `ephemeral_system_prompt` | `str` | `None` | Custom system prompt (not saved to trajectories) |
-| `max_iterations` | `int` | `90` | Max tool-calling iterations per conversation |
+| `max_iterations` | `int` | `500` | Max tool-calling iterations per conversation |
 | `skip_context_files` | `bool` | `False` | Skip loading AGENTS.md files |
 | `skip_memory` | `bool` | `False` | Disable persistent memory read/write |
 | `api_key` | `str` | `None` | API key (falls back to env vars) |
@@ -336,5 +329,5 @@ print(review)
 :::warning
 - **Thread safety**: Create one `AIAgent` per thread or task. Never share an instance across concurrent calls.
 - **Resource cleanup**: The agent automatically cleans up resources (terminal sessions, browser instances) when a conversation ends. If you're running in a long-lived process, ensure each conversation completes normally.
-- **Iteration limits**: The default `max_iterations=90` is generous. For simple Q&A use cases, consider lowering it (e.g., `max_iterations=10`) to prevent runaway tool-calling loops and control costs.
+- **Iteration limits**: The default `max_iterations=500` is generous. For simple Q&A use cases, consider lowering it (e.g., `max_iterations=10`) to prevent runaway tool-calling loops and control costs.
 :::

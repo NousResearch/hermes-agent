@@ -19,11 +19,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import (
     GatewayConfig,
-    HomeChannel,
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.platforms.webhook import WebhookAdapter, _INSECURE_NO_AUTH
 
 
@@ -233,6 +233,7 @@ class TestCrossPlatformDelivery:
 
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform.TELEGRAM: mock_tg_adapter}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config = GatewayConfig(
             platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")}
         )
@@ -332,7 +333,10 @@ class TestGitHubCommentDelivery:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
+            env=None,
         )
         # Delivery info is retained after send() so interim status messages
         # don't strand the final response (TTL-based cleanup happens on POST).

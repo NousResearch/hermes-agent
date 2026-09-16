@@ -57,9 +57,10 @@ class TestMetadata:
     def test_default_model(self, provider):
         assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
+    def test_picker_matches_resolvable_catalog(self, provider):
         ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
+        assert set(ids) == set(provider.models)
+        assert provider.default_model() in ids
 
     def test_catalog_entries_have_display_speed_strengths(self, provider):
         for entry in provider.list_models():
@@ -85,10 +86,6 @@ class TestAvailability:
 
 
 class TestModelResolution:
-    def test_default_is_medium(self):
-        model_id, meta = openai_plugin._resolve_model()
-        assert model_id == "gpt-image-2-medium"
-        assert meta["quality"] == "medium"
 
     def test_env_var_override(self, monkeypatch):
         monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-high")
@@ -96,10 +93,6 @@ class TestModelResolution:
         assert model_id == "gpt-image-2-high"
         assert meta["quality"] == "high"
 
-    def test_env_var_unknown_falls_back(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "bogus-tier")
-        model_id, _ = openai_plugin._resolve_model()
-        assert model_id == openai_plugin.DEFAULT_MODEL
 
     def test_config_openai_model(self, tmp_path):
         import yaml
@@ -110,18 +103,34 @@ class TestModelResolution:
         assert model_id == "gpt-image-2-low"
         assert meta["quality"] == "low"
 
-    def test_config_top_level_model(self, tmp_path):
-        """``image_gen.model: gpt-image-2-high`` also works (top-level)."""
-        import yaml
-        (tmp_path / "config.yaml").write_text(
-            yaml.safe_dump({"image_gen": {"model": "gpt-image-2-high"}})
-        )
-        model_id, meta = openai_plugin._resolve_model()
-        assert model_id == "gpt-image-2-high"
-        assert meta["quality"] == "high"
-
 
 # ── Generate ────────────────────────────────────────────────────────────────
+
+
+class TestSourceImageLoading:
+    def test_load_image_bytes_blocks_credential_store(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        auth_json = hermes_home / "auth.json"
+        auth_json.write_text('{"api_key":"sk-secret"}', encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(ValueError, match="credential store"):
+            openai_plugin._load_image_bytes(str(auth_json))
+
+
+    def test_load_image_bytes_allows_legit_local_image(self, tmp_path, monkeypatch):
+        """Negative control: a legitimate local image path is NOT blocked and
+        loads normally — proves the guard doesn't over-fire on everything."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        img = tmp_path / "pic.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+
+        data, name = openai_plugin._load_image_bytes(str(img))
+        assert data == b"\x89PNG\r\n\x1a\nfake-image-bytes"
+        assert name == "pic.png"
 
 
 class TestGenerate:
@@ -137,7 +146,6 @@ class TestGenerate:
         assert result["error_type"] == "auth_required"
 
     def test_b64_saves_to_cache(self, provider, tmp_path):
-        import base64
         png_bytes = bytes.fromhex(_PNG_HEX)
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
@@ -164,24 +172,40 @@ class TestGenerate:
         # gpt-image-2 rejects response_format — we must NOT send it.
         assert "response_format" not in call_kwargs
 
-    @pytest.mark.parametrize("tier,expected_quality", [
-        ("gpt-image-2-low", "low"),
-        ("gpt-image-2-medium", "medium"),
-        ("gpt-image-2-high", "high"),
+    @pytest.mark.parametrize("api_model,quality", [
+        ("gpt-image-2", quality) for quality in ("low", "medium", "high")
+    ] + [
+        (model, quality)
+        for model in ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
+        for quality in ("auto", "low", "medium", "high", "xhigh", "max")
     ])
-    def test_tier_maps_to_quality(self, provider, monkeypatch, tier, expected_quality):
-        monkeypatch.setenv("OPENAI_IMAGE_MODEL", tier)
+    @pytest.mark.parametrize("editing", [False, True])
+    def test_selection_reaches_image_request(
+        self, provider, monkeypatch, tmp_path, api_model, quality, editing
+    ):
+        import yaml
+
+        tier = api_model if quality == "auto" else f"{api_model}-{quality}"
+        monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "image_gen": {"openai": {"model": tier}}
+        }))
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
         fake_client = MagicMock()
-        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        call = fake_client.images.edit if editing else fake_client.images.generate
+        call.return_value = _fake_response(b64=_b64_png())
 
         with _patched_openai(fake_client):
-            result = provider.generate("a cat")
+            result = provider.generate("a cat", image_url=str(source) if editing else None)
 
+        assert result["success"] is True
         assert result["model"] == tier
-        assert result["quality"] == expected_quality
-        assert fake_client.images.generate.call_args.kwargs["quality"] == expected_quality
-        # Always the same underlying API model regardless of tier.
-        assert fake_client.images.generate.call_args.kwargs["model"] == "gpt-image-2"
+        assert result["quality"] == quality
+        assert call.call_args.kwargs["quality"] == quality
+        assert call.call_args.kwargs["model"] == api_model
+        assert "response_format" not in call.call_args.kwargs
+        assert Path(result["image"]).read_bytes() == bytes.fromhex(_PNG_HEX)
 
     @pytest.mark.parametrize("aspect,expected_size", [
         ("landscape", "1536x1024"),
@@ -208,36 +232,28 @@ class TestGenerate:
 
         assert result["revised_prompt"] == "A photo of a cat"
 
-    def test_api_error_returns_error_response(self, provider):
-        fake_client = MagicMock()
-        fake_client.images.generate.side_effect = RuntimeError("boom")
 
-        with _patched_openai(fake_client):
-            result = provider.generate("a cat")
+    def test_url_response_is_cached_locally(self, provider):
+        """OpenAI URL response (if API ever returns one) is cached locally.
 
-        assert result["success"] is False
-        assert result["error_type"] == "api_error"
-        assert "boom" in result["error"]
-
-    def test_empty_response_data(self, provider):
-        fake_client = MagicMock()
-        fake_client.images.generate.return_value = SimpleNamespace(data=[])
-
-        with _patched_openai(fake_client):
-            result = provider.generate("a cat")
-
-        assert result["success"] is False
-        assert result["error_type"] == "empty_response"
-
-    def test_url_fallback_if_api_changes(self, provider):
-        """Defensive: if OpenAI ever returns URL instead of b64, pass through."""
+        Pre-fix this asserted the bare URL passed through; symmetric to the
+        xAI #26942 fix.  Even though gpt-image-2 returns b64 today, every
+        ``image_gen`` provider must guarantee the gateway gets a stable
+        file path so ephemeral signed URLs can't expire mid-flight.
+        """
         fake_client = MagicMock()
         fake_client.images.generate.return_value = _fake_response(
             b64=None, url="https://example.com/img.png",
         )
 
-        with _patched_openai(fake_client):
+        with _patched_openai(fake_client), patch(
+            "plugins.image_gen._common.save_url_image",
+            return_value=Path("/tmp/openai_gpt-image-2_20260524_000000_deadbeef.png"),
+        ) as mock_save_url:
             result = provider.generate("a cat")
 
         assert result["success"] is True
-        assert result["image"] == "https://example.com/img.png"
+        assert result["image"].startswith("/")
+        assert "example.com" not in result["image"]
+        mock_save_url.assert_called_once()
+

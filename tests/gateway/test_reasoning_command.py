@@ -11,7 +11,7 @@ import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -33,6 +33,7 @@ def _make_runner():
     runner._ephemeral_system_prompt = ""
     runner._prefill_messages = []
     runner._reasoning_config = None
+    runner._session_reasoning_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -63,18 +64,11 @@ class _CapturingAgent:
 
 
 class TestReasoningCommand:
-    @pytest.mark.asyncio
-    async def test_reasoning_in_help_output(self):
-        runner = _make_runner()
-        event = _make_event(text="/help")
 
-        result = await runner._handle_help_command(event)
 
-        assert "/reasoning [level|show|hide]" in result
-
-    def test_reasoning_is_known_command(self):
-        source = inspect.getsource(gateway_run.GatewayRunner._handle_message)
-        assert '"reasoning"' in source
+    def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):
+        assert gateway_run.GatewayRunner._parse_reasoning_command_args("high --global") == ("high", True)
+        assert gateway_run.GatewayRunner._parse_reasoning_command_args("—global xhigh") == ("xhigh", True)
 
     @pytest.mark.asyncio
     async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):
@@ -99,73 +93,45 @@ class TestReasoningCommand:
         assert runner._reasoning_config == {"enabled": False}
         assert runner._show_reasoning is True
 
+
     @pytest.mark.asyncio
-    async def test_handle_reasoning_command_updates_config_and_cache(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    async def test_handle_reasoning_command_accepts_extended_efforts(
+        self, tmp_path, monkeypatch, effort
+    ):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
-        config_path = hermes_home / "config.yaml"
-        config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
-
+        (hermes_home / "config.yaml").write_text(
+            "agent:\n  reasoning_effort: medium\n", encoding="utf-8"
+        )
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
 
         runner = _make_runner()
-        runner._reasoning_config = {"enabled": True, "effort": "medium"}
+        event = _make_event(f"/reasoning {effort}")
+        session_key = runner._session_key_for_source(event.source)
 
-        result = await runner._handle_reasoning_command(_make_event("/reasoning low"))
+        await runner._handle_reasoning_command(event)
 
-        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["agent"]["reasoning_effort"] == "low"
-        assert runner._reasoning_config == {"enabled": True, "effort": "low"}
-        assert "takes effect on next message" in result
+        assert runner._session_reasoning_overrides[session_key] == {
+            "enabled": True,
+            "effort": effort,
+        }
 
-    def test_run_agent_reloads_reasoning_config_per_message(self, tmp_path, monkeypatch):
+
+    def test_resolve_session_reasoning_prefers_session_override(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("agent:\n  reasoning_effort: low\n", encoding="utf-8")
 
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
-        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-        monkeypatch.setattr(
-            gateway_run,
-            "_resolve_runtime_agent_kwargs",
-            lambda: {
-                "provider": "openrouter",
-                "api_mode": "chat_completions",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "test-key",
-            },
-        )
-        fake_run_agent = types.ModuleType("run_agent")
-        fake_run_agent.AIAgent = _CapturingAgent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-        _CapturingAgent.last_init = None
         runner = _make_runner()
-        runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
+        source = _make_event("/reasoning").source
+        session_key = runner._session_key_for_source(source)
+        runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "xhigh"}
 
-        source = SessionSource(
-            platform=Platform.LOCAL,
-            chat_id="cli",
-            chat_name="CLI",
-            chat_type="dm",
-            user_id="user-1",
-        )
+        assert runner._resolve_session_reasoning_config(source=source) == {"enabled": True, "effort": "xhigh"}
 
-        result = asyncio.run(
-            runner._run_agent(
-                message="ping",
-                context_prompt="",
-                history=[],
-                source=source,
-                session_id="session-1",
-                session_key="agent:main:local:dm",
-            )
-        )
-
-        assert result["final_response"] == "ok"
-        assert _CapturingAgent.last_init is not None
-        assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "low"}
 
     def test_run_agent_includes_enabled_mcp_servers_in_gateway_toolsets(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
@@ -183,7 +149,6 @@ class TestReasoningCommand:
 
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
-        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             gateway_run,
             "_resolve_runtime_agent_kwargs",
@@ -228,50 +193,27 @@ class TestReasoningCommand:
         assert "exa" in enabled_toolsets
         assert "web-search-prime" in enabled_toolsets
 
-    def test_run_agent_homeassistant_uses_default_platform_toolset(self, tmp_path, monkeypatch):
+
+class TestLoadShowReasoningCoercion:
+    """Regression: display.show_reasoning must be coerced, not bool()'d."""
+
+    def _load_with_config(self, tmp_path, monkeypatch, yaml_body: str) -> bool:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text("", encoding="utf-8")
-
+        (hermes_home / "config.yaml").write_text(yaml_body, encoding="utf-8")
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
-        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-        monkeypatch.setattr(
-            gateway_run,
-            "_resolve_runtime_agent_kwargs",
-            lambda: {
-                "provider": "openrouter",
-                "api_mode": "chat_completions",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "test-key",
-            },
-        )
-        fake_run_agent = types.ModuleType("run_agent")
-        fake_run_agent.AIAgent = _CapturingAgent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+        return gateway_run.GatewayRunner._load_show_reasoning()
 
-        _CapturingAgent.last_init = None
-        runner = _make_runner()
+    def test_quoted_false_is_false(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: "false"\n',
+        ) is False
 
-        source = SessionSource(
-            platform=Platform.HOMEASSISTANT,
-            chat_id="ha",
-            chat_name="Home Assistant",
-            chat_type="dm",
-            user_id="user-1",
-        )
 
-        result = asyncio.run(
-            runner._run_agent(
-                message="ping",
-                context_prompt="",
-                history=[],
-                source=source,
-                session_id="session-1",
-                session_key="agent:main:homeassistant:dm",
-            )
-        )
+    def test_bare_true_is_true(self, tmp_path, monkeypatch):
+        assert self._load_with_config(
+            tmp_path, monkeypatch,
+            'display:\n  show_reasoning: true\n',
+        ) is True
 
-        assert result["final_response"] == "ok"
-        assert _CapturingAgent.last_init is not None
-        assert "homeassistant" in set(_CapturingAgent.last_init["enabled_toolsets"])

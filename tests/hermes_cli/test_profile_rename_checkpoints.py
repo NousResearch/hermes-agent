@@ -5,8 +5,10 @@ from unittest.mock import patch
 
 import pytest
 
+from hermes_cli.profile_identity import migrate_profile_identity
 from hermes_cli.profiles import create_profile, rename_profile
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+import tools.checkpoint_manager as cm
 from tools.checkpoint_manager import CheckpointManager
 
 
@@ -74,5 +76,52 @@ def test_rename_preserves_profile_local_checkpoint_history(profile_env, tmp_path
         restored = manager.restore(str(new_workdir), checkpoint_hash, safe=True)
         assert restored["success"] is True
         assert new_tracked.read_text(encoding="utf-8") == "before\n"
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_retry_after_partial_rekey_keeps_checkpoints_taken_under_new_name(profile_env):
+    """``migrate-identity`` after a mid-way failure must not rewind history to the old tip.
+
+    Between the failed rename and the retry the user keeps working under the new profile, so the
+    new ref already carries checkpoints (and ledger entries) the old identity never saw.
+    """
+    old_dir = create_profile("oldname", no_alias=True)
+    workdir = old_dir / "project"
+    workdir.mkdir()
+    (workdir / "pyproject.toml").write_text("[project]\nname = 'retry'\n", encoding="utf-8")
+    note = workdir / "note.txt"
+    note.write_text("v1\n", encoding="utf-8")
+
+    token = set_hermes_home_override(old_dir)
+    try:
+        assert CheckpointManager(enabled=True, max_snapshots=5).ensure_checkpoint(str(workdir), "c1") is True
+    finally:
+        reset_hermes_home_override(token)
+
+    with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+         patch("hermes_cli.profiles._live_default_multiplexer", return_value=False), \
+         patch.object(cm, "_delete_ref", return_value=False):  # old ref survives: partial rekey
+        new_dir = rename_profile("oldname", "newname")
+
+    new_workdir = new_dir / "project"
+    new_note = new_workdir / "note.txt"
+    token = set_hermes_home_override(new_dir)
+    try:
+        new_note.write_text("v2\n", encoding="utf-8")
+        manager = CheckpointManager(enabled=True, max_snapshots=5)
+        assert manager.ensure_checkpoint(str(new_workdir), "c2") is True
+        manager.record_agent_write(str(new_note))
+        before = [entry["hash"] for entry in manager.list_checkpoints(str(new_workdir))]
+        assert len(before) == 2
+        store = cm._store_path(new_dir / "checkpoints")
+        ledger_before = cm._load_ledger(store, cm._project_hash(str(new_workdir)))
+
+        assert migrate_profile_identity("oldname", "newname") is True
+
+        manager = CheckpointManager(enabled=True, max_snapshots=5)
+        assert [entry["hash"] for entry in manager.list_checkpoints(str(new_workdir))] == before
+        assert cm._load_ledger(store, cm._project_hash(str(new_workdir))) == ledger_before
+        assert cm._list_project_refs(store, str(new_workdir)) == [cm._ref_name(cm._project_hash(str(new_workdir)))]
     finally:
         reset_hermes_home_override(token)

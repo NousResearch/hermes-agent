@@ -1780,9 +1780,7 @@ def _await_gateway_exit(
     return survivors
 
 
-def _force_kill_survivors(
-    survivors, *, kill=None, grace_s: float = _ORPHAN_EXIT_GRACE_SECONDS
-) -> None:
+def _force_kill_survivors(survivors, *, kill=None) -> None:
     """SIGKILL processes that outlasted the grace period, loudly — a force-kill can tear the store, so
     it must leave a trace."""
     kill = kill or os.kill
@@ -1791,7 +1789,7 @@ def _force_kill_survivors(
             "Gateway PID %s did not exit within %.0fs of SIGTERM — sending "
             "SIGKILL. A kill during a WAL checkpoint can corrupt state.db; "
             "the next start will run an integrity check.",
-            pid, grace_s,
+            pid, _ORPHAN_EXIT_GRACE_SECONDS,
         )
         with contextlib.suppress((ProcessLookupError, PermissionError, OSError)):
             kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
@@ -1828,10 +1826,17 @@ def stop_profile_gateway() -> bool:
         return _reap_unsupervised_gateway_orphans()
 
     windows = is_windows()
-    from gateway.status import _pid_exists, get_process_start_time
-    expected_start_time = get_process_start_time(pid) if windows else None
-    _mark_planned_stop(pid)
-    if not windows:
+    if windows:
+        from hermes_cli.gateway_windows import (
+            _drain_gateway_pid,
+            _force_terminate_known_gateway_pids,
+            _windows_stop_drain_timeout,
+        )
+
+        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
+            _force_terminate_known_gateway_pids([pid])
+    else:
+        _mark_planned_stop(pid)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1841,18 +1846,8 @@ def stop_profile_gateway() -> bool:
             return False
 
     # ``_pid_exists``, NOT ``os.kill(pid, 0)`` (TerminateProcess on Windows).
-    if windows:
-        # The marker is the graceful stop request; force termination is
-        # reserved for a process that outlives the existing ten-second grace.
-        survivors = _await_gateway_exit(
-            [pid], pid_exists=_pid_exists, grace_s=10.0, poll_s=0.5
-        )
-        _force_kill_survivors([
-            survivor for survivor in survivors
-            if expected_start_time is not None
-            and get_process_start_time(survivor) == expected_start_time
-        ], grace_s=10.0)
-    else:
+    from gateway.status import _pid_exists
+    if not windows:
         for _ in range(20):
             if not _pid_exists(pid):
                 break

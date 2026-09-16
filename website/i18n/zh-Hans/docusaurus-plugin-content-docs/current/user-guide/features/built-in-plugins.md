@@ -61,7 +61,8 @@ hermes plugins disable disk-cleanup
 | `google_meet` | 独立插件 | 加入 Meet 通话、实时字幕转录、可选实时双工音频 |
 | `image_gen/openai` | 图像后端 | OpenAI `gpt-image-2` 图像生成后端（FAL 的替代方案） |
 | `image_gen/openai-codex` | 图像后端 | 通过 Codex OAuth 使用 OpenAI 图像生成 |
-| `image_gen/xai` | 图像后端 | xAI `grok-2-image` 后端 |
+| `image_gen/xai` | 图像后端 | xAI `grok-imagine-image` 后端 |
+| `image_gen/krea` | 图像后端 | Krea `Krea 2`（Medium + Medium Turbo + Large）图像生成后端 |
 | `hermes-achievements` | 仪表盘标签页 | Steam 风格的可收集徽章，根据你真实的 Hermes 会话历史生成 |
 | `kanban/dashboard` | 仪表盘标签页 | 多智能体调度器的看板（Kanban）UI——任务、评论、扇出、切换看板。参见 [Kanban 多智能体](./kanban.md)。 |
 

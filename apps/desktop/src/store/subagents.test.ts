@@ -1,3 +1,4 @@
+import type { SubagentSnapshot } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -12,7 +13,7 @@ import {
   reconcileSubagentSnapshot,
   upsertSubagent
 } from './subagents'
-import { subagentEvent } from './subagents.test-util'
+import { subagentEvent, subagentRosterRow } from './subagents.test-util'
 
 const listFor = (sid: string) => $subagentsBySession.get()[sid] ?? []
 
@@ -30,8 +31,15 @@ describe('subagent store', () => {
   })
 
   it('keeps completed children retired across turn pruning, late frames, and roster refreshes', () => {
-    const finished = { subagent_id: 'finished', goal: 'Finished task', status: 'running' }
-    const live = { subagent_id: 'live', goal: 'Background task', status: 'queued' }
+    // The roster carries the same counters the events did, so an unchanged child keeps its row identity.
+    const finished = subagentEvent({ subagent_id: 'finished', goal: 'Finished task', status: 'running', tool_count: 0 })
+    const live = subagentEvent({ subagent_id: 'live', goal: 'Background task', status: 'queued', tool_count: 0 })
+
+    const roster = (status: SubagentSnapshot['status'] = 'running') => [
+      subagentRosterRow({ subagent_id: 'finished', goal: 'Finished task', status }),
+      subagentRosterRow({ subagent_id: 'live', goal: 'Background task', status: 'queued' }),
+    ]
+
     upsertSubagent('owner', finished, true, 'subagent.start')
     upsertSubagent('owner', live, true, 'subagent.spawn_requested')
     upsertSubagent('owner', { ...finished, status: 'completed', summary: 'Done' }, false, 'subagent.complete')
@@ -42,16 +50,16 @@ describe('subagent store', () => {
     // or roster read has drained. Pruning is presentation, not a new child run.
     pruneFinishedSessionSubagents('owner')
     const pruned = listFor('owner')
-    reconcileSubagentSnapshot('owner', [finished, live])
+    reconcileSubagentSnapshot('owner', roster())
     upsertSubagent('owner', finished, true, 'subagent.start')
     upsertSubagent('owner', { ...finished, text: '(°□°) pondering...' }, false, 'subagent.thinking')
     expect(listFor('owner')).toBe(pruned)
     expect(listFor('owner').map(item => item.id)).toEqual(['live'])
 
     // Roster-discovered terminal state has the same authority as an event.
-    reconcileSubagentSnapshot('owner', [{ ...live, status: 'interrupted' }])
+    reconcileSubagentSnapshot('owner', [subagentRosterRow({ subagent_id: 'live', goal: 'Background task', status: 'interrupted' })])
     pruneFinishedSessionSubagents('owner')
-    reconcileSubagentSnapshot('owner', [finished, live])
+    reconcileSubagentSnapshot('owner', roster())
     expect(activeSubagentCount(listFor('owner'))).toBe(0)
 
     // Retirement is scoped to this runtime session, not an ID-global ban.

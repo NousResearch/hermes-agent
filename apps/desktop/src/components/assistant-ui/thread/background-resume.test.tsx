@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { $activeSessionId, $busy } from '@/store/session'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
+import { subagentEvent } from '@/store/subagents.test-util'
 
 import { BackgroundResumeNotice } from './status'
 
@@ -18,8 +19,8 @@ afterEach(() => {
 it('keeps background waiting local to its idle thread without echoing child thinking chrome', () => {
   $activeSessionId.set('other')
   $busy.set(true)
-  upsertSubagent('owner', { subagent_id: 'child', goal: 'Check relevance', status: 'running' })
-  upsertSubagent('owner', { subagent_id: 'child', text: '(°□°) pondering...' }, false, 'subagent.thinking')
+  upsertSubagent('owner', subagentEvent({ subagent_id: 'child', goal: 'Check relevance', status: 'running' }))
+  upsertSubagent('owner', subagentEvent({ subagent_id: 'child', text: '(°□°) pondering...' }), false, 'subagent.thinking')
   const $ownerBusy = atom(false)
   const view = { ...PRIMARY_SESSION_VIEW, $runtimeId: atom<string | null>('owner'), $busy: $ownerBusy }
 
@@ -37,6 +38,6 @@ it('keeps background waiting local to its idle thread without echoing child thin
   expect(container.querySelector('[role="status"]')).toBeNull()
   act(() => $ownerBusy.set(false))
   expect(container.querySelector('[role="status"]')).toBeTruthy()
-  act(() => upsertSubagent('owner', { subagent_id: 'child', status: 'completed' }, true, 'subagent.complete'))
+  act(() => upsertSubagent('owner', subagentEvent({ subagent_id: 'child', status: 'completed' }), true, 'subagent.complete'))
   expect(container.querySelector('[role="status"]')).toBeNull()
 })

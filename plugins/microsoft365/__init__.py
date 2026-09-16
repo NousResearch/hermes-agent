@@ -46,6 +46,10 @@ def register(ctx) -> None:
             return {"action": "block", "message": f"Microsoft 365 operation unsupported: {capability}.{action}: {status.reason}"}
         if action not in settings.operations(capability):
             return {"action": "block", "message": f"Microsoft 365 operation is disabled: {capability}.{action}"}
+        try:
+            tools._validate_action(capability, action, args)
+        except ValueError as exc:
+            return {"action": "block", "message": f"Invalid Microsoft 365 arguments: {exc}"}
         if action in WRITE_OPERATIONS:
             return {"action": "approve", "message": f"Microsoft 365 {action}: external side effect", "rule_key": f"microsoft365.{capability}.{action}"}
         return None

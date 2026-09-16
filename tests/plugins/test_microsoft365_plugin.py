@@ -259,8 +259,18 @@ def test_pre_tool_call_emits_host_approval_directive_for_enabled_write():
     manager = PluginManager(); context = PluginContext(PluginManifest(name="microsoft365"), manager)
     context.get_config = lambda key, default=None: {"tenant_id": "t", "client_id": "c", "client_secret": "s", "user_id": "u", "capabilities": {"outlook": {"send": True}}}.get(key, default)
     register(context)
-    result = manager.invoke_hook("pre_tool_call", tool_name="microsoft365_outlook", args={"action": "send"})
+    result = manager.invoke_hook("pre_tool_call", tool_name="microsoft365_outlook", args={"action": "send", "to": "a@example.com", "body": "B"})
     assert result == [{"action": "approve", "message": "Microsoft 365 send: external side effect", "rule_key": "microsoft365.outlook.send"}]
+
+
+def test_pre_tool_call_blocks_invalid_write_args_before_host_approval():
+    from plugins.microsoft365 import register
+    manager = PluginManager(); context = PluginContext(PluginManifest(name="microsoft365"), manager)
+    context.get_config = lambda key, default=None: {"capabilities": {"outlook": {"send": True}}}.get(key, default)
+    register(context)
+    result = manager.invoke_hook("pre_tool_call", tool_name="microsoft365_outlook", args={"action": "send"})
+    assert result[0]["action"] == "block"
+    assert "required" in result[0]["message"]
 
 
 def test_pre_tool_call_ignores_reads_and_other_tools_and_blocks_malformed_args():
@@ -268,7 +278,7 @@ def test_pre_tool_call_ignores_reads_and_other_tools_and_blocks_malformed_args()
     manager = PluginManager(); context = PluginContext(PluginManifest(name="microsoft365"), manager)
     context.get_config = lambda key, default=None: {"capabilities": {"outlook": {"search": True, "send": True}}}.get(key, default)
     register(context)
-    assert manager.invoke_hook("pre_tool_call", tool_name="microsoft365_outlook", args={"action": "search"}) == []
+    assert manager.invoke_hook("pre_tool_call", tool_name="microsoft365_outlook", args={"action": "search", "query": "hello"}) == []
     assert manager.invoke_hook("pre_tool_call", tool_name="other_tool", args={"action": "send"}) == []
     assert manager.invoke_hook("pre_tool_call", tool_name="microsoft365_outlook", args=None)[0]["action"] == "block"
 
@@ -282,4 +292,4 @@ def test_host_gate_denial_is_fail_closed_before_handler_client(monkeypatch):
     monkeypatch.setattr(plugin_host, "_plugin_manager", manager)
     monkeypatch.setattr("tools.approval.request_tool_approval", lambda *a, **k: {"approved": False, "message": "denied"})
     from hermes_cli.plugins import resolve_pre_tool_block
-    assert resolve_pre_tool_block("microsoft365_outlook", {"action": "send"}) == "denied"
+    assert resolve_pre_tool_block("microsoft365_outlook", {"action": "send", "to": "a@example.com", "body": "B"}) == "denied"

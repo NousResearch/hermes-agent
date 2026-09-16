@@ -8,6 +8,8 @@ python_dependencies:
   - "azure-identity>=1.17.0,<2"
 provides_tools:
   - microsoft365_preflight
+provides_hooks:
+  - pre_tool_call
 config_schema:
   tenant_id: {type: str, required: true, description: "Microsoft Entra tenant ID"}
   client_id: {type: str, required: true, description: "Microsoft Entra application/client ID"}

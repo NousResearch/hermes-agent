@@ -51,4 +51,15 @@ py -3.11 -m compileall -q plugins/microsoft365
 git diff --check origin/main...HEAD
 ```
 
-The exact exit codes and summaries are recorded below after the final documentation commit. The Graph test baseline already recorded one unrelated Trio/asyncio interoperability failure in `.hermes/evidence/microsoft365-baseline.md`; it must remain reported rather than silently filtered.
+Observed on `e7a6a41` (before the evidence-only commit below):
+
+| Command | Exit | Observed result |
+|---|---:|---|
+| `py -3.11 -m pytest tests/plugins/test_microsoft365_plugin.py -q` | 0 | 21 passed in 2.93s |
+| `py -3.11 -m pytest tests/plugins/test_microsoft365_tasks_6_12.py -q` | 0 | 8 passed in 1.61s |
+| `py -3.11 -m pytest tests/tools/test_microsoft_graph_client.py tests/tools/test_microsoft_graph_auth.py -q` | 1 | 16 passed, 1 failed, 8 warnings; the known `[trio]` test passes `asyncio.gather` to Trio and raises `TypeError` |
+| `py -3.11 -m hermes_cli.plugin_validate plugins/microsoft365/plugin.yaml` | 0 | no output |
+| `py -3.11 -m compileall -q plugins/microsoft365` | 0 | no output |
+| `git diff --check origin/main...HEAD` | 0 | no whitespace errors |
+
+The Graph failure matches the pre-existing baseline captured in `.hermes/evidence/microsoft365-baseline.md`; it is reported rather than silently filtered. The final evidence commit does not alter production code or test behavior.

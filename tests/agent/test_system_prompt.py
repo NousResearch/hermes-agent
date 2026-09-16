@@ -835,3 +835,28 @@ class TestConversationStartedTwoLine:
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
 
+
+
+class TestHelpGuidanceEnvAppend:
+    """Documented HERMES_AGENT_HELP_GUIDANCE append is honored (#24438)."""
+
+    def _stable(self, agent):
+        from unittest.mock import patch
+
+        with (
+            patch("agent.prompt_builder.load_soul_md", return_value=""),
+            patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        ):
+            return build_system_prompt_parts(agent)["stable"]
+
+    def test_env_guidance_appended_to_stable_tier(self, monkeypatch):
+        monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "Custom deployment note.")
+        stable = self._stable(_make_agent())
+        assert "Custom deployment note." in stable
+
+    def test_blank_env_leaves_prompt_untouched(self, monkeypatch):
+        monkeypatch.delenv("HERMES_AGENT_HELP_GUIDANCE", raising=False)
+        before = self._stable(_make_agent())
+        monkeypatch.setenv("HERMES_AGENT_HELP_GUIDANCE", "   ")
+        after = self._stable(_make_agent())
+        assert before == after

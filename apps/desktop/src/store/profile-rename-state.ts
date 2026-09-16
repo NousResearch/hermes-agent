@@ -217,6 +217,7 @@ export function completeProfileRenameState(
     window.localStorage.removeItem(
       pendingStorageKey({ connectionId: scope.connectionId.trim() || 'local', oldName: oldProfile, newName: newProfile })
     )
+
     for (const entry of readPending()) {
       if (
         entry.key === PENDING_RENAME_KEY &&

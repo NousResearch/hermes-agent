@@ -92,38 +92,38 @@ export function RenameProfileDialog({
     setStatus('saving')
     setError(null)
 
+    const connection = $connection.get()
+
+    const scopedConnectionId = scope && typeof scope === 'object' ? scope.connectionId : undefined
+    const connectionId = scopedConnectionId?.trim() || 'local'
+
+    const ownsActiveNavigation =
+      (connection?.connectionId?.trim() || 'local') === connectionId &&
+      (connection?.profile?.trim().toLowerCase() || 'default') === currentName.trim().toLowerCase()
+
+    // Local profile navigation always uses the bare connection suffix, even
+    // when this window currently shows another profile or a remote backend.
+    // An inactive remote profile stays unknown because its base URL is not
+    // recoverable from the profile-only rename scope.
+    const oldNavigationSuffix = ownsActiveNavigation
+      ? activeConnectionScopeSuffix()
+      : scope == null
+        ? ''
+        : null
+
+    const newNavigationSuffix = ownsActiveNavigation
+      ? connectionScopeSuffix(connection ? { ...connection, profile: trimmed } : null)
+      : scope == null
+        ? ''
+        : null
+
+    const renameStateScope = {
+      connectionId,
+      oldNavigationSuffix,
+      newNavigationSuffix
+    }
+
     try {
-      const connection = $connection.get()
-
-      const scopedConnectionId = scope && typeof scope === 'object' ? scope.connectionId : undefined
-      const connectionId = scopedConnectionId?.trim() || 'local'
-
-      const ownsActiveNavigation =
-        (connection?.connectionId?.trim() || 'local') === connectionId &&
-        (connection?.profile?.trim().toLowerCase() || 'default') === currentName.trim().toLowerCase()
-
-      // Local profile navigation always uses the bare connection suffix, even
-      // when this window currently shows another profile or a remote backend.
-      // An inactive remote profile stays unknown because its base URL is not
-      // recoverable from the profile-only rename scope.
-      const oldNavigationSuffix = ownsActiveNavigation
-        ? activeConnectionScopeSuffix()
-        : scope == null
-          ? ''
-          : null
-
-      const newNavigationSuffix = ownsActiveNavigation
-        ? connectionScopeSuffix(connection ? { ...connection, profile: trimmed } : null)
-        : scope == null
-          ? ''
-          : null
-
-      const renameStateScope = {
-        connectionId,
-        oldNavigationSuffix,
-        newNavigationSuffix
-      }
-
       if (!isDefault) {
         stageProfileRenameState(currentName, trimmed, renameStateScope)
       }

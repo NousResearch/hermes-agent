@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
+import { requestPinnedSessionNavigation } from '@/app/chat/sidebar/pinned-session-navigation'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
@@ -229,6 +230,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.newWindow': () => void openNewWindow(),
     'session.next': () => cycleTab(1),
     'session.prev': () => cycleTab(-1),
+    'session.pinned.next': () => requestPinnedSessionNavigation(1),
+    'session.pinned.previous': () => requestPinnedSessionNavigation(-1),
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,

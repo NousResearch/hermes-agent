@@ -350,6 +350,8 @@ export const ru = defineLocale({
       'session.newWindow': 'Новое окно',
       'session.next': 'Следующий сеанс',
       'session.prev': 'Предыдущий сеанс',
+      'session.pinned.next': 'Следующий закреплённый сеанс',
+      'session.pinned.previous': 'Предыдущий закреплённый сеанс',
       'session.slot.1': 'Переключить на недавний сеанс 1',
       'session.slot.2': 'Переключить на недавний сеанс 2',
       'session.slot.3': 'Переключить на недавний сеанс 3',

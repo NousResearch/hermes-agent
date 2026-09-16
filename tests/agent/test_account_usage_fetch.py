@@ -201,3 +201,104 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+class _RecordingClient:
+    """Client that records the URL it was asked for and answers every GET with one payload."""
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.urls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        self.urls.append(url)
+        return _Response(self._payload)
+
+
+def _deepseek_runtime(base_url):
+    return lambda requested, explicit_base_url=None, explicit_api_key=None: {
+        "provider": "deepseek", "base_url": base_url, "api_key": "sk-deepseek",
+    }
+
+
+def test_fetch_account_usage_deepseek_reads_balance_off_the_api_root(monkeypatch):
+    """The configured DeepSeek base_url carries the ``/v1`` route suffix; ``/user/balance`` lives on
+    the API root, so the suffix must not leak into the balance request."""
+    client = _RecordingClient({
+        "is_available": True,
+        "balance_infos": [{
+            "currency": "CNY", "total_balance": "110.00", "granted_balance": "10.00",
+            "topped_up_balance": "100.00",
+        }],
+    })
+    monkeypatch.setattr("agent.account_usage.resolve_runtime_provider", _deepseek_runtime("https://api.deepseek.com/v1"))
+    monkeypatch.setattr("agent.account_usage.httpx.Client", lambda timeout=10.0: client)
+
+    snapshot = fetch_account_usage("deepseek")
+
+    assert client.urls == ["https://api.deepseek.com/user/balance"]
+    assert snapshot is not None
+    assert snapshot.details == ("Balance: 110.00 CNY (granted 10.00 • topped up 100.00)",)
+    assert [line for line in render_account_usage_lines(snapshot) if "Balance:" in line]
+
+
+def test_fetch_account_usage_deepseek_flags_a_depleted_account(monkeypatch):
+    monkeypatch.setattr("agent.account_usage.resolve_runtime_provider", _deepseek_runtime("https://api.deepseek.com"))
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _Client({
+            "is_available": False,
+            "balance_infos": [{"currency": "USD", "total_balance": "0.00", "topped_up_balance": "0.00"}],
+        }),
+    )
+
+    snapshot = fetch_account_usage("deepseek")
+
+    assert snapshot is not None
+    assert "Balance: 0.00 USD" in snapshot.details
+    assert any("depleted" in line for line in snapshot.details)
+
+
+def test_fetch_account_usage_deepseek_returns_nothing_when_the_api_reports_no_balance(monkeypatch):
+    """A header with no numbers under it is worse than no block at all."""
+    monkeypatch.setattr("agent.account_usage.resolve_runtime_provider", _deepseek_runtime("https://api.deepseek.com"))
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _Client({"is_available": True, "balance_infos": []}),
+    )
+
+    assert fetch_account_usage("deepseek") is None
+
+
+def test_account_usage_lines_bounds_a_slow_provider_and_abandons_the_worker(monkeypatch):
+    """Model-switch confirmations render inline: a provider whose usage API hangs must cost the
+    caller the timeout, not the fetch (fail-open, abandonable daemon worker)."""
+    import time
+
+    from agent.account_usage import account_usage_lines
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda provider, **kw: time.sleep(30))
+
+    started = time.monotonic()
+    lines = account_usage_lines("deepseek", timeout=0.2)
+    elapsed = time.monotonic() - started
+
+    assert lines == []
+    assert elapsed < 2.0, f"bounded fetch waited {elapsed:.1f}s on a hung provider API"
+
+
+def test_account_usage_lines_is_empty_without_a_provider(monkeypatch):
+    from agent.account_usage import account_usage_lines
+
+    calls = []
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda provider, **kw: calls.append(provider))
+
+    assert account_usage_lines(None) == []
+    assert account_usage_lines("") == []
+    assert calls == []

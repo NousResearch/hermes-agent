@@ -27,6 +27,15 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    # Batch cards are displayed side-by-side. Free prose must explicitly reply to
+    # its card, otherwise an unrelated active-session follow-up could become its answer.
+    requires_text_reply_binding: bool = False
+    text_reply_to_message_id: Optional[str] = None
+    # A Telegram message id is only unique in its chat. These fields make a
+    # reply-bound card fail closed when a group session is shared.
+    text_reply_chat_id: Optional[str] = None
+    text_reply_user_id: Optional[str] = None
+    text_reply_thread_id: Optional[str] = None
 
 
 _lock = threading.RLock()
@@ -44,15 +53,51 @@ TEXT_NO_PENDING = "no_pending"
 
 
 def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
-             multi_select: bool = False) -> _ClarifyEntry:
+             multi_select: bool = False, require_text_reply_binding: bool = False) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
-    entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
-                          bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+    entry = _ClarifyEntry(
+        clarify_id, session_key, question, list(choices) if choices else None,
+        bool(multi_select) and bool(choices), awaiting_text=not bool(choices),
+        requires_text_reply_binding=bool(require_text_reply_binding),
+    )
     with _lock:
         _entries[clarify_id] = entry
         _session_index.setdefault(session_key, []).append(clarify_id)
     return entry
+
+
+def bind_text_reply_to(clarify_id: str, message_id: object, *, chat_id: object = None,
+                       user_id: object = None, thread_id: object = None) -> bool:
+    """Bind typed input for a batch card to its rendered platform message."""
+    value = str(message_id).strip() if message_id is not None else ""
+    with _lock:
+        entry = _entries.get(clarify_id)
+        if entry is None or not value:
+            return False
+        entry.text_reply_to_message_id = value
+        entry.text_reply_chat_id = str(chat_id) if chat_id is not None else None
+        entry.text_reply_user_id = str(user_id) if user_id is not None else None
+        entry.text_reply_thread_id = str(thread_id) if thread_id is not None else None
+        return True
+
+
+def cancel_bound_batch_for_session(session_key: str) -> int:
+    """Release every unresolved reply-bound batch card when the user sends a follow-up.
+
+    A batch owns one blocked agent turn.  An unbound message is ordinary conversation, not
+    an answer to a card, so keeping the remaining cards armed would hide that follow-up behind
+    a potentially unlimited clarify timeout.
+    """
+    cancelled = 0
+    with _lock:
+        for clarify_id in _session_index.get(session_key) or []:
+            entry = _entries.get(clarify_id)
+            if entry is not None and entry.requires_text_reply_binding and not entry.event.is_set():
+                entry.response = ""
+                entry.event.set()
+                cancelled += 1
+    return cancelled
 
 
 def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
@@ -87,6 +132,50 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
+def wait_for_batch_responses(clarify_ids: List[str], timeout: float) -> tuple[Dict[str, str], bool]:
+    """Wait once for a set of clarifies and retain every response (including explicit skips).
+
+    The shared deadline makes a batch bounded as one user interaction rather than one timeout per
+    question. Entries remain indexed until the batch settles so adapters can report progress.
+    """
+    with _lock:
+        entries = [(cid, _entries.get(cid)) for cid in clarify_ids]
+    deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover - optional
+        touch_activity_if_due = None
+    activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
+    timed_out = False
+    while any(entry is not None and not entry.event.is_set() for _, entry in entries):
+        remaining = 1.0 if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        next_pending = next(entry for _, entry in entries if entry is not None and not entry.event.is_set())
+        next_pending.event.wait(timeout=min(1.0, remaining))
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(activity_state, "waiting for user clarify batch responses")
+    responses: Dict[str, str] = {}
+    with _lock:
+        for clarify_id, entry in entries:
+            if entry is None:
+                timed_out = True
+                continue
+            if entry.event.is_set():
+                responses[clarify_id] = entry.response or ""
+            else:
+                timed_out = True
+                responses[clarify_id] = ""
+            _entries.pop(clarify_id, None)
+            ids = _session_index.get(entry.session_key) or []
+            if clarify_id in ids:
+                ids.remove(clarify_id)
+            if not ids:
+                _session_index.pop(entry.session_key, None)
+    return responses, timed_out
+
+
 def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """Unblock the waiter on ``clarify_id``; False if already resolved/expired/unknown."""
     with _lock:
@@ -105,7 +194,11 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
     with _lock:
         for cid in _session_index.get(session_key) or []:
             entry = _entries.get(cid)
-            if entry is not None and (include_choice_prompts or entry.awaiting_text):
+            # Resolved batch cards stay indexed until the shared waiter collects every
+            # answer. They are no longer candidates for a typed reply: choosing Q1 by
+            # button must let typed text target the next unresolved card, Q2.
+            if (entry is not None and not entry.event.is_set()
+                    and (include_choice_prompts or entry.awaiting_text)):
                 return entry
         return None
 
@@ -234,7 +327,10 @@ def mark_awaiting_text(clarify_id: str) -> bool:
 def has_pending(session_key: str) -> bool:
     """True when this session has at least one pending clarify entry."""
     with _lock:
-        return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
+        return any(
+            (entry := _entries.get(cid)) is not None and not entry.event.is_set()
+            for cid in _session_index.get(session_key) or []
+        )
 
 
 def clear_session(session_key: str) -> int:

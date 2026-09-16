@@ -1,0 +1,17 @@
+name: morning-briefing
+repo: https://github.com/drkpxl/morning-briefing
+sha: 8198c77f8adcc78307e7fdb852f20e91ec46c5a2
+description: 'Personal daily newspaper for Hermes: gathers weather, calendar, AQI, curated
+  36-hour news (timestamped Reddit RSS + X + web search, per-story QR codes), and
+  newsletter digests, renders one 8.5x11 newsprint page, and prints it every morning
+  via a cron job.'
+maintainer: drkpxl
+tier: community
+category: automation
+docs_url: https://github.com/drkpxl/morning-briefing#readme
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

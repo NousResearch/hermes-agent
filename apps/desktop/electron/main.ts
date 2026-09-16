@@ -353,7 +353,9 @@ import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './re
 import {
   applyRemoteRequestHeaders,
   createRegistryGatewayWsUrlHandler,
-  createRemoteWsHeaderStore
+  createRemoteWsHeaderStore,
+  gatewayWsAuthorizesItsMintedUrl,
+  gatewayWsConsumerTag
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
@@ -8349,7 +8351,7 @@ async function mintGatewayWsTicket(baseUrl, headers = {}) {
 // calls this immediately before every gateway.connect() so each WS upgrade
 // carries a freshly-minted ticket. For local/token connections this just
 // reuses the static token (no minting needed).
-async function freshGatewayWsUrl(profile, consumerTag?: string) {
+async function freshGatewayWsUrl(profile, consumerTag?: string, authorizeCookie = true) {
   // Mint for the requested profile's backend, NOT always the primary. The
   // renderer re-mints right before every gateway.connect(); when swapping to a
   // pooled profile we must return THAT backend's ws URL, otherwise the connect
@@ -8368,13 +8370,13 @@ async function freshGatewayWsUrl(profile, consumerTag?: string) {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
     const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
 
-    await rememberGatewayWsAuth(wsUrl, connection, consumer)
+    await rememberGatewayWsAuth(wsUrl, connection, consumer, authorizeCookie)
 
     return wsUrl
   }
 
   // Local/token: the cached wsUrl already carries the (long-lived) token.
-  await rememberGatewayWsAuth(connection.wsUrl, connection, consumer)
+  await rememberGatewayWsAuth(connection.wsUrl, connection, consumer, authorizeCookie)
 
   return connection.wsUrl
 }
@@ -9285,21 +9287,6 @@ const gatewayWsCookieStore = createGatewayWsCookieStore({
   onError: message => rememberLog(`[oauth] gateway ws cookie lookup failed: ${message}`)
 })
 
-// Which socket consumer is asking: the calling window (senders are distinct
-// per window, including session/peer windows) plus what it opens, since one
-// window's chat and speech flows mint against the same route for independent
-// sockets. Stable across that consumer's reconnects, so its own re-mint still
-// retires its own url. The purpose is renderer-supplied, so it is trimmed and
-// length-capped before becoming part of a map key.
-function gatewayWsConsumerTag(event, purpose) {
-  const sender = event?.sender?.id
-  const kind = String(purpose ?? '')
-    .trim()
-    .slice(0, 32)
-
-  return `w${typeof sender === 'number' ? sender : 0}:${kind || 'default'}`
-}
-
 // Single seam for "the renderer is about to open this gateway socket": bind the
 // static remote headers AND, for a cookie-authed gateway, the proxy session to
 // that exact url. Every mint site goes through here so no path can authorize a
@@ -9309,10 +9296,10 @@ function gatewayWsConsumerTag(event, purpose) {
 // because one baseUrl can back several live sockets -- a shared remote serves
 // a socket per profile, and a descriptor build mints alongside them -- and a
 // new mint may only retire the url its own consumer registered before.
-async function rememberGatewayWsAuth(wsUrl, connection, consumer?: string) {
+async function rememberGatewayWsAuth(wsUrl, connection, consumer?: string, authorizeCookie = true) {
   rememberRemoteWsHeaders(wsUrl, connection?.headers)
 
-  if (connection?.authMode === 'oauth' && connection?.baseUrl) {
+  if (authorizeCookie && connection?.authMode === 'oauth' && connection?.baseUrl) {
     await gatewayWsCookieStore.register(wsUrl, connection.baseUrl, consumer)
   }
 }
@@ -10171,9 +10158,12 @@ async function buildRemoteConnection(
 
     const wsUrl = buildGatewayWsUrlWithTicket(baseUrl, ticket)
 
-    // The renderer opens this socket on defaultSession, which holds none of the
-    // gateway's cookies; authorize this exact url to carry the proxy session.
-    await rememberGatewayWsAuth(wsUrl, { authMode: 'oauth', baseUrl, headers: remoteHeaders }, `descriptor:${source}`)
+    // Headers only, no cookie authorization: for an OAuth gateway this
+    // descriptor url is never dialed. Every renderer path re-mints through
+    // resolveGatewayWsUrl first, because the ticket baked in here is
+    // single-use and already stale by the time anything connects. Authorizing
+    // it parked a credential no upgrade could ever consume.
+    rememberRemoteWsHeaders(wsUrl, remoteHeaders)
 
     return {
       baseUrl,
@@ -10216,9 +10206,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -15183,7 +15175,9 @@ ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
   return { ok: true, limits: next }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (event, profile, purpose) => {
-  return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile, gatewayWsConsumerTag(event, purpose)))
+  return gatewayWsUrlIpcResult(() =>
+    freshGatewayWsUrl(profile, gatewayWsConsumerTag(event, purpose), gatewayWsAuthorizesItsMintedUrl(purpose))
+  )
 })
 ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
@@ -15970,7 +15964,8 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   ensureBackend: ensureRegistryBackend,
   mintTicket: mintGatewayWsTicket,
   buildTicketUrl: buildGatewayWsUrlWithTicket,
-  rememberHeaders: (wsUrl, _headers, connection, consumer) => rememberGatewayWsAuth(wsUrl, connection, consumer),
+  rememberHeaders: (wsUrl, _headers, connection, consumer, authorizeCookie) =>
+    rememberGatewayWsAuth(wsUrl, connection, consumer, authorizeCookie),
   // Mirrors ensureRegistryBackend()'s own rule, so every spelling that selects
   // one backend produces one cookie-consumer key. Defensive like
   // resolveOauthPartitionForUrl: a broken registry read must never take the
@@ -15991,8 +15986,10 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
 })
 
 ipcMain.handle('hermes:gateway:ws-url-for', async (event, payload) => {
+  const purpose = (payload as any)?.purpose
+
   return gatewayWsUrlIpcResult(() =>
-    registryGatewayWsUrlHandler(payload, gatewayWsConsumerTag(event, (payload as any)?.purpose))
+    registryGatewayWsUrlHandler(payload, gatewayWsConsumerTag(event, purpose), gatewayWsAuthorizesItsMintedUrl(purpose))
   )
 })
 

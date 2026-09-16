@@ -666,6 +666,71 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(appended.requestHeaders).toEqual({ cookie: `preexisting=1; ${EXPECTED}` })
   })
 
+  // The merge itself: where the outgoing headers come from, and what survives.
+  it('merges onto the headers the request already carries when the response has none', async () => {
+    const { store } = createStore()
+
+    await store.register(WS_URL, GATEWAY)
+
+    const merged = store.apply(
+      { url: WS_URL, resourceType: 'webSocket', requestHeaders: { Origin: 'app://hermes' } },
+      {}
+    )
+
+    expect(merged.requestHeaders).toEqual({ Cookie: EXPECTED, Origin: 'app://hermes' })
+  })
+
+  it('keeps other fields of the response it was handed', async () => {
+    const { store } = createStore()
+
+    await store.register(WS_URL, GATEWAY)
+
+    const merged = store.apply({ url: WS_URL, resourceType: 'webSocket' }, {
+      cancel: false,
+      requestHeaders: { Origin: 'app://hermes' }
+    } as never)
+
+    expect(merged).toEqual({ cancel: false, requestHeaders: { Cookie: EXPECTED, Origin: 'app://hermes' } })
+  })
+
+  // Documented fail-open: some call shapes report no resourceType, and the
+  // exact-url match is the real gate, so a missing type must still forward.
+  it('forwards when Chromium reports no resource type at all', async () => {
+    const { store } = createStore()
+
+    await store.register(WS_URL, GATEWAY)
+
+    const merged = store.apply({ url: WS_URL }, {})
+
+    expect(merged.requestHeaders?.Cookie).toBe(EXPECTED)
+  })
+
+  it('bounds how many live authorizations it will hold', async () => {
+    const { store } = createStore()
+    const first = 'wss://gateway.example/api/ws?ticket=first'
+
+    await store.register(first, GATEWAY, 'consumer:first')
+
+    // Each distinct consumer keeps its own entry, so the cap is the only thing
+    // standing between many consumers and unbounded growth.
+    for (let index = 0; index < 64; index += 1) {
+      await store.register(`wss://gateway.example/api/ws?ticket=${index}`, GATEWAY, `consumer:${index}`)
+    }
+
+    expect(cookieOn(store, first)).toBeUndefined()
+    expect(cookieOn(store, 'wss://gateway.example/api/ws?ticket=63')).toBe(EXPECTED)
+  })
+
+  it('applies a default lifetime when the caller sets none', async () => {
+    // No ttlMs: the shipped default has to bound the authorization by itself.
+    const { advance, store } = createStore()
+
+    await store.register(WS_URL, GATEWAY)
+    advance(10 * 60_000)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
   it('authorizes nothing when the jar is empty or the partition is gone', async () => {
     const jars: Record<string, GatewayCookie[] | null> = { [GATEWAY]: [] }
     const { store } = createStore(jars)
@@ -691,21 +756,27 @@ describe('gateway WebSocket cookie forwarding', () => {
   })
 
   it('reports a failed jar read, forwards nothing, and revokes prior authority', async () => {
-    const { onError, store } = createStore()
-
-    await store.register(WS_URL, GATEWAY)
-
-    const failing = createGatewayWsCookieStore({
+    const onError = vi.fn()
+    let reads = 0
+    // One store, whose SECOND read fails: the revocation has to be observed on
+    // the authority the first read established, not on a fresh empty store.
+    const store = createGatewayWsCookieStore({
       readCookies: async () => {
-        throw new Error('partition unavailable')
+        if (++reads > 1) {
+          throw new Error('partition unavailable')
+        }
+
+        return proxyJar
       },
       resolvePartition: () => LEGACY,
       onError
     })
 
-    await failing.register(WS_URL, GATEWAY)
+    await store.register(WS_URL, GATEWAY)
+    await store.register('wss://gateway.example/api/ws?ticket=next', GATEWAY)
 
-    expect(cookieOn(failing, WS_URL)).toBeUndefined()
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+    expect(cookieOn(store, 'wss://gateway.example/api/ws?ticket=next')).toBeUndefined()
     expect(onError).toHaveBeenCalledWith('partition unavailable')
   })
 

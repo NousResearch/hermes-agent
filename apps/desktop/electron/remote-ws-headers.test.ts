@@ -5,6 +5,8 @@ import {
   applyRemoteRequestHeaders,
   createRegistryGatewayWsUrlHandler,
   createRemoteWsHeaderStore,
+  gatewayWsAuthorizesItsMintedUrl,
+  gatewayWsConsumerTag,
   type RegistryGatewayWsConnection
 } from './remote-ws-headers'
 
@@ -70,6 +72,48 @@ function expectNoHeadersForNearbyUrls(store: ReturnType<typeof createRemoteWsHea
     expectRequestHeaders(store, url.toString(), undefined)
   }
 }
+
+describe('gateway WebSocket consumer identity', () => {
+  // This is the half of the consumer key that separates independent sockets in
+  // one window from each other, and one window's socket from another's.
+  it('names the calling window and what it opens', () => {
+    expect(gatewayWsConsumerTag({ sender: { id: 1 } }, 'speech')).toBe('w1:speech')
+    expect(gatewayWsConsumerTag({ sender: { id: 2 } }, 'secondary')).toBe('w2:secondary')
+
+    // Same window, different sockets -- and the same socket reconnecting keeps
+    // its key, which is what lets it retire its own stale url.
+    expect(gatewayWsConsumerTag({ sender: { id: 1 } }, 'speech')).not.toBe(
+      gatewayWsConsumerTag({ sender: { id: 1 } }, undefined)
+    )
+    expect(gatewayWsConsumerTag({ sender: { id: 1 } }, 'speech')).not.toBe(
+      gatewayWsConsumerTag({ sender: { id: 2 } }, 'speech')
+    )
+  })
+
+  it('normalizes a missing, blank, or oversized renderer purpose', () => {
+    expect(gatewayWsConsumerTag({ sender: { id: 3 } })).toBe('w3:default')
+    expect(gatewayWsConsumerTag({ sender: { id: 3 } }, '   ')).toBe('w3:default')
+    expect(gatewayWsConsumerTag({ sender: { id: 3 } }, ' speech ')).toBe('w3:speech')
+
+    // Renderer-supplied, so it cannot grow a map key without bound.
+    const long = gatewayWsConsumerTag({ sender: { id: 3 } }, 'x'.repeat(500))
+
+    expect(long).toBe(`w3:${'x'.repeat(32)}`)
+  })
+
+  it('falls back to a single window id when the sender is unknown', () => {
+    expect(gatewayWsConsumerTag(undefined, 'speech')).toBe('w0:speech')
+    expect(gatewayWsConsumerTag({}, 'speech')).toBe('w0:speech')
+    expect(gatewayWsConsumerTag({ sender: { id: 'not-a-number' } }, 'speech')).toBe('w0:speech')
+  })
+
+  it('authorizes a cookie only for callers that dial the url they minted', () => {
+    expect(gatewayWsAuthorizesItsMintedUrl(undefined)).toBe(true)
+    expect(gatewayWsAuthorizesItsMintedUrl('secondary')).toBe(true)
+    expect(gatewayWsAuthorizesItsMintedUrl('speech')).toBe(false)
+    expect(gatewayWsAuthorizesItsMintedUrl('  speech  ')).toBe(false)
+  })
+})
 
 describe('registry gateway WebSocket headers', () => {
   it('evicts the least recently accessed exact URL', () => {
@@ -204,7 +248,9 @@ describe('registry gateway WebSocket headers', () => {
         readCookies: async () => jar,
         resolvePartition: () => 'persist:hermes-remote-oauth'
       })
+
       let minted = 0
+
       const handler = createRegistryGatewayWsUrlHandler({
         ensureBackend: async (_connectionId, profile) => ({
           authMode: 'oauth',
@@ -225,6 +271,34 @@ describe('registry gateway WebSocket headers', () => {
     }
 
     const route = { connectionId: 'remote', profile: 'work' }
+
+    // Speech mints an /api/ws ticket url and then rewrites the path before
+    // dialing, so the url we could authorize is not the one opened. Parking a
+    // credential no upgrade can consume is worse than parking none.
+    it('authorizes no cookie for a caller that rewrites the minted url', async () => {
+      const seen: Array<{ authorizeCookie?: boolean; consumer?: string }> = []
+
+      const handler = createRegistryGatewayWsUrlHandler({
+        ensureBackend: async () => ({
+          authMode: 'oauth',
+          baseUrl: 'https://gateway.example',
+          wsUrl: 'wss://gateway.example/api/ws?ticket=stale'
+        }),
+        mintTicket: async () => 'fresh-ticket',
+        buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+        rememberHeaders: (_wsUrl, _headers, _connection, consumer, authorizeCookie) => {
+          seen.push({ authorizeCookie, consumer })
+        }
+      })
+
+      await handler({ connectionId: 'remote', profile: 'work' }, 'w1:speech', false)
+      await handler({ connectionId: 'remote', profile: 'work' }, 'w1:default')
+
+      expect(seen).toEqual([
+        { authorizeCookie: false, consumer: 'registry:remote:work:w1:speech' },
+        { authorizeCookie: true, consumer: 'registry:remote:work:w1:default' }
+      ])
+    })
 
     it('keeps two windows on the same route independent', async () => {
       const { cookieOn, handler } = composed()
@@ -344,9 +418,11 @@ describe('registry gateway WebSocket headers', () => {
     const seen: Array<{ connection?: RegistryGatewayWsConnection; wsUrl: string }> = []
     let resolveRemember: () => void = () => undefined
     let signalEntered: () => void = () => undefined
+
     const remembered = new Promise<void>(resolve => {
       resolveRemember = resolve
     })
+
     const entered = new Promise<void>(resolve => {
       signalEntered = resolve
     })

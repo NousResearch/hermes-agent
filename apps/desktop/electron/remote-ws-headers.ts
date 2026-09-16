@@ -30,7 +30,10 @@ interface RegistryGatewayWsUrlDependencies {
     wsUrl: string,
     headers?: Record<string, string>,
     connection?: RegistryGatewayWsConnection,
-    consumer?: string
+    consumer?: string,
+    // False when this caller rewrites the minted url before dialing it, so
+    // the url we could authorize is not the one that gets opened.
+    authorizeCookie?: boolean
   ) => Promise<void> | void
 }
 
@@ -95,6 +98,39 @@ export function applyRemoteRequestHeaders(
   callback({ requestHeaders: { ...details.requestHeaders, ...headers } })
 }
 
+// Purposes whose caller REWRITES the minted url before dialing it, so the url
+// we could authorize is not the url that gets opened. Speech mints an
+// `/api/ws` ticket url and then rewrites the path to `/api/audio/speak-stream`
+// (appending its own `profile` param), so authorizing the minted url would
+// park a credential no upgrade can ever consume while the speech upgrade
+// still carries none. Forwarding onto that endpoint is deliberately out of
+// scope; the single-use ticket in its url is what authenticates it to Hermes.
+const WS_PURPOSES_THAT_REWRITE_THE_URL = new Set(['speech'])
+
+// Renderer-supplied, so normalized once, here, before it can reach a map key
+// or a scope decision.
+function normalizeWsPurpose(purpose: unknown) {
+  return String(purpose ?? '')
+    .trim()
+    .slice(0, 32)
+}
+
+export function gatewayWsAuthorizesItsMintedUrl(purpose?: unknown) {
+  return !WS_PURPOSES_THAT_REWRITE_THE_URL.has(normalizeWsPurpose(purpose))
+}
+
+// Which socket consumer is asking: the calling window -- senders are distinct
+// per window, including session and peer windows -- plus what it opens, since
+// one window's chat, speech and secondary flows mint against the same route
+// for independent sockets. Stable across that consumer's reconnects, so its
+// own re-mint still retires its own url.
+export function gatewayWsConsumerTag(event?: { sender?: { id?: unknown } }, purpose?: unknown) {
+  const sender = event?.sender?.id
+  const kind = normalizeWsPurpose(purpose)
+
+  return `w${typeof sender === 'number' ? sender : 0}:${kind || 'default'}`
+}
+
 export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayWsUrlDependencies) {
   // `consumerTag` identifies the actual socket consumer behind the route --
   // which window asked, and what it opens (chat vs speech). A route is not a
@@ -102,7 +138,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
   // the same (connectionId, profile) and hold independent pending upgrades.
   // Without it, the second mint retires the first's unused authorization and
   // that upgrade goes out without its proxy cookie.
-  return async (payload: unknown, consumerTag?: string): Promise<string> => {
+  return async (payload: unknown, consumerTag?: string, authorizeCookie = true): Promise<string> => {
     const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
     // Pin the source id BEFORE selecting the backend, and select with the
     // pinned id. Resolving it afterwards read the registry's primary a second
@@ -129,7 +165,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
 
     const finalWsUrl = registryGatewayWsUrl(connection, wsUrl)
 
-    await dependencies.rememberHeaders(finalWsUrl, connection.headers, connection, consumer)
+    await dependencies.rememberHeaders(finalWsUrl, connection.headers, connection, consumer, authorizeCookie)
 
     return finalWsUrl
   }

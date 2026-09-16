@@ -559,7 +559,11 @@ def validate_requested_model(
         return _reject("Model name cannot be empty.")
     req = _Request(requested, lookup, provider, normalized, api_key, base_url, api_mode, headers)
     from hermes_cli.models_cache_policy import catalog_refresh_is_manual
+    # Managed local aliases validate the resolved endpoint, like Ollama/LM Studio;
+    # their generic provider-id catalog has no endpoint and can be empty.
+    from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
     if (catalog_refresh_is_manual() and normalized not in ('moa', 'ollama', 'lmstudio')
+            and normalized not in LLAMACPP_ALIASES
             and not normalized.startswith('custom')):
         req.catalog = _m.cached_provider_model_ids(normalized)
     elif catalog_refresh_is_manual() and _is_custom(req):

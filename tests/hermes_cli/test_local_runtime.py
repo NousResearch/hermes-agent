@@ -889,7 +889,8 @@ def test_local_identity_survives_resume_before_server_ready(tmp_path, monkeypatc
     assert restored["provider_override"] == alias
 
 
-def test_switch_to_local_waits_for_runtime_after_unready_catalog(tmp_path, monkeypatch, stub_server):
+@pytest.mark.parametrize("manual_catalog", [False, True])
+def test_switch_to_local_waits_for_runtime_after_unready_catalog(tmp_path, monkeypatch, stub_server, manual_catalog):
     from hermes_cli.local_runtime import endpoint
     from hermes_cli.model_switch import switch_model
 
@@ -901,8 +902,12 @@ def test_switch_to_local_waits_for_runtime_after_unready_catalog(tmp_path, monke
     route = {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "local-test-key"}
     monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint",
                         lambda **kw: None if kw.get("wait_for_boot_s") == 0 else route)
-    result = switch_model("local-test-model", current_provider="anthropic", current_model="cloud-model",
-                          current_base_url="https://api.anthropic.com", explicit_provider="llamacpp")
+    from contextlib import nullcontext
+    from hermes_cli.models_cache_policy import manual_catalog_refresh
+
+    with manual_catalog_refresh() if manual_catalog else nullcontext():
+        result = switch_model("local-test-model", current_provider="anthropic", current_model="cloud-model",
+                              current_base_url="https://api.anthropic.com", explicit_provider="llamacpp")
     assert result.success, result.error_message
     assert result.target_provider == "llamacpp"
     assert result.base_url == route["base_url"]

@@ -252,6 +252,9 @@ hermes skills uninstall <skill-name>
 | [**sherlock**](/docs/user-guide/skills/optional/security/security-sherlock) | Find accounts for a username across 400+ platforms. |
 | [**unbroker**](/docs/user-guide/skills/optional/security/security-unbroker) | Autonomously remove your info from data-broker sites. |
 | [**web-pentest**](/docs/user-guide/skills/optional/security/security-web-pentest) | Authorized web pentest: recon, proof-based exploits, report. |
+| [**cve-vulnerability-detection**](/docs/user-guide/skills/optional/security/security-cve-vulnerability-detection) | Use when checking dependencies or products for CVEs. |
+| [**security-review**](/docs/user-guide/skills/optional/security/security-security-review) | Use when reviewing code or designs for security. |
+| [**threat-modeling**](/docs/user-guide/skills/optional/security/security-threat-modeling) | Use when modeling threats for a system or feature. |
 
 ## smart-home
 

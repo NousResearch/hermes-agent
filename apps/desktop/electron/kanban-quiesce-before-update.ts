@@ -26,6 +26,22 @@ export interface KanbanQuiesceDeps {
 
 export const KANBAN_QUIESCE_TIMEOUT_MS = 60_000
 
+function parseQuiesceResult(raw: unknown): KanbanQuiesceResult | undefined {
+  try {
+    const parsed = JSON.parse(String(raw))
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') return undefined
+
+    return {
+      ok: parsed.ok,
+      reclaimed: Array.isArray(parsed.reclaimed) ? parsed.reclaimed : [],
+      failed: Array.isArray(parsed.failed) ? parsed.failed : [],
+      ...(typeof parsed.error === 'string' ? { error: parsed.error } : {})
+    }
+  } catch {
+    return undefined
+  }
+}
+
 export function quiesceKanbanWorkersForUpdate(
   updateRoot: string,
   hermesHome: string,
@@ -52,19 +68,15 @@ export function quiesceKanbanWorkersForUpdate(
       encoding: 'utf8'
     } as ExecFileSyncOptionsWithStringEncoding)
 
-    const parsed = JSON.parse(String(raw))
-
-    if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') {
+    const parsed = parseQuiesceResult(raw)
+    if (!parsed) {
       throw new Error('invalid quiesce response')
     }
-
-    return {
-      ok: parsed.ok,
-      reclaimed: Array.isArray(parsed.reclaimed) ? parsed.reclaimed : [],
-      failed: Array.isArray(parsed.failed) ? parsed.failed : [],
-      ...(typeof parsed.error === 'string' ? { error: parsed.error } : {})
-    }
+    return parsed
   } catch (error: any) {
+    const parsed = parseQuiesceResult(error?.stdout)
+    if (parsed) return parsed
+
     return {
       ok: false,
       reclaimed: [],

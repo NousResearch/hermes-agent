@@ -61,16 +61,24 @@ def quiesce_all_workers() -> dict[str, Any]:
                     failed.append({"board": board, "error": "dispatch lock busy"})
                     continue
                 with contextlib.closing(kbc.connect(board=board)) as conn:
+                    host_prefix = kb._host_prefix()
                     task_ids = [
                         str(row["id"])
                         for row in conn.execute(
-                            "SELECT id FROM tasks WHERE status = 'running' OR claim_lock IS NOT NULL"
+                            "SELECT id, claim_lock FROM tasks "
+                            "WHERE status = 'running' OR claim_lock IS NOT NULL"
                         ).fetchall()
+                        if str(row["claim_lock"] or "").startswith(host_prefix)
                     ]
                     for task_id in task_ids:
                         if kb.reclaim_task(conn, task_id, reason="Windows desktop update hand-off"):
                             reclaimed.append({"board": board, "task_id": task_id})
                         else:
+                            row = conn.execute(
+                                "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
+                            ).fetchone()
+                            if row is None or (row["status"] != "running" and row["claim_lock"] is None):
+                                continue
                             failed.append({"board": board, "task_id": task_id, "error": "reclaim raced"})
         except Exception as exc:
             failed.append({"board": board, "error": f"{type(exc).__name__}: {exc}"})

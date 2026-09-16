@@ -27,7 +27,7 @@ def _set_config_value_in_tmp(monkeypatch, tmp_path: Path, key: str, value: str):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "default")
     from hermes_cli.config import set_config_value
-    set_config_value(key, value)
+    set_config_value(key, value, force=True)
 
 
 def test_config_set_preserves_quoting_style(tmp_path: Path, monkeypatch):

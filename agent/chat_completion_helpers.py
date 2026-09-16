@@ -1883,7 +1883,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             continue
 
         try:
-            from agent.auxiliary_client import resolve_provider_client
+            from agent.auxiliary_client import (
+                _normalize_aux_provider,
+                _resolve_moa_aggregator,
+                resolve_provider_client,
+            )
             from hermes_cli.fallback_config import resolve_entry_api_key
             # Pass the entry's base_url/api_key so custom endpoints (Ollama Cloud) resolve instead
             # of falling through to OpenRouter defaults.
@@ -1895,6 +1899,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if fb_base_url_hint and base_url_host_matches(fb_base_url_hint, "ollama.com") and not fb_api_key_hint:
                 from agent.secret_scope import get_secret
                 fb_api_key_hint = get_secret("OLLAMA_API_KEY") or None
+            if fb_provider == "moa":
+                resolved_fb_provider, resolved_fb_model = _resolve_moa_aggregator(fb_model)
+                if not resolved_fb_provider or not resolved_fb_model:
+                    logger.warning("Fallback to MoA preset %s failed: aggregator not configured", fb_model)
+                    unavailable.add(fb_key)
+                    continue
+                fb_provider = _normalize_aux_provider(resolved_fb_provider)
+                fb_model = resolved_fb_model
+                if fb_base_url_hint and fb_base_url_hint.lower().startswith("moa://"):
+                    fb_base_url_hint = fb_api_key_hint = None
             # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
             fb_client, _resolved_fb_model = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True, explicit_base_url=fb_base_url_hint, explicit_api_key=fb_api_key_hint, api_mode=fb_api_mode)
@@ -1904,7 +1918,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 continue
             try:
                 from hermes_cli.model_normalize import normalize_model_for_provider
-                fb_model = normalize_model_for_provider(fb_model, fb_provider)
+                fb_model = normalize_model_for_provider(
+                    _resolved_fb_model or fb_model, fb_provider
+                )
             except Exception as _norm_err:
                 logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 

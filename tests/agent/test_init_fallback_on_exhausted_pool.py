@@ -49,6 +49,84 @@ def test_init_tries_fallback_when_primary_returns_none():
         assert agent._fallback_activated is True
 
 
+def test_init_moa_fallback_persists_native_aggregator_identity():
+    """Init fallback must not pair a native aggregator client with the MoA facade."""
+    fb = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "openai-codex":
+            return fb, "gpt-5.6-sol"
+        return None, None
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("agent.auxiliary_client._resolve_moa_aggregator",
+               return_value=("codex", "gpt-5.6-sol")), \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+
+        agent = AIAgent(
+            provider="alibaba-coding-plan",
+            model="qwen3.6-plus",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{"provider": "moa", "model": "default"}],
+        )
+
+        assert agent.provider == "openai-codex"
+        assert agent.requested_provider == "openai-codex"
+        assert agent.model == "gpt-5.6-sol"
+        assert agent.api_mode == "codex_responses"
+        assert agent._fallback_activated is True
+
+
+def test_init_moa_fallback_dispatches_native_anthropic_wire():
+    """A native Anthropic aggregator must initialize the Anthropic client path."""
+    fb = _mock_client(base_url="https://api.anthropic.com/v1")
+    native_client = MagicMock()
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "anthropic":
+            return fb, "claude-opus-4-6"
+        return None, None
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("agent.auxiliary_client._resolve_moa_aggregator",
+               return_value=("anthropic", "claude-opus-4-6")), \
+         patch("agent.anthropic_adapter.build_anthropic_client",
+               return_value=native_client), \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}):
+
+        agent = AIAgent(
+            provider="alibaba-coding-plan",
+            model="qwen3.6-plus",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{"provider": "moa", "model": "default"}],
+        )
+
+        assert agent.provider == "anthropic"
+        assert agent.requested_provider == "anthropic"
+        assert agent.model == "claude-opus-4-6"
+        assert agent.api_mode == "anthropic_messages"
+        assert str(agent.base_url) == "https://api.anthropic.com/v1"
+        assert agent.client is None
+        assert agent._anthropic_client is native_client
+        assert agent._use_prompt_caching is True
+        assert agent._use_native_cache_layout is True
+        assert str(agent._primary_runtime["base_url"]) == "https://api.anthropic.com/v1"
+        assert agent._fallback_activated is True
+
+
 def test_init_raises_when_no_fallback_configured():
     """When primary returns None and no fallback is set, should raise."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \

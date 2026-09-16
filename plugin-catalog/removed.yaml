@@ -3,4 +3,8 @@
 # matches an entry here (unless the caller explicitly bypasses the check).
 # Each entry: {name, repo, reason, date}. Removals land via reviewed PRs,
 # same as additions.
-removed: []
+removed:
+- name: mnemosyne
+  repo: https://github.com/Devs-Foundation/mnemosyne
+  reason: "Upstream inactive since 2026-08-11 (two days of commits total; 0 stars, 0 forks) - no maintainer to author SHA bumps; entered via bulk Discord sweep #112292 without individual review; holds the bare 'mnemosyne' Memory key while the maintained project is invisible to the catalog."
+  date: "2026-09-16"

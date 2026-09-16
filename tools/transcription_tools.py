@@ -1718,6 +1718,106 @@ def _transcribe_deepinfra(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _transcribe_with_provider(
+    file_path: str,
+    provider: str,
+    stt_config: Dict[str, Any],
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Dispatch one STT attempt without applying fallback policy."""
+    if provider == "local":
+        local_cfg = stt_config.get("local") or {}
+        model_name = _normalize_local_model(
+            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        )
+        return _transcribe_local(file_path, model_name)
+
+    if provider == "local_command":
+        local_cfg = stt_config.get("local") or {}
+        model_name = _normalize_local_command_model(
+            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        )
+        return _transcribe_local_command(file_path, model_name)
+
+    if provider == "groq":
+        return _transcribe_groq(file_path, model or DEFAULT_GROQ_STT_MODEL)
+
+    if provider == "openai":
+        openai_cfg = stt_config.get("openai") or {}
+        return _transcribe_openai(
+            file_path, model or openai_cfg.get("model", DEFAULT_STT_MODEL)
+        )
+
+    if provider == "mistral":
+        mistral_cfg = stt_config.get("mistral") or {}
+        return _transcribe_mistral(
+            file_path, model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
+        )
+
+    if provider == "xai":
+        return _transcribe_xai(file_path, model or "grok-stt")
+
+    if provider == "elevenlabs":
+        elevenlabs_cfg = stt_config.get("elevenlabs") or {}
+        return _transcribe_elevenlabs(
+            file_path, model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
+        )
+
+    if provider == "deepinfra":
+        di_config = stt_config.get("deepinfra")
+        di_config = di_config if isinstance(di_config, dict) else {}
+        return _transcribe_deepinfra(file_path, model or di_config.get("model") or "")
+
+    command_provider_config = _resolve_command_stt_provider_config(provider, stt_config)
+    if command_provider_config is not None:
+        return _transcribe_command_stt(
+            file_path,
+            provider,
+            command_provider_config,
+            stt_config,
+            model_override=model,
+        )
+
+    plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
+    plugin_result = _dispatch_to_plugin_provider(
+        file_path,
+        provider,
+        stt_config,
+        model=model or plugin_cfg.get("model"),
+        language=plugin_cfg.get("language"),
+    )
+    if plugin_result is not None:
+        return plugin_result
+
+    return _no_stt_provider_result() | {"provider": provider}
+
+
+def _get_stt_fallback_provider(primary_provider: str, stt_config: Dict[str, Any]) -> Optional[str]:
+    """Resolve an opt-in fallback provider, rejecting empty and self loops."""
+    raw = stt_config.get("fallback_provider") if isinstance(stt_config, dict) else None
+    if not isinstance(raw, str):
+        return None
+    fallback = raw.strip().lower()
+    if not fallback or fallback == primary_provider.strip().lower() or fallback == "none":
+        return None
+    return fallback
+
+
+def _no_stt_provider_result() -> Dict[str, Any]:
+    return {
+        "success": False,
+        "transcript": "",
+        "error": (
+            "No STT provider available. Install faster-whisper for free local "
+            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
+            "or OPENAI_API_KEY for the OpenAI Whisper API."
+        ),
+    }
+
+
 def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
@@ -1753,103 +1853,26 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     provider = _get_provider(stt_config)
 
-    if provider == "local":
-        local_cfg = stt_config.get("local") or {}
-        model_name = _normalize_local_model(
-            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        )
-        return _transcribe_local(file_path, model_name)
+    fallback_provider = _get_stt_fallback_provider(provider, stt_config)
+    primary_result = _transcribe_with_provider(file_path, provider, stt_config, model)
+    if primary_result.get("success") or fallback_provider is None:
+        return primary_result
 
-    if provider == "local_command":
-        local_cfg = stt_config.get("local") or {}
-        model_name = _normalize_local_command_model(
-            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        )
-        return _transcribe_local_command(file_path, model_name)
+    # A caller-supplied model belongs to the primary provider. Let the
+    # fallback resolve its own provider-specific configured model.
+    fallback_result = _transcribe_with_provider(file_path, fallback_provider, stt_config)
+    if fallback_result.get("success"):
+        return fallback_result
 
-    if provider == "groq":
-        model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
-
-    if provider == "openai":
-        openai_cfg = stt_config.get("openai") or {}
-        model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
-
-    if provider == "mistral":
-        mistral_cfg = stt_config.get("mistral") or {}
-        model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
-        return _transcribe_mistral(file_path, model_name)
-
-    if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
-        model_name = model or "grok-stt"
-        return _transcribe_xai(file_path, model_name)
-
-    if provider == "elevenlabs":
-        elevenlabs_cfg = stt_config.get("elevenlabs") or {}
-        model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
-        return _transcribe_elevenlabs(file_path, model_name)
-
-    if provider == "deepinfra":
-        di_config = stt_config.get("deepinfra")  # may be None (YAML null)
-        di_config = di_config if isinstance(di_config, dict) else {}
-        model_name = model or di_config.get("model") or ""
-        return _transcribe_deepinfra(file_path, model_name)
-
-    # User-declared command-type provider
-    # (``stt.providers.<name>: type: command``). Fires after the built-in
-    # elif chain — built-in names short-circuit upstream so a user's
-    # ``stt.providers.openai.command`` can't override the real OpenAI
-    # handler — and BEFORE the plugin dispatcher, because config is more
-    # local than a plugin install (same precedence rule as TTS PR #17843).
-    command_provider_config = _resolve_command_stt_provider_config(provider, stt_config)
-    if command_provider_config is not None:
-        return _transcribe_command_stt(
-            file_path,
-            provider,
-            command_provider_config,
-            stt_config,
-            model_override=model,
-        )
-
-    # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
-    # Gemini-STT). Fires only when ``provider`` is neither a built-in
-    # nor ``"none"`` AND there is no same-name command provider. The
-    # dispatcher enforces built-ins-always-win + command-wins-over-plugin
-    # defensively. Returns None when no plugin is registered for the
-    # configured name, falling through to the legacy "No STT provider"
-    # error message below.
-    #
-    # Plugin-scoped config namespace mirrors the built-in pattern
-    # (``stt.openai.model``, ``stt.mistral.model``): plugins read their
-    # per-provider config under ``stt.<provider>`` and the dispatcher
-    # forwards ``language`` from there. Top-level ``model`` argument
-    # overrides any config-set model.
-    plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
-    plugin_language = plugin_cfg.get("language")
-    plugin_model = model or plugin_cfg.get("model")
-    plugin_result = _dispatch_to_plugin_provider(
-        file_path,
-        provider,
-        stt_config,
-        model=plugin_model,
-        language=plugin_language,
-    )
-    if plugin_result is not None:
-        return plugin_result
-
-    # No provider available
+    primary_error = primary_result.get("error", "unknown error")
+    fallback_error = fallback_result.get("error", "unknown error")
     return {
         "success": False,
         "transcript": "",
+        "provider": fallback_provider,
         "error": (
-            "No STT provider available. Install faster-whisper for free local "
-            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
-            "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            f"STT transcription failed ({provider}; fallback {fallback_provider}): "
+            f"primary: {primary_error}; fallback: {fallback_error}"
         ),
     }
 

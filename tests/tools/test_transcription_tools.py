@@ -208,6 +208,53 @@ class TestExplicitProviderRespected:
             result = _get_provider({})
             assert result == "openai"
 
+
+class TestConfiguredSttFallback:
+    """A failed primary provider retries the same file with configured fallback."""
+
+    def test_primary_failure_retries_openai(self, sample_wav, monkeypatch):
+        from tools.transcription_tools import transcribe_audio
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "enabled": True,
+                "provider": "elevenlabs",
+                "fallback_provider": "openai",
+                "openai": {"model": "whisper-1"},
+            },
+        )
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda _cfg: "elevenlabs")
+        primary = {"success": False, "transcript": "", "provider": "elevenlabs", "error": "quota exceeded"}
+        fallback = {"success": True, "transcript": "salut", "provider": "openai"}
+        with patch("tools.transcription_tools._transcribe_elevenlabs", return_value=primary) as eleven, \
+             patch("tools.transcription_tools._transcribe_openai", return_value=fallback) as openai:
+            result = transcribe_audio(sample_wav)
+
+        assert result == fallback
+        eleven.assert_called_once()
+        openai.assert_called_once_with(sample_wav, "whisper-1")
+
+    def test_both_providers_fail_returns_combined_error(self, sample_wav, monkeypatch):
+        from tools.transcription_tools import transcribe_audio
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"enabled": True, "provider": "elevenlabs", "fallback_provider": "openai"},
+        )
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda _cfg: "elevenlabs")
+        primary = {"success": False, "transcript": "", "provider": "elevenlabs", "error": "quota exceeded"}
+        fallback = {"success": False, "transcript": "", "provider": "openai", "error": "network down"}
+        with patch("tools.transcription_tools._transcribe_elevenlabs", return_value=primary), \
+             patch("tools.transcription_tools._transcribe_openai", return_value=fallback):
+            result = transcribe_audio(sample_wav)
+
+        assert result["success"] is False
+        assert "elevenlabs" in result["error"]
+        assert "openai" in result["error"]
+        assert "quota exceeded" in result["error"]
+        assert "network down" in result["error"]
+
     def test_auto_detect_prefers_groq_over_openai(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")

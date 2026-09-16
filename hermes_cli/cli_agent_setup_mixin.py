@@ -97,6 +97,7 @@ def _tool_calls_summary(tool_calls) -> str:
 _RESUME_EVENT_TEXT = {
     "model_switch": "model changed",
     "async_delegation_complete": "background delegation completed",
+    "process_complete": "background process finished",
     "auto_continue": "resumed interrupted turn"}
 
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
@@ -125,7 +126,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
             continue
         if display_kind in _RESUME_EVENT_TEXT:
             metadata = msg.get("display_metadata") or {}
-            label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None
+            label = metadata.get("display_text") if display_kind in ("async_delegation_complete", "process_complete") else None
             entries.append(("event", _sanitize_display_text(label or _RESUME_EVENT_TEXT[display_kind])))
             continue
         if role == "user":
@@ -193,7 +194,10 @@ class CLIAgentSetupMixin:
                 _primary_exc = None
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
-            ChatConsole().print(f"[bold red]{message}[/]")
+            if getattr(self, "tool_progress_mode", "full") == "off":
+                print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
+            else:
+                ChatConsole().print(f"[bold red]{message}[/]")
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
@@ -347,7 +351,7 @@ class CLIAgentSetupMixin:
         source of truth. True when a provider was configured."""
         from cli import _cprint, logger
         _cprint("")
-        _cprint("⚕ No inference provider is configured yet — let's fix that.")
+        _cprint("☤ No inference provider is configured yet — let's fix that.")
         _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
                 "no API key needed) and a model.")
         try:
@@ -513,8 +517,8 @@ class CLIAgentSetupMixin:
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
         if self._session_db is None:
             try:
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         if (
@@ -575,6 +579,12 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
+            # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
+            # thread rendered, so the shared prompt path never re-reads config or skill files.
+            _auto_result = getattr(self, "_auto_load_skills_result", None)
+            if _auto_result is not None:
+                self.agent._auto_load_skills_result = _auto_result
+                self.agent._auto_load_skills_resolved = True
             # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
@@ -603,7 +613,8 @@ class CLIAgentSetupMixin:
             return True
         except Exception as e:
             console = ChatConsole()
-            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+            console.print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             from hermes_constants import partial_update_hint
             for line in partial_update_hint(e):
                 console.print(line)

@@ -147,10 +147,10 @@ export function backfillOlderTranscriptPage(request: BackfillRequest): Promise<b
       return false
     }
 
-    // Session switched while the page was in flight: discard it entirely.
-    // The bookkeeping stays untouched so a later re-visit (which re-records
-    // the tail on hydration anyway) starts from consistent state.
-    if (!request.isCurrent()) {
+    // A route can stay put while rewind or revalidation replaces its tail.
+    // This page belongs to the exact tail generation we fetched against, not
+    // merely the same stored id. Never graft it onto a newer display history.
+    if (!request.isCurrent() || transcriptTailState(storedSessionId, profile) !== tail) {
       return false
     }
 

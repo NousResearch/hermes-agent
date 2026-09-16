@@ -157,6 +157,12 @@ def get_process_hermes_home() -> Path:
     return Path(val) if val else _get_platform_default_hermes_home()
 
 
+# Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
+# managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
+# ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
+# default profile) so the two lists cannot drift apart.
+LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node"})
+
 # get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays
 # fresh when a test or plugin mutates HERMES_HOME; saves ~80us/call at 31+ sites.
 _default_hermes_root_memo: "tuple[str, str, Path] | None" = None

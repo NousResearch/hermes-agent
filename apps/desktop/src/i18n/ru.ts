@@ -194,7 +194,10 @@ export const ru = defineLocale({
       errorTitle: 'Сервер MCP недоступен',
       errorMessage: name => `MCP ${name} не прошёл проверку работоспособности.`,
       signIn: 'Войти',
-      view: 'Просмотр'
+      view: 'Просмотр',
+      disable: 'Отключить',
+      disabledMessage: name => `${name} MCP отключён. Включить снова можно в любой момент в разделе Возможности → MCP.`,
+      disableFailed: name => `Не удалось отключить ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'Для STT ElevenLabs нужен ELEVENLABS_API_KEY.',
@@ -205,7 +208,6 @@ export const ru = defineLocale({
         'Бэкенд приложения отклонил запрос (405 Method Not Allowed). Попробуйте перезапустить Hermes Desktop.',
       microphonePermission: 'Доступ к микрофону запрещён.',
       openaiRejectedApiKey: 'OpenAI отклонил API-ключ.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI отклонил API-ключ (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'Для TTS OpenAI нужен VOICE_TOOLS_OPENAI_KEY или OPENAI_API_KEY.'
     },
     voice: {
@@ -332,6 +334,7 @@ export const ru = defineLocale({
       'view.toggleReview': 'Показать / скрыть панель ревью',
       'view.toggleStatusbar': 'Показать / скрыть строку состояния',
       'view.toggleTabStrip': 'Показать / скрыть вкладки',
+      'view.toggleProfileRail': 'Показать / скрыть панель профилей',
       'view.showFiles': 'Показать браузер файлов',
       'view.showBrowser': 'Открыть браузер',
       'view.toggleHud': 'Включить / выключить режим HUD',
@@ -473,7 +476,7 @@ export const ru = defineLocale({
         desktopSuccess: name => `Плагин приложения ${name} установлен`,
         agentFailed: 'Не удалось установить плагин агента',
         desktopFailed: 'Не удалось установить плагин приложения',
-        missingEnv: vars => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`
+        missingEnv: (_name, vars) => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`
       }
     },
     notifications: {
@@ -564,7 +567,7 @@ export const ru = defineLocale({
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
       tabStripTitle: 'Панель вкладок',
-      tabStripDesc: 'Показывать вкладки над зоной. Автоматически скрываются, когда в зоне только одна панель.',
+      tabStripDesc: 'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
@@ -578,6 +581,13 @@ export const ru = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF или CSS-стек шрифтов',
       terminalFontPreview: 'Предпросмотр глифов',
       terminalFontReset: 'Использовать по умолчанию',
+      chatFontTitle: 'Шрифт чата',
+      chatFontDesc:
+        'Выберите установленный шрифт для чата и всего интерфейса. Удобно для шрифтов повышенной читаемости, например OpenDyslexic; оставьте пустым, чтобы использовать шрифт темы.',
+      chatFontPlaceholder: 'OpenDyslexic или CSS-стек шрифтов',
+      chatFontPreview: 'Предпросмотр',
+      chatFontSample: 'Съешь же ещё этих мягких французских булок. 0123456789',
+      chatFontReset: 'Шрифт темы',
       translucencyTitle: 'Полупрозрачность окна',
       translucencyDesc:
         'Рабочий стол виден сквозь всё окно, включая текст. Отдельная настройка для светлой и тёмной тем.',
@@ -829,6 +839,7 @@ export const ru = defineLocale({
       compression: {
         enabled: 'Авто-сжатие',
         threshold: 'Порог сжатия',
+        codexGpt55Autoraise: 'Автоповышение сжатия Codex',
         targetRatio: 'Целевое сжатие',
         protectLastN: 'Защищённые недавние сообщения'
       },
@@ -894,7 +905,8 @@ export const ru = defineLocale({
         engine: 'Стратегия управления длинными диалогами у предела контекста.'
       },
       compression: {
-        enabled: 'Сжимать более старый контекст, когда диалоги становятся большими.'
+        enabled: 'Сжимать более старый контекст, когда диалоги становятся большими.',
+        codexGpt55Autoraise: 'Повышает порог сжатия до 85% для поддерживаемых моделей ChatGPT Codex OAuth.'
       },
       voice: {
         autoTts: 'Автоматически зачитывать ответы ассистента.'
@@ -1354,6 +1366,7 @@ export const ru = defineLocale({
       setToMain: 'На основную',
       change: 'Изменить',
       autoUseMain: 'авто · использовать основную модель',
+      inheritMainEffort: 'наследовать · усилие основной модели',
       providerDefault: '(по умолчанию провайдера)',
       fallbackAdd: 'Добавить запасную',
       fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
@@ -1808,6 +1821,10 @@ export const ru = defineLocale({
     restartGateway: 'Перезапустить шлюз',
     openBrowser: 'Открыть браузер',
     gatewayRestartFailed: 'Не удалось перезапустить шлюз.',
+    sharedGatewayRestartTitle: 'Перезапустить общий шлюз?',
+    sharedGatewayRestartDescription: bots => `Все боты на этом устройстве переподключатся: ${bots}`,
+    sharedGatewayRestartConfirm: 'Перезапустить все',
+    sharedGatewayRestarted: count => `Общий шлюз перезапущен (ботов: ${count})`,
     updateHermes: 'Обновить Hermes',
     reloadWindow: 'Перезагрузить окно',
     actionRunning: 'выполняется',
@@ -1900,6 +1917,7 @@ export const ru = defineLocale({
     },
     unknown: 'Неизвестно',
     hintPendingRestart: 'Перезапустите шлюз из строки состояния, чтобы применить это изменение.',
+    sharedListenerUrl: 'Обслуживается общим слушателем шлюза по адресу',
     hintGatewayStopped: 'Запустите шлюз из строки состояния для подключения.',
     credentialsSet: 'Учётные данные заданы',
     needsSetup: 'Нужна настройка',
@@ -1926,6 +1944,8 @@ export const ru = defineLocale({
     restartToApply: 'Это изменение вступит в силу после перезапуска шлюза.',
     setupSaved: name => `Настройка ${name} сохранена`,
     restartToReconnect: 'Новые учётные данные вступят в силу после перезапуска шлюза.',
+    appliedLive: 'Применено к работающему шлюзу.',
+    connectingLive: 'Работающий шлюз подключается с новыми учётными данными.',
     keyCleared: key => `${key} очищено`,
     setupUpdated: name => `Настройка ${name} обновлена.`,
     failedUpdate: name => `Не удалось обновить ${name}`,
@@ -3618,22 +3638,18 @@ export const ru = defineLocale({
       lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.'
     },
     mcpSetup: {
-      installTitle: server => `Добавить MCP-сервер ${server}?`,
-      enableTitle: server => `Включить MCP-сервер ${server}?`,
-      authorizeTitle: server => `Авторизовать MCP-сервер ${server}?`,
+      installTitle: 'Добавить MCP-серверы',
+      enableTitle: 'Включить MCP-серверы',
+      authorizeTitle: 'Авторизовать MCP-серверы',
       installAction: 'Установить',
       enableAction: 'Включить',
       authorizeAction: 'Авторизовать',
-      decline: 'Не сейчас',
-      declined: 'Отклонено',
       installed: server => `${server} установлен`,
       enabled: server => `${server} включён`,
       authorized: server => `${server} авторизован`,
       failed: server => `Настройка не удалась для ${server}`,
-      unanswered: 'Нет ответа',
       toolCount: count => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
       notInCatalog: server => `«${server}» нет в MCP-каталоге`,
-      catalogSource: 'Из каталога, одобренного Nous',
       envRequired: 'Сначала заполните обязательные учётные данные',
       sendFailed: 'Не удалось отправить ответ на настройку MCP',
       reloadFailed: 'Сервер сохранён, но перезагрузка MCP-инструментов не удалась — они загрузятся в следующем сеансе',
@@ -3650,6 +3666,19 @@ export const ru = defineLocale({
       copyQuery: 'Копировать запрос',
       copyFile: 'Копировать файл',
       copyPath: 'Копировать путь',
+      failedCalls: (count: number) => `Вызовов с ошибкой: ${count}`,
+      skillActivity: {
+        loading: 'Загружается скилл',
+        loaded: 'Загружен скилл',
+        loadFailed: 'Не удалось загрузить скилл',
+        readingResource: 'Читается ресурс скилла',
+        readResource: 'Прочитан ресурс скилла',
+        resourceFailed: 'Не удалось прочитать ресурс скилла',
+        listing: 'Загружается список скиллов',
+        listed: 'Получен список скиллов',
+        listFailed: 'Не удалось получить список скиллов',
+        unavailable: 'Результат работы со скиллом недоступен'
+      },
       outputAlt: 'Вывод инструмента',
       rawResponse: 'Сырой ответ',
       copyActivity: 'Копировать активность',
@@ -3662,6 +3691,7 @@ export const ru = defineLocale({
       statusError: 'Ошибка',
       statusRecovered: 'Восстановлено',
       statusDone: 'Готово',
+      resultUnavailable: 'Результат недоступен',
       memoryWriteNoted: 'Запись в память отмечена',
       actions: {
         read: 'Чтение',
@@ -3745,7 +3775,8 @@ export const ru = defineLocale({
     secretSendFailed: 'Не удалось отправить секрет',
     sudoTitle: 'Пароль администратора',
     sudoDesc:
-      'Hermes нужен ваш пароль sudo, чтобы выполнить команду с повышенными правами. Он отправляется только вашему локальному агенту.',
+      'Проверьте команду перед вводом пароля sudo. Пароль отправляется агенту, который её выполняет, и кэшируется на время сеанса.',
+    sudoCommandUnavailable: 'Агент не предоставил команду. Отмените запрос, если не можете проверить её в разговоре.',
     sudoPlaceholder: 'пароль sudo',
     secretTitle: 'Требуется секрет',
     secretDesc: 'Hermes нужны учётные данные, чтобы продолжить.',

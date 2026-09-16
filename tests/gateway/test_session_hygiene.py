@@ -150,20 +150,19 @@ class TestSessionHygieneThresholds:
         assert approx_tokens < huge_model_threshold
 
 
-def test_hygiene_total_ceiling_warning_reports_elapsed_and_progress():
+@pytest.mark.parametrize("total_exhausted", [True, False])
+def test_hygiene_timeout_warning_names_chat_commands_not_config(total_exhausted):
+    """The chat user cannot edit model config or read second counts; the notice names the
+    slash commands they can run and keeps the timing detail in the log."""
     from gateway.run import _hygiene_compression_timeout_message
 
     warning = _hygiene_compression_timeout_message(
-        total_exhausted=True,
-        elapsed=600.4,
-        idle_timeout=30.0,
-        progress_observed=True,
+        total_exhausted=total_exhausted, elapsed=600.4, idle_timeout=30.0, progress_observed=True,
     )
 
-    assert "total ceiling after 600.4s" in warning
-    assert "summary output was observed" in warning
-    assert "30.0s" not in warning
-    assert "no output" not in warning
+    assert "/compress" in warning and "/new" in warning
+    assert "600.4" not in warning and "30.0" not in warning
+    assert "auxiliary" not in warning and "/reset" not in warning
 
 
 class TestSessionHygieneWarnThreshold:
@@ -631,7 +630,7 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
     _cd_args = fake_db.record_compression_failure_cooldown.call_args[0]
     assert _cd_args[0] == "sess-timeout"
     assert _cd_args[1] > time.time()
-    timeout_warnings = [s for s in adapter.sent if "Context compression timed out" in s["content"]]
+    timeout_warnings = [s for s in adapter.sent if "took too long" in s["content"]]
     assert len(timeout_warnings) == 1
     fake_db.archive_and_compact.assert_not_called()
     assert lease_released.is_set()
@@ -808,8 +807,9 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     # Behavior witness 1: turn-hold expiry must NOT stamp the idle-timeout
     # provenance or send the "no output" user message.
     sent_contents = [m["content"] for m in adapter.sent]
+    # The idle-timeout copy is the only one that adds the `hermes doctor` pointer.
     assert not any(
-        "timed out" in c.lower() and "no output" in c.lower()
+        "took too long" in c.lower() and "hermes doctor" in c.lower()
         for c in sent_contents
     ), f"turn-hold must not send idle-timeout message, got: {sent_contents}"
     assert any(
@@ -843,7 +843,7 @@ async def test_session_hygiene_turn_hold_budget_abandons_streaming_wait(
     # timeout, not a turn-hold deferral. The turn-hold path must use a
     # distinct provenance stamp.
     # (Verified indirectly: the idle-timeout path would have sent the
-    # "no output" message, which we already asserted absent above.)
+    # idle-timeout message, which we already asserted absent above.)
 
 
 @pytest.mark.asyncio
@@ -975,12 +975,12 @@ async def test_session_hygiene_idle_timeout_still_takes_failure_path(
     assert worker_started.is_set()
     assert runner._run_agent.await_count == 1
 
-    # Behavior witness: idle timeout MUST send the "no output" message.
+    # Behavior witness: idle timeout MUST send the idle-timeout message (with the `hermes doctor` pointer).
     sent_contents = [m["content"] for m in adapter.sent]
     assert any(
-        "timed out" in c.lower() and "no output" in c.lower()
+        "took too long" in c.lower() and "hermes doctor" in c.lower()
         for c in sent_contents
-    ), f"idle timeout must send 'no output' message, got: {sent_contents}"
+    ), f"idle timeout must send the took-too-long + hermes doctor message, got: {sent_contents}"
 
     # Behavior witness: idle timeout MUST advance the failure cooldown.
     # The gateway calls _hygiene_cooldown_for_failure + _record_hygiene_cooldown.
@@ -1614,7 +1614,7 @@ async def test_hygiene_fence_cancel_records_cooldown_without_abort_flag(
             f"got {state!r}"
         )
         assert not any(
-            "Context compression aborted" in s["content"] for s in adapter1.sent
+            "Shortening the conversation history failed" in s["content"] for s in adapter1.sent
         ), "fence-cancel during /stop or /restart must not toast an abort"
 
         class ShouldNotRunAgent:
@@ -1713,7 +1713,7 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
         state = db.get_compression_failure_cooldown(session_id)
         assert state is not None and state["remaining_seconds"] > 0
         assert not any(
-            "Context compression timed out" in s["content"] for s in adapter.sent
+            "took too long" in s["content"] for s in adapter.sent
         ), "fence-cancel is not a summary-model timeout; no timeout toast"
         release_worker.set()
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
@@ -1814,4 +1814,180 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
         release_worker.set()
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
     finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed in-context bound when hygiene has not landed (#111988)
+# ---------------------------------------------------------------------------
+
+_HARD_LIMIT = 20
+
+
+def _make_bound_probe_transcript(total: int = 60) -> list:
+    """Transcript with a setup prefix, a tool group straddling the tail cut, and a newest tail.
+
+    With ``_HARD_LIMIT`` = 20 and one setup row, the newest-19 cut starts at index 41 — the
+    first tool result of the group at 40/41/42.
+    """
+    rows = [{"role": "session_meta", "tools": [], "model": "m", "platform": "telegram", "timestamp": "t0"}]
+    while len(rows) < total - 20:
+        role = "user" if len(rows) % 2 else "assistant"
+        rows.append({"role": role, "content": f"old-{len(rows)}", "timestamp": f"t{len(rows)}"})
+    rows.append({"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "t"}}]})
+    rows.append({"role": "tool", "tool_call_id": "c1", "content": "old tool output 1"})
+    rows.append({"role": "tool", "tool_call_id": "c2", "content": "old tool output 2"})
+    rows.append({"role": "user", "content": "newest ask", "timestamp": "t-ask"})
+    rows.append({"role": "assistant", "content": "newest reply", "timestamp": "t-reply"})
+    while len(rows) < total:
+        role = "user" if len(rows) % 2 else "assistant"
+        rows.append({"role": role, "content": f"tail-{len(rows)}", "timestamp": f"t{len(rows)}"})
+    if total == 60:
+        assert rows[41].get("role") == "tool", "fixture must put the tail cut on a tool result"
+    return rows
+
+
+def _turn_payload(runner):
+    """The history the gateway handed the turn runner for the model (one turn)."""
+    assert runner._run_agent.await_count == 1
+    return runner._run_agent.call_args.kwargs["history"]
+
+
+def _make_bound_runner(monkeypatch, tmp_path, agent_cls, cfg_text, transcript):
+    """``_make_cooldown_runner`` with a >hard-limit transcript and a lowered hard limit."""
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-bound", "telegram")
+    runner, adapter, event = _make_cooldown_runner(
+        monkeypatch, tmp_path, agent_cls, db, "sess-bound"
+    )
+    (tmp_path / "config.yaml").write_text(cfg_text, encoding="utf-8")
+    runner.session_store.load_transcript.return_value = transcript
+    return db, runner, adapter, event
+
+
+class _LandedCompressAgent:
+    """Rotating hygiene compressor that SUCCEEDS with a transcript longer than the hard limit."""
+
+    last_instance = None
+
+    def __init__(self, **kwargs):
+        self.session_id = kwargs.get("session_id", "fake-session")
+        self._session_db = kwargs.get("session_db")
+        self._last_compaction_in_place = False
+        self.context_compressor = SimpleNamespace(
+            bind_session_state=MagicMock(),
+            _last_compress_aborted=False,
+            _last_aux_model_failure_model=None,
+        )
+        self.shutdown_memory_provider = MagicMock()
+        self.close = MagicMock()
+        type(self).last_instance = self
+
+    def _compress_context(self, messages, *_args, **_kwargs):
+        # 25 rows: over the 20-message limit but far under the input's token count, so the
+        # adopted (landed) transcript must reach the model untouched.
+        compressed = [{"role": "assistant", "content": f"summary {i}"} for i in range(25)]
+        type(self).last_compressed = compressed
+        self.session_id = f"{self.session_id}_compressed"
+        return (compressed, None)
+
+
+def test_bound_model_input_without_hygiene_is_deterministic_and_fail_closed():
+    """The bound keeps the setup head + the newest tail, drops the middle, never mutates input."""
+    from gateway.run_turn import bound_model_input_without_hygiene
+
+    rows = _make_bound_probe_transcript()
+    snapshot = [dict(r) for r in rows]
+
+    bounded = bound_model_input_without_hygiene(rows, _HARD_LIMIT)
+
+    assert len(bounded) <= _HARD_LIMIT
+    assert len(bounded) < len(rows), "a >limit transcript must actually be bounded"
+    assert bounded[0] is rows[0], "the leading system/setup row must survive"
+    assert bounded[-1] is rows[-1], "the newest row must survive"
+    assert bounded[1].get("role") != "tool", "the kept tail must not start on an orphan tool result"
+    assert rows[:] == snapshot, "the source transcript must not be mutated in place"
+    # Same input, same cut — no randomness, no clock.
+    assert bound_model_input_without_hygiene(rows, _HARD_LIMIT) == bounded
+    # At or below the limit nothing is dropped, and the SAME list comes back.
+    assert bound_model_input_without_hygiene(rows, len(rows)) is rows
+    assert bound_model_input_without_hygiene(rows, len(rows) + 5) is rows
+
+
+@pytest.mark.asyncio
+async def test_hygiene_miss_bounds_the_model_payload(monkeypatch, tmp_path):
+    """Turn-hold expiry without a landed summary must not feed the model the whole transcript
+    (#111988); a landed commit is still adopted byte-identical."""
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    cleanup_done = threading.Event()
+    session_id = "sess-bound"
+
+    class StreamingCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.session_id = kwargs.get("session_id", session_id)
+            self._session_db = kwargs.get("session_db")
+            self._last_compaction_in_place = False
+            self.context_compressor = SimpleNamespace(
+                bind_session_state=MagicMock(),
+                _last_compress_aborted=False,
+                _last_aux_model_failure_model=None,
+            )
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock(side_effect=cleanup_done.set)
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, commit_fence=None, **_kwargs):
+            worker_started.set()
+            release_worker.wait(timeout=10)
+            return (messages, None)
+
+    transcript = _make_bound_probe_transcript()
+    db, runner, _adapter, event = _make_bound_runner(
+        monkeypatch, tmp_path, StreamingCompressAgent,
+        "compression:\n"
+        "  enabled: true\n"
+        f"  hygiene_hard_message_limit: {_HARD_LIMIT}\n"
+        "  hygiene_timeout_seconds: 60\n"
+        "  hygiene_total_ceiling_seconds: 600\n"
+        "  hygiene_max_turn_hold_seconds: 0.3\n",
+        transcript,
+    )
+    try:
+        assert await asyncio.wait_for(runner._handle_message(event), timeout=15) == "ok"
+        assert worker_started.wait(timeout=2)
+
+        payload = _turn_payload(runner)
+        assert len(payload) <= _HARD_LIMIT, (
+            f"hygiene never landed but the model got {len(payload)} messages "
+            f"(limit {_HARD_LIMIT}) — unbounded fail-open"
+        )
+        assert payload[0] is transcript[0], "the system/setup head must be preserved"
+        assert payload[-1] is transcript[-1], "the newest tail must be preserved"
+        assert payload[1].get("role") != "tool", "the kept tail must not start on an orphan tool result"
+
+        # History on disk untouched: the loaded transcript still holds every row and nothing
+        # rewrote it — only the payload about to be sent to the model was clipped.
+        assert len(transcript) == len(_make_bound_probe_transcript())
+        assert transcript[20]["content"].startswith("old-")
+        runner.session_store.rewrite_transcript.assert_not_called()
+
+        release_worker.set()
+        await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=3)
+
+        # Control: a LANDED hygiene commit is adopted as-is — its 25 summary rows exceed the
+        # limit, and the bound must not touch them (only the unlanded path is clipped).
+        db.create_session("sess-landed", "telegram")
+        runner2, _adapter2, event2 = _make_cooldown_runner(
+            monkeypatch, tmp_path, _LandedCompressAgent, db, "sess-landed"
+        )
+        runner2.session_store.load_transcript.return_value = _make_bound_probe_transcript()
+        assert await asyncio.wait_for(runner2._handle_message(event2), timeout=15) == "ok"
+        assert _turn_payload(runner2) is _LandedCompressAgent.last_compressed
+    finally:
+        release_worker.set()
         db.close()

@@ -6,7 +6,7 @@
   only I/O primitives (cross-process flock, atomic 0o600 writes).
 - ``resolve_provider()`` picks the active provider via the documented priority chain.
 - ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
-  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_spotify`` and are
+  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_spotify``/``auth_openrouter`` and are
   re-imported here so ``hermes_cli.auth.<name>`` stays the public/patchable surface."""
 
 from __future__ import annotations
@@ -16,10 +16,8 @@ import logging
 import os
 import shutil
 import shlex
-import stat
 import threading
 import time
-import uuid
 import webbrowser  # noqa: F401  (tests patch auth_mod.webbrowser.open; same module object)
 
 from contextlib import ExitStack, contextmanager
@@ -34,7 +32,7 @@ from hermes_cli.config import (
     get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
-from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
+from utils import atomic_json_write, atomic_yaml_write, env_float, file_signature, is_truthy_value  # noqa: F401  (env_float: agent.credential_pool reads auth_mod.env_float)
 from hermes_cli.auth_zai_kimi import (  # noqa: F401  re-exported
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
@@ -85,6 +83,7 @@ from hermes_cli.auth_codex import (  # noqa: F401  re-exported
 from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
     _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
     resolve_spotify_runtime_credentials)
+from hermes_cli.auth_openrouter import _openrouter_pkce_login  # noqa: F401  re-exported
 from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
@@ -502,8 +501,8 @@ def _load_global_auth_store() -> Dict[str, Any]:
         _global_auth_store_cache = None
         return {}
     try:
-        cache_key: Optional[Tuple[str, int]] = (
-            str(global_path.resolve(strict=False)), global_path.stat().st_mtime_ns)
+        cache_key: Optional[Tuple[str, Tuple[int, int, int, int]]] = (
+            str(global_path.resolve(strict=False)), file_signature(global_path.stat()))
     except Exception:
         cache_key = None
     cached = _global_auth_store_cache
@@ -696,61 +695,27 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return _empty_auth_store()
 
 
-def _write_private_file_atomic(
-    target: Path, payload: str, *, replace: Optional[Callable[[Any, Any], Any]] = None,
-    fsync_dir: bool = False) -> None:
-    """Write *payload* to *target* via a 0o600 temp file + atomic rename.
-
-    ``os.open(O_EXCL, 0o600)`` closes the TOCTOU window where ``write_text()`` + post-write
-    ``chmod`` briefly exposed tokens at process umask. The per-process random temp suffix avoids
-    collisions between concurrent writers and stale leftovers from a crashed prior write."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    secure_parent_dir(target)  # refuses to chmod /, top-level dirs, or the install tree
-    tmp_path = target.with_name(f"{target.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    try:
-        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        (replace or atomic_replace)(tmp_path, target)
-        if fsync_dir:
-            try:
-                dir_fd = os.open(str(target.parent), os.O_RDONLY)
-            except OSError:
-                pass
-            else:
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
+def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **dump_kwargs: Any) -> None:
+    """0600 credential JSON under a 0700 parent (``secure_parent_dir`` refuses ``/``, top-level dirs
+    and the install tree). ``atomic_json_write`` creates the temp file 0600 before any byte lands."""
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(target.parent)
+    secure_parent_dir(target)
+    atomic_json_write(target, data, mode=0o600, fsync_dir=fsync_dir, **dump_kwargs)
 
 
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
     """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
     an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
-    # Tighten parent dir to 0o700 so siblings can't traverse to creds. No-op on Windows (POSIX mode bits not
-    # enforced); ignore failures. secure_parent_dir refuses to chmod /, top-level dirs, or the hermes-agent
-    # install tree (#25821, #93050).
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
-    _write_private_file_atomic(auth_file, json.dumps(auth_store, indent=2) + "\n", fsync_dir=True)
+    _save_private_json(auth_file, auth_store, fsync_dir=True)
     if target_path is not None:
         # A write-through to the global root must not be masked by the mtime memo: on coarse-mtime
         # filesystems a read-after-write in the same tick would keep serving the pre-write store.
         global _global_auth_store_cache
         _global_auth_store_cache = None
-    try:
-        auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
     return auth_file
 
 
@@ -790,18 +755,20 @@ def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Option
 
 
 @contextmanager
-def _provider_state_transaction(provider_id: str):
+def _provider_state_transaction(
+        provider_id: str, timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     """Lock the active auth store and any global fallback source, in that order.
 
     Re-reading the source after its lock is acquired prevents stale refreshes and whole-file lost
-    updates without inverting the documented auth -> shared lock order."""
-    with _auth_store_lock():
+    updates without inverting the documented auth -> shared lock order. ``timeout_seconds`` applies
+    to BOTH locks: a transaction that spans a network call must let waiters outlive that call."""
+    with _auth_store_lock(timeout_seconds):
         auth_store = _load_auth_store()
         state, source_path = _load_provider_state_with_source(auth_store, provider_id)
         if source_path is None or _same_path(source_path, _auth_file_path()):
             yield auth_store, state, source_path
             return
-        with _auth_store_lock(target_path=source_path):
+        with _auth_store_lock(timeout_seconds, target_path=source_path):
             yield auth_store, _provider_state_in(_load_auth_store(source_path), provider_id), source_path
 
 
@@ -1392,16 +1359,33 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
 
 
 def _config_model_provider() -> Tuple[Any, Optional[str]]:
-    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider.
+    """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider
+    or a custom OpenAI-compatible endpoint (``custom``, ``custom:<name>``, ``vllm``/``ollama``/...).
 
     The normal chat/gateway path resolves config.provider upstream in resolve_requested_provider();
-    this is the safety net for the lone direct caller (main.py resolve_provider("auto"))."""
+    this is the safety net for the direct ``resolve_provider("auto")`` callers. A configured custom
+    endpoint is explicit intent like any registry pin: without this rung the boot inventory
+    (``free_tier_bootstrap``) read a llama.cpp/vLLM install as "nothing configured" and the
+    dashboard's Ink chat parked every session on Setup Required while ``hermes chat`` worked
+    (#108383)."""
     try:
         from hermes_cli.config import load_config
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
-        return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
+        provider = _plugin_aliases().get(provider, provider)
+        if provider == "custom" or provider.startswith("custom:"):
+            return model_cfg, "custom"
+        if provider in PROVIDER_REGISTRY:
+            return model_cfg, provider
+        # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
+        # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
+        base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
+        if base_url:
+            from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+            if _config_base_url_trustworthy_for_bare_custom(base_url, provider):
+                return model_cfg, "custom"
+        return model_cfg, None
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
         return None, None
@@ -1522,10 +1506,12 @@ def resolve_provider(
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
+    from hermes_constants import display_hermes_home
     raise AuthError(
-        "No inference provider configured. Run 'hermes model' to choose a "
-        "provider and model, or set an API key (OPENROUTER_API_KEY, "
-        "OPENAI_API_KEY, etc.) in ~/.hermes/.env.",
+        "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one (the free "
+        "Nous tier needs no API key), type `/login` in chat, or add a key with "
+        f"`hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "
+        f"{display_hermes_home()}/.env.)",
         code="no_provider_configured")
 
 

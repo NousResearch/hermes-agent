@@ -155,10 +155,8 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         acct_id = _extract_chatgpt_account_id(access_token)
         if acct_id:
             headers["ChatGPT-Account-Id"] = acct_id
-        resp = httpx.get(
-            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-            headers=headers,
-            timeout=10)
+        from agent.model_metadata import CODEX_MODELS_CATALOG_URL
+        resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
         if resp.status_code != 200:
             return []
         data = resp.json()

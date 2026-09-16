@@ -180,6 +180,9 @@ def cmd_clear_legacy(args: argparse.Namespace) -> int:
 
     result = clear_legacy()
     print(f"Deleted {result['deleted']} archive(s), reclaimed {_fmt_bytes(result['bytes_freed'])}.")
+    if result["errors"]:
+        print(f"Could not delete {result['errors']} archive(s) (see logs).")
+        return 2
     return 0
 
 

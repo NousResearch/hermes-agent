@@ -2841,12 +2841,36 @@ class BasePlatformAdapter(ABC):
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
         text = _media_failure_text(kind, file_name)
-        if not self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
-            if caption:
-                await self.send(chat_id=chat_id, content=caption, reply_to=reply_to, metadata=metadata)
-            return SendResult(success=False, error=text)
-        text = f"{caption}\n{text}" if caption else text
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+        return await self.emit_media_warning(chat_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
+
+    async def emit_warning(
+        self, chat_id: str, content: str, *, reply_to=None, metadata=None, logical_platform=None,
+    ) -> Optional[SendResult]:
+        """Present a classified channel diagnostic in the caller's owning scope.
+
+        None means suppressed, NOT successfully sent. Transport receipts/exceptions
+        pass through unchanged; logs and producer state belong outside this boundary.
+        Existing routing/stream metadata is preserved, never inferred from text.
+        """
+        if not self.warning_notifications_enabled(logical_platform, chat_id=chat_id, metadata=metadata):
+            return None
+        return await self.send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def emit_media_warning(
+        self, chat_id: str, notice: str, *, caption=None, reply_to=None, metadata=None,
+    ) -> SendResult:
+        """Present an optional media diagnostic without losing the requested caption.
+
+        Preserve the legacy fallback-text receipt when shown. When hidden, preserve
+        the media failure even if the independent caption itself was delivered.
+        """
+        result = await self.emit_warning(chat_id, f"{caption}\n{notice}" if caption else notice,
+                                         reply_to=reply_to, metadata=metadata)
+        if result is not None:
+            return result
+        if caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+        return SendResult(success=False, error=notice)
 
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         """Presentation policy under the caller's owning profile; old plugins inherit it."""

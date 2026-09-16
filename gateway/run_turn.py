@@ -787,13 +787,11 @@ class GatewayTurnMixin:
 
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
-        from gateway.warning_notifications import warning_notifications_enabled
-        if not warning_notifications_enabled(source.platform):
-            return
         try:
             _adapter = self._adapter_for_source(source)
             if _adapter and source.chat_id:
-                await _adapter.send(source.chat_id, message, metadata=meta)
+                await _adapter.emit_warning(source.chat_id, message, metadata=meta,
+                                            logical_platform=source.platform)
         except Exception as _werr:
             logger.warning("Failed to deliver %s to user: %s", what, _werr)
 

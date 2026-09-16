@@ -53,6 +53,20 @@ async function createRoom(page: Page) {
 
   await dialog.getByRole('textbox', { name: 'Group name' }).fill(ROOM)
   await dialog.getByRole('button', { name: 'Create Group (2)' }).click()
+
+  return frontRoom(page)
+}
+
+/** A just-created Bot's canonical Bot Chat hydrates late and can front its
+ *  "Draft" tab over the room tab; bring the room back before typing into it. */
+async function frontRoom(page: Page) {
+  const tab = page.getByRole('tab', { name: ROOM }).first()
+  await expect(tab).toBeVisible({ timeout: 20_000 })
+
+  if ((await tab.getAttribute('aria-selected')) !== 'true') {
+    await tab.click()
+  }
+
   const composer = page.getByRole('textbox', { name: `Message ${ROOM}` }).filter({ visible: true })
   await expect(composer).toBeVisible({ timeout: 20_000 })
 
@@ -80,8 +94,9 @@ test.afterEach(async () => {
 test('a re-titled member is re-labelled in the room transcript and Activity feed', async () => {
   test.setTimeout(300_000)
   const page = fixture!.page
-  const composer = await createRoom(page)
+  await createRoom(page)
 
+  const composer = await frontRoom(page)
   await composer.fill('@programmer hello')
   await composer.press('Enter')
   await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible({ timeout: 90_000 })

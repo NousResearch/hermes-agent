@@ -59,6 +59,9 @@ class _Heredoc:
     strip_tabs: bool
     execute_as_shell: bool
     body: list[str] = field(default_factory=list)
+    # Carried operator when the opener's line ends mid-command (`|` or `\`): the next
+    # physical line continues the pipeline, so its leading segments may consume the body.
+    continuation: str | None = None
 
 
 @dataclass
@@ -208,6 +211,37 @@ def _shell_script_arg(args: list[str]) -> str | None:
     return None
 
 
+def _executes_heredoc_body(words: list[str]) -> bool:
+    """A bare shell (no ``-c`` script, no script operand) executes the body itself."""
+    _, executable, args = _command_parts(words)
+    return bool(
+        executable and _executable_name(executable) in _SHELL_EXECUTABLES
+        and _shell_script_arg(args) is None
+        and not any(arg and not arg.startswith("-") for arg in args))
+
+
+def _pipe_op_before(command: str, start: int) -> str | None:
+    """``|`` when a single pipe (``|`` or ``|&``) joins the segment, else the list operator."""
+    head = command[:start].rstrip()
+    if head.endswith("|&") or (head.endswith("|") and not head.endswith("||")):
+        return "|"
+    return _operator_before(command, start)
+
+
+_PIPE_JOIN = frozenset({"|", "(", "{"})
+
+
+def _pipeline_continuation(text: str) -> str | None:
+    """Carried operator when ``text`` ends mid-command: ``|`` mid-pipeline, ``\\`` line join."""
+    tail = text.rstrip()
+    joined = tail.endswith("\\")
+    if joined:
+        tail = tail[:-1].rstrip()
+    if tail.endswith("|&") or (tail.endswith("|") and not tail.endswith("||")):
+        return "|"
+    return "\\" if joined else None
+
+
 def _heredoc_specs(line: str) -> list[_Heredoc]:
     """Heredoc openers on one line; ``execute_as_shell`` when a bare shell consumes the body."""
     specs: list[_Heredoc] = []
@@ -233,14 +267,53 @@ def _heredoc_specs(line: str) -> list[_Heredoc]:
         if not delimiter:
             continue
         starts = list(_iter_shell_command_starts(header))
-        _, executable, args = _command_parts(_shell_words_at(header, starts[-1]) if starts else [])
-        # A bare shell (no -c script, no script operand) executes the body itself.
-        execute_as_shell = bool(
-            executable and _executable_name(executable) in _SHELL_EXECUTABLES
-            and _shell_script_arg(args) is None
-            and not any(arg and not arg.startswith("-") for arg in args))
-        specs.append(_Heredoc(delimiter, bool(opener.group("dash")), execute_as_shell))
+        execute_as_shell = _executes_heredoc_body(
+            _shell_words_at(header, starts[-1]) if starts else [])
+        # `cat <<EOF | bash` pipes the body into a shell downstream of the opener; check
+        # pipe-joined segments on the rest of the line the way the consumer is checked.
+        tail = line[index:]
+        if not execute_as_shell:
+            for start in _iter_shell_command_starts(tail):
+                op = _pipe_op_before(tail, start)
+                if op is None:
+                    continue  # operator token itself, not a command start
+                if op not in _PIPE_JOIN:
+                    break
+                if _executes_heredoc_body(_shell_words_at(tail, start)):
+                    execute_as_shell = True
+                    break
+        spec = _Heredoc(delimiter, bool(opener.group("dash")), execute_as_shell)
+        if not execute_as_shell:
+            spec.continuation = _pipeline_continuation(tail)
+        specs.append(spec)
     return specs
+
+
+def _absorb_continuation(pending: list[_Heredoc], line: str) -> None:
+    """Evaluate segments on a line that continues a heredoc's command line. A `|`-carried
+    first segment joins the pipeline directly; a `\\`-carried one is an argument unless the
+    line itself opens with `|`. A bare shell reached through the pipe chain executes the
+    body, so every pending heredoc on that line is marked."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return  # blank lines and comments do not end a continuation
+    first = True
+    for start in _iter_shell_command_starts(line):
+        op = pending[0].continuation if first else _pipe_op_before(line, start)
+        first = False
+        if op == "\\":
+            op = _pipe_op_before(line, start)
+        if op is None:
+            continue  # operator token itself or an argument, not a pipeline member
+        if op not in _PIPE_JOIN:
+            break
+        if _executes_heredoc_body(_shell_words_at(line, start)):
+            for spec in pending:
+                spec.execute_as_shell = True
+            break
+    carry = _pipeline_continuation(line)
+    for spec in pending:
+        spec.continuation = carry if spec is pending[0] else None
 
 
 def _mask_heredocs(command: str) -> tuple[str, list[str]]:
@@ -259,6 +332,8 @@ def _mask_heredocs(command: str) -> tuple[str, list[str]]:
         if (candidate.lstrip("\t") if current.strip_tabs else candidate) == current.delimiter:
             finished.append(pending.pop(0))
         else:
+            if current.continuation and not current.execute_as_shell:
+                _absorb_continuation(pending, line)
             current.body.append(line)
         output.append(re.sub(r"[^\r\n]", " ", line))
     shell_scripts = ["".join(spec.body) for spec in finished + pending if spec.execute_as_shell]

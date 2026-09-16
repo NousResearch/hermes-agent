@@ -136,12 +136,17 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     if err is not None:
         return err
     if not _smt._skill_gate_bypass.get():
+        for op, nm in zip(operations, names):
+            if (refusal := _smt._background_review_preflight(op["action"], nm)) is not None:
+                return json.dumps(refusal, ensure_ascii=False)
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
-            return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+            return {"action": "batch", "operations": [
+                {**op, "name": nm} for op, nm in zip(operations, names)]}, gist
+        staged = _smt._run_write_gate(
+            _staging, targets=[(op["action"], nm) for op, nm in zip(operations, names)])
         if staged is not None:
             return staged
     snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))

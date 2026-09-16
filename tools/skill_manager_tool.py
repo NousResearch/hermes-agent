@@ -3,7 +3,7 @@
 
 Skills are the agent's procedural memory (narrow "how to do X"; MEMORY.md/USER.md are
 broad, declarative). New skills land in ~/.hermes/skills/ (or ``skills.create_dir``);
-existing skills (bundled, hub, user) are modified in place. Layout:
+existing skills are modified in place (bundled/Hub mutations require approval). Layout:
 ``<skills>/[category/]<skill>/SKILL.md`` + optional ``references/ templates/ scripts/ assets/``.
 """
 
@@ -615,10 +615,8 @@ def _bundled_install_relpath(name: str) -> Optional[str]:
 def _managed_skill_provenance(name: str) -> Optional[str]:
     """Return upstream provenance for an installed skill, if any.
 
-    Bundled and hub skills are package-managed as a unit. Mutating one file
-    makes their update machinery preserve the whole local directory, including
-    withholding unrelated files added upstream. Keep this lookup local to the
-    skill manager so the write policy follows the exact path it will mutate.
+    Bundled edits freeze updates; Hub edits risk overwrite on reinstall.
+    Resolve the actual package path before consulting either ownership store.
     """
     existing = _find_skill(name)
     if not existing:
@@ -634,6 +632,7 @@ def _managed_skill_provenance(name: str) -> Optional[str]:
         # provenance stores.
         return None
 
+    name = existing["path"].name  # categorized lookups must not bypass provenance
     manifest_path = skills_root / ".bundled_manifest"
     try:
         for line in manifest_path.read_text(encoding="utf-8").splitlines():
@@ -672,50 +671,43 @@ def _managed_skill_provenance(name: str) -> Optional[str]:
     return None
 
 
-def _run_write_gate(build_staging, *, action=None, name=None):
-    """Shared write gate: None to proceed, else a JSON tool result (blocked/staged).
-    ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
-    write_approval cannot be imported."""
+def _run_write_gate(build_staging, *, targets=()):
+    """Stage the entire call when any target is upstream-managed, even with the
+    global gate off. Approved replay bypasses this at the caller, not per op."""
+    managed = {name: origin for action, name in targets if action != "create"
+               if (origin := _managed_skill_provenance(name))}
     try:
         from tools import write_approval as wa
     except Exception:
-        return None  # fail open
-    provenance = None if action == "create" or not name else _managed_skill_provenance(name)
+        if managed:
+            return tool_error("Cannot load approval gate for upstream-managed skills.", success=False)
+        return None  # preserve existing behavior for ordinary local skills
     decision = wa.evaluate_gate(wa.SKILLS)
-    if provenance and not decision.blocked:
-        if provenance == "hub":
-            # Hub skills reinstall from the stored lock on update, so the
-            # risk is overwrite of local edits — not update starvation.
+    if managed and not decision.blocked:
+        warnings = []
+        for name, provenance in managed.items():
             risk = (
-                "hub updates reinstall the skill from the stored lock, "
-                "so local edits will be overwritten and lost"
-            )
-        else:
-            # Bundled skills are package-managed as a unit: mutating one
-            # file makes the updater preserve the whole local directory,
-            # withholding unrelated files added upstream.
-            risk = (
-                "editing it will freeze future package updates, including "
-                "supporting files added upstream"
-            )
-        decision = wa.GateDecision(
-            stage=True,
-            message=(
-                f"Staged for approval because '{name}' is an upstream-managed "
-                f"{provenance} skill. Not yet saved: {risk}. "
-                "Prefer SOUL, project context, or a user-owned overlay skill for "
-                "user-specific guidance. Review with /skills pending."
-            ),
-        )
+                "editing it will freeze future package updates, including supporting files added upstream"
+                if provenance == "bundled" else
+                "hub updates reinstall the skill, so local edits may be overwritten and lost")
+            warnings.append(f"'{name}' is an upstream-managed {provenance} skill: {risk}.")
+        decision = wa.GateDecision(stage=True, message=(
+            "Staged for approval. Not yet saved. " + " ".join(warnings)
+            + " Prefer a separate user-owned skill for local lessons. Do not bypass this gate "
+              "with file or terminal tools. Review with /skills pending."))
     if decision.allow:
         return None
     if decision.blocked:
         return tool_error(decision.message, success=False)
     payload, gist = build_staging(wa)
+    if managed:
+        gist += " — " + decision.message  # persist the risk for the human's pending/approve UI
     record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    kinds = set(managed.values())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"],
                        "gist": gist, "message": decision.message,
-                       **({"provenance": provenance} if provenance else {})}, ensure_ascii=False)
+                       **({"provenance": next(iter(kinds)) if len(kinds) == 1 else "mixed",
+                           "managed_skills": managed} if managed else {})}, ensure_ascii=False)
 
 
 def _apply_skill_write_gate(action, name, **payload_kwargs):
@@ -728,7 +720,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         gist_kw = {k: payload_kwargs.get(k) or ""
                    for k in ("content", "file_path", "old_string", "new_string")}
         return payload, wa.skill_gist(action, name, **gist_kw)
-    return _run_write_gate(_staging, action=action, name=name)
+    return _run_write_gate(_staging, targets=[(action, name)])
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
@@ -917,7 +909,8 @@ def _skill_manage_description(create_dir: str) -> str:
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
-        "op only). Existing skills are modified wherever they live. Keep "
+        "op only). Bundled/Hub writes are staged for human approval, not applied. "
+        "Save local lessons in a separate skill instead. Keep "
         "the description's first 57 chars a self-contained trigger: 'Use "
         "when <trigger>. <one-line behavior>.' Write lessons, not logs: "
         "imperative rule + why, no PR numbers/dates/incident narration, one "

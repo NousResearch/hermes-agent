@@ -22,6 +22,8 @@ from tui_gateway import launch_profile_policy as lpp
 A_VAL = "a-only-secret-0001"
 B_VAL = "b-only-secret-0002"
 ENV_VAL = "systemd-injected-0003"
+A_API_KEY = "launch-api-key-0004"
+B_API_KEY = "secondary-api-key-0005"
 
 
 @pytest.fixture
@@ -30,14 +32,17 @@ def two_homes(tmp_path, monkeypatch):
     root = tmp_path / "hermes_home"
     b = root / "profiles" / "b"
     b.mkdir(parents=True)
-    (root / ".env").write_text(f"A_ONLY_TOKEN={A_VAL}\n", encoding="utf-8")
-    (b / ".env").write_text(f"B_ONLY_TOKEN={B_VAL}\n", encoding="utf-8")
+    (root / ".env").write_text(
+        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\n", encoding="utf-8")
+    (b / ".env").write_text(
+        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\n", encoding="utf-8")
     for home in (root, b):
         (home / "config.yaml").write_text(
             "probe:\n  a_ref: ${A_ONLY_TOKEN}\n  b_ref: ${B_ONLY_TOKEN}\n  env_ref: ${INJECTED_TOKEN}\n",
             encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the launch process loaded its own .env
+    monkeypatch.setenv("HERMES_API_KEY", A_API_KEY)
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
@@ -121,6 +126,24 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     r = server._methods["model.options"]("r2", {"profile": "b"})
     assert r["result"] == {"providers": []}
     assert seen["options"] == (b, B_VAL, None)
+
+
+def test_config_show_keeps_each_profiles_api_key_after_multiplex_activation(two_homes):
+    """A→B→A config.show calls resolve the requested profile instead of running unscoped."""
+    _root, _b = two_homes
+
+    def masked_key(profile=None):
+        params = {"profile": profile} if profile else {}
+        response = server._methods["config.show"]("rid", params)
+        assert "error" not in response, response
+        model_rows = next(
+            section["rows"] for section in response["result"]["sections"]
+            if section["title"] == "Model")
+        return dict(model_rows)["API Key"]
+
+    assert masked_key() == f"****{A_API_KEY[-4:]}"
+    assert masked_key("b") == f"****{B_API_KEY[-4:]}"
+    assert masked_key() == f"****{A_API_KEY[-4:]}"
 
 
 def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monkeypatch):

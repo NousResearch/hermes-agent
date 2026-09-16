@@ -767,3 +767,102 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
 
     assert "did not restart running gateways" in capsys.readouterr().err
     assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def _write_latest_receipt(*, runtimes, outcomes):
+    """A deferred-restart receipt whose ``fleet`` sample predates the deferred restart."""
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "partial",
+                "exit_code": 1,
+                "plan": {"runtimes": runtimes},
+                "fleet": [
+                    {"profile": r["profile"], "pid": r["pid"], "code_sha": "o" * 40, "state": "stale"}
+                    for r in runtimes
+                    if r.get("kind") == "gateway"
+                ],
+                "runtime_outcomes": outcomes,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _patch_current_fleet(monkeypatch, disk_sha, profiles):
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": p, "pid": 99, "code_sha": disk_sha, "code_version": "0.21.2", "state": "current"}
+            for p in profiles
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("dashboard_outcome", "warns"),
+    [("restarted", False), ("unaccounted", True)],
+    ids=["dashboard-restarted", "dashboard-unaccounted"],
+)
+def test_startup_warn_tracks_the_managed_dashboard_outcome(monkeypatch, capsys, dashboard_outcome, warns):
+    """A receipt recording the managed dashboard must not pin the warning forever. (#107402)
+
+    The dashboard is not the gateway matrix's business, but it is not a veto either: the receipt
+    reconciles it in its own vocabulary, so discharge follows that runtime's own outcome — and
+    still fails closed when the outcome is not ``restarted``.
+    """
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_latest_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "dashboard", "profile": "default", "pid": 43, "code_sha": None},
+        ],
+        outcomes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "outcome": "restarted"},
+            {"kind": "dashboard", "profile": "default", "pid": 43, "outcome": dashboard_outcome},
+        ],
+    )
+    _patch_current_fleet(monkeypatch, disk_sha, ["default"])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    err = capsys.readouterr().err
+    assert ("did not restart running gateways" in err) is warns
+    assert update_cmd._fleet_restart_pending_marker_path().exists() is warns
+
+
+@pytest.mark.parametrize(
+    ("second_outcome", "warns"),
+    [("restarted", False), ("unaccounted", True)],
+    ids=["both-restarted", "one-unaccounted"],
+)
+def test_startup_warn_fails_closed_on_a_duplicate_profile_runtime(monkeypatch, capsys, second_outcome, warns):
+    """One profile may run two serve/dashboard processes; PID identity decides each one.
+
+    #107402 review: keying the non-gateway allowance on (kind, profile) alone lets a restarted
+    sibling vouch for a second runtime of the same profile whose own outcome is ``unaccounted``.
+    No marker is written, so the receipt path decides.
+    """
+    disk_sha = "e" * 40
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_latest_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "serve", "profile": "default", "pid": 70, "code_sha": None},
+            {"kind": "serve", "profile": "default", "pid": 71, "code_sha": None},
+        ],
+        outcomes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "outcome": "restarted"},
+            {"kind": "serve", "profile": "default", "pid": 70, "outcome": "restarted"},
+            {"kind": "serve", "profile": "default", "pid": 71, "outcome": second_outcome},
+        ],
+    )
+    _patch_current_fleet(monkeypatch, disk_sha, ["default"])
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert ("did not restart running gateways" in capsys.readouterr().err) is warns

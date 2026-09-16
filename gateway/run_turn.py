@@ -1957,6 +1957,7 @@ class GatewayTurnMixin:
         persist_user_display_kind: Optional[str]
         persistence_session_id: Optional[str] = None
         persistence_owner: Optional[str] = None
+        is_new_session: bool = False
 
     async def _hmwa_prepare_turn(self, event, source, session_entry, session_key, _quick_key, run_generation):
         """Everything between session resolution and the agent run: session open, task-local env,
@@ -2047,7 +2048,7 @@ class GatewayTurnMixin:
                  if event.message_id else str(uuid.uuid4()))
         return self._PreparedTurn(
             history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
-            persist_user_display_kind, session_entry.session_id, owner,
+            persist_user_display_kind, session_entry.session_id, owner, _is_new_session,
         ), _session_env_tokens
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -2098,6 +2099,7 @@ class GatewayTurnMixin:
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
+                is_new_session=prepared.is_new_session,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
                 channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
@@ -2801,8 +2803,30 @@ class GatewayTurnMixin:
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
+        import sys
+        from gateway.turn_observer import GatewayTurnObserver
         with self._profile_scope_for_source(source):
-            return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
+            session_key = turn_kwargs.get("session_key")
+            generation = turn_kwargs.get("run_generation")
+            observer = GatewayTurnObserver(
+                platform=source.platform.value, profile=getattr(source, "profile", None) or "default",
+                channel_id=source.chat_id, session_id=session_id,
+                triggering_event_id=turn_kwargs.get("inbound_message_id") or turn_kwargs.get("event_message_id"),
+                is_new_session=turn_kwargs.pop("is_new_session", False),
+                route=self._adapter_for_source(source), loop=asyncio.get_running_loop(),
+                is_current=lambda: generation is None or self._is_session_run_current(session_key, generation),
+            )
+            response = None
+            observer.start()
+            observer.session_resolved()
+            try:
+                response = await self._run_agent_inner(
+                    message, context_prompt, history, source, session_id,
+                    turn_observer=observer, **turn_kwargs,
+                )
+                return response
+            finally:
+                observer.finish(response, exception_type=sys.exc_info()[0])
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
@@ -3464,7 +3488,11 @@ class GatewayTurnMixin:
                     ).start()
                     break
             await self._run_agent_backup_interrupt_check(turn_ctx, _interrupt_detected, interrupt_monitor)
-        return self._run_agent_timeout_result(worker, turn_ctx)
+        result = self._run_agent_timeout_result(worker, turn_ctx)
+        observer = getattr(turn_ctx, "turn_observer", None)
+        if observer is not None:
+            observer.finish(result, timed_out=True)
+        return result
 
     def _run_agent_evict_on_fallback(self, turn_ctx: TurnContext) -> None:
         """Evict the cached agent when a fallback model activated on a SUCCESSFUL run (so /model shows
@@ -3750,6 +3778,7 @@ class GatewayTurnMixin:
                 message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                is_new_session=False,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_display_kind=next_display_kind,
@@ -4072,6 +4101,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        turn_observer=None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4097,6 +4127,8 @@ class GatewayTurnMixin:
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
         )
+        turn_runner._observer = turn_observer
+        turn_ctx.turn_observer = turn_observer
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
@@ -4122,6 +4154,9 @@ class GatewayTurnMixin:
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
             _executor_task_holder[0] = worker.executor_task  # read late by _notify_long_running
             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
+            # Execution owns terminal state, before TTS, delivery or queued recursion can suspend.
+            if turn_observer is not None:
+                turn_observer.finish(response)
             self._run_agent_evict_on_fallback(turn_ctx)
 
             # Interrupted OR queued message (/queue)?

@@ -2219,6 +2219,11 @@ class BasePlatformAdapter(ABC):
         """Set the incoming-message handler (MessageEvent -> optional response str)."""
         self._message_handler = handler
 
+    def on_turn_lifecycle(self, event: Any) -> bool:
+        """Consume a platform-neutral Gateway turn event when supported. Fail-open no-op by default;
+        an adapter may translate the closed event contract into platform-native activity telemetry."""
+        return False
+
     def set_platform_event_handler(
         self, handler: Optional[Callable[[Dict[str, Any], Any], Awaitable[None]]]) -> None:
         """Install the gateway-owned normalized platform-event boundary (stable dicts + internal

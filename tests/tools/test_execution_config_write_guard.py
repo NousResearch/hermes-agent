@@ -68,7 +68,7 @@ def test_terminal_reports_direct_config_write_without_stale_rollback(tmp_path, m
     command = f"{shlex.quote(sys.executable.replace(chr(92), '/'))} -c {shlex.quote(script)}"
     result = json.loads(terminal_tool(command, task_id="terminal-config-write-guard"))
 
-    assert result["exit_code"] == 126
+    assert result["exit_code"] == 126, result
     assert "modified the active Hermes config.yaml" in result["error"]
     assert "was not rolled back" in result["error"]
     assert config_path.read_bytes() == changed
@@ -116,7 +116,7 @@ def test_terminal_detects_config_symlink_retarget(tmp_path, monkeypatch):
     command = f"{shlex.quote(sys.executable.replace(chr(92), '/'))} -c {shlex.quote(script)}"
     result = json.loads(terminal_tool(command, task_id="terminal-symlink-retarget-guard"))
 
-    assert result["exit_code"] == 126
+    assert result["exit_code"] == 126, result
     assert config_path.resolve() == target_b.resolve()
 
 

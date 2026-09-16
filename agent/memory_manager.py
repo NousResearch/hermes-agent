@@ -867,6 +867,18 @@ class MemoryManager:
                 result, session_id=session_id, source=f"{provider.name} memory prefetch",
                 config=self._external_prefetch_spill_config,
             )
+        elif isinstance(result, MemoryPrefetchResult) and result.context.strip():
+            # Keep structured providers on the same effective context path as legacy string
+            # providers. Observations are metadata only; the digest is computed later from this
+            # spilled context after all provider contexts are merged.
+            spilled_context = spill_if_oversized(
+                result.context, session_id=session_id, source=f"{provider.name} memory prefetch",
+                config=self._external_prefetch_spill_config,
+            )
+            if spilled_context != result.context:
+                result = MemoryPrefetchResult(
+                    context=spilled_context, observations=result.observations
+                )
         return result
 
     def describe_recall(self) -> str:

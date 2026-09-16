@@ -27,6 +27,65 @@ class TestToolProgressProvenance:
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
 
+    def test_chat_scoped_override_wins_over_platform(self):
+        """display.platforms.<p>.chats.<chat_id>.<key> beats the platform-wide value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "verbose",
+                        "chats": {"-1004294267446": {"tool_progress": "off"}},
+                    },
+                },
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-1004294267446"
+        ) == "off"
+        # Other chats on the same platform keep the platform-wide value.
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="8622947177"
+        ) == "verbose"
+
+    def test_chat_scoped_override_without_platform_block(self):
+        """A chats entry is authoritative even when the platform block sets nothing."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {"chats": {"12345": {"tool_progress": "log"}}},
+                },
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id=12345
+        ) == "log"
+        # No chat_id passed -> the chat override is invisible; Telegram's tier
+        # default (off, mobile inbox) applies, not the global default.
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
+
+    def test_chat_scoped_null_inherits_to_platform(self):
+        """A chat entry whose value is None inherits to the platform block, not the chat dict."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "new",
+                        "chats": {"-1004294267446": {"tool_progress": None}},
+                    },
+                },
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "tool_progress", chat_id="-1004294267446"
+        ) == "new"
+
     def test_explicit_platform_override_wins(self):
         """display.platforms.<plat>.<key> takes top priority."""
         from gateway.display_config import resolve_display_setting

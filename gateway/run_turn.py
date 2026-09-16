@@ -2923,17 +2923,17 @@ class GatewayTurnMixin:
         ):
             with suppress(Exception):
                 from agent import display as _agent_display
-                _val = resolve_display_setting(user_config, platform_key, _setting, _default)
+                _val = resolve_display_setting(user_config, platform_key, _setting, _default, chat_id=source.chat_id)
                 getattr(_agent_display, _setter)(_cast(_val))
 
         # Resolve the mode and its provenance together: null inherits, tier off is not intent.
         # A raw os.getenv here reads whichever profile's env loaded last under multiplexing
         # (#116898); get_secret resolves through the active profile's scope instead.
         progress_mode, _tool_progress_explicit = resolve_tool_progress(
-            user_config, platform_key, get_secret("HERMES_TOOL_PROGRESS_MODE"),
+            user_config, platform_key, get_secret("HERMES_TOOL_PROGRESS_MODE"), chat_id=source.chat_id,
         )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
-        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping", chat_id=source.chat_id) or "accumulate"
         _generic_status_recent: List[str] = []
         _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
 
@@ -2950,7 +2950,7 @@ class GatewayTurnMixin:
                     and not _has_platform_display_override(user_config, platform_key, setting)
                 ):
                     return "off"
-            value = resolve_display_setting(user_config, platform_key, setting, default)
+            value = resolve_display_setting(user_config, platform_key, setting, default, chat_id=source.chat_id)
             if isinstance(value, str) and value.strip().lower() == "generic":
                 return "generic" if allow_generic else "off"
             return "raw" if bool(value) else "off"

@@ -700,6 +700,64 @@ def test_review_bound_handoff_preserves_declared_artifacts(kanban_home):
         ("evidence.json", str(persisted.resolve()))
     ]
 
+def test_complete_task_registers_artifact_already_in_attachments_dir(kanban_home):
+    """A declared artifact that already sits in the task's attachments dir is an
+    attachment, whether or not this call copied it.
+
+    Workers that write a deliverable straight into ``attachments/<task>/`` — the
+    board's git-tracked convention, discoverable by reading a previous card's
+    artifacts — declare a path that needs no copy. Staging skipped those, so the
+    file was on disk with zero ``task_attachments`` rows and ``kanban_attachments``
+    returned ``[]``. Contract: registration follows the declaration, not the copy.
+    """
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="pre-placed deliverable")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+        placed = kb.task_attachments_dir(t) / "REPORT.md"
+        placed.parent.mkdir(parents=True, exist_ok=True)
+        placed.write_bytes(b"# report\n")
+
+        assert kb.complete_task(conn, t, result="ok", metadata={"artifacts": [str(placed)]})
+        attachments = kb.list_attachments(conn, t)
+        events = [e.kind for e in kb.list_events(conn, t)]
+
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("REPORT.md", str(placed.resolve()))
+    ]
+    assert placed.read_bytes() == b"# report\n"
+    assert "attached" in events
+
+
+def test_review_rollback_keeps_pre_placed_artifact(kanban_home):
+    """A file the worker placed in the attachments dir is not a staged copy, so a
+    rolled-back handoff must leave it alone — only copies this call made are
+    discardable."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="pre-placed rollback")
+        ws = kbw.resolve_workspace(kb.get_task(conn, t))
+        kbw.set_workspace_path(conn, t, ws)
+        placed = kb.task_attachments_dir(t) / "REPORT.md"
+        placed.parent.mkdir(parents=True, exist_ok=True)
+        placed.write_bytes(b"# report\n")
+        kb.claim_task(conn, t)
+        run_id = kb.get_task(conn, t).current_run_id
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("run bookkeeping failed")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(kb, "_end_or_synthesize_run", _boom)
+            with pytest.raises(RuntimeError):
+                kb.request_review(
+                    conn, t, summary="ready", metadata={"artifacts": [str(placed)]},
+                    expected_run_id=run_id)
+
+        assert kb.get_task(conn, t).status == "running"
+        assert placed.read_bytes() == b"# report\n"
+        assert kb.list_attachments(conn, t) == []
+
+
 
 def test_request_review_rollback_discards_staged_copies(kanban_home):
     """A failure after staging rolls the txn back; the copied file must go

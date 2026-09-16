@@ -29,6 +29,7 @@ from gateway.kanban_watchers_dispatcher import (
     _KanbanDispatcher,
     _log_spawn_results,
     _resolve_dispatcher_settings,
+    _warn_unresolved_assignees,
 )
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
@@ -273,6 +274,7 @@ class GatewayKanbanWatchersMixin:
         bad_ticks = 0
         last_warn_at = 0
         results: Optional[list] = None
+        warned_unresolved: set = set()
         dispatcher = _KanbanDispatcher(_kb, settings)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
@@ -290,7 +292,8 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Emergency stop (`hermes pause`): no auto-decompose or
                 # dispatch while paused; running workers finish naturally.
-                if not _kanban_dispatch_allowed():
+                dispatch_allowed = _kanban_dispatch_allowed()
+                if not dispatch_allowed:
                     bad_ticks = 0
                 else:
                     # Re-read the auto-decompose toggle live so disabling it
@@ -314,6 +317,16 @@ class GatewayKanbanWatchersMixin:
                         bad_ticks, f" Last tick held back: {held}." if held else "",
                     )
                     last_warn_at = now
+                if dispatch_allowed:
+                    # Independent of the counter above: a card whose assignee does
+                    # not resolve to a profile is classified "correctly idle", so it
+                    # never increments bad_ticks — the stall would be completely
+                    # silent. Name those cards instead of sending the operator to
+                    # profile health, which is not where the fault is.
+                    warned_unresolved = _warn_unresolved_assignees(
+                        await _to_thread_process_service(dispatcher.unresolved_assignee_cards),
+                        warned_unresolved,
+                    )
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
                 self._release_kanban_dispatcher_lock()

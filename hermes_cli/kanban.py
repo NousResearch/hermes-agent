@@ -385,6 +385,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+            advisory = kbd.assignee_advisory(task.assignee, task_id=task_id)
+            if advisory:
+                print(f"\n⚠  {advisory}", file=sys.stderr)
     return 0
 
 

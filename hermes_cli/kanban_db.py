@@ -1112,7 +1112,15 @@ def _validate_model_override(model: Optional[str], provider: Optional[str]) -> t
 
 
 def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
-    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity).
+
+    A leading ``@`` is mention-style spelling (``@default``). The dispatcher
+    resolves an assignee with :func:`hermes_cli.profiles.profile_exists`, which
+    can never match ``@default``, so an unstripped mention is accepted at create
+    time and then parks the task in ``ready`` forever with no worker and no
+    error. Strip it at the ingress every writer (create/assign/reassign/graph)
+    already shares, rather than teaching each caller.
+    """
     if assignee is None:
         return None
     from hermes_cli.profiles import normalize_profile_name
@@ -1129,7 +1137,12 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     if token in {"", "none", "-", "null"}:
         return None
 
-    return normalize_profile_name(assignee)
+    text = assignee.strip()
+    if text.startswith("@"):
+        mentionless = text.lstrip("@").strip()
+        if mentionless:
+            text = mentionless
+    return normalize_profile_name(text)
 
 
 def _resolve_project_link(

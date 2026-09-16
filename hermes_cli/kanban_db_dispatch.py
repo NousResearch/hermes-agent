@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -115,10 +116,15 @@ class DispatchResult:
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
     acting on the fallback rule rather than explicit assignments."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
-    """Ready task ids whose assignee names a control-plane lane (e.g. a Claude
-    Code terminal like ``orion-cc``), not a Hermes profile. Expected steady-state
-    on multi-lane setups, NOT operator-actionable; tracked apart so health
-    telemetry can tell "stuck" from "correctly idle"."""
+    """Ready task ids whose assignee names something other than a live Hermes
+    profile — a control-plane lane that pulls via ``claim_task`` (``orion-cc``),
+    or a name that simply does not exist. Steady-state for multi-lane setups, but
+    NOT unconditionally benign: for a card the operator did not intend as an
+    external lane this is a permanent stall, so each one also gets a
+    ``skipped_nonspawnable`` event naming the assignee and is reported by
+    ``unresolved_assignee_notice``. Creation and assignment of such a value are
+    rejected outright (`_validate_assignee_resolvable`), so reaching this bucket
+    means the row predates that guard or was written by an external tool."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
@@ -1716,6 +1722,132 @@ def dispatch_profile_allowlist_summary() -> str:
             "profile, or the config could not be read — omit the key to allow any)")
 
 
+SKIPPED_NONSPAWNABLE = "skipped_nonspawnable"
+
+
+def _record_skipped_nonspawnable(conn: sqlite3.Connection, task_id: str, assignee: str) -> None:
+    """Emit the ``skipped_nonspawnable`` event the worker-lane contract promises.
+
+    Without it an unresolvable assignee is invisible: the card sits in ``ready``
+    looking healthy, no worker ever claims it, and ``has_spawnable_ready``
+    classifies the queue as "correctly idle" so health telemetry stays silent
+    about a board that can never make progress.
+
+    Deduped on the recorded assignee so a queue stuck for hours does not grow one
+    event per tick, while a reassignment to a different unresolvable value
+    re-arms it. Called only for non-dry-run ticks.
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? ORDER BY id DESC LIMIT 1",
+        (task_id, SKIPPED_NONSPAWNABLE),
+    ).fetchone()
+    if row is not None:
+        try:
+            previous = json.loads(row["payload"] or "{}") or {}
+        except (TypeError, ValueError):
+            previous = {}
+        if previous.get("assignee") == assignee:
+            return
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, task_id, SKIPPED_NONSPAWNABLE, {
+            "assignee": assignee,
+            "reason": "assignee_does_not_resolve_to_a_profile",
+        })
+
+
+MAX_UNRESOLVED_ASSIGNEES_NAMED = 5
+
+
+def unresolved_assignee_notice(cards, *, seen: set) -> Optional[str]:
+    """Operator notice for cards the dispatcher can never spawn for; ``None`` when
+    there is nothing new to report.
+
+    *cards* are ``(task_id, assignee)`` pairs or ``(board_slug, task_id,
+    assignee)`` triples. *seen* carries the signatures already reported and is
+    updated in place, so a deliberately non-Hermes lane (``orion-cc``, pulled by
+    a terminal via ``claim_task``) is reported once and stays quiet afterwards,
+    while a genuinely new unresolvable card is always named.
+
+    This exists because the "stuck" health signal cannot see this failure:
+    ``has_spawnable_ready`` reports an unresolvable assignee as "correctly idle",
+    so a permanently stalled queue trips no counter. Naming the cards is the
+    difference between a two-hour detour into profile health and a one-line fix.
+    """
+    fresh = [entry for entry in (cards or []) if repr(entry) not in seen]
+    if not fresh:
+        return None
+    seen.update(repr(entry) for entry in fresh)
+    def _label(entry) -> str:
+        task_id, assignee = entry[-2], entry[-1]
+        return f"{assignee!r} ({task_id})"
+
+    listed = ", ".join(_label(entry) for entry in fresh[:MAX_UNRESOLVED_ASSIGNEES_NAMED])
+    if len(fresh) > MAX_UNRESOLVED_ASSIGNEES_NAMED:
+        listed += f", +{len(fresh) - MAX_UNRESOLVED_ASSIGNEES_NAMED} more"
+    return (
+        f"kanban dispatcher: {len(fresh)} ready card(s) name an assignee that does not "
+        f"resolve to a Hermes profile, so no worker can be spawned for them and they will "
+        f"sit in 'ready' indefinitely: {listed}. This is NOT a profile-health problem — "
+        f"venv, PATH and credentials are irrelevant here. Fix each with "
+        f"`hermes kanban assign <task_id> <profile>` (see `hermes kanban assignees`), or "
+        f"confirm the assignee belongs to an external worker lane that pulls tasks itself."
+    )
+
+
+def assignee_advisory(assignee: Optional[str], *, task_id: str = "") -> Optional[str]:
+    """Creation-time advisory for an assignee the dispatcher cannot route; ``None``
+    when the name resolves (or ``profile_exists`` cannot be imported).
+
+    Deliberately a warning rather than an error. A name that resolves to no local
+    profile may legitimately belong to an external worker lane that pulls tasks
+    itself, and a creator may be about to create the profile; refusing the write
+    would fight both. What must not survive is the *silent* version — a card that
+    looks healthy in ``ready`` and is never picked up, while the dispatcher's
+    health telemetry reads the queue as "correctly idle".
+    """
+    if not assignee:
+        return None
+    profile_exists = _profile_exists_fn()
+    if profile_exists is None or profile_exists(assignee):
+        return None
+    from hermes_cli.profiles import list_profile_names
+
+    known = ", ".join(list_profile_names()) or "(none)"
+    card = f" {task_id}." if task_id else " this card."
+    return (
+        f"assignee {assignee!r} does not resolve to a Hermes profile, so no worker will "
+        f"be spawned for{card} It will sit in 'ready'. Known profiles: {known}. Fix with "
+        f"`hermes kanban assign <task_id> <profile>`, or ignore this if the assignee "
+        f"belongs to an external worker lane that pulls tasks itself."
+    )
+
+
+def unresolved_assignee_ready(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """``(task_id, assignee)`` for ready+assigned+unclaimed tasks whose assignee
+    does not resolve to a live Hermes profile.
+
+    These are the cards the dispatcher can never spawn for — and the ones health
+    telemetry reports as "correctly idle", so a permanently stalled queue is
+    indistinguishable from an idle one unless a caller names them.
+
+    Identity-agnostic by construction: there is no registry of external lanes,
+    so a deliberate non-Hermes lane (``orion-cc``, pulled by a terminal via
+    ``claim_task``) appears here too. Callers must word the finding as *"does not
+    resolve to a profile"*, never as *"broken"*.
+    """
+    profile_exists = _profile_exists_fn()
+    if profile_exists is None:
+        return []
+    rows = conn.execute(
+        "SELECT id, assignee FROM tasks "
+        "WHERE status = ? AND claim_lock IS NULL "
+        "  AND assignee IS NOT NULL AND trim(assignee) <> '' "
+        "ORDER BY id",
+        ("ready",),
+    ).fetchall()
+    return [(row["id"], row["assignee"]) for row in rows if not profile_exists(row["assignee"])]
+
+
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
@@ -2001,9 +2133,14 @@ def _dispatch_lane_task(
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
+    # A card parked here is not silent, though: the event below is the only trace
+    # that it is unroutable, and it is what ``unresolved_assignee_ready`` and the
+    # dispatcher's health notice point at.
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        if not dry_run:
+            _record_skipped_nonspawnable(conn, task_id, assignee)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.

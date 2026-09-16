@@ -395,6 +395,7 @@ import {
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { electronOwnedUpdateEnvironment } from './update-owner'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
@@ -4605,12 +4606,12 @@ async function applyUpdatesPosixHandoff(opts: any) {
 
   const child = spawnUpdaterProcess(handoff.command, args, {
     cwd: HERMES_HOME,
-    env: {
+    env: electronOwnedUpdateEnvironment({
       ...process.env,
       HERMES_HOME,
       HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
       PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
-    },
+    }),
     detached: true,
     stdio: 'ignore'
   })

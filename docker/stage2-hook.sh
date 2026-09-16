@@ -514,6 +514,67 @@ elif ! grep -q '^API_SERVER_KEY=..*' "$HERMES_HOME/.env" 2>/dev/null; then
     fi
 fi
 
+# --- Sync deploy-injected Nous routing overrides into every profile .env ---
+# Hosted deploys point an instance at a non-production Portal / inference
+# host with HERMES_PORTAL_BASE_URL and NOUS_INFERENCE_BASE_URL in the
+# container environment, and run the gateway with GATEWAY_MULTIPLEX_PROFILES.
+# Under multiplex, hermes_cli.auth_nous resolves both through the profile
+# secret scope (agent.secret_scope.get_secret, #108319 / #111809), which is
+# built from <profile>/.env and never falls back to os.environ. A value that
+# lives only in the process env is therefore invisible on every routed turn:
+# the Portal allowlist then heals the URL to production, the staging refresh
+# token is POSTed to portal.nousresearch.com, the Portal answers
+# invalid_grant, and the login is quarantined ("No access token found for
+# Nous Portal login") within seconds of every boot. The two commits that
+# scoped these reads assign the deploy this duty: "Deployments that set
+# HERMES_PORTAL_BASE_URL only in the process env must carry it in each served
+# profile's .env". The container value wins over a stale line (the platform
+# is the authority on where this instance routes); operators who never set
+# the variable are untouched. Idempotent: an already-correct line is left
+# alone so the volume is not rewritten every boot.
+sync_routing_override() {
+    _name="$1"
+    _value="$2"
+    _file="$3"
+    if refuse_symlinked_path "sync $_name" "$_file"; then
+        return 0
+    fi
+    if grep -qxF -- "$_name=$_value" "$_file" 2>/dev/null; then
+        return 0
+    fi
+    if [ ! -f "$_file" ]; then
+        # Owner-only from the first instant, hermes-owned (same shape as the
+        # API_SERVER_KEY bootstrap above).
+        if ! (umask 077 && as_hermes touch "$_file") 2>/dev/null; then
+            echo "[stage2] Warning: could not create $_file — $_name will not reach this profile's secret scope"
+            return 0
+        fi
+    fi
+    # Rewrite in place (redirect keeps inode, owner and mode) so a stale value
+    # is replaced, not shadowed by a second assignment. `grep -v` exits 1 when
+    # nothing remains (new or single-line file) — that is not an error here.
+    # Guarded: a read-only volume degrades to a warning, never a boot abort
+    # under `set -e`.
+    if _rewritten=$( { grep -v -- "^$_name=" "$_file" 2>/dev/null || true; } ; printf '%s=%s\n' "$_name" "$_value") \
+        && printf '%s\n' "$_rewritten" > "$_file" 2>/dev/null; then
+        echo "[stage2] Synced $_name from the container environment into $_file"
+    else
+        echo "[stage2] Warning: could not write $_name to $_file (read-only volume?) — routed turns will fall back to the production Portal"
+    fi
+    unset _rewritten
+}
+
+for _routing_name in HERMES_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
+    eval "_routing_value=\${$_routing_name:-}"
+    [ -n "$_routing_value" ] || continue
+    sync_routing_override "$_routing_name" "$_routing_value" "$HERMES_HOME/.env"
+    for _profile_dir in "$HERMES_HOME"/profiles/*/; do
+        [ -d "$_profile_dir" ] || continue
+        sync_routing_override "$_routing_name" "$_routing_value" "${_profile_dir}.env"
+    done
+done
+unset _routing_name _routing_value _profile_dir
+
 # .env holds API keys and secrets — restrict to owner-only access. Applied
 # unconditionally (not only on first-seed) so a host-mounted .env that was
 # created with a permissive umask gets tightened on every container start.

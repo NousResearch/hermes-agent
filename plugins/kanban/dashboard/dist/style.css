@@ -347,6 +347,33 @@
   animation: hermes-kanban-drawer-in 180ms ease-out;
 }
 
+/* Mobile fix: on small screens the drawer covers nearly the entire viewport
+   (92vw), leaving too little room to tap the shade overlay to close. At
+   <=768px we make the drawer full-width and add a persistent close bar at
+   the top with a large touch target so collapsing always works. Fixes #33358. */
+@media (max-width: 768px) {
+  .hermes-kanban-drawer {
+    width: 100vw;
+    border-left: none;
+  }
+
+  .hermes-kanban-drawer-head {
+    padding: 0.75rem 1rem;
+    min-height: 52px;
+  }
+
+  .hermes-kanban-drawer-close {
+    font-size: 1.5rem;
+    padding: 0.25rem 0.5rem;
+    margin: -0.25rem -0.5rem;
+    min-width: 44px;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 @keyframes hermes-kanban-drawer-in {
   from { transform: translateX(100%); opacity: 0.3; }
   to   { transform: translateX(0);    opacity: 1; }

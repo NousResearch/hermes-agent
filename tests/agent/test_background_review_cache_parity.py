@@ -20,6 +20,7 @@ def _make_agent_stub(agent_cls):
     agent.model = "test-model"
     agent.platform = "test"
     agent.provider = "openai"
+    agent.requested_provider = agent.provider
     agent.session_id = "sess-123"
     agent.quiet_mode = True
     agent._memory_store = None
@@ -237,6 +238,70 @@ def test_review_fork_inherits_prefill_and_provider_routing():
     ), "fork prefill aliases the parent's dicts (needs deepcopy)"
     assert init_kwargs.get("providers_allowed") == agent.providers_allowed
     assert init_kwargs.get("provider_sort") == agent.provider_sort
+
+
+def test_review_fork_inherits_named_provider_identity_and_opaque_credential():
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    def token_source():
+        raise AssertionError("credential source must remain opaque")
+
+    agent.model = "inventory-model"
+    agent.provider = "custom"
+    agent.requested_provider = "custom:databricks"
+    agent.base_url = "https://workspace.invalid/anthropic"
+    agent.api_mode = "anthropic_messages"
+    agent.api_key = token_source
+    captured = {}
+    _Recorder = _make_recorder_class(captured)
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    init_kwargs = captured["init_kwargs"]
+    assert init_kwargs["model"] == agent.model
+    assert init_kwargs["provider"] == "custom"
+    assert init_kwargs["requested_provider"] == "custom:databricks"
+    assert init_kwargs["base_url"] == agent.base_url
+    assert init_kwargs["api_mode"] == agent.api_mode
+    assert init_kwargs["api_key"] is token_source
+
+
+def test_routed_review_fork_uses_resolved_requested_provider_identity():
+    import run_agent
+    import agent.background_review as bg_review
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    routed_token = object()
+    resolved = {
+        "provider": "custom",
+        "requested_provider": "custom:routed-review",
+        "model": "routed-model",
+        "api_key": routed_token,
+        "base_url": "https://review.invalid/v1",
+        "api_mode": "chat_completions",
+    }
+
+    with patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=resolved,
+    ):
+        runtime = bg_review._resolve_review_runtime(
+            agent,
+            {"provider": "custom:routed-review", "model": "routed-model"},
+        )
+
+    kwargs = bg_review._fork_init_kwargs(agent, runtime, routed=True, max_iterations=3)
+    assert runtime["requested_provider"] == "custom:routed-review"
+    assert kwargs["provider"] == "custom"
+    assert kwargs["requested_provider"] == "custom:routed-review"
+    assert kwargs["api_key"] is routed_token
 
 
 def test_review_fork_pins_session_start_and_session_id():

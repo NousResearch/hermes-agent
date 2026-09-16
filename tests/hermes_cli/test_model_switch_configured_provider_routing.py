@@ -48,6 +48,7 @@ def _run_switch(
     validation=_ACCEPTED,
     current_model="old-model",
     current_base_url="",
+    runtime_resolution=None,
 ):
     """Drive ``switch_model`` with the resolution chain mocked out.
 
@@ -66,7 +67,7 @@ def _run_switch(
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
          patch(
              "hermes_cli.runtime_provider.resolve_runtime_provider",
-             return_value={
+             return_value=runtime_resolution or {
                  "api_key": "***",
                  "base_url": current_base_url or "http://resolved/v1",
                  "api_mode": "",
@@ -80,6 +81,79 @@ def _run_switch(
             user_providers=user_providers or {},
             custom_providers=custom_providers or [],
         )
+
+
+def test_duplicate_aliases_of_one_configured_provider_preserve_active_identity():
+    token_source = lambda: "opaque-token"
+    provider_config = {
+        "name": "Databricks Unity AI Gateway",
+        "provider_key": "databricks",
+        "base_url": "https://workspace.invalid/serving-endpoints",
+        "models": {
+            "inventory-model": {
+                "api_mode": "anthropic_messages",
+                "base_url": "https://workspace.invalid/anthropic",
+            }
+        },
+    }
+    result = _run_switch(
+        raw_input="inventory-model",
+        current_provider="custom:databricks",
+        current_model="old-model",
+        current_base_url="https://workspace.invalid/old",
+        user_providers={"databricks": provider_config},
+        custom_providers=[provider_config],
+        runtime_resolution={
+            "provider": "custom",
+            "requested_provider": "custom:databricks",
+            "api_key": token_source,
+            "base_url": "https://workspace.invalid/anthropic",
+            "api_mode": "anthropic_messages",
+        },
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:databricks"
+    assert result.requested_provider == "custom:databricks"
+    assert result.runtime_provider == "custom"
+    assert result.api_key is token_source
+    assert result.base_url == "https://workspace.invalid/anthropic"
+    assert result.api_mode == "anthropic_messages"
+
+
+def test_distinct_configured_providers_with_same_model_remain_ambiguous():
+    result = _run_switch(
+        raw_input="shared-model",
+        current_provider="openai-codex",
+        user_providers={
+            "provider-one": {"base_url": "https://one.invalid/v1", "models": ["shared-model"]},
+            "provider-two": {"base_url": "https://two.invalid/v1", "models": ["shared-model"]},
+        },
+    )
+
+    assert result.success is False
+    assert "multiple configured providers" in result.error_message
+    assert "provider-one" in result.error_message
+    assert "provider-two" in result.error_message
+
+
+def test_catalog_only_model_routes_through_its_configured_provider():
+    result = _run_switch(
+        raw_input="catalog-model",
+        current_provider="openai-codex",
+        user_providers={
+            "enterprise-gateway": {
+                "base_url": "https://gateway.invalid/v1",
+                "models": ["verified-model"],
+                "catalog_models": ["verified-model", "catalog-model"],
+            },
+        },
+        validation=_REJECTED,
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "enterprise-gateway"
+    assert result.new_model == "catalog-model"
 
 
 

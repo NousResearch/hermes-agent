@@ -133,6 +133,31 @@ def test_switch_model_without_config_context_length():
         assert call_kwargs.get("config_context_length") is None
 
 
+def test_switch_model_preserves_resolved_and_requested_provider_identities():
+    agent = _make_agent_with_compressor(config_context_length=None)
+    agent.provider = "custom"
+    agent.requested_provider = "custom:databricks"
+    agent.model = "system.ai.claude-sonnet-current"
+    agent.base_url = "https://workspace.example/ai-gateway/anthropic"
+    token_source = lambda: "refreshable-token"
+    agent._create_openai_client = lambda kwargs, **_kwargs: MagicMock(api_key=kwargs["api_key"])
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=202_752):
+        agent.switch_model(
+            "system.ai.glm-5-3",
+            "custom",
+            new_requested_provider="custom:databricks",
+            api_key=token_source,
+            base_url="https://workspace.example/ai-gateway/mlflow/v1",
+            api_mode="chat_completions",
+        )
+
+    assert agent.provider == "custom"
+    assert agent.requested_provider == "custom:databricks"
+    assert agent.api_key is token_source
+    assert agent._client_kwargs["api_key"] is token_source
+
+
 def test_switch_model_omitted_base_url_preserves_direct_openai_capability():
     """A same-provider switch resolves capabilities from the retained URL."""
     agent = _make_agent_with_compressor(config_context_length=None)

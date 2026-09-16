@@ -115,7 +115,7 @@ _KNOWN_PROVIDER_KEYS = {
     # own config writer has historically emitted it. Accept it so self-written configs don't warn.
     "provider",
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
-    "api_mode", "transport", "model", "default_model", "models", "models_discovered",
+    "api_mode", "transport", "model", "default_model", "models", "catalog_models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
 
@@ -242,6 +242,9 @@ def _normalize_custom_provider_entry(
     # ``models_discovered`` marks a mapping auto-discovered by Hermes, not hand-curated.
     models_dict, discovered = _normalize_provider_models(entry.get("models"))
     _put("models", models_dict)
+    catalog_models, _ = _normalize_provider_models(entry.get("catalog_models"))
+    if catalog_models:
+        normalized["catalog_models"] = list(catalog_models)
     if entry.get("models_discovered") is True or discovered:
         normalized["models_discovered"] = True
 
@@ -283,7 +286,7 @@ def _custom_provider_entry_to_provider_config(
 
     provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
     for field in (
-        "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
+        "name", "api_key", "key_env", "key_cmd", "models", "catalog_models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify"):
         if field in normalized:

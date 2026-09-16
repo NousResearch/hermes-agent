@@ -7904,6 +7904,7 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        no_tools: bool = False,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (
@@ -7998,6 +7999,7 @@ class AIAgent:
                     persist_user_display_kind=persist_user_display_kind,
                     persist_user_display_metadata=persist_user_display_metadata,
                     moa_config=moa_config,
+                    no_tools=no_tools,
                 )
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:

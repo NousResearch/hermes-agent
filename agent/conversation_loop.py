@@ -1431,6 +1431,7 @@ def run_conversation(
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    no_tools: bool = False,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -2107,7 +2108,13 @@ def run_conversation(
         # exactly the point the breakpoints were meant to protect. Marking
         # last also keeps breakpoints off messages that the orphan sweep or
         # the thinking-only drop is about to remove or merge away.
-        tools_for_api = agent.tools
+        # Chat mode (no_tools): send the turn with an empty tool list so the
+        # model returns a plain completion — no tool loop, no action side
+        # effects, lower latency. Adapters treat an empty list as "no tools"
+        # and omit the ``tools`` key entirely. ``agent.tools`` is the canonical
+        # per-session registry, so we substitute a fresh empty list here rather
+        # than mutating it — the next (normal) turn still sees the full set.
+        tools_for_api = [] if no_tools else agent.tools
         if agent._use_prompt_caching and agent.provider != "moa":
             _static_system_prefix = getattr(agent, "_cached_system_prompt_static", None)
             _initial_cache_plan = build_prompt_cache_plan(

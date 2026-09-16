@@ -71,6 +71,12 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    # Tool-less chat turn (opt-in via ``mode: "chat"``). Used by the desktop's
+    # voice conversation loop: replies should be a plain completion — no tool
+    # loop, no action side effects, lower latency — because a spoken
+    # back-and-forth is a conversation, not an action request. Absent/other
+    # values keep the normal tool-enabled agent turn.
+    chat_mode = params.get("mode") == "chat"
     # Typed bare stop phrase while backend voice mode is active ends the
     # voice chat instead of sending "stop" to the agent — the typed twin of
     # the spoken stop phrase (PR #73106), applied at the ONE server-side
@@ -386,7 +392,7 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, chat_mode=chat_mode)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

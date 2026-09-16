@@ -1019,6 +1019,7 @@ def _(rid, params: dict) -> dict:
             "learning.deck",
             "learning.progress",
             "learning.review",
+            "prompt.chat_mode",
         ],
     })
 

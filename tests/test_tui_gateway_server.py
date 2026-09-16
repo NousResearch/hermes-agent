@@ -5074,6 +5074,75 @@ class _RecordingAgent:
         return {"final_response": "", "messages": []}
 
 
+class _NoToolsCapturingAgent(_RecordingAgent):
+    """Agent whose ``run_conversation`` declares ``no_tools`` explicitly — like
+    the real ``AIAgent`` — so the server's signature-gated forwarding matches
+    and we can observe the value that reaches the turn."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.observed_no_tools = "unset"
+
+    def run_conversation(
+        self, prompt, conversation_history=None, stream_callback=None, no_tools=False, **_kwargs
+    ):
+        self.observed_no_tools = no_tools
+        return super().run_conversation(prompt)
+
+
+def test_run_prompt_submit_chat_mode_runs_the_turn_tool_less(monkeypatch, tmp_path):
+    """``chat_mode=True`` forwards ``no_tools=True`` into the agent turn."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    agent = _NoToolsCapturingAgent([])
+    session = _session(session_key="s-chat", agent=agent, running=True)
+    server._sessions["sid-chat"] = session
+    try:
+        server._run_prompt_submit("rid", "sid-chat", session, "hey", chat_mode=True)
+        assert agent.observed_no_tools is True
+    finally:
+        server._sessions.pop("sid-chat", None)
+
+
+def test_run_prompt_submit_default_keeps_tools(monkeypatch, tmp_path):
+    """Without chat mode the turn runs the normal tool-enabled agent."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    agent = _NoToolsCapturingAgent([])
+    session = _session(session_key="s-normal", agent=agent, running=True)
+    server._sessions["sid-normal"] = session
+    try:
+        server._run_prompt_submit("rid", "sid-normal", session, "hey")
+        assert agent.observed_no_tools is False
+    finally:
+        server._sessions.pop("sid-normal", None)
+
+
+def test_prompt_submit_mode_chat_dispatches_tool_less(monkeypatch, tmp_path):
+    """End-to-end: ``prompt.submit`` with ``mode: "chat"`` reaches the turn as
+    a tool-less run (proves the handler reads the mode flag)."""
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": False}})
+    fake_title = types.ModuleType("agent.title_generator")
+    setattr(fake_title, "maybe_auto_title", lambda *args, **kwargs: None)
+    monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title)
+
+    agent = _NoToolsCapturingAgent([])
+    server._sessions["sid-e2e"] = _session(session_key="s-e2e", agent=agent)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "turn-1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid-e2e", "text": "hey", "mode": "chat"},
+            }
+        )
+        assert resp["result"]["status"] == "streaming"
+        assert agent.observed_no_tools is True
+    finally:
+        server._sessions.pop("sid-e2e", None)
+
+
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_run_prompt_submit_requeues_foreign_completion(
     monkeypatch, tmp_path, exit_code

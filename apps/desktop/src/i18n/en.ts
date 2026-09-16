@@ -2698,6 +2698,10 @@ export const en: Translations = {
       artifacts: 'Artifacts',
       cron: 'Scheduled jobs'
     },
+    // Header row of the nav block — the label doubles as the collapse toggle.
+    navMenu: 'Menu',
+    navHide: 'Hide menu',
+    navShow: 'Show menu',
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
     clearSearch: 'Clear search',

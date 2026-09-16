@@ -67,6 +67,10 @@ function formatRunTime(seconds?: null | number): string {
 }
 
 interface SidebarCronJobsSectionProps {
+  // Extra cap for the scroll body (twMerge-resolved against the built-in
+  // `max-h-72`). The sidebar raises it while its nav block is collapsed, so the
+  // freed height reaches this section too and not just the Recents list.
+  capClassName?: string
   jobs: CronJob[]
   label: string
   max?: number
@@ -81,6 +85,7 @@ interface SidebarCronJobsSectionProps {
 }
 
 export function SidebarCronJobsSection({
+  capClassName,
   jobs,
   label,
   max = 50,
@@ -192,7 +197,12 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="scrollbar-fade flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
+        <SidebarGroupContent
+          className={cn(
+            'scrollbar-fade flex max-h-72 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible',
+            capClassName
+          )}
+        >
           {shown.map(job => (
             <CronJobSidebarRow
               busy={triggeringJobIds.has(job.id)}

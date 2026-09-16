@@ -35,6 +35,7 @@ export const SIDEBAR_FILTERED_PAGE_SIZE = 300
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
+const SIDEBAR_NAV_COLLAPSED_STORAGE_KEY = 'hermes.desktop.sidebarNavCollapsed'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
@@ -220,6 +221,11 @@ export const $sidebarRecentsOpen = atom(true)
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
 export const $sidebarCronOpen = persistentAtom(SIDEBAR_CRON_OPEN_STORAGE_KEY, false, Codecs.bool)
+// The navigation block (New session + the route rows, built-in and contributed)
+// is ~200px of the sidebar's top. Collapsing it hands that space to the session
+// lists below. Window presentation, so it persists here rather than per
+// connection or profile.
+export const $sidebarNavCollapsed = persistentAtom(SIDEBAR_NAV_COLLAPSED_STORAGE_KEY, false, Codecs.bool)
 // Messaging platform sections collapse by default (they can be numerous and
 // tall). We persist the ids the user has *explicitly expanded*, so the default
 // stays collapsed unless they've opened a platform before.
@@ -613,6 +619,10 @@ export function setSidebarRecentsOpen(open: boolean) {
 
 export function setSidebarCronOpen(open: boolean) {
   $sidebarCronOpen.set(open)
+}
+
+export function toggleSidebarNavCollapsed() {
+  $sidebarNavCollapsed.set(!$sidebarNavCollapsed.get())
 }
 
 export function toggleSidebarMessagingOpen(sourceId: string) {

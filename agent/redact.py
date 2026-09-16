@@ -197,6 +197,17 @@ _PREFIX_PATTERNS = [
     r"glwt-[A-Za-z0-9_\-]{10,}",        # GitLab workspace token
     r"GR1348941[A-Za-z0-9_\-]{10,}",    # GitLab legacy runner registration token
     r"pk-lf-[A-Za-z0-9\-]{8,}",         # Langfuse public key (sk-lf- already covered by sk- pattern)
+    # JWT — three dot-separated base64url segments starting eyJ. OpenRouter's
+    # content filter tags JWTs as [SECRET:json-web-token] and 403s the whole
+    # session (ops-triage 2026-09-11; 7 live JWTs scrubbed from state.db
+    # 2026-09-13). Segment floors {8,} keep normal prose sentences with dots
+    # from matching.
+    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+    # Google OAuth refresh token — raw form starts "1//" (2026-09-13: a
+    # subagent echoed a full Authorization header built from google_token.json
+    # into session history; 4 rows leaked, filter 403s as
+    # [SECRET:...refresh_token]). Seen lengths 60-103 chars; floor {35,}.
+    r"1//[A-Za-z0-9_.\-]{35,}",
 ]
 
 # ENV assignment: KEY=value where KEY carries a secret-like name. Uppercase keys

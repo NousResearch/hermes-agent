@@ -47,7 +47,7 @@ def test_remove_alias_whose_profile_is_gone(isolated_home, capsys):
     assert "Removed alias 'petcare'" in capsys.readouterr().out
 
 
-def test_remove_never_unlinks_a_file_that_is_not_a_wrapper(isolated_home):
+def test_remove_never_unlinks_a_file_that_is_not_a_wrapper(isolated_home, capsys):
     """Dropping the profile check is safe only because removal stays name- and
     content-guarded: it refuses a traversal-shaped name and only unlinks a file
     that reads as a Hermes wrapper."""
@@ -60,6 +60,9 @@ def test_remove_never_unlinks_a_file_that_is_not_a_wrapper(isolated_home):
     )
 
     assert not_a_wrapper.exists()
+    # A dead end must point at the tool that surfaces these mismatches (#90983).
+    out = capsys.readouterr().out
+    assert "hermes doctor" in out and "Orphan alias" in out
 
 
 def test_create_still_requires_an_existing_profile(isolated_home):

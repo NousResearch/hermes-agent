@@ -265,6 +265,73 @@ class TestCommandBoundaryFinalization:
         assert len(list(directory.glob("update_*.json"))) == 1
 
 
+    def test_boundary_recovers_receipt_after_state_loss(
+        self, receipt_home, monkeypatch
+    ):
+        """End-to-end through the real cmd_update boundary: an update that loses
+        its module singleton on a failing path must still leave a `failed`
+        receipt (real exit code, stop reason, steps) instead of nothing at all
+        (#112465)."""
+        from types import SimpleNamespace
+
+        from hermes_cli import main as hermes_main
+
+        def _fake_impl(args, gateway_mode):
+            ur.begin_update_receipt()
+            ur.record_step("git_pull", True, "updated checkout")
+            ur.record_step("fleet_settlement", False, "settlement check failed closed")
+            ur._current = None  # module state lost before the boundary finalizes
+            sys.exit(1)
+
+        monkeypatch.setattr(update_cmd, "_cmd_update_impl", _fake_impl)
+        monkeypatch.setattr(
+            hermes_main, "detect_install_method", lambda *a, **k: "git", raising=False
+        )
+        monkeypatch.setattr(
+            hermes_main,
+            "_install_hangup_protection",
+            lambda gateway_mode: None,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            hermes_main, "_finalize_update_output", lambda state: None, raising=False
+        )
+
+        class _FakeLock:
+            holder = None
+
+            def acquire(self):
+                return True
+
+            def release(self):
+                pass
+
+        import hermes_cli.update_lock as update_lock_mod
+
+        monkeypatch.setattr(update_lock_mod, "UpdateLock", _FakeLock)
+
+        args = SimpleNamespace(
+            check=False, gateway=False, branch=None, yes=False,
+            force=False, force_venv=False,
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            hermes_main.cmd_update(args)
+
+        assert exc_info.value.code == 1
+        latest = ur.read_latest_receipt()
+        assert latest is not None
+        assert latest["outcome"] == "failed"
+        assert latest["exit_code"] == 1
+        assert latest["stop_reason"] == "sys.exit(1)"
+        assert [step["name"] for step in latest["steps"]] == ["git_pull", "fleet_settlement"]
+        # exactly-once: the recovered record is rewritten in place, not duplicated
+        directory = receipt_home / "logs" / "update_receipts"
+        assert len(list(directory.glob("update_*.json"))) == 1
+        assert json.loads(next(directory.glob("update_*.json")).read_text(encoding="utf-8"))[
+            "outcome"
+        ] == "failed"
+
+
 class TestFleetClassification:
     def _fleet_with(self, monkeypatch, tmp_path, record, expected_sha="a" * 40):
         """Run collect_fleet_versions against one fake default profile."""

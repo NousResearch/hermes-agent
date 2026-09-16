@@ -8,15 +8,20 @@ a fleet E2E (that lives in the CI install/update harness).
 
 Invariants pinned, and WHERE each is enforced:
 
-1. RECEIPT ALWAYS FINALIZED — ``begin → steps → finalize`` writes a
+1. RECEIPT ALWAYS DURABLE — ``begin → steps → finalize`` writes a
    parseable receipt for success/failed/refused (#91283 made every
-   post-begin run leave a record). A begun-but-never-finalized run
-   (simulated crash) writes NOTHING to disk, so the reader the Desktop
-   uses (``read_latest_receipt``, surfaced via
-   ``/api/hermes/update/receipt`` — #92780) can never interpret a crash
-   as success. The HTTP-layer gating of an ``outcome == "running"``
-   receipt is already pinned in test_update_receipt_endpoint.py and is
-   deliberately not duplicated here.
+   post-begin run leave a record), and ``begin`` seeds it on disk
+   immediately: the module singleton is the only other copy of a run, so
+   a run whose singleton is lost (module eviction / re-import) used to
+   leave NOTHING behind — which is #112465. The seeded record is
+   ``outcome == "running"`` and a lost run is finalized from it at the
+   command boundary, never left dangling. What a crash must never do is
+   READ as success: the Desktop's reader (``read_latest_receipt``,
+   surfaced via ``/api/hermes/update/receipt`` — #92780) sees either
+   ``running`` or a terminal non-success. The HTTP-layer gating of an
+   ``outcome == "running"`` receipt is pinned in
+   test_update_receipt_endpoint.py and is deliberately not duplicated
+   here.
 
 2. SUCCESS IMPLIES ACCOUNTING — #92902 made the pre-update plan the
    restart worklist. The final refuse-success decision is INLINE in
@@ -39,6 +44,8 @@ Only paths/env are monkeypatched; every receipt is produced by the real
 """
 
 import json
+import os
+import time
 
 import pytest
 
@@ -70,6 +77,11 @@ def _receipt_files(home):
     if not directory.is_dir():
         return []
     return sorted(directory.glob("*.json"))
+
+
+def _per_run_files(home):
+    """The per-run records (``update_<id>.json``); ``latest.json`` is a pointer."""
+    return [path for path in _receipt_files(home) if path.name.startswith("update_")]
 
 
 def _plan_with_runtimes(records):
@@ -111,27 +123,46 @@ class TestReceiptAlwaysFinalized:
         assert latest is not None
         assert latest["outcome"] == outcome
 
-    def test_nothing_on_disk_until_finalize(self, receipt_home):
-        """The receipt is written atomically at finalize — a run that is
-        still going (or that dies) has NO on-disk artifact to misread."""
+    def test_running_receipt_is_durable_before_finalize(self, receipt_home):
+        """`begin` seeds the run on disk and every step rewrites it (#112465):
+        losing in-memory state can no longer erase the fact that an update was
+        attempted."""
         ur.begin_update_receipt()
         ur.record_step("pre_update_backup", True)
-        assert _receipt_files(receipt_home) == []
+
+        records = _per_run_files(receipt_home)
+        assert len(records) == 1
+        # No pointer yet: `latest.json` still names the last FINALIZED run, so an in-flight
+        # run cannot hide a previous interrupted update's obligation (#98022).
+        assert not (receipt_home / "logs" / "update_receipts" / "latest.json").exists()
+
+        payload = json.loads(records[0].read_text(encoding="utf-8"))
+        assert payload["outcome"] == "running"
+        assert payload["finished_at"] is None
+        assert payload["steps"][0]["name"] == "pre_update_backup"
+        # ...and the reader can therefore report no success at all for this run.
+        assert ur.read_latest_receipt() is None
 
     def test_crash_without_finalize_never_claims_success(self, receipt_home):
-        """Simulated crash: begin + steps, then the process dies (fresh
-        module state). The Desktop's reader (#92780 reads the receipt via
-        read_latest_receipt) must see NO successful update."""
+        """Simulated crash: begin + steps, then the process dies (fresh module
+        state). A durable record is fine; a false success is not — the reader
+        the Desktop uses (#92780 reads read_latest_receipt) must never be able
+        to interpret the crash as a completed update."""
         ur.begin_update_receipt()
         ur.record_step("git_pull", True)
         ur.record_step("pip_install", True)
         # Crash: module singleton is gone, finalize never ran.
         ur._current = None
 
-        assert _receipt_files(receipt_home) == []
+        records = _per_run_files(receipt_home)
+        assert len(records) == 1
+        durable = json.loads(records[0].read_text(encoding="utf-8"))
+        assert durable["outcome"] == "running"
+        assert durable["outcome"] != "success"
+        assert durable["finished_at"] is None
+        # The reader must not see a success either way (no receipt at all, or a
+        # non-terminal one — never `success`).
         latest = ur.read_latest_receipt()
-        # No receipt at all — the reader cannot report success. If this
-        # ever returns a dict, it must not claim a completed success.
         assert latest is None or latest.get("outcome") != "success"
 
     def test_boundary_safety_net_records_crash_as_not_success(
@@ -145,6 +176,238 @@ class TestReceiptAlwaysFinalized:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["outcome"] == "failed"
         assert ur.read_latest_receipt()["outcome"] == "failed"
+
+
+class TestFailedReceiptSurvivesStateLoss:
+    """#112465 — a failed run must still leave a terminal receipt when module
+    state is lost. ``_current`` is the only other copy of the run, so losing it
+    used to mean the failed update vanished entirely (no ``update_*.json``, a
+    ``latest.json`` still pointing at an older update)."""
+
+    def _lost_singleton_run(self):
+        """A run that got as far as a failed restart/settlement, then lost the
+        module singleton before anything was finalized."""
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", True, "updated checkout")
+        ur.record_step("gateway_restart", False, "settlement check failed closed")
+        ur._current = None  # module eviction / re-import before the boundary
+        return ur._receipt_dir()
+
+    def test_failed_receipt_is_recovered_and_finalized(self, receipt_home):
+        self._lost_singleton_run()
+
+        path = ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+
+        assert path is not None and path.is_file()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "failed"
+        assert payload["exit_code"] == 1
+        assert payload["stop_reason"] == "sys.exit(1)"
+        assert payload["finished_at"] is not None
+        # Receipt metadata survives the loss: identity, steps, reason, timestamp.
+        assert payload["update_id"]
+        assert payload["pid"] == os.getpid()
+        assert payload["started_at"]
+        assert [step["name"] for step in payload["steps"]] == ["git_pull", "gateway_restart"]
+        assert payload["steps"][1]["detail"] == "settlement check failed closed"
+
+        latest = ur.read_latest_receipt()
+        assert latest is not None and latest["outcome"] == "failed"
+
+    def test_recovery_rewrites_the_same_record_in_place(self, receipt_home):
+        """No dangling ``running`` record is left next to the recovered one —
+        the reader would keep polling a run that can never finish."""
+        self._lost_singleton_run()
+        seeded = _per_run_files(receipt_home)
+        assert len(seeded) == 1
+
+        ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+
+        assert _per_run_files(receipt_home) == seeded
+        assert json.loads(seeded[0].read_text(encoding="utf-8"))["outcome"] == "failed"
+
+    def test_refused_receipt_is_recovered_with_its_exit_code(self, receipt_home):
+        """Exit 2 (preflight refusal) keeps its own vocabulary through recovery."""
+        ur.begin_update_receipt()
+        ur.record_step("windows_preflight", False, "another hermes.exe running")
+        ur._current = None
+
+        path = ur.finalize_pending_update_receipt(2, "sys.exit(2)")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "refused"
+        assert payload["exit_code"] == 2
+        assert payload["stop_reason"] == "sys.exit(2)"
+
+    def test_recovery_never_resurrects_a_successful_receipt(self, receipt_home):
+        """A finalized success must not be rewritten as failed by a later
+        boundary call in the same process (the failure mode this fix could
+        introduce if recovery were less narrow)."""
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", True)
+        success_path = ur.finalize_update_receipt("success")
+        assert json.loads(success_path.read_text(encoding="utf-8"))["outcome"] == "success"
+
+        ur._current = None
+        assert ur.finalize_pending_update_receipt(1, "sys.exit(1)") is None
+
+        assert json.loads(success_path.read_text(encoding="utf-8"))["outcome"] == "success"
+        assert ur.read_latest_receipt()["outcome"] == "success"
+
+    def test_recovery_ignores_another_process_running_record(self, receipt_home):
+        """Only OUR pid's in-progress record is admissible: a concurrent
+        updater's record must never be finalized by this process."""
+        directory = receipt_home / "logs" / "update_receipts"
+        directory.mkdir(parents=True)
+        other_pid = os.getpid() + 1
+        other = directory / f"update_20260101_000000_{other_pid}.json"
+        other.write_text(json.dumps({
+            "schema": 1, "update_id": f"20260101_000000_{other_pid}", "pid": other_pid,
+            "started_at": "2026-01-01T00:00:00+00:00", "finished_at": None,
+            "outcome": "running", "steps": [],
+        }), encoding="utf-8")
+
+        assert ur.finalize_pending_update_receipt(1, "sys.exit(1)") is None
+
+        assert json.loads(other.read_text(encoding="utf-8"))["outcome"] == "running"
+        assert ur.read_latest_receipt() is None
+
+    def test_recovery_skips_corrupt_partial_and_foreign_records(self, receipt_home):
+        """Corrupt/partial records degrade to "skipped", never to a crash, and
+        never get rewritten — the healthy record for this pid is still found."""
+        self._lost_singleton_run()
+        directory = ur._receipt_dir()
+        healthy = _per_run_files(receipt_home)[0]
+        future = time.time() + 60  # newest: recovery meets the decoys first
+        decoys = {
+            "torn": directory / f"update_19990101_000000_{os.getpid()}.json",
+            "list": directory / f"update_19990101_000001_{os.getpid()}.json",
+            "foreign": directory / f"update_19990101_000002_{os.getpid() + 1}.json",
+        }
+        decoys["torn"].write_text('{"schema": 1, "pid": 1, "outcome": "run', encoding="utf-8")
+        decoys["list"].write_text("[1, 2, 3]", encoding="utf-8")
+        decoys["foreign"].write_text(json.dumps({
+            "schema": 1, "pid": os.getpid() + 1, "outcome": "running", "finished_at": None,
+        }), encoding="utf-8")
+        for path in decoys.values():
+            os.utime(path, (future, future))
+
+        path = ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+
+        assert path == healthy
+        assert json.loads(healthy.read_text(encoding="utf-8"))["outcome"] == "failed"
+        assert decoys["torn"].read_text(encoding="utf-8").startswith('{"schema": 1, "pid": 1')
+        assert json.loads(decoys["list"].read_text(encoding="utf-8")) == [1, 2, 3]
+        assert json.loads(decoys["foreign"].read_text(encoding="utf-8"))["outcome"] == "running"
+
+    def test_two_runs_in_one_second_keep_separate_records(self, receipt_home):
+        """`update_id` is second-resolution and per-pid (the refusal path can run
+        right before a real update), so a later run must not overwrite an
+        earlier run's record — including a finalized one."""
+        ur.begin_update_receipt()
+        ur.record_step("venv_preflight", False, "another hermes holds the venv")
+        refused_path = ur.finalize_pending_update_receipt(2, "sys.exit(2)")
+
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", False, "remote unreachable")
+        failed_path = ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+
+        assert refused_path != failed_path
+        assert json.loads(refused_path.read_text(encoding="utf-8"))["outcome"] == "refused"
+        assert json.loads(failed_path.read_text(encoding="utf-8"))["outcome"] == "failed"
+        assert ur.read_latest_receipt()["outcome"] == "failed"
+        assert len(_per_run_files(receipt_home)) == 2
+
+
+    def test_in_flight_run_does_not_hide_the_previous_receipt(self, receipt_home):
+        """`latest.json` names the last FINALIZED run: a new run starting up must
+        not overwrite a previous interrupted update's stale-plan obligation
+        (#98022)."""
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", False, "network died")
+        ur.finalize_update_receipt("failed", stop_reason="KeyboardInterrupt: ")
+
+        ur.begin_update_receipt()
+        ur.record_step("preflight", True)
+
+        latest = ur.read_latest_receipt()
+        assert latest is not None
+        assert latest["outcome"] == "failed"
+        assert latest["stop_reason"] == "KeyboardInterrupt: "
+
+    def test_plan_joins_the_durable_record(self, receipt_home):
+        """The pre-update plan is the restart worklist; recording it must reach
+        disk, not just the in-memory copy that state loss takes away (#112465)."""
+        from hermes_cli.update_inventory import UpdatePlan, record_plan_in_receipt
+
+        plan = UpdatePlan(install_method="git", updatable_in_place=True)
+        plan.profiles = ["default"]
+        plan.runtimes = _THREE_RUNTIMES[:1]
+
+        ur.begin_update_receipt()
+        record_plan_in_receipt(plan)
+
+        payload = json.loads(_per_run_files(receipt_home)[0].read_text(encoding="utf-8"))
+        assert payload["plan"]["runtimes"][0]["pid"] == 101
+        assert payload["outcome"] == "running"
+
+
+class TestReceiptPersistenceIsAtomicAndVisible:
+    """The durable record is the only copy of a run, so a write must be atomic
+    and a FAILED write must be visible instead of collapsing into the same
+    ``None`` as "no receipt was open" (#112465)."""
+
+    def test_no_temp_file_or_partial_record_is_left_behind(self, receipt_home):
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", True)
+        path = ur.finalize_update_receipt("success")
+
+        directory = path.parent
+        assert sorted(p.name for p in directory.iterdir()) == sorted(["latest.json", path.name])
+        assert list(directory.glob("*.tmp")) == []
+        json.loads(path.read_text(encoding="utf-8"))
+        json.loads((directory / "latest.json").read_text(encoding="utf-8"))
+
+    def test_failed_write_leaves_the_previous_record_intact(
+        self, receipt_home, monkeypatch, capsys
+    ):
+        """A write that dies mid-flight must not leave a torn record where a
+        reader or recovery would parse it."""
+        ur.begin_update_receipt()
+        ur.record_step("git_pull", True)
+        seeded = _per_run_files(receipt_home)[0]
+        before = seeded.read_text(encoding="utf-8")
+
+        def _no_replace(src, dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ur.os, "replace", _no_replace)
+
+        assert ur.finalize_update_receipt("failed") is None
+
+        assert "Update receipt write failed: disk full" in capsys.readouterr().out
+        assert seeded.read_text(encoding="utf-8") == before
+        assert json.loads(seeded.read_text(encoding="utf-8"))["outcome"] == "running"
+        assert list(seeded.parent.glob("*.tmp")) == []
+
+    def test_unwritable_receipt_dir_is_reported_not_swallowed(
+        self, receipt_home, capsys
+    ):
+        """The dir cannot be created: the run still proceeds, both write
+        attempts are visible, and ``None`` is not silently indistinguishable
+        from "no receipt was open"."""
+        logs = receipt_home / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "update_receipts").write_text("not a directory", encoding="utf-8")
+
+        ur.begin_update_receipt()  # must not raise
+        path = ur.finalize_update_receipt("failed")
+
+        out = capsys.readouterr().out
+        assert path is None
+        assert "Update receipt could not be persisted" in out
+        assert "Update receipt write failed" in out
+        assert ur.read_latest_receipt() is None
 
 
 class TestSuccessImpliesAccounting:

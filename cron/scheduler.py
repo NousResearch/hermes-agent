@@ -552,7 +552,7 @@ def get_running_job_details() -> list[dict]:
         ]
 
 
-def try_register_running_job(job_id: str) -> bool:
+def try_register_running_job(job_id: str, owning_future=None) -> bool:
     """Atomically add ``job_id`` to the in-flight set; False (caller must skip) if already mid-run.
     Single dedupe owner for ticker + manual runs (the fire claim's 300s TTL is outlived by real
     jobs). Callers MUST pair success with ``release_running_job`` in a ``finally``.
@@ -569,9 +569,19 @@ def try_register_running_job(job_id: str) -> bool:
             return False
         _running_job_ids.add(job_id)
         # Same critical section as the add: no window where an in-flight id lacks an age the sweep
-        # can bound. Sentinel is replaced by the real future once ``pool.submit`` returns.
+        # can bound. Ticker callers use the sentinel until ``pool.submit`` returns; manual
+        # background runners already know their owning future and install it atomically.
         _running_since[job_id] = time.time()
-        _running_futures[job_id] = _FUTURE_PENDING
+        _running_futures[job_id] = _FUTURE_PENDING if owning_future is None else owning_future
+        return True
+
+
+def bind_running_job_future(job_id: str, future) -> bool:
+    """Bind the Future that owns a registered in-flight job, if its claim still exists."""
+    with _running_lock:
+        if job_id not in _running_job_ids:
+            return False
+        _running_futures[job_id] = future
         return True
 
 

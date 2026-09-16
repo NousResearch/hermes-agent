@@ -68,7 +68,7 @@ class GatewayNotificationsMixin:
 
     # Coalescing keys: process completions (short-window fan-in) and async delegations (+ parent session).
     _COMPLETION_BATCH_KEY_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id")
-    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", *_COMPLETION_BATCH_KEY_FIELDS[1:])
+    _ASYNC_GROUP_KEY_FIELDS = ("session_key", "parent_session_id", "task_failure_notice", *_COMPLETION_BATCH_KEY_FIELDS[1:])
 
     @dataclasses.dataclass
     class _UpdatePaths:
@@ -1017,7 +1017,9 @@ class GatewayNotificationsMixin:
         else:
             info = "Watch pattern notification — waking api_server session %s via self-post"
             fail = "Watch notification self-post wake failed for session %s: %s"
-            deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid)  # noqa: E731
+            from agent.notification_presentation import diagnostic_process_event
+            deliver = lambda: deliver_wake(adapter, text=synth_text, session_id=raw_sid,
+                notification_category="diagnostic" if diagnostic_process_event(evt) else "result")  # noqa: E731
         try:
             logger.info(info, raw_sid)
             await deliver()
@@ -1088,6 +1090,9 @@ class GatewayNotificationsMixin:
         try:
             metadata = {}
             session_key = str(evt.get("session_key") or "").strip()
+            from agent.notification_presentation import diagnostic_process_event
+            if diagnostic_process_event(evt):
+                metadata["notification_category"] = "diagnostic"
             if session_key.startswith("agent:"):
                 metadata["gateway_session_key"] = session_key
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
@@ -1801,6 +1806,10 @@ class GatewayNotificationsMixin:
                     notify_mode == "error" and session.exit_code not in {0, None}
                 ):
                     message_text = self._format_process_final_message(session_id, session, notify_mode)
+                    from gateway.warning_notifications import warning_notifications_enabled
+                    async with self._completion_event_scope(watcher):
+                        if session.exit_code not in {0, None} and not warning_notifications_enabled(platform_name):
+                            break
                     await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
                 break
             elif has_new_output and notify_mode == "all" and not agent_notify:

@@ -370,6 +370,12 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+    if (message.get("display_kind") == "hidden"
+            and (message.get("display_metadata") or {}).get("notification_category") == "diagnostic"):
+        # Retain row identity and execution evidence in storage, not in the notification UI.
+        return {k: v for k, v in message.items() if k in {
+            "id", "session_id", "role", "timestamp", "display_kind", "platform_message_id",
+        }} | {"content": ""}
     projected = project_compaction_message_for_display(message)
     if projected is None:
         projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
@@ -3693,7 +3699,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result") -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3755,7 +3761,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
-                    result = agent.run_conversation(**conversation_kwargs)
+                    from agent.notification_presentation import notification_turn
+                    from gateway.warning_notifications import warning_notifications_enabled
+                    muted = notification_category == "diagnostic" and not warning_notifications_enabled("api_server")
+                    with notification_turn(agent, muted=muted, session_id=session_id or ""):
+                        result = agent.run_conversation(**conversation_kwargs)
+                    if muted and isinstance(result, dict):
+                        result["final_response"] = ""
                     return self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)

@@ -1792,6 +1792,10 @@ class MatrixAdapter(BasePlatformAdapter):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = "⚠️ Couldn't deliver the attachment."
+            if not self.warning_notifications_enabled():
+                if caption:
+                    await self.send(room_id, caption, reply_to, metadata=metadata)
+                return SendResult(success=False, error=text)
             return await self.send(room_id, f"{caption}\n{text}" if caption else text, reply_to)
         try:
             file_size = p.stat().st_size

@@ -5779,6 +5779,11 @@ class TelegramAdapter(BasePlatformAdapter):
         is out of scope per #23045).
         """
         named = f" ({display_name})" if display_name else ""
+        if not self.warning_notifications_enabled():
+            event.text = self._append_observed_note(
+                event.text, f"[The user attempted to send a {kind}{named} but it could not be downloaded.]",
+            )
+            return
         try:
             await msg.reply_text(
                 f"\u26a0\ufe0f Couldn't download your {kind}{named} ({exc.__class__.__name__}). Please try sending it again.")

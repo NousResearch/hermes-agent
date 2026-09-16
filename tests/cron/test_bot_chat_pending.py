@@ -102,3 +102,29 @@ def test_pending_queue_uses_admission_order_and_keeps_claims(tmp_path, monkeypat
     queue.drain()
     queue.drain()
     assert seen == ["older", "newer"]
+
+
+def test_policy_change_settles_diagnostic_without_waiting_for_cli_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="chat", source="cli")
+    db.set_session_title("chat", "Bot Chat")
+    lease, refusal = try_acquire_active_session(session_id="chat", surface="cli", config={}, registry_home=tmp_path)
+    assert refusal is None
+    run = Mock()
+    monkeypatch.setattr(delivery.subprocess, "run", run)
+    job = {"id": "failure", "execution_id": "run"}
+    try:
+        assert "queued" in delivery._deliver_to_bot_chat(job, "diagnostic", "", for_failure=True)
+        key = job["_bot_chat_delivery_receipts"]["bot-chat:(own)"]["delivery_id"]
+        assert queue.read_pending(key)["for_failure"] is True
+        with pytest.raises(ValueError, match="different payload"):
+            queue.defer(key, job, "diagnostic", "", tmp_path, for_failure=False)
+        (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}")
+        queue.drain()
+        assert queue.read_pending(key)["status"] == "suppressed"
+        queue.drain()
+        run.assert_not_called()
+    finally:
+        lease.release()
+        db.close()

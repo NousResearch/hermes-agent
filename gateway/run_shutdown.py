@@ -861,6 +861,9 @@ class GatewayShutdownMixin:
                 adapter = self.adapters.get(platform)
                 if adapter is None or not self._restart_notification_allowed(platform):
                     continue
+                from gateway.warning_notifications import warning_notifications_enabled
+                if not warning_notifications_enabled(platform):
+                    continue
                 chat_id = str(target.get("chat_id"))
                 thread_id = target.get("thread_id")
                 dedup_key = (job_id, *_notice_target_key(platform.value, chat_id, thread_id))

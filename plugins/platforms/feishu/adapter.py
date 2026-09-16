@@ -1856,6 +1856,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 chat_id=chat_id, animation_url=animation_url, caption=caption, reply_to=reply_to, metadata=metadata,
             )
         degraded_caption = f"[GIF downgraded to file]\n{caption}" if caption else "[GIF downgraded to file]"
+        if not self.warning_notifications_enabled():
+            degraded_caption = caption
         return await self.send_document(
             chat_id=chat_id, file_path=file_path, file_name=file_name, caption=degraded_caption,
             reply_to=reply_to, metadata=metadata,

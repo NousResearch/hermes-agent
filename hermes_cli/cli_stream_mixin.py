@@ -212,6 +212,9 @@ class CLIStreamMixin:
         from cli import ChatConsole, _accent_hex
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
+            from gateway.warning_notifications import warning_notifications_enabled
+            if user_input.notification_category == "diagnostic" and not warning_notifications_enabled("cli"):
+                return
             ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]")
             return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")

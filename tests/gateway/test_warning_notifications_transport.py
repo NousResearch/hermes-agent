@@ -29,7 +29,7 @@ from tests.gateway.relay.stub_connector import StubConnector
 def test_warning_policy_reaches_slack_transport(tmp_path, monkeypatch, relay, thread_id, enabled):
     from gateway import run
 
-    (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(enabled).lower()}}}")
+    (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
     source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", user_id="U1", thread_id=thread_id)
     metadata = {"thread_id": thread_id} if thread_id else {}
@@ -83,9 +83,9 @@ def test_profile_config_isolated_for_callbacks_and_direct_warnings(tmp_path, mon
     from gateway.warning_notifications import warning_notifications_enabled
 
     homes = [tmp_path / name for name in ("a", "b")]
-    for home, value in zip(homes, ("false", "true")):
+    for home, value in zip(homes, ("true", "false")):
         home.mkdir()
-        (home / "config.yaml").write_text(f"display: {{warning_notifications: {value}}}")
+        (home / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {value}}}")
     # The ambient default must never override the context-bound owner.
     monkeypatch.setattr(run, "_hermes_home", homes[1])
     source = SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm", user_id="U1")

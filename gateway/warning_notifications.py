@@ -3,35 +3,43 @@
 from gateway.display_config import resolve_display_setting
 
 
-# Lifecycle is an older mixed progress/diagnostic rail. Match only engine-owned
-# diagnostic headlines here; ordinary heartbeats and compression progress survive.
-_DIAGNOSTIC_PREFIXES = (
-    "⚠", "❌", "🚫", "↻", "Content filter terminated stream",
-    "🔌 Detected stale connections", "✅ Primary model restored",
-    "⏳ Retrying", "⏱️ Rate limited", "⏱️ Provider overloaded",
-    "🔐 Authentication failed", "⏳ Your Nous account",
-    "ℹ️ Estimated cost of these empty attempts",
-    "📐 Compression could not reduce the request further",
-)
+class DiagnosticText(str):
+    """Producer-owned classification on the legacy two-argument status callback.
+
+    String behavior and event kind stay unchanged for existing plugin renderers.
+    Durable carriers must serialize their own category, not this in-memory marker.
+    """
 
 
 def is_warning_status(event_type: str, message: str) -> bool:
-    return event_type == "warn" or (
-        event_type == "lifecycle" and str(message or "").lstrip().startswith(_DIAGNOSTIC_PREFIXES)
+    return event_type == "warn" or isinstance(message, DiagnosticText)
+
+
+def diagnostic_wake_muted(event, user_config=None) -> bool:
+    """Only trusted diagnostic-only wakes can mute a turn, never human content."""
+    snapshot = getattr(event, "_notification_reply_muted", None)
+    if isinstance(snapshot, bool):
+        return snapshot
+    return (
+        getattr(event, "internal", False)
+        and (getattr(event, "metadata", None) or {}).get("notification_category") == "diagnostic"
+        and not warning_notifications_enabled(event.source.platform, user_config)
     )
 
 
 def warning_notifications_enabled(platform, user_config=None) -> bool:
     """Use the turn snapshot when supplied, otherwise the active profile's effective config.
 
-    Programmatic/local surfaces keep their diagnostic stream. Unknown values never
-    silently opt an operator out; null inherits via the canonical display resolver.
+    No surface exemption: direct command/API outcomes are not notifications.
+    Unknown values never opt in; null inherits via the canonical display resolver.
     """
-    from gateway.run import _gateway_surface_passes_raw_text, _load_gateway_config
-
-    if _gateway_surface_passes_raw_text(platform):
-        return True
     if user_config is None:
-        user_config = _load_gateway_config()
+        from hermes_cli.config_effective import load_user_config_effective
+        try:
+            user_config = load_user_config_effective()
+        except Exception:
+            user_config = {}
+    if not isinstance(user_config, dict):
+        user_config = {}
     platform_key = getattr(platform, "value", platform)
-    return resolve_display_setting(user_config, platform_key, "warning_notifications", True)
+    return not resolve_display_setting(user_config, platform_key, "suppress_warning_notifications", False)

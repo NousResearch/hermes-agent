@@ -80,7 +80,7 @@ def pending_entry(monkeypatch):
 @pytest.mark.parametrize("warning_notifications", [True, False])
 def test_timeout_edits_the_card_to_say_the_command_did_not_run(pending_entry, tmp_path, monkeypatch, warning_notifications):
     import gateway.run as gateway_run
-    (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(warning_notifications).lower()}}}")
+    (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not warning_notifications).lower()}}}")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     adapter = _ButtonAdapter()
     _runner(adapter)._approval_notify_sync(dict(pending_entry.data))  # what notify_cb receives

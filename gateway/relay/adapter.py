@@ -213,6 +213,11 @@ class RelayAdapter(BasePlatformAdapter):
         """The chat's underlying platform as seen inbound, else the primary's."""
         return self._platform_by_chat.get(str(chat_id)) or self.descriptor.platform
 
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
+        platform = (logical_platform or (metadata or {}).get("_relay_logical_platform")
+                    or self._chat_platform(chat_id))
+        return super().warning_notifications_enabled(platform)
+
     def _descriptor_for_chat(self, chat_id: str) -> CapabilityDescriptor:
         """The descriptor governing a specific chat. Platform caps genuinely differ
         (Discord 2000 / Telegram 4096 / Slack 39000), so the primary's scalar cap
@@ -1420,6 +1425,8 @@ class RelayAdapter(BasePlatformAdapter):
         if seal is not None:
             return seal
         if explicit_platform:
+            if _interim:
+                send_metadata["_interim_send"] = True
             return await self.send_for_platform(
                 explicit_platform, chat_id, content, reply_to=reply_to, metadata=send_metadata or None
             )

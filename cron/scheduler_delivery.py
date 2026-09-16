@@ -653,7 +653,8 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None,
+                         for_failure: bool = False) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
@@ -682,6 +683,12 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         from pathlib import Path
         home = (Path(deferred["home"]) if deferred is not None else
                 get_profile_dir(profile) if profile else source_home).resolve()
+        for_failure = for_failure or bool((deferred or {}).get("for_failure"))
+        from gateway.warning_notifications import warning_notifications_enabled
+        from hermes_cli.config_effective import load_user_config_effective
+        if for_failure and not warning_notifications_enabled("tui", load_user_config_effective(home / "config.yaml")):
+            job["_notification_all_targets_suppressed"] = True
+            return None
         if deferred is not None and not (home / "state.db").is_file():
             return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
@@ -705,7 +712,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
 
             pending = read_pending(key)
             if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
-                pending = defer(key, dict(job), content, profile, home)
+                pending = defer(key, dict(job), content, profile, home,
+                                **({"for_failure": True} if for_failure else {}))
             if pending is not None:
                 if pending["content"] != content or pending["home"] != str(home):
                     raise ValueError("delivery id already belongs to a different payload")
@@ -717,7 +725,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:
-                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key)
+                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
+                    **({"notification_category": "diagnostic"} if for_failure else {}))
         if receipt is not None:
             if receipt["message"] != message:
                 raise ValueError("delivery id already belongs to a different payload")
@@ -1715,6 +1724,8 @@ def _deliver_result(
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
+    job.pop("_notification_suppressed_targets", None)
+    job.pop("_notification_all_targets_suppressed", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1800,9 +1811,17 @@ def _deliver_result(
 
     delivery_errors = []
     for target in targets:
+        from gateway.warning_notifications import warning_notifications_enabled
+        if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
+                and not warning_notifications_enabled(target["platform"], user_cfg)):
+            job.setdefault("_notification_suppressed_targets", []).append(dict(target))
+            continue
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:
-            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"])
+            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"],
+                                                 **({"for_failure": True} if for_failure else {}))
+            if job.pop("_notification_all_targets_suppressed", False):
+                job.setdefault("_notification_suppressed_targets", []).append(dict(target))
             if bot_chat_error:
                 receipt_target = f"bot-chat:{target['chat_id'] or '(own)'}"
                 receipt = job.get("_bot_chat_delivery_receipts", {}).get(receipt_target)
@@ -1829,7 +1848,10 @@ def _deliver_result(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once.
-    delivery_errors.extend(policy_drop_errors)
+    if len(job.get("_notification_suppressed_targets", [])) == len(targets):
+        job["_notification_all_targets_suppressed"] = True
+    if not job.get("_notification_all_targets_suppressed"):
+        delivery_errors.extend(policy_drop_errors)
     _record_delivery_verification(job, unverified_targets)
     return "; ".join(delivery_errors) if delivery_errors else None
 

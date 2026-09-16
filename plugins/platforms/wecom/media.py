@@ -300,7 +300,8 @@ class WeComMediaMixin:
                 logger.error("[%s] Failed to prepare outbound media %s: %s", self.name, media_source, exc)
             return SendResult(success=False, error=str(exc))
         if prepared["rejected"]:
-            await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}", reply_to=reply_to)
+            if self.warning_notifications_enabled():
+                await self._send_followup_markdown(chat_id, f"⚠️ {prepared['reject_reason']}", reply_to=reply_to)
             return SendResult(success=False, error=prepared["reject_reason"])
         reply_req_id = self._cached_reply_req_id(chat_id, reply_to)
         # Active/expired stream owns the req_id (passive replyMedia is never acked): go proactive.
@@ -323,6 +324,8 @@ class WeComMediaMixin:
             return SendResult(success=False, error=str(exc))
         raw: Dict[str, Any] = {"upload": upload_result, "media": media_response}
         for key, text in (("caption", caption), ("downgrade", f"ℹ️ {prepared['downgrade_note']}" if prepared["downgraded"] and prepared["downgrade_note"] else None)):
+            if key == "downgrade" and not self.warning_notifications_enabled():
+                text = None
             followup = await self._send_followup_markdown(chat_id, text, reply_to=reply_to) if text else None
             raw[key] = followup.raw_response if followup else None
             raw[f"{key}_error"] = followup.error if followup and not followup.success else None

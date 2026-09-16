@@ -35,15 +35,15 @@ class Emitter(StatusOutputMixin):
 @pytest.mark.parametrize("thread_id", [None, "1700.1"])
 @pytest.mark.parametrize("configured,enabled", [
     ("", True), ("display: null", True),
-    ("display: {warning_notifications: null}", True),
-    ("display: {warning_notifications: false}", False),
-    ('display: {warning_notifications: "false"}', False),
-    ("display: {warning_notifications: typo}", True),
-    ("display: {warning_notifications: []}", True),
+    ("display: {suppress_warning_notifications: null}", True),
+    ("display: {suppress_warning_notifications: true}", False),
+    ('display: {suppress_warning_notifications: "true"}', False),
+    ("display: {suppress_warning_notifications: typo}", True),
+    ("display: {suppress_warning_notifications: []}", True),
     ("display: broken", True),
     ("display: [broken]", True),
     ("display: {platforms: broken}", True),
-    ("display: {warning_notifications: false, platforms: {slack: {warning_notifications: true}}}", True),
+    ("display: {suppress_warning_notifications: true, platforms: {slack: {suppress_warning_notifications: false}}}", True),
 ])
 def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platform, thread_id, configured, enabled):
     from gateway import run
@@ -53,7 +53,7 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
     config = _load_gateway_config()
     if "platforms: {slack" in configured and platform != Platform.SLACK:
         enabled = False
-    enabled = enabled or platform == Platform.LOCAL
+
     adapter = RecordingAdapter()
     source = SessionSource(platform=platform, chat_id="chat", user_id="user", thread_id=thread_id)
     gateway = object.__new__(GatewayRunner)
@@ -81,7 +81,10 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
         ("lifecycle", "📐 Compression could not reduce the request further — removed retained vision payloads and retrying..."),
     ]
     for kind, text in diagnostics:
-        emitter._emit_status_kind(kind, text, origin="test")
+        if kind == "warn":
+            emitter._emit_warning(text)
+        else:
+            emitter._emit_diagnostic_status(text)
     emitter._pending_fallback_notice = "↻ Switched to fallback: secondary (provider)"
     emitter._emit_pending_fallback_notice()
     assert emitter._pending_fallback_notice is None
@@ -102,7 +105,8 @@ def test_warning_opt_out_preserves_other_delivery(tmp_path, monkeypatch, platfor
 def test_direct_warning_delivery_keeps_failure_state(tmp_path, monkeypatch, enabled):
     from gateway import run
 
-    (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(enabled).lower()}}}")
+    (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
     adapter = RecordingAdapter()
     source = SessionSource(platform=Platform.SLACK, chat_id="chat", user_id="user")

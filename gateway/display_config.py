@@ -21,7 +21,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
-    "warning_notifications": True,
+    "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -154,13 +154,13 @@ def _norm_long_running(value: Any) -> Any:
     return "generic" if isinstance(value, str) and value.strip().lower() == "generic" else _norm_bool(value)
 
 
-def _norm_warning_notifications(value: Any) -> bool:
-    # Only an explicit, recognized opt-out may hide engine diagnostics.
+def _norm_suppress_warning_notifications(value: Any) -> bool:
+    # Only an explicit, recognized opt-in may hide engine diagnostics.
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.strip().lower() not in _FALSY | {"off"}
-    return True
+        return value.strip().lower() in _TRUTHY
+    return False
 
 
 def _norm_cleanup_progress(value: Any) -> bool:
@@ -187,7 +187,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
-    "warning_notifications": _norm_warning_notifications,
+    "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

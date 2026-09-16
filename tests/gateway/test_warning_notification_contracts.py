@@ -47,7 +47,7 @@ class Agent(StatusOutputMixin):
 def test_real_retry_producers_keep_final_failure_and_persistence(tmp_path, monkeypatch, caplog, enabled):
     from gateway import run
 
-    (tmp_path / "config.yaml").write_text(f"display: {{warning_notifications: {str(enabled).lower()}}}")
+    (tmp_path / "config.yaml").write_text(f"display: {{suppress_warning_notifications: {str(not enabled).lower()}}}")
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
     sent = []
     async def send(chat_id, text, **kwargs):
@@ -86,12 +86,13 @@ def test_real_retry_producers_keep_final_failure_and_persistence(tmp_path, monke
 @pytest.mark.parametrize("yaml_text,expected", [
     ("display: broken", True), ("display: [broken]", True),
     ("display: {platforms: broken}", True),
-    ("display: {warning_notifications: false, platforms: broken}", False),
+    ("display: {suppress_warning_notifications: true, platforms: broken}", False),
 ])
 def test_bad_config_containers_do_not_abort_startup_warning(tmp_path, monkeypatch, yaml_text, expected):
     from gateway import run
 
     (tmp_path / "config.yaml").write_text(yaml_text)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(run, "_hermes_home", tmp_path)
     gateway = object.__new__(GatewayRunner)
     gateway._session_db_init_error = "database is locked"

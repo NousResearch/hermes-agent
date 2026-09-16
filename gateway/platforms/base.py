@@ -2841,8 +2841,17 @@ class BasePlatformAdapter(ABC):
         shown."""
         logger.warning("[%s] %s fallback: native %s send unavailable for %s", self.name, method, kind, path)
         text = _media_failure_text(kind, file_name)
+        if not self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
+            if caption:
+                await self.send(chat_id=chat_id, content=caption, reply_to=reply_to, metadata=metadata)
+            return SendResult(success=False, error=text)
         text = f"{caption}\n{text}" if caption else text
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+
+    def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
+        """Presentation policy under the caller's owning profile; old plugins inherit it."""
+        from gateway.warning_notifications import warning_notifications_enabled
+        return warning_notifications_enabled(logical_platform or self.platform)
 
     def prepare_tts_text(self, text: str) -> str:
         """Chat Markdown -> transcript-like spoken script (reasoning blocks removed,
@@ -2925,6 +2934,8 @@ class BasePlatformAdapter(ABC):
         subsequent upload returns ``success=False`` (for example Discord accepted the message but attached
         nothing), the user must see a failure notice instead of a silent drop (#66797).
         """
+        if not self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
+            return
         ext = Path(media_path).suffix.lower()
         if is_voice or should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
             text = _media_failure_text("audio")
@@ -2933,7 +2944,8 @@ class BasePlatformAdapter(ABC):
         else:
             text = _media_failure_text("file", os.path.basename(media_path))
         try:
-            notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
+            notice = await self.send(chat_id=chat_id, content=text,
+                                     metadata={**(metadata or {}), "_interim_send": True})
             problem = None if notice.success else notice.error
         except Exception as notify_err:
             problem = notify_err
@@ -3424,6 +3436,8 @@ class BasePlatformAdapter(ABC):
                     )
                     return result
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                if not self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata):
+                    return result
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent.")
@@ -3451,7 +3465,8 @@ class BasePlatformAdapter(ABC):
         """Last-resort send after a non-transient failure; platforms whose markup is not the
         likely culprit override it (Photon drops rich links instead of adding the banner)."""
         return await self.send(
-            chat_id=chat_id, content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            chat_id=chat_id, content=(f"(Response formatting failed, plain text:)\n\n{content[:3500]}"
+                                     if self.warning_notifications_enabled(chat_id=chat_id, metadata=metadata) else content[:3500]),
             reply_to=reply_to, metadata=metadata)
 
     @staticmethod
@@ -4030,13 +4045,19 @@ class BasePlatformAdapter(ABC):
         """Tell the user a turn failed rather than leaving radio silence (last resort:
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
+        from gateway.warning_notifications import diagnostic_wake_muted
+        with self._media_delivery_scope(event.source):
+            if diagnostic_wake_muted(event):
+                return _thread_metadata_for_event(event)
         try:
             error_detail = str(e)[:300] if str(e) else "no details available"
             _thread_metadata = _thread_metadata_for_event(event)
             await self.send(
                 chat_id=event.source.chat_id,
-                content=(f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
-                "Try again or use /reset to start a fresh session."), metadata=_thread_metadata)
+                content=((f"Sorry, I encountered an error ({type(e).__name__}).\n{error_detail}\n"
+                          "Try again or use /reset to start a fresh session.")
+                         if self.warning_notifications_enabled() else "Sorry, I encountered an error."),
+                metadata=_thread_metadata)
         except Exception as notify_err:
             logger.error(
                 "[%s] Failed to send error notification to user: %s", self.name, notify_err, exc_info=True)
@@ -4177,6 +4198,10 @@ class BasePlatformAdapter(ABC):
         try:
             await self._run_processing_hook("on_processing_start", event)
             response = await self._message_handler(event)
+            from gateway.warning_notifications import diagnostic_wake_muted
+            with self._media_delivery_scope(event.source):
+                if diagnostic_wake_muted(event):
+                    response = None
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)

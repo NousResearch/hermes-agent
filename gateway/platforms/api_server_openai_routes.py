@@ -511,6 +511,10 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        # This is presentation only. The ordinary API-key/session authorization
+        # above still applies; it grants no internal ingress or control authority.
+        if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
+            run_kwargs["notification_category"] = "diagnostic"
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/

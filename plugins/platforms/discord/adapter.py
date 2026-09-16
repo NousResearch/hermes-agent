@@ -2883,7 +2883,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             f"{dropped_chars} characters were not delivered; the full "
             f"response is in the session logs."
         )
-        kept.append(notice)
+        if self.warning_notifications_enabled():
+            kept.append(notice)
         return kept
 
     async def send(
@@ -4031,6 +4032,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 home = config.get_home_channel(target)
                 if not home or not getattr(home, "chat_id", None):
                     continue
+                if not self.warning_notifications_enabled(target):
+                    return  # A policy veto is not transport failure or permission to reroute.
                 msg = (
                     "⚠️ Unauthorized Discord slash attempt\n"
                     f"User: {user_name} ({user_id})\n"
@@ -5817,8 +5820,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         # channel. Surface a short visible error so the user can retry once Discord
                         # recovers, and skip agent invocation for this message. See #20243.
                         await message.channel.send(
-                            "⚠️ Hermes could not create a Discord thread for "
-                            "this message, so the request was not processed. Please retry."
+                            ("⚠️ Hermes could not create a Discord thread for "
+                             "this message, so the request was not processed. Please retry.")
+                            if self.warning_notifications_enabled() else "The request was not processed. Please retry."
                         )
                     except Exception as notify_error:
                         logger.warning(

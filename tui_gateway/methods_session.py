@@ -123,8 +123,9 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             "source": row.get("source") or ""}
 
 
-# Hidden from human listings (sub-agent runs, kanban workers); a deny-list so new platforms surface automatically.
-_LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
+# Hidden from human listings (finite automatic runs, sub-agent runs, kanban workers); a deny-list so new
+# interactive platforms surface automatically.
+_LISTING_DENY_SOURCES = frozenset({"kanban", "oneshot", "tool"})
 
 
 def _denied_source(row: dict) -> bool:

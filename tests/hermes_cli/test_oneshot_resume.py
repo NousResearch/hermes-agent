@@ -12,6 +12,8 @@ must run on the session's stored model/provider runtime and on a reopened sessio
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hermes_state import SessionDB
@@ -266,3 +268,16 @@ class TestRunOneshotForwardsResume:
         assert rc == 0
         assert captured["prompt"] == "hello"
         assert captured["resume"] == "sess-1"
+
+    def test_marks_the_run_as_single_query(self, monkeypatch):
+        observed = {}
+
+        def _fake_run_agent(_prompt, **_kwargs):
+            observed["single_query"] = os.environ.get("HERMES_SINGLE_QUERY_SESSION")
+            return "ok", {"final_response": "ok"}
+
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION", raising=False)
+        monkeypatch.setattr("hermes_cli.oneshot._run_agent", _fake_run_agent)
+
+        assert run_oneshot("hello", model="m", provider="custom") == 0
+        assert observed["single_query"] == "1"

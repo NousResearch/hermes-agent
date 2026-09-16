@@ -246,8 +246,7 @@ def _config_profile_scope(profile: Optional[str]):
     Explicit names resolving to the process home retain current-profile semantics.
     Still enter the requested home so a nested scope cannot retain another profile.
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
@@ -261,17 +260,19 @@ def _config_profile_scope(profile: Optional[str]):
         activate_multi_profile_hosting()
         hydrate_profile_secret_sources(scoped)  # first call may block on the source's fetch
         secrets = build_profile_secret_scope(scoped)
-    elif is_multiplex_active():
-        secrets = launch_secret_scope(process_home)
     else:
-        secrets = None  # single-profile dashboard: legacy os.environ precedence (systemd / op-run injection)
+        # The dashboard's own profile: its launch-env scope (live env + .env while single-profile, so
+        # systemd / op-run injection keeps resolving; frozen at activation afterwards). Bound even
+        # before any secondary is served so the request's credential source is decided HERE: a
+        # concurrent first ``?profile=B`` request flips ``get_secret`` to fail closed mid-request,
+        # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
+        secrets = launch_secret_scope(process_home)
     with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
-        token = set_secret_scope(secrets) if secrets is not None else None
+        token = set_secret_scope(secrets)
         try:
             yield scoped
         finally:
-            if token is not None:
-                reset_secret_scope(token)
+            reset_secret_scope(token)
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with

@@ -13,6 +13,7 @@ import { useI18n } from '@/i18n'
 import { isLikelyProseCodeBlock } from '@/lib/markdown-code'
 
 import type { CachedShikiBlockProps } from './shiki-block'
+import { PlainShiki } from './shiki-plain'
 export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-config'
 
 /**
@@ -56,7 +57,7 @@ const ShikiBlock = lazy(() => import('./shiki-block'))
  *  until the shiki chunk arrives. Highlighted output is cached by
  *  (theme, language, code), so revisits never re-tokenize (#95595). */
 export const LazyShiki: FC<CachedShikiBlockProps> = ({ language, code, theme, colorReplacements }) => (
-  <Suspense fallback={<PlainCode code={code} />}>
+  <Suspense fallback={<PlainShiki code={code} />}>
     <ShikiBlock code={code} colorReplacements={colorReplacements} language={language} theme={theme} />
   </Suspense>
 )

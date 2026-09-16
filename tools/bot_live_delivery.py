@@ -76,6 +76,13 @@ def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
 
 
+def has_mailbox(profile_home: Path | str) -> bool:
+    """Whether any delivery was ever admitted for this profile (the mailbox directory is created on
+    first admission only). A cheap pre-check for pollers: no mailbox means nothing to claim, so the
+    owner lookup — a state.db open plus the exclusive active-session registry lock — can be skipped."""
+    return _root(profile_home).is_dir()
+
+
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)

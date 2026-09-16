@@ -459,9 +459,11 @@ DEFAULT_CONFIG = {
         "max_total_size_mb": 500,
         # Skip files larger than this (MB) when staging (datasets, model weights). 0 = no filter.
         "max_file_size_mb": 10,
-        # Startup sweep (at most once per min_interval_hours): deletes projects whose last_touch is
-        # older than retention_days, GCs the shared store, enforces max_total_size_mb, deletes
-        # legacy-* archives older than retention_days. It NEVER deletes orphans (workdir missing on
+        # Background sweep (CLI helper thread / gateway housekeeping tick, at most once per
+        # min_interval_hours; never on the startup path — its git gc can block for tens of seconds):
+        # deletes projects whose last_touch is older than retention_days, GCs the shared store when
+        # refs moved, enforces max_total_size_mb, deletes legacy-* archives older than retention_days.
+        # It NEVER deletes orphans (workdir missing on
         # disk) — a missing workdir may just be an unmounted volume/VPN, and an unattended sweep
         # must not guess. Orphans: `hermes checkpoints prune` (`--keep-orphans` to skip).
         "auto_prune": True,
@@ -2231,14 +2233,15 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
+            # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
+            "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
         },
         "bitwarden": {
-            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
+            "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
     },

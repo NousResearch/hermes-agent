@@ -30,6 +30,7 @@ import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
 import {
+  $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
@@ -51,7 +52,7 @@ import {
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
-import { receiveApprovalRequest } from '@/store/prompts'
+import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -125,12 +126,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
-import {
-  dropTranscriptTail,
-  dropTranscriptTailEverywhere,
-  loadTranscriptTail,
-  saveTranscriptTail
-} from '@/store/transcript-tail-cache'
+import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResult, UsageStats } from '@/types/hermes'
 
@@ -140,6 +136,8 @@ import { sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
+import { captureDisplayHydration } from './display-hydration'
+import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
@@ -368,6 +366,7 @@ function restorePendingApproval(response: SessionResumeResult, sessionId: string
     sessionId,
     smartDenied: pending.smart_denied === true
   })
+  void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
 
   return true
 }
@@ -399,6 +398,8 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+  const transcriptHydrationByRuntimeRef = useRef(new Map<string, symbol>())
+  const coldDisplayReadsRef = useRef(new Map<string, symbol>())
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
 
   // Follow auto-compression's stored-id rotation only while the exact runtime,
@@ -938,12 +939,15 @@ export function useSessionActions({
       }
 
       const requestId = resumeRequestRef.current + 1
+      const routeToken = getRouteToken()
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
       const resumeStartMessages = resumedSameSelectedSession ? $messages.get() : []
 
       const isCurrentResume = () =>
-        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
+        resumeRequestRef.current === requestId &&
+        selectedStoredSessionIdRef.current === storedSessionId &&
+        getRouteToken() === routeToken
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -1039,10 +1043,21 @@ export function useSessionActions({
       const ambientConnectionId =
         ambientConnection?.mode === 'remote' ? ambientConnection.connectionId?.trim() || '' : ''
 
+      const provisional = provisionalTranscriptPaint(
+        storedSessionId,
+        () => isCurrentResume() && !resumedSameSelectedSession && !takeWarmCache()
+      )
+
+      const listedStored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
+      if (ownerRoute || listedStored?.profile) {
+        provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
+      }
+
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)
       const sessionProfile = storedForProfile?.profile
 
-      if (resumeRequestRef.current !== requestId) {
+      if (!isCurrentResume()) {
         return
       }
 
@@ -1061,6 +1076,9 @@ export function useSessionActions({
               profile: sessionProfile || 'default'
             }
           : sessionProfile)
+
+      const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
+      provisional.paint(sessionRestScope)
 
       // All-profiles / plugin navigation must not steal chrome API-home:
       // dial the owning backend without moving $activeGatewayProfile.
@@ -1093,17 +1111,9 @@ export function useSessionActions({
       const requestForSession = <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
         requestForSessionProfile<T>(sessionOwner, requestGateway, method, params)
 
-      const sessionRestScope = resolvedConnectionId
-        ? {
-            connectionId: resolvedConnectionId,
-            profile: ownerRoute?.targetProfile || ownerRoute?.profile || sessionProfile || 'default'
-          }
-        : storedForProfile?.connection_id
-          ? {
-              connectionId: storedForProfile.connection_id,
-              profile: sessionProfile || 'default'
-            }
-          : sessionProfile
+      if (!isCurrentResume()) {
+        return
+      }
 
       // Re-check after the profile-resolve / gateway-swap awaits above: the
       // cache may have changed, and takeWarmCache re-validates belongs-to and
@@ -1361,6 +1371,15 @@ export function useSessionActions({
               // events arrive on the newly attached transport. Hydration below
               // reconciles only messages, so those events also retain liveness
               // authority while the request is pending.
+              const hydration = captureDisplayHydration({
+                flights: transcriptHydrationByRuntimeRef.current,
+                key: cachedRuntimeId,
+                runtimeIdByStoredSessionIdRef,
+                sessionStateByRuntimeIdRef,
+                stored,
+                storedSessionId
+              })
+
               const persistedTranscriptPromise = shouldRefreshPersistedTranscript
                 ? getLatestSessionMessages(storedSessionId, sessionRestScope).catch(() => null)
                 : null
@@ -1375,7 +1394,11 @@ export function useSessionActions({
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
 
-                if (!isCurrentResume()) {
+                // Navigation only revokes foreground publication, not this
+                // runtime's display read. Edits/rebinds revoke both.
+                if (!hydration.owns()) {
+                  hydration.release()
+
                   return
                 }
 
@@ -1459,37 +1482,46 @@ export function useSessionActions({
 
               releaseTranscriptView()
 
-              const activatedState = updateSessionState(
-                cachedRuntimeId,
-                state => {
-                  // #95595: the reconcilers above always produce fresh
-                  // message objects, so an unconditional publish replaces the
-                  // warm-cached array with new-object equivalents and every
-                  // visible row re-normalizes + remounts (markdown re-parse +
-                  // shiki re-highlight per row, seconds of main-thread work).
-                  // Keep the existing array when the content is unchanged —
-                  // same guard the cold-resume path uses below.
-                  const messages = preserveEquivalentTranscript(state.messages, visibleActivatedMessages)
+              const reconcileActivatedState = (state: ClientSessionState): ClientSessionState => {
+                // #95595: the reconcilers above always produce fresh
+                // message objects, so an unconditional publish replaces the
+                // warm-cached array with new-object equivalents and every
+                // visible row re-normalizes + remounts (markdown re-parse +
+                // shiki re-highlight per row, seconds of main-thread work).
+                // Keep the existing array when the content is unchanged —
+                // same guard the cold-resume path uses below.
+                const messages = preserveEquivalentTranscript(state.messages, visibleActivatedMessages)
 
-                  return {
-                    ...state,
-                    messages,
-                    transcriptProvenance:
-                      acceptedPersistedDisplayTranscript || hasValidProvenance
-                        ? (expectedProvenance ?? undefined)
-                        : undefined,
-                    ...(livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection)),
-                    ...(clearedClarifyProjection
-                      ? {
-                          streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
-                        }
-                      : {})
-                  }
-                },
-                storedSessionId
-              )
+                return {
+                  ...state,
+                  messages,
+                  transcriptProvenance:
+                    acceptedPersistedDisplayTranscript || hasValidProvenance
+                      ? (expectedProvenance ?? undefined)
+                      : undefined,
+                  ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
+                  ...(clearedClarifyProjection
+                    ? {
+                        streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                      }
+                    : {})
+                }
+              }
 
-              syncSessionStateToView(cachedRuntimeId, activatedState)
+              if (isCurrentResume()) {
+                const activatedState = updateSessionState(cachedRuntimeId, reconcileActivatedState, storedSessionId)
+                syncSessionStateToView(cachedRuntimeId, activatedState)
+              } else {
+                // updateSessionState stages a view sync based on active runtime,
+                // which can lag a newer route intent. Background hydration only
+                // publishes the cache; it cannot stage that foreground write.
+                const latestState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)!
+                const activatedState = reconcileActivatedState(latestState)
+                sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, activatedState)
+                publishSessionState(cachedRuntimeId, activatedState)
+              }
+
+              hydration.release()
               // Cache backend transcript truth only. The pending/running bit and
               // any synthetic clarify row are a live resume projection and must
               // not survive after the server-side request expires.
@@ -1543,30 +1575,15 @@ export function useSessionActions({
       // session's transcript would leak into this cold resume ("switching
       // sessions shows the same messages"). Clear it so the loader/prefetch
       // paints fresh; guarded so the normal cold path (already cleared) no-ops.
-      if (!resumedSameSelectedSession && $messages.get().length > 0) {
+      if (!resumedSameSelectedSession && $messages.get().length > 0 && $messages.get() !== provisional.messages) {
         setMessages([])
       }
 
-      // Instant paint from the durable tail cache: a cold resume (fresh app
-      // launch, reaped/respawned backend) otherwise shows a loader until the
-      // REST prefetch lands — which on a cold multi-profile boot waits behind
-      // a backend spawn. Painting the persisted tail here makes the wake
-      // visually complete at ~0ms (and satisfies the paint-first hydration
-      // wait). The paint is DISPLAY-ONLY: reconciliation below must treat the
-      // view as empty (see cachedTailPaint), because grafting the REST tail
-      // onto a stale cached tail would duplicate or misorder rows — the
-      // authoritative transcript REPLACES the cached paint when it lands.
-      // Same-selected re-resumes skip it — their transcript is already live.
-      let cachedTailPaint: ChatMessage[] | null = null
-
-      if (!resumedSameSelectedSession && $messages.get().length === 0) {
-        const cachedTail = loadTranscriptTail(storedSessionId, sessionRestScope)
-
-        if (cachedTail && selectedStoredSessionIdRef.current === storedSessionId) {
-          cachedTailPaint = cachedTail
-          setMessages(cachedTail)
-        }
-      }
+      // Retry after a warm runtime was discarded, without clearing a cold
+      // tail that already painted before metadata/dial. This remains display-
+      // only: REST replaces it rather than grafting onto stale cached history.
+      provisional.paint(sessionRestScope)
+      const cachedTailPaint = provisional.messages
 
       // The reconciler's notion of "what was already on screen": a durable
       // cached paint is provisional, not history — report empty so the
@@ -1595,6 +1612,15 @@ export function useSessionActions({
       if (stored) {
         applyStoredUsage(stored)
       }
+
+      const displayRead = captureDisplayHydration({
+        flights: coldDisplayReadsRef.current,
+        key: JSON.stringify([sessionRestScope, storedSessionId]),
+        runtimeIdByStoredSessionIdRef,
+        sessionStateByRuntimeIdRef,
+        stored,
+        storedSessionId
+      })
 
       let resumedRunning = false
       // A recovered in-flight tail means the turn already produced output, so
@@ -1658,6 +1684,17 @@ export function useSessionActions({
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
+        }
+
+        // A completed read still warms its exact durable scope after navigation.
+        // It must not adopt a runtime or touch the foreground on that path.
+        if (
+          prefetchedResult &&
+          stored &&
+          displayRead.owns() &&
+          (!prefetchedResult.session_id || prefetchedResult.session_id === stored.id)
+        ) {
+          saveTranscriptTail(storedSessionId, toChatMessages(prefetchedResult.messages), sessionRestScope)
         }
 
         // Paint the persisted transcript as soon as REST returns instead of
@@ -1828,7 +1865,12 @@ export function useSessionActions({
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
         const pendingClarify = pendingClarifyState.request
-        const pendingConnection = restorePendingConnectionFromSnapshot(resumed, resumed.session_id, resumeStartedAt).request
+
+        const pendingConnection = restorePendingConnectionFromSnapshot(
+          resumed,
+          resumed.session_id,
+          resumeStartedAt
+        ).request
 
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
@@ -1908,7 +1950,7 @@ export function useSessionActions({
               : {
                   turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
                 }),
-            ...(livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection)),
+            ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {
                   streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null
@@ -2095,6 +2137,8 @@ export function useSessionActions({
 
         notifyError(err, copy.resumeFailed)
       } finally {
+        displayRead.release()
+
         if (isCurrentResume()) {
           busyRef.current = resumedRunning
           setBusy(resumedRunning)
@@ -2106,6 +2150,7 @@ export function useSessionActions({
       activeSessionIdRef,
       busyRef,
       copy,
+      getRouteToken,
       holdSessionTranscriptView,
       requestGateway,
       resetViewSync,

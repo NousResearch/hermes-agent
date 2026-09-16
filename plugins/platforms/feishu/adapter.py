@@ -1998,6 +1998,8 @@ class FeishuAdapter(BasePlatformAdapter):
         reason = self._admit(sender, message)
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
+            if reason == "group_policy_rejected":
+                self._warn_once_empty_allowlist_deny(getattr(message, "chat_id", "") or "")
             return
         await self._process_inbound_message(
             data=data, message=message, sender_id=getattr(sender, "sender_id", None),
@@ -3282,6 +3284,26 @@ class FeishuAdapter(BasePlatformAdapter):
             return "group_policy_rejected"
         return None
 
+    # Class default so the first drop after construction is the one that warns.
+    _warned_empty_allowlist_deny = False
+
+    def _warn_once_empty_allowlist_deny(self, chat_id: str) -> None:
+        """One WARNING when group traffic dies on the untouched allowlist default (#111420).
+
+        The policy read is scoped per profile on purpose — never inherit another profile's
+        FEISHU_GROUP_POLICY here; only make the resulting deny visible above DEBUG.
+        """
+        if self._warned_empty_allowlist_deny:
+            return
+        from plugins.platforms.feishu.feishu_admission_diagnostics import empty_allowlist_drop_warning
+        text = empty_allowlist_drop_warning(
+            chat_id=chat_id, group_rules=self._group_rules,
+            default_group_policy=self._default_group_policy, allowed_group_users=self._allowed_group_users,
+        )
+        if text:
+            self._warned_empty_allowlist_deny = True
+            logger.warning(text)
+
     def _require_mention_for(self, chat_id: str) -> bool:
         rule = self._group_rules.get(chat_id) if chat_id else None
         if rule and rule.require_mention is not None:
@@ -3427,7 +3449,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _persist_seen_message_ids(self) -> None:
         try:
-            self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(self._dedup_state_path.parent)
             with self._dedup_lock:
                 recent = self._seen_message_order[-self._dedup_cache_size:]
                 # Save as {msg_id: timestamp} so TTL filtering works across restarts.
@@ -4103,7 +4126,8 @@ def _qr_register_inner(*, initial_domain: str, timeout_seconds: int) -> Optional
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
     else:
         print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
+        from hermes_cli.managed_uv import pip_install_hint
+        print(f"  Tip: {pip_install_hint('qrcode')}  to display a scannable QR code here next time")
     print()
     result = _poll_registration(
         device_code=begin["device_code"], interval=begin["interval"],

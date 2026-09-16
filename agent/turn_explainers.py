@@ -168,6 +168,28 @@ _PERSISTENCE_DEFAULT_EXPLANATION = (
 )
 
 
+def _file_mutation_identity(path: str, task_id: Optional[str]) -> str:
+    """One key per on-disk target: the file tools' task-resolved absolute path, case-folded
+    on case-insensitive hosts. A failure recorded as ``notes.md`` and the write that later
+    lands as ``/repo/notes.md`` (or ``Notes.md`` on Windows) must meet on the same key."""
+    try:
+        from tools.file_tools_paths import _resolve_path_for_task
+
+        resolved = str(_resolve_path_for_task(path, task_id or "default"))
+    except Exception:
+        resolved = os.path.abspath(os.path.expanduser(path))
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def _file_stat_signature(identity: str) -> Optional[tuple]:
+    """``(mtime_ns, size)`` of the target, ``None`` when it does not exist (or cannot be read)."""
+    try:
+        st = os.stat(identity)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: str) -> bool:
     """``display.<config_key>`` (default True), cached per agent on ``cache_attr``.
 
@@ -201,11 +223,14 @@ class TurnExplainersMixin:
     """File-mutation failure footer + turn-completion explainer (see module docstring)."""
 
     def _record_file_mutation_result(
-        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool
+        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool,
+        *, task_id: Optional[str] = None,
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool}}``; a later success on the same path removes the entry.
+        Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
+        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
+        failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
@@ -233,10 +258,33 @@ class TurnExplainersMixin:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
             for path in targets:
-                state.setdefault(path, {"tool": tool_name, "error_preview": preview})
+                identity = _file_mutation_identity(path, task_id)
+                state.setdefault(path, {
+                    "tool": tool_name, "error_preview": preview,
+                    "identity": identity, "stat": _file_stat_signature(identity),
+                })
         else:
-            for path in targets:
-                state.pop(path, None)
+            cleared = {
+                _file_mutation_identity(p, task_id)
+                for p in (landed_paths if landed else targets)
+            }
+            for path, info in list(state.items()):
+                if info.get("identity", _file_mutation_identity(path, task_id)) in cleared:
+                    state.pop(path, None)
+
+    @staticmethod
+    def _file_mutations_still_failed(failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Drop entries whose target changed on disk since the failed call.
+
+        The recorder only sees write_file/patch receipts; a terminal redirect or an
+        execute_code write leaves none. Re-checking the stat signature at turn end keeps
+        the footer from listing a file that was in fact modified later this turn. Entries
+        without a snapshot (hand-built dicts) are kept as-is.
+        """
+        return {
+            path: info for path, info in failed.items()
+            if "stat" not in info or _file_stat_signature(info["identity"]) == info["stat"]
+        }
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
@@ -280,9 +328,9 @@ class TurnExplainersMixin:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
+            f"{len(failed)} file edit(s) FAILED this turn despite any "
             "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            "`read_file` to confirm what actually landed."
         ]
         shown = list(failed.items())[:10]
         for path, info in shown:

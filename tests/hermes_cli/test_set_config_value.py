@@ -450,14 +450,28 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067: ``hermes config set`` must not report bare success for
-    unrecognized keys. The key IS written (arbitrary keys are supported —
-    top-level scalars bridge into os.environ for skills/external apps), but
-    a post-write notice warns that Hermes may never read it and suggests the
-    likely-intended path. Headline case: the plausible-but-wrong
-    ``gateway.discord.gateway_restart_notification`` (correct path:
-    ``discord.gateway_restart_notification``).
+    """#34067 / #112003: an unknown path UNDER a known section is a typo and is refused before
+    anything is written (headline case ``gateway.discord.gateway_restart_notification``, correct
+    path ``discord.gateway_restart_notification``). Unknown TOP-LEVEL keys stay writable — their
+    scalars bridge into os.environ for skills/external apps — with a post-write notice.
     """
+
+    def test_unknown_subkey_under_known_section_refused_before_write(self, _isolated_hermes_home, capsys):
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text("model: gpt-4o\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit):
+            set_config_value("gateway.discord.gateway_restart_notification", "true")
+
+        assert config_path.read_text(encoding="utf-8") == "model: gpt-4o\n"
+        err = capsys.readouterr().err
+        assert "nothing was written" in err
+        assert "discord.gateway_restart_notification" in err
+
+    def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
+        set_config_value("brand_new_future_key", "value")
+        assert "brand_new_future_key" in _read_config(_isolated_hermes_home)
+        assert "not a recognized config key" in capsys.readouterr().out
 
 
 
@@ -508,7 +522,7 @@ class TestValidateConfigKey:
         assert is_known, f"Expected {key!r} to validate as known"
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
-        ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
     ])

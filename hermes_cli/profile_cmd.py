@@ -9,10 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
-from typing import Optional
+from typing import NoReturn, Optional
 
 
-def _die(msg: str, code: int = 1, *, err: bool = False) -> None:
+def _die(msg: str, code: int = 1, *, err: bool = False) -> NoReturn:
     print(msg, file=sys.stderr if err else sys.stdout)
     sys.exit(code)
 
@@ -436,6 +436,21 @@ def _profile_rename(args):
         _die(f"Error: {e}")
 
 
+def _profile_migrate_identity(args):
+    """Retry the identity migration of a rename that already completed. Exits non-zero when a
+    live gateway would not migrate (it still owns the routing index in memory), or when a
+    database rejected the rewrite (collision, lock, partial failure)."""
+    from hermes_cli.profile_identity import migrate_profile_identity
+    try:
+        migrated = migrate_profile_identity(args.old_name, args.new_name)
+    except (ValueError, FileNotFoundError) as e:
+        _die(f"Error: {e}")
+    if not migrated:
+        _die(f"Error: session identity was not migrated. Restart or stop the gateway, then run:\n"
+             f"    hermes profile migrate-identity {args.old_name} {args.new_name}", err=True)
+    print(f"✓ Session/routing identity migrated: {args.old_name} → {args.new_name}")
+
+
 def _profile_export(args):
     from hermes_cli.profiles import export_profile, get_profile_export_path
     name = args.profile_name
@@ -575,6 +590,7 @@ PROFILE_ACTIONS = {
     'show': _profile_show,
     'alias': _profile_alias,
     'rename': _profile_rename,
+    'migrate-identity': _profile_migrate_identity,
     'export': _profile_export,
     'import': _profile_import,
     'install': _profile_install,

@@ -1206,12 +1206,17 @@ def _is_termux_env(env: dict[str, str] | None = None) -> bool:
 
 
 def _is_windows_npm_path(npm_path: str) -> bool:
-    """True if ``npm_path`` points at a Windows npm shim (WSL ``/mnt/c`` interop, ``.cmd``/``.exe``, UNC).
+    """True if ``npm_path`` points at a Windows npm shim (WSL drive interop, ``.cmd``/``.exe``, UNC).
 
     Callers use this only on a POSIX host — on native Windows ``npm.cmd`` is correct.
     """
     low = npm_path.lower()
-    return low.endswith((".exe", ".cmd", ".bat")) or low.startswith("/mnt/") or "\\" in npm_path
+    mount = low.split("/", 3)[2] if low.startswith("/mnt/") else ""
+    return (
+        low.endswith((".exe", ".cmd", ".bat"))
+        or (len(mount) == 1 and mount.isalpha())
+        or "\\" in npm_path
+    )
 
 
 def _resolve_node_runtime_npm() -> str | None:
@@ -1219,7 +1224,7 @@ def _resolve_node_runtime_npm() -> str | None:
 
     On WSL, PATH interop can hand back a Windows npm that fails with EISDIR / symlink errors over
     ``\\\\wsl.localhost\\...`` UNC paths. Refuse it on a POSIX host and re-scan PATH minus the
-    ``/mnt/*`` drive mounts. ``None`` when no suitable npm is reachable.
+    Windows drive mounts. ``None`` when no suitable npm is reachable.
 
     On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed through PATH interop. See #30271.
     """
@@ -1232,7 +1237,7 @@ def _resolve_node_runtime_npm() -> str | None:
     if not _is_windows_npm_path(npm):
         return npm
     for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory or directory.lower().startswith("/mnt/"):
+        if not directory or _is_windows_npm_path(directory):
             continue
         candidate = shutil.which("npm", path=directory)
         if candidate and not _is_windows_npm_path(candidate):

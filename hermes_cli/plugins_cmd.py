@@ -611,6 +611,43 @@ def _read_manifest_for_install(plugin_dir: Path) -> dict:
     return manifest
 
 
+def _probe_readable(path: Path) -> None:
+    """Raise ``OSError`` unless *path* can actually be listed (dir) or opened for reading (file)."""
+    if path.is_dir():
+        os.listdir(path)
+    else:
+        with open(path, "rb"):
+            pass
+
+
+def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
+    """Refuse to ship a tree Hermes cannot read back. A clone can land unreadable (Windows ACL
+    inheritance -> WinError 5, a mode-000 file) and discovery would then skip the plugin forever
+    (#111804); repair ``u+rX`` where the OS supports it, otherwise fail before anything moves."""
+    paths = [root]
+    for dirpath, dirnames, filenames in os.walk(root):
+        paths.extend(Path(dirpath) / name for name in (*dirnames, *filenames))
+    for path in paths:
+        try:
+            _probe_readable(path)
+            continue
+        except OSError:
+            if os.name != "nt":  # chmod only toggles the read-only bit on Windows; ACLs need icacls
+                try:
+                    os.chmod(path, os.stat(path).st_mode | (0o500 if path.is_dir() else 0o400))
+                except OSError:
+                    pass
+        try:
+            _probe_readable(path)
+        except OSError as exc:
+            fix = (f'icacls "{plugins_dir}" /grant:r "%USERNAME%":(OI)(CI)F /T' if os.name == "nt"
+                   else f"chmod -R u+rX {plugins_dir}")
+            raise PluginOperationError(
+                f"Installed file {path.relative_to(root)} is not readable ({exc.strerror or exc}); "
+                f"nothing was installed. Fix permissions on {plugins_dir} (e.g. `{fix}`) and retry."
+            ) from exc
+
+
 def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
     """Move the validated clone into place and persist metadata; on any failure restore the
     previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
@@ -661,6 +698,7 @@ def _install_plugin_core(
         tmp_clone = Path(tmp) / "plugin"
         installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision)
         tmp_target = _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
+        _ensure_tree_readable(tmp_target, plugins_dir)
         manifest = _read_manifest_for_install(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url))
@@ -1274,9 +1312,14 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
     if not base.is_dir():
         return
     for d in sorted(base.iterdir()):
-        if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+        try:
+            if not d.is_dir() or (depth == 0 and skip_names and d.name in skip_names):
+                continue
+            info = _read_manifest_info(d, prefix)
+        except OSError as exc:
+            # Mirrors scan_directory: an unsearchable plugin dir (WinError 5 / mode 000) is skipped, not fatal.
+            logger.warning("Skipping unreadable plugin directory %s: %s", d, exc)
             continue
-        info = _read_manifest_info(d, prefix)
         if info is None:
             if depth == 0:
                 _scan_level(d, source, set(), f"{prefix}/{d.name}" if prefix else d.name, 1, seen)

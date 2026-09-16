@@ -397,6 +397,77 @@ def test_sweep_drains_a_named_profile_home_under_the_root(adapter, home):
     assert q.queue_depth(lane_home, profile) == 0
 
 
+def test_drain_resessions_a_record_pinned_to_a_dead_session(adapter, home, monkeypatch):
+    """DoD #2: a drained record pinned to a dead session runs in the lane's current
+    Bot Chat tip instead of dead-lettering forever."""
+    from gateway.platforms import api_server_bot_delivery as drain
+
+    profile = "lane-beta"
+    lane_home = home / "profiles" / profile
+    record = q.admit(
+        lane_home,
+        sender_profile="lane-alpha",
+        target_profile=profile,
+        target_session_id="api_dead_tip",
+        idempotency_key=q.validate_idempotency_key("auto:resession"),
+        fingerprint="fp",
+        delivery_id="e" * 32,
+        message="hello again",
+    )
+    assert record["status"] == q.STATUS_QUEUED
+    monkeypatch.setattr(drain, "_canonical_bot_chat_tip", lambda home: "api_current_tip")
+
+    assert asyncio.run(drain.drain_once(adapter, home)) == 1
+    assert [call["session_id"] for call in adapter.calls] == ["api_current_tip"]
+    assert q.read_record(lane_home, record["delivery_id"])["status"] == q.STATUS_DELIVERED
+
+
+def test_drain_keeps_a_record_pinned_to_the_current_tip(adapter, home, monkeypatch):
+    """A record already pinned to the current tip is not re-sessioned."""
+    from gateway.platforms import api_server_bot_delivery as drain
+
+    profile = "lane-beta"
+    lane_home = home / "profiles" / profile
+    record = q.admit(
+        lane_home,
+        sender_profile="lane-alpha",
+        target_profile=profile,
+        target_session_id="api_current_tip",
+        idempotency_key=q.validate_idempotency_key("auto:resession-current"),
+        fingerprint="fp",
+        delivery_id="f" * 32,
+        message="hello",
+    )
+    monkeypatch.setattr(drain, "_canonical_bot_chat_tip", lambda home: "api_current_tip")
+
+    assert asyncio.run(drain.drain_once(adapter, home)) == 1
+    assert [call["session_id"] for call in adapter.calls] == ["api_current_tip"]
+    assert q.read_record(lane_home, record["delivery_id"])["status"] == q.STATUS_DELIVERED
+
+
+def test_drain_keeps_pinned_session_when_no_tip_resolvable(adapter, home, monkeypatch):
+    """No provable tip: the drainer degrades to the pinned session, never drops."""
+    from gateway.platforms import api_server_bot_delivery as drain
+
+    profile = "lane-beta"
+    lane_home = home / "profiles" / profile
+    record = q.admit(
+        lane_home,
+        sender_profile="lane-alpha",
+        target_profile=profile,
+        target_session_id="api_dead_tip",
+        idempotency_key=q.validate_idempotency_key("auto:resession-fallback"),
+        fingerprint="fp",
+        delivery_id="a" * 32,
+        message="hello",
+    )
+    monkeypatch.setattr(drain, "_canonical_bot_chat_tip", lambda home: "")
+
+    assert asyncio.run(drain.drain_once(adapter, home)) == 1
+    assert [call["session_id"] for call in adapter.calls] == ["api_dead_tip"]
+    assert q.read_record(lane_home, record["delivery_id"])["status"] == q.STATUS_DELIVERED
+
+
 def test_queued_receipt_reports_the_slot_state_observed(adapter, home):
     """D2: a receipt says WHY it queued, from the slot's real state.
 

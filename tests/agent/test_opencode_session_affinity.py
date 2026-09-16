@@ -91,7 +91,9 @@ def test_auxiliary_call_uses_explicit_main_runtime_session(monkeypatch):
     aux.call_llm(
         task="title_generation",
         messages=_MSGS,
-        main_runtime={"session_id": "sess-explicit-2"},
+        main_runtime=_agent(
+            "opencode-zen", "glm-5", "https://opencode.ai/zen/v1"
+        )._current_main_runtime(),
     )
 
-    assert captured["extra_headers"]["x-opencode-session"] == "sess-explicit-2"
+    assert captured["extra_headers"]["x-opencode-session"] == "sess-affinity-1"

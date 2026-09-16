@@ -592,6 +592,18 @@ class CLIModelSwitchMixin:
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider
+        # Re-resolve the CLI-level reasoning_config for the new model. The lazy-built
+        # agent inherits THIS field (cli_agent_setup_mixin passes self.reasoning_config
+        # into run_agent), so without this a /model switch away from a default model
+        # with a different reasoning_effort leaves the target model running on the
+        # old effort — e.g. a switch to an always-thinking GLM/ARK model that only
+        # accepts low/high/max goes out with effort=medium and 400s on turn one.
+        try:
+            from hermes_constants import resolve_reasoning_config
+            from cli import CLI_CONFIG as _MS_CLI_CONFIG
+            self.reasoning_config = resolve_reasoning_config(_MS_CLI_CONFIG, self.model)
+        except Exception:
+            pass
         # Always overwrite explicit overrides so stale credentials from the previous provider
         # (e.g. Ollama api_key/base_url) don't leak into the next resolution.
         self._explicit_api_key = result.api_key

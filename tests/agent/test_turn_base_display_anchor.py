@@ -15,6 +15,7 @@ Covers:
     compressor.last_prompt_tokens and falls back cleanly without an anchor;
   * compute_session_context_breakdown prefers the turn-base anchor over the
     last-response anchor;
+  * context_usage_fields given the owning agent reports the breakdown's figure;
   * invalidation sites clear _turn_base_usage_anchor alongside _usage_anchor.
 """
 
@@ -171,6 +172,38 @@ class TestContextBreakdownPrefersTurnBaseAnchor:
         )
         payload = cb.compute_session_context_breakdown(agent, messages)
         assert payload["context_used"] >= 300_000
+
+    def test_usage_fields_with_agent_report_the_breakdown_figure(self, monkeypatch):
+        """A usage surface that passes the owning agent reads the occupancy /context shows; once
+        the anchor no longer matches the transcript it keeps the compressor's own figure."""
+        from agent import context_breakdown as cb
+
+        messages = [_msg("user", "start"), _msg("assistant", "reply")]
+        turn_base = capture_usage_anchor(400_000, 200, messages)
+        messages.append(_msg("assistant", "anchored reply"))
+        comp = SimpleNamespace(context_length=1_000_000, last_prompt_tokens=900_000)
+        agent = SimpleNamespace(
+            _usage_anchor=None,
+            _turn_base_usage_anchor=turn_base,
+            _session_messages=messages,
+            _memory_store=None,
+            tools=[],
+            model="test/model",
+            context_compressor=comp,
+        )
+        monkeypatch.setattr(
+            "agent.system_prompt.build_system_prompt_parts",
+            lambda a: {"stable": "sys", "context": "", "volatile": ""},
+        )
+        payload = cb.compute_session_context_breakdown(agent, messages)
+        fields = cb.context_usage_fields(comp, agent)
+        assert (fields["context_used"], fields["context_source"]) == (
+            payload["context_used"],
+            payload["context_source"],
+        )
+
+        agent._session_messages = [_msg("user", "rebuilt")]
+        assert cb.context_usage_fields(comp, agent) == cb.context_usage_fields(comp)
 
 
 class TestInvalidationSitesClearTurnBaseAnchor:

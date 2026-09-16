@@ -465,11 +465,24 @@ Poll the current run state. This is useful for dashboards that need status witho
   "session_id": "space-session",
   "model": "hermes-agent",
   "output": "Done.",
-  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
+  "usage": {
+    "input_tokens": 50, "output_tokens": 200, "total_tokens": 250,
+    "context_used": 18350, "context_max": 272000, "context_percent": 7,
+    "context_source": "provider_usage", "context_estimated": false
+  }
 }
 ```
 
 Statuses are retained briefly after terminal states (`completed`, `failed`, or `cancelled`) for polling and UI reconciliation.
+
+`input_tokens`, `output_tokens` and `total_tokens` sum every model call the run made, so a tool-heavy
+run can report more than the context window: they measure cost. The `context_*` fields measure how
+full the context is when the turn ends, the same figure `/context` shows: `context_used` of
+`context_max` tokens, `context_percent`, `context_source` (`provider_usage`,
+`provider_usage_plus_estimate` or `local_estimate`) and `context_estimated`. They are omitted until
+the agent has a reading. The `usage` of `POST /api/sessions/{session_id}/chat` and of the terminal
+`run.*` frame on `/chat/stream` carries the same fields; the OpenAI-compatible `usage` of
+`/v1/chat/completions` and `/v1/responses` is unchanged.
 
 ### GET /v1/runs/\{run_id\}/events
 

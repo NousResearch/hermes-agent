@@ -408,6 +408,56 @@ class TestRunStatus:
                 assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "space-session"
                 assert status["session_id"] == "space-session"
 
+    @pytest.mark.asyncio
+    async def test_every_turn_surface_reports_the_same_context_occupancy(self, adapter):
+        """/v1/runs builds its usage on its own agent lifecycle, apart from _run_agent's. Both must
+        carry the occupancy the shared producer reports for the agent, not the summed cost."""
+        from agent.context_breakdown import context_usage_fields
+        from agent.context_engine import ContextEngine
+        from agent.usage_anchor import capture_usage_anchor
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "done"},
+        ]
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done", "messages": messages}
+        mock_agent.session_prompt_tokens = 250_000
+        mock_agent.session_completion_tokens = 900
+        mock_agent.session_total_tokens = 250_900
+        mock_agent.context_compressor = MagicMock(
+            spec=ContextEngine, context_length=272_000, last_prompt_tokens=90_000
+        )
+        mock_agent._session_messages = messages
+        mock_agent._usage_anchor = None
+        mock_agent._turn_base_usage_anchor = capture_usage_anchor(35_000, 400, messages)
+        occupancy = context_usage_fields(mock_agent.context_compressor, mock_agent)
+        assert occupancy
+
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        _, turn_usage = adapter._finish_turn_result(
+            mock_agent,
+            {"messages": messages},
+            None,
+            route=None,
+            requested_runtime=None,
+            route_source="global",
+            confirmed_runtime_lock=False,
+        )
+        assert status["status"] == "completed"
+        for usage in (status["usage"], turn_usage):
+            assert {key: usage[key] for key in occupancy} == occupancy
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id}/events — SSE event stream

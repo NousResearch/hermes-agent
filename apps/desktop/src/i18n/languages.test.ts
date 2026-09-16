@@ -25,6 +25,7 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('uk')).toBe('uk')
     expect(normalizeLocale('uk-UA')).toBe('uk')
     expect(normalizeLocale(' uk_UA ')).toBe('uk')
+    expect(normalizeLocale('Українська')).toBe('uk')
   })
 
   it('falls back to English for empty or unsupported values', () => {

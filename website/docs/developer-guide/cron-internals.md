@@ -140,7 +140,14 @@ dropped silently. The mechanics, in the order the due scan applies them
 3. **Already fired → never twice.** `completed_occurrence()` consults the
    executions ledger for a `completed` row with that exact `scheduled_instant`
    before anything is due; a slot that ran before the restart advances without
-   firing. `failed` / `unknown` rows do not count as completion.
+   firing. `failed` / `unknown` rows do not count as completion, and neither
+   does a `completed` row whose `finished_at` (else `claimed_at`) precedes the
+   instant it is stamped with — a run cannot prove an occurrence that had not
+   happened yet. Rows without a comparable timestamp keep counting.
+   An occurrence identity is only claimable once it is due: `claim_job_for_fire`
+   drops a `scheduled_instant` that is still in the future, so an off-tick fire
+   (dashboard trigger, webhook, lease reclaim, misfire backstop) runs
+   occurrence-free instead of consuming the next slot.
 4. **Late within grace → fire late.** Grace = half the period clamped to
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
    `last_dispatch.kind = late`.
@@ -224,7 +231,7 @@ If Chronos is misconfigured or the agent isn't logged into Nous,
 `resolve_cron_scheduler()` falls back to the built-in ticker (logged warning) —
 cron never loses its trigger. Recurring jobs re-arm after each fire; `repeat`-N
 jobs stop cleanly when the count is exhausted (no orphaned one-shot). The full
-agent↔Nous wire contract lives in `docs/chronos-managed-cron-contract.md`.
+agent↔Nous wire contract lives in [Chronos managed-cron contract](chronos-managed-cron-contract.md).
 
 ### Fresh Session Isolation
 

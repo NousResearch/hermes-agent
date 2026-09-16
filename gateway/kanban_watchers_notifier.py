@@ -93,6 +93,30 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
     return str(resolved) if resolved else None
 
 
+_ANCHORLESS_WARNED: set[tuple] = set()
+
+
+def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
+    """A thread-shaped subscription without ``parent_chat_id`` cannot match a channel-level
+    ``profile_routes`` entry, so the fail-closed route gate skips it on every tick. Say so ONCE per
+    row at WARNING — a subscription that can never deliver was invisible below DEBUG (#110919)."""
+    metadata = sub.get("delivery_metadata") or {}
+    thread_like = bool(sub.get("thread_id")) or (sub.get("chat_type") or metadata.get("chat_type")) in {
+        "thread", "forum", "forum_post", "forum-post", "topic"}
+    if not thread_like or metadata.get("parent_chat_id"):
+        return
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _ANCHORLESS_WARNED:
+        return
+    _ANCHORLESS_WARNED.add(key)
+    logger.warning(
+        "kanban notifier: subscription for %s on %s thread %s has no parent_chat_id anchor and matched no "
+        "profile route; it will not be delivered. Re-subscribe with `hermes kanban notify-subscribe ... "
+        "--parent-chat-id <channel id> [--guild-id <guild id>]`.",
+        sub.get("task_id"), platform, sub.get("chat_id"),
+    )
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -225,6 +249,7 @@ class _Collector:
             return None
         from gateway.config import Platform
         if _adapter_for_subscription(self.runner, Platform(platform), sub, owner_profile or self.notifier_profile) is None:
+            _warn_anchorless_thread_sub_once(sub, platform)
             return None
         old_cursor, cursor, events = _kbn().claim_unseen_events_for_sub(
             conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
@@ -342,29 +367,61 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_block_loop_detected(ev, n) -> tuple:
+    """Re-blocked for the same cause past the limit and routed to `triage`.
+
+    It emits no blocked/status event, so ping loudly here. A repeated-block
+    circuit breaker establishes that orchestration attention is needed; it
+    does NOT establish that a human decision or owner input exists. Use
+    neutral orchestration wording unless the block was typed as a genuine
+    owner-input request (`needs_input`, the only kind that carries a concrete
+    question for the owner).
+    """
+    kind = _payload(ev, "kind")
+    decision = kind == "needs_input"
+    msg = (
+        f"🛑 {n.head} routed to TRIAGE — "
+        f"{'needs a human decision' if decision else 'for orchestration attention'}"
+        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    )
+    return msg, None, None
+
+
+def _fmt_gave_up(ev, n) -> tuple:
+    # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
+    # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
+    failures = _payload(ev, "failures")
+    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
+    last = _clip(ev, "error", " (last: {})", 160)
+    return (
+        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
+        f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
+        None, None,
+    )
+
+
+def _fmt_timed_out(ev, n) -> tuple:
+    limit = int(_payload(ev, "limit_seconds") or 0)
+    minutes = max(1, round(limit / 60)) if limit else 0
+    span = f"its {minutes}-minute limit" if minutes else "its time limit"
+    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
-    "gave_up": lambda ev, n: (
-        f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
+    "gave_up": _fmt_gave_up,
+    "crashed": lambda ev, n: (
+        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
     ),
-    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
-    "timed_out": lambda ev, n: (
-        f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
-    ),
+    "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
-    # Re-blocked for the same cause past the limit and routed to `triage` for a
-    # human. It emits no blocked/status event, so ping loudly here.
-    "block_loop_detected": lambda ev, n: (
-        f"🛑 {n.head} routed to TRIAGE — needs a human decision"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}",
-        None, None,
-    ),
+    "block_loop_detected": _fmt_block_loop_detected,
 }
 
 
@@ -548,9 +605,12 @@ class _KanbanNotification:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
-        # Upload artifact paths from the completion payload / legacy result as
-        # native files. Only on ``completed`` so retries never spam attachments.
-        if ev.kind == "completed":
+        # Upload artifact paths from the handoff payload / legacy result as
+        # native files. Both handoff kinds stage files for exactly this: a
+        # review-bound card's files exist precisely so the human sees them at
+        # handoff time. Retry exposure matches ``completed`` (the sub cursor is
+        # rewound only when a send failed).
+        if ev.kind in ("completed", "review_requested"):
             try:
                 await self.runner._deliver_kanban_artifacts(
                     adapter=adapter, chat_id=sub["chat_id"], metadata=metadata,

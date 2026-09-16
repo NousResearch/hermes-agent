@@ -1227,22 +1227,31 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
     return flags, disable_gpu, password_store, ozone_hint
 
 
-def _register_linux_desktop_entry() -> None:
+def _register_linux_desktop_entry(defer: bool = False):
     """Install the XDG desktop entry for Hermes Desktop (Linux only, best-effort).
 
     ``Exec`` and ``Icon`` are absolute so the entry works outside a login shell.
     ``hermes uninstall --gui`` removes it.
+
+    ``defer=True`` (app-grid launch) returns a ``DeferredDesktopEntryInstall`` that writes the
+    entry only once the Electron window is on screen (#111906); ``None`` when nothing is
+    pending. Terminal, detached and ``--build-only`` launches install synchronously.
     """
     from hermes_cli.main import PROJECT_ROOT
     try:
-        from hermes_cli.linux_desktop_entry import install_desktop_entry, is_supported
+        from hermes_cli.linux_desktop_entry import DeferredDesktopEntryInstall, install_desktop_entry, is_supported
         if not is_supported():
-            return
+            return None
+        if defer:
+            deferred = DeferredDesktopEntryInstall(PROJECT_ROOT)
+            deferred.start()
+            return deferred
         entry = install_desktop_entry(PROJECT_ROOT)
         if entry:
             print(f"✓ Desktop launcher entry installed: {entry}")
     except Exception as exc:  # never block a launch on launcher plumbing
         print(f"⚠ Could not install the desktop launcher entry: {exc}")
+    return None
 
 
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
@@ -1547,14 +1556,19 @@ def cmd_gui(args: argparse.Namespace):
         print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
 
     # Best-effort and idempotent; a failure must never stop the app from launching.
-    _register_linux_desktop_entry()
+    # An app-grid launch (DESKTOP_STARTUP_ID) must not write its own entry while the
+    # shell still has the app in STARTING, so it defers the write until Electron
+    # reports the window on screen (#111906). --build-only spawns no app: write now.
+    from hermes_cli.linux_desktop_entry import launched_from_shell
+    build_only = bool(getattr(args, "build_only", False))
+    deferred_entry = _register_linux_desktop_entry(defer=launched_from_shell() and not build_only)
 
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and launches the desktop
     # itself (detached, after the old exe has exited); launching here would
     # block the installer. Verify the artifact exists so a silent "built
     # nothing" can't slip past.
-    if getattr(args, "build_only", False):
+    if build_only:
         if source_mode:
             if not _desktop_dist_exists(desktop_dir):
                 print(f"✗ --build-only --source produced no dist at: {desktop_dir / 'dist'}")
@@ -1582,5 +1596,11 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.append("--local")
     if not source_mode:
         print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
-    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+    pass_fds: tuple[int, ...] = ()
+    if deferred_entry is not None:
+        env = deferred_entry.child_env(env)
+        pass_fds = deferred_entry.pass_fds
+    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False, pass_fds=pass_fds)
+    if deferred_entry is not None:
+        deferred_entry.finish()
     sys.exit(launch_result.returncode)

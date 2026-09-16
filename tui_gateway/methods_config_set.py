@@ -122,7 +122,7 @@ def _set_model(rid, params, key, value, session):
             if failed_ready is None:
                 return _err(rid, 5032, session.get("agent_error") or "agent initialization failed")
             if not failed_ready.wait(timeout=30.0):
-                return _err(rid, 5032, "agent initialization timed out")
+                return _err(rid, 5032, AGENT_STILL_STARTING)
         failed_agent_init = (
             failed_agent_init and session.get("agent") is None and session.get("agent_error") is not None
             and session.get("agent_ready") is failed_ready and failed_ready.is_set())
@@ -168,7 +168,7 @@ def _set_fast(rid, params, key, value, session):
     else:
         current_tier = _load_service_tier()
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal"}.get(current_tier, current_tier))
+        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
     nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")

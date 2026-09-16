@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 from contextlib import nullcontext, suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
@@ -465,9 +466,28 @@ class GatewayAgentCacheMixin:
         if not session_key:
             return
         state = self._peek_session_state(session_key)
+        running_agent = state.turn.agent if state else None
         _generation_at_interrupt = self._interrupt_running_turn(
             session_key, interrupt_reason=interrupt_reason, invalidation_reason=invalidation_reason,
         )
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            # Plugins holding a per-turn external resource (an outbound RPC blocked on a tool result
+            # the loop will never consume) learn the turn is gone. Fires for /stop and the /new
+            # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
+            # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+                _invoke_hook(
+                    "agent_loop_stopped",
+                    session_key=session_key,
+                    platform=source.platform.value if source.platform else "",
+                    reason=interrupt_reason,
+                    invalidation_reason=invalidation_reason,
+                )
+            except Exception:
+                logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
         adapter = self._adapter_for_source(source)
         interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
         if adapter and callable(interrupt_session_activity):
@@ -672,24 +692,32 @@ class GatewayAgentCacheMixin:
                 ctx.run(self._run_release_in_profile_scope, target, args, session_key)
 
     def _run_release_in_profile_scope(self, target, args: tuple, session_key: Optional[str]) -> None:
-        """Call ``target(*args)`` under the profile that owns ``session_key``. Threads start with an
-        EMPTY context, so a bare thread would commit end-of-session memory (provider ``on_session_end``
-        reads credentials/home at call time) under the LAUNCH profile — lost memories or a secondary's
-        transcript extracted into the default profile's provider namespace. In-turn callers already
-        carry the scope (``copy_context`` preserves it); the unscoped housekeeping sweep resolves the
-        owner from the session key (``agent:<profile>:...``) and enters that profile's scope."""
+        """Call ``target(*args)`` under the profile that OWNS ``session_key``.
+
+        Threads start with an EMPTY context, so a bare thread would commit end-of-session memory
+        (provider ``on_session_end`` reads credentials/home at call time) under the launch profile.
+        And the LRU-cap eviction runs inside the REQUESTING turn, whose agent may belong to another
+        profile — so "some scope is present" is not enough either. The owner comes from the session
+        key: a named profile's home, else the DEFAULT profile (``agent:main:`` keys), which is the
+        root Hermes dir even when the gateway was launched under a named profile. Its scope is
+        entered unless the current one already is the owner's."""
         from agent.secret_scope import current_secret_scope, is_multiplex_active
-        if current_secret_scope() is not None or not is_multiplex_active():
-            target(*args)
-            return
-        from gateway.run import _profile_runtime_scope
-        from hermes_constants import get_hermes_home
-        home = None
-        store = getattr(self, "session_store", None)
-        if session_key and store is not None:
-            with suppress(Exception):
-                home = store._profile_home_for_key(session_key)
-        with _profile_runtime_scope(home or get_hermes_home()):
+        scope = nullcontext()
+        if is_multiplex_active():
+            from gateway.run import _profile_runtime_scope
+            from hermes_constants import get_default_hermes_root, get_hermes_home, hermes_home_key
+            owner = None
+            store = getattr(self, "session_store", None)
+            if session_key and store is not None:
+                try:
+                    owner = store._profile_home_for_key(session_key)
+                except Exception:
+                    logger.warning("Could not resolve the owning profile for %s; releasing under the default profile",
+                                   session_key, exc_info=True)
+            owner_home = Path(owner) if owner else get_default_hermes_root()
+            if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
+                scope = _profile_runtime_scope(owner_home)
+        with scope:
             target(*args)
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:

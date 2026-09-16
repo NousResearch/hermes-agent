@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger("cli")
 
@@ -366,18 +367,60 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
     return {"path": str(wt_path), "branch": branch_name, "repo_root": repo_root, "base": base_ref}
 
 
+_REMOTE_TRUNK_CANDIDATES = ("origin/HEAD", "origin/main", "origin/master")
+_LOCAL_TRUNK_CANDIDATES = ("main", "master")
+
+
+def _worktree_local_trunk(path: str, timeout: float = 5) -> Optional[str]:
+    """Local trunk of a repo with NO remote-tracking refs: ``main``/``master``, else the branch
+    checked out in the main worktree. None = no baseline at all; callers must preserve.
+
+    Nothing in such a repo was ever pushed, so "merged into the local trunk" is the only fact
+    that can tell redundant scratch work from unique commits. May raise like ``_git``.
+    """
+    for name in _LOCAL_TRUNK_CANDIDATES:
+        if _git_out(["rev-parse", "--verify", "--quiet", f"refs/heads/{name}"], path, timeout=timeout):
+            return name
+    porcelain = _git_out(["worktree", "list", "--porcelain"], path, timeout=timeout) or ""
+    for line in porcelain.split("\n\n", 1)[0].splitlines():  # first block = the main worktree
+        if line.startswith("branch refs/heads/"):
+            return line[len("branch refs/heads/"):].strip() or None
+    return None
+
+
+def _worktree_merge_base_ref(path: str, timeout: float = 5) -> Optional[str]:
+    """Ref merged work is judged against: ``origin/HEAD``/``origin/main``/``origin/master``, or the
+    local trunk when the repo has no remote-tracking refs at all. None = nothing to compare
+    against -> every consumer must preserve. May raise like ``_git``.
+    """
+    for cand in _REMOTE_TRUNK_CANDIDATES:
+        if _git_out(["rev-parse", "--verify", "--quiet", cand], path, timeout=timeout):
+            return cand
+    if _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], path, timeout=timeout) == "":
+        return _worktree_local_trunk(path, timeout=timeout)
+    return None
+
+
 def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:
     """Whether a worktree has commits unreachable from any remote branch. Fails SAFE toward True.
 
-    No remote-tracking refs = no baseline -> False. A shallow boundary can disconnect an older
-    HEAD from origin/* so public commits look unpushed; ``_deepen_shallow_repo`` first if affordable.
+    No remote-tracking refs = nothing was ever pushed, so the tree is compared against the local
+    trunk instead (``_worktree_local_trunk``); no trunk either -> True. A shallow boundary can
+    disconnect an older HEAD from origin/* so public commits look unpushed;
+    ``_deepen_shallow_repo`` first if affordable.
     """
     try:
         remote_refs = _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], worktree_path,
                                timeout=timeout)
+        if remote_refs is None:
+            return True
+        baseline = ["--remotes"]
         if not remote_refs:
-            return remote_refs is None  # no remote-tracking refs: nothing to be unpushed against
-        unpushed = _git_out(["log", "--oneline", "HEAD", "--not", "--remotes"], worktree_path,
+            trunk = _worktree_local_trunk(worktree_path, timeout=timeout)
+            if trunk is None:
+                return True
+            baseline = [trunk]
+        unpushed = _git_out(["log", "--oneline", "HEAD", "--not", *baseline], worktree_path,
                             timeout=timeout)
         return unpushed is None or bool(unpushed)
     except Exception:
@@ -458,21 +501,11 @@ def _load_worktree_merge_cache() -> Dict[str, bool]:
 
 def _save_worktree_merge_cache(verdicts: Dict[str, bool]) -> None:
     """Atomically persist the newest ``_WORKTREE_MERGE_CACHE_MAX`` verdicts. Never raises."""
-    path = _worktree_merge_cache_path()
-    tmp = None
     try:
         items = list(verdicts.items())[-_WORKTREE_MERGE_CACHE_MAX:]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"version": 1, "verdicts": dict(items)}), encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        atomic_json_write(_worktree_merge_cache_path(), {"version": 1, "verdicts": dict(items)}, indent=None)
     except Exception as e:
         logger.debug("Could not persist worktree merge cache: %s", e)
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
 
 
 def _worktree_commits_all_merged_upstream(
@@ -481,13 +514,12 @@ def _worktree_commits_all_merged_upstream(
     """Whether every local-only commit is patch-equivalent (``git cherry``) to upstream. Fails SAFE -> False.
 
     Catches squash-merged/cherry-picked PRs whose remote branch was deleted (commits unreachable
-    from ``refs/remotes/*`` forever). More than *max_ahead* ahead = stale-base tree -> False.
+    from ``refs/remotes/*`` forever). Upstream is ``_worktree_merge_base_ref`` (the local trunk in
+    a repo without remotes). More than *max_ahead* ahead = stale-base tree -> False.
     *cache* memoizes on ``(base_sha, head_sha, max_ahead)``, exactly what ``git cherry`` consumes.
     """
     try:
-        base = next((c for c in ("origin/HEAD", "origin/main", "origin/master")
-                     if _git_out(["rev-parse", "--verify", "--quiet", c], worktree_path, timeout=timeout)),
-                    None)
+        base = _worktree_merge_base_ref(worktree_path, timeout=timeout)
         if base is None:
             return False
 

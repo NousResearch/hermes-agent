@@ -1,3 +1,4 @@
+import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
@@ -40,10 +41,6 @@ const defaultConfigClient: I18nConfigClient = {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 export function getConfigDisplayLanguage(config: HermesConfigRecord): unknown {
   return isRecord(config.display) ? config.display.language : undefined
 }
@@ -62,17 +59,6 @@ export function withConfigDisplayLanguage(config: HermesConfigRecord, locale: Lo
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
-}
-
-const RTL_LOCALES = new Set<Locale>(['ar'])
-
-function applyDocumentLocale(locale: Locale) {
-  if (typeof document === 'undefined') {
-    return
-  }
-
-  document.documentElement.lang = locale
-  document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
 }
 
 export interface I18nContextValue {

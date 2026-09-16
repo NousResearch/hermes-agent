@@ -8,6 +8,15 @@ import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
 const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
+// An unterminated reasoning block: an open tag that starts its own block (start
+// of text, or a fresh line) with no close tag in the text yet. Reasoning models
+// inline their chain of thought in the answer channel and stream the open tag
+// long before the close one, so between those two flushes the regex above — which
+// needs a close tag — matches nothing and the reasoning renders as chat prose.
+// `agent/think_scrubber.py` draws the same block-boundary line for the same
+// reason: a real reasoning preamble is always its own block, while prose that
+// merely *mentions* `<thinking>` mid-sentence must survive.
+const OPEN_REASONING_BLOCK_RE = /(^|\n)[ \t]*<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*$/i
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
@@ -157,6 +166,36 @@ function scrubBacktickNoise(text: string): string {
   }
 
   return out
+}
+
+/**
+ * Strip reasoning blocks out of assistant text.
+ *
+ * Applied to the whole accumulated text on every streaming flush, which is what
+ * makes the two defects around the plain `.replace(REASONING_BLOCK_RE, '')` show
+ * up in chat but never on a settled message:
+ *
+ * 1. The regex consumes the whitespace on its seam, so a block sitting BETWEEN
+ *    two words fused them — `no` + `Hermes` rendered as `noHermes` (the report's
+ *    `noHermes` / `backendveal`). When both sides of the removed span are still
+ *    prose, keep one space instead of deleting the seam.
+ * 2. An unterminated block was not stripped at all, so the model's chain of
+ *    thought painted as answer prose for as long as the close tag took to arrive,
+ *    and when it arrived the whole span vanished in one frame — the text the
+ *    reader had already read, gone. Stripping the unterminated block is what the
+ *    backend scrubber already does at end-of-stream ("leaking partial reasoning
+ *    is worse than a truncated answer"); doing it here keeps the surface stable
+ *    instead of showing reasoning then deleting it.
+ */
+function stripReasoningBlocks(text: string): string {
+  const closed = text.replace(REASONING_BLOCK_RE, (match: string, _tag: string, offset: number, whole: string) => {
+    const before = whole.slice(0, offset)
+    const after = whole.slice(offset + match.length)
+
+    return /\S$/.test(before) && /^\S/.test(after) ? ' ' : ''
+  })
+
+  return closed.replace(OPEN_REASONING_BLOCK_RE, '$1')
 }
 
 function stripEmptyFenceBlocks(text: string): string {
@@ -649,7 +688,7 @@ function normalizeFenceBlocks(text: string): string {
 }
 
 export function preprocessMarkdown(text: string): string {
-  const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
+  const cleaned = stripReasoningBlocks(text).replace(PREVIEW_MARKER_RE, '')
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)

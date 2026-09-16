@@ -78,7 +78,9 @@ def test_init_moa_fallback_persists_native_aggregator_identity():
         )
 
         assert agent.provider == "xai-oauth"
+        assert agent.requested_provider == "xai-oauth"
         assert agent.model == "grok-4.6"
+        assert agent.api_mode == "codex_responses"
         assert agent._fallback_activated is True
 
 

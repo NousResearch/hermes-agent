@@ -861,12 +861,18 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             continue
         if _fb_client is not None:
             _fb_provider = _fb["provider"]
-            if str(_fb_provider).strip().lower() == "moa":
+            _fb_is_moa = str(_fb_provider).strip().lower() == "moa"
+            if _fb_is_moa:
                 _agg_provider, _ = _resolve_moa_aggregator(_fb["model"])
                 if _agg_provider:
                     _fb_provider = _normalize_aux_provider(_agg_provider)
-            agent.provider = _fb_provider
+            agent.provider = agent.requested_provider = _fb_provider
             agent.model = _fb_model or _fb["model"]
+            if _fb_is_moa:
+                from agent.chat_completion_helpers import _fallback_api_mode_resolved
+                agent.api_mode = _fallback_api_mode_resolved(
+                    agent, agent.provider, agent.model, str(_fb_client.base_url)
+                )
             agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:

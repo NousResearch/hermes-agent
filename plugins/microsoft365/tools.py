@@ -37,24 +37,38 @@ async def _run(capability: str, args: dict, ctx) -> str:
             request = client.users.by_user_id(user).messages
             if action == "search": result = await _maybe(request.get())
             elif action == "read": result = await _maybe(request.by_message_id(str(args.get("id"))).get())
-            else: raise NotImplementedError(f"SDK mapping required for {action}")
+            else: raise ValueError(f"unsupported Microsoft 365 operation: {action}")
         elif capability == "calendar":
             request = client.users.by_user_id(user).calendar.events
             if action == "search": result = await _maybe(request.get())
-            else: raise NotImplementedError(f"SDK mapping required for {action}")
+            else: raise ValueError(f"unsupported Microsoft 365 operation: {action}")
         elif capability in ("sharepoint", "onedrive"):
-            if capability == "sharepoint": request = client.sites.by_site_id(str(args.get("site_id") or "")).drive.root
+            if capability == "sharepoint":
+                site_id = str(args.get("site_id") or "").strip()
+                if not site_id:
+                    raise ValueError("site_id is required for SharePoint operations")
+                request = client.sites.by_site_id(site_id).drive.root
             else: request = client.users.by_user_id(user).drive.root
             if action == "search": result = await _maybe(request.search_with_q(str(args.get("query") or "")).get())
-            elif action == "read": result = await _maybe(request.item_with_path(str(args.get("path") or "")).get())
-            elif action == "download_files": result = await _maybe(request.item_with_path(str(args.get("path") or "")).content.get())
-            elif action == "upload_files":
-                content = args.get("content", "")
-                if not isinstance(content, str) or len(content.encode()) > 5 * 1024 * 1024:
-                    raise ValueError("upload content must be text no larger than 5 MiB")
-                result = await _maybe(request.item_with_path(str(args.get("path") or "")).content.put(content.encode()))
+            elif action in ("read", "download_files"):
+                path = str(args.get("path") or "").strip()
+                if not path:
+                    raise ValueError("path is required for file operations")
+                item = request.item_with_path(path)
+                result = await _maybe(item.get() if action == "read" else item.content.get())
         else:
-            raise NotImplementedError(f"SDK mapping required for {capability}.{action}")
+            if capability == "teams":
+                if action == "list_teams":
+                    result = await _maybe(client.users.by_user_id(user).joined_teams.get())
+                else:
+                    team_id = str(args.get("team_id") or "").strip()
+                    if not team_id:
+                        raise ValueError("team_id is required to list Teams channels")
+                    result = await _maybe(client.teams.by_team_id(team_id).channels.get())
+            elif capability == "planner" and action == "list_task_lists":
+                result = await _maybe(client.users.by_user_id(user).todo.lists.get())
+            else:
+                raise ValueError(f"unsupported Microsoft 365 operation: {capability}.{action}")
         return tool_result({"success": True, "capability": capability, "action": action, "result": safe_result(result)})
     except Exception as exc:
         return tool_error(f"Microsoft 365 {capability} operation failed: {type(exc).__name__}")
@@ -78,5 +92,5 @@ _SCHEMA = {
 
 def schema(capability: str) -> dict:
     return {"name": f"microsoft365_{capability}",
-            "description": f"Microsoft 365 Plugin {capability} operations; writes use the host approval seam when available.",
+            "description": f"Microsoft 365 Plugin {capability} read-only operations.",
             "parameters": {"type": "object", "properties": _SCHEMA[capability], "required": ["action"]}}

@@ -5,19 +5,40 @@ from __future__ import annotations
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
+def test_advertised_operations_are_implemented_read_only_scope():
+    from plugins.microsoft365.backend import OPERATIONS
+
+    assert OPERATIONS == {
+        "outlook": ("search", "read"),
+        "sharepoint": ("search", "read", "download_files"),
+        "onedrive": ("search", "read", "download_files"),
+        "calendar": ("search",),
+        "teams": ("list_teams", "list_channels"),
+        "planner": ("list_task_lists",),
+    }
+
+
+def test_schema_does_not_advertise_writes_or_approval():
+    from plugins.microsoft365.tools import schema
+
+    assert schema("outlook")["parameters"]["properties"]["action"]["enum"] == ["search", "read"]
+    assert "approval" not in schema("outlook")["description"].lower()
+
+
 def test_permissions_are_derived_from_operation_flags():
     from plugins.microsoft365.backend import Microsoft365Settings, required_permissions
 
     settings = Microsoft365Settings.from_mapping({"capabilities": {
-        "outlook": {"search": True, "send": True},
+        "outlook": {"search": True},
         "sharepoint": {"read": True},
         "calendar": {"search": True},
-        "teams": False,
-        "planner": {"create_tasks": True},
+        "teams": {"list_channels": True},
+        "planner": {"list_task_lists": True},
     }})
 
     assert required_permissions(settings) == {
-        "Mail.Read", "Mail.Send", "Sites.Read.All", "Calendars.Read", "Tasks.ReadWrite"
+        "Mail.Read", "Sites.Read.All", "Calendars.Read",
+        "Channel.ReadBasic.All", "Tasks.Read",
     }
 
 
@@ -25,9 +46,7 @@ def test_service_true_enables_all_operations_for_compatibility():
     from plugins.microsoft365.backend import Microsoft365Settings
 
     settings = Microsoft365Settings.from_mapping({"capabilities": {"outlook": True}})
-    assert settings.operations("outlook") == {
-        "search", "read", "create_draft", "send"
-    }
+    assert settings.operations("outlook") == {"search", "read"}
 
 
 def test_disabled_operation_is_rejected_before_graph_client_creation():
@@ -41,7 +60,7 @@ def test_disabled_operation_is_rejected_before_graph_client_creation():
     original = tools.create_graph_client
     tools.create_graph_client = lambda settings: (_ for _ in ()).throw(AssertionError("client created"))
     try:
-        result = asyncio.run(tools._run("outlook", {"action": "send"}, Context()))
+        result = asyncio.run(tools._run("outlook", {"action": "read"}, Context()))
     finally:
         tools.create_graph_client = original
     assert "disabled" in result.lower()
@@ -56,7 +75,7 @@ def test_preflight_is_side_effect_free_and_redacts_configuration():
     }), sdk_available=False)
 
     assert result["ready"] is False
-    assert result["required_permissions"] == ["Mail.Read", "Mail.ReadWrite", "Mail.Send"]
+    assert result["required_permissions"] == ["Mail.Read"]
     assert "do-not-return" not in repr(result)
     assert result["configuration"]["client_secret"] == "[redacted]"
 
@@ -76,7 +95,8 @@ def test_bundled_manifest_is_loaded_by_real_plugin_discovery():
     loaded = manager._plugins["microsoft365"]
     assert loaded.enabled is True
     assert loaded.manifest.name == "microsoft365"
-    assert "one bundled connection" in loaded.manifest.description
+    assert "one bundled plugin" in loaded.manifest.description
+    assert "broader Microsoft ecosystem" in loaded.manifest.description
     assert "microsoft365_calendar" in manager._plugin_tool_names
     assert "microsoft365_outlook" not in manager._plugin_tool_names
 

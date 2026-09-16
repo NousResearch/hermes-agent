@@ -9,12 +9,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 OPERATIONS = {
-    "outlook": ("search", "read", "create_draft", "send"),
-    "sharepoint": ("search", "read", "download_files", "upload_files"),
-    "onedrive": ("search", "read", "download_files", "upload_files"),
-    "calendar": ("search", "create_events"),
-    "teams": ("list_teams", "list_channels", "search_messages", "send_messages"),
-    "planner": ("search", "read", "create_tasks", "update_tasks"),
+    "outlook": ("search", "read"),
+    "sharepoint": ("search", "read", "download_files"),
+    "onedrive": ("search", "read", "download_files"),
+    "calendar": ("search",),
+    "teams": ("list_teams", "list_channels"),
+    "planner": ("list_task_lists",),
 }
 CAPABILITIES = tuple(OPERATIONS)
 
@@ -28,22 +28,21 @@ OPERATION_PERMISSIONS = {
     },
     "sharepoint": {
         "search": {"Sites.Read.All"}, "read": {"Sites.Read.All"},
-        "download_files": {"Files.Read.All"}, "upload_files": {"Files.ReadWrite.All"},
+        "download_files": {"Files.Read.All"},
     },
     "onedrive": {
         "search": {"Files.Read.All"}, "read": {"Files.Read.All"},
-        "download_files": {"Files.Read.All"}, "upload_files": {"Files.ReadWrite.All"},
+        "download_files": {"Files.Read.All"},
     },
     "calendar": {
-        "search": {"Calendars.Read"}, "create_events": {"Calendars.ReadWrite"},
+        "search": {"Calendars.Read"},
     },
     "teams": {
         "list_teams": {"Team.ReadBasic.All"}, "list_channels": {"Channel.ReadBasic.All"},
-        "search_messages": {"ChannelMessage.Read.All"}, "send_messages": {"ChannelMessage.Send"},
+
     },
     "planner": {
-        "search": {"Tasks.Read"}, "read": {"Tasks.Read"},
-        "create_tasks": {"Tasks.ReadWrite"}, "update_tasks": {"Tasks.ReadWrite"},
+        "list_task_lists": {"Tasks.Read"},
     },
 }
 SECRET_KEYS = frozenset({"client_secret", "access_token", "refresh_token"})

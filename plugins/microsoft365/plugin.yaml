@@ -1,6 +1,6 @@
 name: microsoft365
 version: 0.1.0
-description: "Microsoft 365 Plugin — one bundled connection for Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do."
+description: "Microsoft 365 Plugin — one bundled plugin connecting Hermes to the broader Microsoft ecosystem: Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do."
 author: NousResearch
 kind: backend
 python_dependencies:
@@ -32,19 +32,19 @@ config_schema:
     properties:
       outlook:
         type: dict
-        description: "search, read, create_draft, send"
+        description: "search, read"
       sharepoint:
         type: dict
-        description: "search, read, download_files, upload_files"
+        description: "search, read, download_files"
       onedrive:
         type: dict
-        description: "search, read, download_files, upload_files"
+        description: "search, read, download_files"
       calendar:
         type: dict
-        description: "search, create_events"
+        description: "search"
       teams:
         type: dict
-        description: "list_teams, list_channels, search_messages, send_messages"
+        description: "list_teams, list_channels"
       planner:
         type: dict
-        description: "search, read, create_tasks, update_tasks (also covers To Do)"
+        description: "list_task_lists (Microsoft To Do; bounded read-only scope)"

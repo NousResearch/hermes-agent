@@ -19,23 +19,23 @@ operations for this service”; new configurations should use the explicit form:
 
 ```yaml
 capabilities:
-  outlook: {search: true, read: true, create_draft: false, send: false}
-  sharepoint: {search: true, read: true, download_files: true, upload_files: false}
-  onedrive: {search: true, read: true, download_files: false, upload_files: false}
-  calendar: {search: true, create_events: false}
-  teams: {list_teams: true, list_channels: true, search_messages: true, send_messages: false}
-  planner: {search: true, read: true, create_tasks: true, update_tasks: false}
+  outlook: {search: true, read: true}
+  sharepoint: {search: true, read: true, download_files: true}
+  onedrive: {search: true, read: true, download_files: false}
+  calendar: {search: true}
+  teams: {list_teams: true, list_channels: true}
+  planner: {list_task_lists: true}
 ```
 
-`planner` covers both Planner and To Do task operations. A service tool is registered
+`planner` is the bundled task capability; its current bounded operation lists Microsoft To Do task lists. A service tool is registered
 only when at least one operation is enabled; calls for disabled or unknown operations
 are rejected before a Graph client is created. `microsoft365_preflight` is local and
 side-effect-free and reports the least-privilege permissions derived from the selected
 flags. The manifest contains the explicit operation and permission contract.
 
-Writes (drafts, sends, uploads, events and task changes) are only described as using
-the host approval seam when that seam is available. This plugin does not implement a
-separate approval gate; it must not be treated as an approval implementation by itself.
+This bundled scope is read-only. It does not advertise draft/send, upload, event creation,
+message sending, or task mutation because those SDK calls and approval wiring are not
+implemented here. This plugin does not implement a separate approval gate.
 Secrets are read through the host configuration flow and redacted from preflight and
 SDK-shaped results.
 

@@ -1261,6 +1261,71 @@ class TestAnthropicStreamCallbacks:
         assert mock_rebuild.call_count == 0
         assert agent._anthropic_client.close.call_count >= 1
 
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @pytest.mark.parametrize("message", [
+        # Production message: the turn aborted with this and stalled 31 minutes
+        # until the user sent another message. Every jiter message must retry.
+        "key must be a string at line 1 column 338",
+        "key must be a string at line 1 column 566",
+        "expected value at line 1 column 6",
+        "trailing comma at line 1 column 8",
+        "EOF while parsing an object at line 1 column 1",
+    ])
+    def test_jiter_stream_parser_valueerror_retries_before_delivery(
+        self, mock_replace, mock_rebuild, monkeypatch, message,
+    ):
+        """Every native-parser (jiter) ValueError retries, not just one hardcoded message.
+
+        Only one jiter message was special-cased (two after the marker-list refactor), so a
+        malformed frame from a proxy died as a "local validation bug" with the reply
+        half-streamed.
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://aibase.example/anthropic-api/anthropic",
+            provider="anthropic",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        class _BadStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                raise ValueError(message)
+
+        final_message = SimpleNamespace(content=[], stop_reason="end_turn")
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = [_BadStream(), good_stream]
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message, (
+            f"{message!r} must retry to the good stream, not abort the turn"
+        )
+        assert agent._anthropic_client.messages.stream.call_count == 2
+
     def test_anthropic_malformed_tool_json_retries_with_buffered_tool_input(self):
         """#107830: a parser ValueError mid tool-args (after visible text) is retried on the SAME
         stream wire with ``eager_input_streaming: false`` on every tool (server-validated args),

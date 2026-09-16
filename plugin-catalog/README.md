@@ -54,6 +54,9 @@ category: memory            # desktop | memory | platform | web | tools | voice 
                             # (default desktop) — the shelf the entry sits on at /docs/plugins
 requires_hermes: ">=0.19"   # optional
 docs_url: ""                # optional
+version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
+image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
+                            # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 capabilities:
   provides_tools: []
@@ -61,6 +64,13 @@ capabilities:
   provides_middleware: []
   requires_env: []
 ```
+
+`version` and `image` are cosmetic: neither is parsed or used to pick what
+installs. The sha stays the release; bump `version` in the same PR that bumps
+`sha` so the label on the card matches the code. Images must live on
+`raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` so
+the Desktop catalog never fetches from third-party hosts; pin the raw URL to
+the entry's commit and the picture is as immutable as the code.
 
 ## removed.yaml — the blocklist
 

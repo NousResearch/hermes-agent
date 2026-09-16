@@ -1,37 +1,72 @@
-"""Integrity boundary for execution tools that can mutate Hermes config directly.
+"""Detect active-config mutations across unrestricted execution boundaries.
 
 File tools reject the active profile's ``config.yaml`` before writing, but code
-and shell children can use ordinary filesystem APIs.  Snapshotting at the
-trusted parent boundary lets those tools detect and roll back a write without
-trying to statically parse arbitrary Python or shell syntax.
+and shell children can use ordinary filesystem APIs.  A parent-owned snapshot
+can report mutations without treating an old snapshot as authority to overwrite
+a newer configuration generation.
 """
 
 from __future__ import annotations
 
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 
 _REFUSAL = (
     "Blocked: the execution modified the active Hermes config.yaml. The change "
-    "was rolled back because agents cannot modify security-sensitive "
-    "configuration. Edit config.yaml directly or use 'hermes config' outside "
-    "the agent."
+    "was not rolled back because it cannot be distinguished safely from a "
+    "concurrent trusted edit. Inspect config.yaml before continuing, and use "
+    "'hermes config' outside the agent for intended changes."
 )
 
 
-@dataclass
+@dataclass(frozen=True)
+class _ConfigState:
+    """Namespace-entry and resolved-target state for one config path."""
+
+    entry_identity: tuple[int, int, int] | None
+    link_target: str | None
+    resolved_path: Path
+    target_identity: tuple[int, int, int] | None
+    content: bytes | None
+
+
+@dataclass(frozen=True)
 class ActiveConfigSnapshot:
-    """Bytes and metadata needed to verify and restore one active config file."""
+    """A mutation detector for the active config namespace entry and its target."""
 
     path: Path
-    existed: bool
-    content: bytes
-    mode: int | None
-    identity: tuple[int, int] | None
+    state: _ConfigState
+
+    @staticmethod
+    def _read_state(path: Path) -> _ConfigState:
+        if not os.path.lexists(path):
+            return _ConfigState(None, None, path.resolve(strict=False), None, None)
+
+        entry = path.lstat()
+        link_target = os.readlink(path) if stat.S_ISLNK(entry.st_mode) else None
+        resolved = path.resolve(strict=False)
+        if not resolved.exists():
+            return _ConfigState(
+                (entry.st_dev, entry.st_ino, entry.st_mode),
+                link_target,
+                resolved,
+                None,
+                None,
+            )
+
+        target = resolved.stat()
+        if not stat.S_ISREG(target.st_mode):
+            raise OSError(f"Hermes config path is not a regular file: {path}")
+        return _ConfigState(
+            (entry.st_dev, entry.st_ino, entry.st_mode),
+            link_target,
+            resolved,
+            (target.st_dev, target.st_ino, target.st_mode),
+            resolved.read_bytes(),
+        )
 
     @classmethod
     def capture(cls) -> tuple[ActiveConfigSnapshot | None, str | None]:
@@ -39,72 +74,15 @@ class ActiveConfigSnapshot:
         try:
             from hermes_cli.config import get_config_path
 
-            path = get_config_path().resolve(strict=False)
-            try:
-                info = path.stat()
-            except FileNotFoundError:
-                return cls(
-                    path=path, existed=False, content=b"", mode=None, identity=None
-                ), None
-            if path.is_symlink() or not path.is_file():
-                return None, f"execute tool refused: Hermes config path is not a regular file: {path}"
-            return cls(
-                path=path,
-                existed=True,
-                content=path.read_bytes(),
-                mode=stat.S_IMODE(info.st_mode),
-                identity=(info.st_dev, info.st_ino),
-            ), None
+            path = get_config_path().absolute()
+            return cls(path=path, state=cls._read_state(path)), None
         except OSError as exc:
             return None, f"execute tool refused: could not snapshot Hermes config.yaml: {exc}"
 
-    def restore_if_changed(self) -> str | None:
-        """Restore the snapshot atomically and return a refusal when it changed."""
+    def mutation_error(self) -> str | None:
+        """Return a refusal when either the namespace entry or target changed."""
         try:
-            current_exists = self.path.exists()
-            current_info = self.path.stat() if current_exists else None
-            current_regular = current_exists and not self.path.is_symlink() and self.path.is_file()
-            current = self.path.read_bytes() if current_regular else None
-            current_mode = stat.S_IMODE(current_info.st_mode) if current_info else None
-            current_identity = (
-                (current_info.st_dev, current_info.st_ino) if current_info else None
-            )
-        except OSError:
-            current_exists, current = True, None
-            current_mode, current_identity = None, None
-
-        expected = self.content if self.existed else None
-        if (
-            current_exists == self.existed
-            and current == expected
-            and current_mode == self.mode
-            and current_identity == self.identity
-        ):
-            return None
-
-        try:
-            if self.existed:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                fd, temp_name = tempfile.mkstemp(
-                    prefix=f".{self.path.name}.restore-", dir=str(self.path.parent)
-                )
-                try:
-                    with os.fdopen(fd, "wb") as stream:
-                        stream.write(self.content)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    if self.mode is not None:
-                        os.chmod(temp_name, self.mode)
-                    os.replace(temp_name, self.path)
-                finally:
-                    try:
-                        os.unlink(temp_name)
-                    except FileNotFoundError:
-                        pass
-            elif self.path.is_file() or self.path.is_symlink():
-                self.path.unlink()
-            else:
-                raise OSError("config path was replaced by a non-file entry")
+            current = self._read_state(self.path)
         except OSError as exc:
-            return f"{_REFUSAL} WARNING: automatic rollback failed: {exc}"
-        return _REFUSAL
+            return f"{_REFUSAL} Snapshot comparison failed: {exc}"
+        return None if current == self.state else _REFUSAL

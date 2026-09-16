@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -486,8 +487,10 @@ def _new_delegation_id() -> str:
 
 
 def _prune_completed_locked() -> None:
-    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
-    completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]
+    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``.
+    ``stalling``/``finalizing`` are still live: evicting one makes the late runner return hit
+    ``_finalize``'s missing-record path and silently drop a real result."""
+    completed = [(rid, r) for rid, r in _records.items() if r.get("status") not in _LIVE_STATES]
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
     for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
         _records.pop(rid, None)
@@ -553,6 +556,9 @@ def _dispatch(
         "slot_key": slot_key or delegation_id,
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
+        # The one stale-monitor thread serves every profile and starts with an empty Context;
+        # a forced finalization runs under the dispatcher's so it settles the same state.db.
+        "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -722,7 +728,11 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
-    _persist_completion(evt, result)
+    try:
+        _persist_completion(evt, result)
+    except Exception as exc:  # noqa: BLE001 — a lost durable row is recoverable; a lost result + leaked slot is not
+        logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
+                     "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -847,7 +857,9 @@ def _stale_monitor_loop() -> None:
                 fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
             _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
         for delegation_id in expired:
-            _finalize(delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            with _records_lock:
+                ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
+            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
         if not any_monitorable:
             return
 

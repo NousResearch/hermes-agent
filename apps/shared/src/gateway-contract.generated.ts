@@ -1505,10 +1505,10 @@ export interface ProfilesCreateResult {
   model_set?: boolean
   mirrored: ProfileMirrored
 }
-/** What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``. */
+/** What was copied from the launch profile. */
 export interface ProfileMirrored {
   env?: boolean
-  auth?: boolean | 'shared'
+  auth?: boolean
   model_inherited?: boolean
   voice?: boolean
 }
@@ -3533,7 +3533,7 @@ export interface McpServerRuntimeRow {
   disabled: boolean
   status: McpRuntimeStatus
 }
-export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'configured'
+export type McpRuntimeStatus = 'connected' | 'disabled' | 'connecting' | 'failed' | 'lazy' | 'configured'
 /** ``preset`` (catalog id) and/or ``config`` (url/command/args/env/headers/auth/tools); a ``bearer_token`` is written to the profile's .env, only the header template persists. */
 export interface McpServersAddParams {
   profile?: string | null
@@ -3681,6 +3681,7 @@ export interface AgentPluginRow {
   catalog_tier?: string | null
   installed_sha?: string | null
   catalog_sha?: string | null
+  catalog_version?: string | null
   update_available?: boolean | null
   pinned_sha?: string | null
 }

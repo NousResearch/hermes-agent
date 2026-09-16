@@ -405,7 +405,9 @@ class MintFailure:
     attempts: int = 1
 
     def remaining(self) -> float:
-        return 0.0 if not self.retryable else max(0.0, self.not_before - time.monotonic())
+        # Rounded to the millisecond: ``(now + wait) - now`` is not exactly ``wait`` in floating point,
+        # and the ceil below turned that dust into an extra whole second ("retry in 61s").
+        return 0.0 if not self.retryable else max(0.0, round(self.not_before - time.monotonic(), 3))
 
     def as_payload(self) -> Dict[str, Any]:
         """The wire shape every status RPC carries: ``{error_code, error, retryable, retry_after}``
@@ -817,12 +819,10 @@ def guest_notice_pending() -> bool:
 
 
 def mark_guest_notice_shown() -> bool:
-    """Persist ``guest_notice_shown`` on the guest's ``providers.nous`` state (whichever store holds it).
+    """Persist ``guest_notice_shown`` on the guest's ``providers.nous`` state (the active store).
 
     Returns True when a flag was written; False when there is no guest to mark."""
-    from hermes_cli.auth import (
-        _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path, _save_auth_store,
-        _store_section)
+    from hermes_cli.auth import _provider_state_transaction, _save_auth_store, _store_section
     with _provider_state_transaction("nous") as (auth_store, state, source_path):
         if not is_guest_state(state) or source_path is None:
             return False
@@ -830,13 +830,8 @@ def mark_guest_notice_shown() -> bool:
             return True
         state = dict(state)
         state[GUEST_NOTICE_FLAG] = True
-        if _same_path(source_path, _auth_file_path()):
-            _store_section(auth_store, "providers")["nous"] = state
-            _save_auth_store(auth_store)
-        else:
-            source_store = _load_auth_store(source_path)
-            _store_section(source_store, "providers")["nous"] = state
-            _save_auth_store(source_store, target_path=source_path)
+        _store_section(auth_store, "providers")["nous"] = state
+        _save_auth_store(auth_store)
     return True
 
 

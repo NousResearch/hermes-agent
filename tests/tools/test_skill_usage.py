@@ -571,3 +571,29 @@ def test_foreground_create_stamps_learn_provenance_not_agent(skills_home):
     skill_usage.record_created("agent-skill", agent_created=True)
     assert skill_usage.get_record("agent-skill")["created_by"] == "agent"
     assert skill_usage.is_curator_managed("agent-skill")
+
+
+def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp_path):
+    """A nested acquire of the same lock path in one thread must not deadlock (an atomic
+    skill_manage batch holds every target lock while its per-op calls re-acquire them), while a
+    second thread still waits until the outer holder releases.
+    """
+    import threading
+    from tools.skill_usage import skill_file_lock
+
+    lock_path = tmp_path / ".locks" / "demo.lock"
+    entered = threading.Event()
+    other_done = threading.Event()
+
+    def other():
+        with skill_file_lock(lock_path):
+            other_done.set()
+
+    t = threading.Thread(target=other)
+    with skill_file_lock(lock_path):
+        with skill_file_lock(lock_path):  # re-entrant: returns immediately
+            entered.set()
+        t.start()
+        assert not other_done.wait(timeout=0.2), "second thread acquired a held lock"
+    t.join(timeout=2)
+    assert entered.is_set() and other_done.is_set()

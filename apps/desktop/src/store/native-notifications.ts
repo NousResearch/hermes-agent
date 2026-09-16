@@ -5,8 +5,13 @@ import { persistString, storedString } from '@/lib/storage'
 
 import { $gateway } from './gateway'
 import { withinNativeNotifyBaseline } from './notify-baseline'
-import { $approvalRequests, answerApproval } from './prompts'
-import { clearApprovalRequest } from './prompts'
+import {
+  answerApproval,
+  clearApprovalRequest,
+  replayPendingApproval,
+  sessionApprovalRequest,
+  sessionApprovalRequests
+} from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { $activeSessionId } from './session'
 import { storedSessionIdForRuntimeId } from './session-states'
@@ -350,7 +355,9 @@ export function dispatchPluginNativeNotification(pluginId: string, input: Plugin
 // Resolve a pending approval from a notification button, mirroring the in-app
 // Run/Reject bar. Keyed by session id — a background approval has no local guard.
 export async function respondToApprovalAction(sessionId: null | string, actionId: string): Promise<void> {
-  const choice = actionId === 'approve' ? 'once' : actionId === 'reject' ? 'deny' : null
+  const [action, ...idParts] = actionId.split(':')
+  const requestId = idParts.length ? idParts.join(':') : sessionApprovalRequest(sessionId).get()?.requestId
+  const choice = action === 'approve' ? 'once' : action === 'reject' ? 'deny' : null
 
   if (!choice) {
     return
@@ -367,12 +374,17 @@ export async function respondToApprovalAction(sessionId: null | string, actionId
   }
 
   try {
-    // The parked prompt knows how to answer itself: the live server request when
-    // still open, else the owner-routed queue-level RPC (#91684 client half).
-    const parked = $approvalRequests.get()[sessionId ?? '']
+    const parked = sessionApprovalRequests(sessionId)
+      .get()
+      .find(request => request.requestId === requestId)
 
-    await answerApproval(gateway, parked ?? { sessionId: sessionId ?? null }, choice)
-    clearApprovalRequest(sessionId)
+    await answerApproval(gateway, parked ?? { sessionId, requestId }, choice)
+
+    if (requestId || sessionApprovalRequest(sessionId).get()?.requestId === undefined) {
+      clearApprovalRequest(sessionId, requestId)
+    }
+
+    void replayPendingApproval(gateway, sessionId).catch(() => undefined)
   } catch (error) {
     if (sessionId && isSessionGoneForBackgroundPolling(error)) {
       markSessionGone(sessionId)

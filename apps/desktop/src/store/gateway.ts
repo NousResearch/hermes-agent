@@ -31,7 +31,7 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 // user-initiated open is 'foreground' and may take the pool's reserved slot;
 // roster hydration, hover prewarm and untagged dials are 'background' — main's
 // default, so background dials keep the pre-priority IPC payload shape.
-type SpawnPriority = 'foreground' | 'background'
+export type SpawnPriority = 'foreground' | 'background'
 
 function dialPriority(spawnPriority: SpawnPriority): { priority: 'foreground' } | Record<never, never> {
   return spawnPriority === 'foreground' ? { priority: 'foreground' } : {}
@@ -991,9 +991,13 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
-  const route = await gatewayForProfile(profile, true)
+  // A user-initiated Settings-scoped RPC (the Vault tab's "Applies to" pick)
+  // dials `foreground` so a cold profile spawn is not queued behind background
+  // work (#111651); ambient callers keep the background default.
+  const route = await gatewayForProfile(profile, true, spawnPriority)
 
   try {
     if (!route.gateway) {
@@ -1018,6 +1022,12 @@ export async function requestGatewayForProfile<T>(
  * composite (connectionId, profile) pool key prevents same-named agents on two
  * sources from sharing a socket. Only null/empty ids retain the v1 profile
  * resolver; explicit `local` is a registry source and must use getConnectionFor.
+ *
+ * `spawnPriority` defaults to 'background' like every other dial in this file.
+ * A user gesture that reaches the pool through this RPC path (first send on a
+ * fresh chat, "New session", an explicit Bot Chat open) passes 'foreground' so
+ * its cold spawn takes the pool's reserved interactive slot instead of queuing
+ * behind roster hydration (#102281 primitive; #105104 symptom).
  */
 export async function requestGatewayForAgent<T>(
   connectionId: null | string,
@@ -1025,13 +1035,14 @@ export async function requestGatewayForAgent<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -1043,10 +1054,10 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  if (await isAttachedSharedRemote(connectionId, key)) {
+  if (await isAttachedSharedRemote(connectionId, key, spawnPriority)) {
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
   }
 
@@ -1070,7 +1081,7 @@ export async function requestGatewayForAgent<T>(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, spawnPriority)
     }
 
     return await (timeoutMs === undefined && signal === undefined
@@ -1221,20 +1232,28 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
  * acquire this lease before the first session-scoped RPC and release it in a
  * `finally`; the refcount keeps the socket (and the session it minted) alive
  * for the whole sequence. Primary/shared-primary routes return a no-op release.
+ *
+ * `spawnPriority` follows requestGatewayForAgent: the retain is the FIRST dial
+ * of a session-create gesture, so a user click passes 'foreground' here or the
+ * cold spawn still queues behind background hydration before the create RPC.
  */
-export async function retainGatewayForAgent(connectionId: null | string, profile: string): Promise<() => void> {
+export async function retainGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
+): Promise<() => void> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
     // Plain-profile route: gatewayForProfile's request lease IS the retain —
     // hold it until the caller releases.
-    const route = await gatewayForProfile(key, true)
+    const route = await gatewayForProfile(key, true, spawnPriority)
 
     return route.release
   }
 
-  if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key))) {
+  if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key, spawnPriority))) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
     return () => undefined
   }
@@ -1290,7 +1309,7 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, spawnPriority)
     }
   } catch (error) {
     release()

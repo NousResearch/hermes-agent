@@ -65,7 +65,10 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   `{"description", "prompt", "url", "password": True, "category": provider|tool|messaging|setting}`.
   Non-secret settings go in config.yaml; if internal code needs an env mirror, bridge it in code
   (`gateway_timeout`; `terminal.cwd` → `TERMINAL_CWD`). `MESSAGING_CWD` is removed and `TERMINAL_CWD`
-  in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`.
+  in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`. `hermes config
+  set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
+  (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
+  file the platform setup flows write — never to the top level of config.yaml.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
@@ -126,7 +129,15 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
   Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
   refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for.
+  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt writer runs in
+  the PRE-pull interpreter after the module purge, so `update_receipt.py` may import only stdlib and
+  purge-protected modules (`hermes_constants`) — a `hermes_cli.config` import there re-executed the
+  pulled config against a stale `utils` and silently dropped the whole receipt; a write failure
+  prints `⚠ Update receipt not written` and logs at WARNING, never debug.
+- **Post-update steps are isolated**: everything after the code swap that runs pulled code in the
+  pre-pull process (`_finish_dashboard_update_cleanup`, notices, probes) catches its own failure,
+  prints it, and records a failed receipt step — one stale-symbol `AttributeError` must not abort
+  the fleet matrix, reconciliation and receipt finalize that follow it.
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
@@ -142,7 +153,9 @@ profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
 root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+islands by design — no live config inheritance and no credential inheritance (a named profile reads
+only its own `auth.json`/`.env`; the root store is never a fallback and never a write-through target,
+#111724 — a profile without a provider gets the setup prompt); `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
@@ -157,6 +170,12 @@ Enumeration is a pure read: never `mkdir` a profile home from a served path (`Se
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
 tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+`gateway.multiplex_profiles` defaults to **on**, but `GatewayConfig` keeps an unset flag `None` and
+`gateway_multiplex_mode.resolve_multiplex_mode` settles it once per boot (called from
+`load_gateway_config_for_runner`): default profile, >= 2 profiles, no standalone secondary gateway,
+no preflight blocker, migratable host → `True`; else `False` + a logged reason. Explicit values pass
+through. CLI/dashboard readers use `default_gateway_multiplexes` (live `served_profiles` record, then
+the explicit flag) — never the merged default, which would guess a verdict only the gateway makes.
 Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
 --multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
 `update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success

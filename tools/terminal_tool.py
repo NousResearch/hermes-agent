@@ -1072,7 +1072,6 @@ def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
-    config_snapshot=None,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize."""
     max_retries = 3
@@ -1098,8 +1097,7 @@ def _run_foreground(
             result = env.execute(
                 command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
                 **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key,
-                                config_snapshot=config_snapshot),
+                                task_id=task_id, session_key=session_key),
             )
             break
         except Exception as e:
@@ -1127,6 +1125,12 @@ def _run_foreground(
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
     )
+
+
+# Floor for the pre-exec guard's share of the command deadline: a short command timeout
+# (1s in tests, a few seconds in practice) must not turn the guard's own cold-start cost
+# (module imports, git probes under load) into a refusal; the wedge it bounds lasted an hour.
+_PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 
 
 def _pre_exec_block(
@@ -1224,27 +1228,57 @@ def terminal_tool(
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
-        _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
+        # The supervised-gateway identity probe ends in a kernel process query
+        # (psutil create_time) that has wedged for the better part of an hour on
+        # macOS; ``env.execute`` is already behind ``run_bounded_sync`` but this
+        # chain ran ahead of it, so the tool call never returned and the cron
+        # slot stayed occupied (#111922). Share the command's own deadline. A
+        # guard that never rendered a verdict fails CLOSED: these checks apply
+        # unconditionally (``force`` cannot bypass them), so the command is
+        # refused with a retryable error instead of running unguarded.
+        from agent.deadline import run_bounded_sync
+        from tools.interrupt import acting_for_tid
+
+        # The guard chain runs on the deadline worker; keep it answerable to /stop
+        # aimed at this tool thread (a remote-backend script read polls is_interrupted()).
+        guard_timeout = max(plan.effective_timeout, _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+        _acting_token = acting_for_tid.set(threading.current_thread().ident)
+        try:
+            bounded_guard = run_bounded_sync(
+                lambda: _pre_exec_block(
+                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                ),
+                guard_timeout,
+                label="terminal.pre-exec-guard",
+            )
+        finally:
+            acting_for_tid.reset(_acting_token)
+        if bounded_guard.timed_out:
+            raise _Rejected(_error_json(
+                f"Terminal pre-execution guard did not finish within {guard_timeout}s "
+                "(process-identity probe wedged); the command was not run. Retry the call.",
+                status="error",
+            ))
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
-
-        # Shell text can hide writes behind variables, interpreters, or generated
-        # scripts, so static dangerous-command patterns are not a complete file
-        # boundary. Snapshot when this backend can reach host files; background
-        # sessions carry the snapshot until the process registry observes exit.
-        config_snapshot = None
-        if env_type == "local" or _docker_has_host_access(plan.config):
-            from tools.security_config_guard import ActiveConfigSnapshot
-            config_snapshot, snapshot_error = ActiveConfigSnapshot.capture()
-            if snapshot_error:
-                return _error_json(snapshot_error)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
             # caller could not have meant for a foreground call, and the two are exclusive anyway.
             background, notify_on_complete, watch_patterns = True, True, None
+
+        # A long-lived background snapshot cannot identify which actor changed
+        # config.yaml, so it must never authorize rollback or blame at process
+        # exit. Bound mutation detection to synchronous host-reaching commands.
+        config_snapshot = None
+        if not background and (env_type == "local" or _docker_has_host_access(plan.config)):
+            from tools.security_config_guard import ActiveConfigSnapshot
+
+            config_snapshot, snapshot_error = ActiveConfigSnapshot.capture()
+            if snapshot_error:
+                return _error_json(snapshot_error)
         if background:
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
@@ -1252,31 +1286,21 @@ def terminal_tool(
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
-                config_snapshot=config_snapshot,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
-            try:
-                started = bool(json.loads(result).get("session_id"))
-            except (TypeError, json.JSONDecodeError):
-                started = False
-            if not started and config_snapshot is not None:
-                violation = config_snapshot.restore_if_changed()
-                if violation:
-                    return _error_json(violation, exit_code=126)
             return result
         result = _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-            config_snapshot=config_snapshot,
         )
         try:
             yielded = json.loads(result).get("status") == "yielded_to_background"
         except (TypeError, json.JSONDecodeError):
             yielded = False
         if not yielded and config_snapshot is not None:
-            violation = config_snapshot.restore_if_changed()
+            violation = config_snapshot.mutation_error()
             if violation:
                 return _error_json(violation, exit_code=126)
         return result
@@ -1349,6 +1373,8 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    from agent.terminal_approval_batch import validate_prepared_terminal
+    validate_prepared_terminal(args)
     # Models sometimes send execute_code's ``code`` here; name the stray
     # argument and the right tool instead of failing on command=None.
     if "command" not in args and "code" in args:

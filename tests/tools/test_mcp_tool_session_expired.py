@@ -66,6 +66,20 @@ def test_is_session_expired_traversal_is_budget_bounded():
     assert _is_session_expired_error(exc) is False
 
 
+def test_is_session_expired_walks_group_chain():
+    """A group's own ``__cause__``/``__context__`` are inspected like any node's: a marker there classifies
+    as expired, and an InterruptedError there still overrides a marker inside the group."""
+    from tools.mcp_tool_errors import _is_session_expired_error
+
+    group = ExceptionGroup("task group", [ValueError("unrelated")])
+    group.__context__ = RuntimeError("session terminated")
+    assert _is_session_expired_error(group) is True
+
+    group = ExceptionGroup("task group", [RuntimeError("session terminated")])
+    group.__context__ = InterruptedError()
+    assert _is_session_expired_error(group) is False
+
+
 # ---------------------------------------------------------------------------
 # Handler integration — verify the recovery plumbing wires end-to-end
 # ---------------------------------------------------------------------------

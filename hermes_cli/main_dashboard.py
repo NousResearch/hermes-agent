@@ -210,6 +210,101 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
     return False
 
 
+# launchd plist directories that can supervise a ``hermes dashboard`` / ``hermes serve`` backend on
+# macOS, with the launchctl domain their jobs load into (LaunchAgents: ``gui/<uid>`` or ``user/<uid>``,
+# probed per label like the gateway helpers; LaunchDaemons: ``system``). Both LaunchAgents dirs are
+# per-user domains, so they share the ``agent`` kind.
+def _launchd_plist_dirs() -> list[tuple[str, Path]]:
+    return [
+        ("agent", Path.home() / "Library" / "LaunchAgents"),
+        ("agent", Path("/Library/LaunchAgents")),
+        ("daemon", Path("/Library/LaunchDaemons")),
+    ]
+
+
+def _loaded_launchd_backend_jobs(
+    plist_dirs: list[tuple[str, Path]] | None = None,
+) -> list[tuple[str, str, list[str], int | None]]:
+    """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
+    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
+    elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
+    per candidate label — a job that is not loaded in any domain is not returned, so an operator's
+    stale plist never claims a process."""
+    if sys.platform != "darwin":
+        return []
+    import plistlib
+    from hermes_cli.gateway import _launchd_print_service_pid
+    uid = os.getuid()  # windows-footgun: ok — darwin-only branch
+    jobs: list[tuple[str, str, list[str], int | None]] = []
+    for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
+        try:
+            plists = sorted(plist_dir.glob("*.plist"))
+        except OSError:
+            continue
+        for plist_path in plists:
+            try:
+                with open(plist_path, "rb") as f:
+                    data = plistlib.load(f)
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                continue
+            if not isinstance(data, dict):
+                continue
+            label = str(data.get("Label") or "").strip()
+            args = data.get("ProgramArguments")
+            if not label or not isinstance(args, list) or not args:
+                continue
+            argv = [str(a) for a in args]
+            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+                continue
+            domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
+            for domain in domains:
+                try:
+                    loaded, live_pid = _launchd_print_service_pid(domain, label)
+                except _SYSTEMCTL_ERRORS:
+                    loaded, live_pid = False, None
+                if loaded:
+                    jobs.append((domain, label, argv, live_pid))
+                    break
+    return jobs
+
+
+def _launchd_job_owning_backend(
+    pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
+    ancestors: "list[int] | tuple[int, ...]" = (),
+) -> tuple[str, str, int | None] | None:
+    """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
+    (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
+    as the job's live process, OR the process runs the job's ``ProgramArguments`` — a detached copy
+    of a supervised backend (an earlier respawn) holds the port the job needs, and respawning it again
+    would only re-create that conflict. ``--no-open`` is ignored on both sides: the respawn path adds
+    it, so an earlier respawn's argv is the plist's plus that flag. None when no loaded job claims
+    the process."""
+    def _norm(argv: list[str]) -> list[str]:
+        return [a for a in argv if a != "--no-open"]
+
+    for domain, label, argv, live_pid in jobs:
+        if live_pid is not None and (live_pid == pid or live_pid in ancestors):
+            return (domain, label, live_pid)
+        if cmdline is not None and _norm(list(cmdline)) == _norm(argv):
+            return (domain, label, live_pid)
+    return None
+
+
+def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeout: float = 15.0) -> bool:
+    """Bring a launchd-supervised backend back after its process was stopped: ``launchctl kickstart
+    <domain>/<label>`` (no ``-k`` — a KeepAlive job may already have respawned it, and a kill would
+    take that fresh process down), then require launchd to report a live PID other than *old_pid*
+    within *timeout*. A kickstart that returns 0 only means "restart requested"; a job that is loaded
+    but never comes back on a fresh PID is a failure the operator must hear about."""
+    from hermes_cli.gateway import _wait_for_launchd_service_pid
+    try:
+        if _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode != 0:
+            return False
+        return _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=timeout, domain=domain)
+    except _SYSTEMCTL_ERRORS:
+        return False
+
+
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
     """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
     (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""

@@ -874,9 +874,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             f"was found. Set the {_env_hint} environment "
             f"variable, or switch to a different provider with `hermes model`."
         )
+    from hermes_constants import profile_cli_selector
+    _sel = profile_cli_selector()
     raise RuntimeError(
-        "No LLM provider configured. Run `hermes model` to "
-        "select a provider, or run `hermes setup` for first-time "
+        f"No LLM provider configured. Run `hermes {_sel}model` to "
+        f"select a provider, or run `hermes {_sel}setup` for first-time "
         "configuration."
     )
 
@@ -1215,12 +1217,17 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
             _st = agent._session_db.get_session_title(agent.session_id)
             if _st:
                 kwargs["session_title"] = _st
+                _source = agent._session_db.get_session_title_source(agent.session_id)
+                if _source:
+                    kwargs["session_title_source"] = _source
     # Gateway user/chat identity for per-user scoping (gateway_session_key: stable per-chat
     # Honcho session isolation).
     for _ident in _GATEWAY_IDENTITY_PARAMS:
         _val = getattr(agent, f"_{_ident}")
         if _val:
             kwargs[_ident] = _val
+    if agent.session_cwd:
+        kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
         from hermes_cli.profiles import get_active_profile_name
@@ -2207,13 +2214,15 @@ def init_agent(
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 
     Non-obvious parameters:
       max_iterations: default unlimited (sys.maxsize); the budget is shared with subagents.
       requested_provider: provider identity before runtime canonicalization.
+      cwd: logical session workspace, available to memory providers during construction;
+        None or empty leaves the runtime cwd resolver unpinned.
       openrouter_min_coding_score: coding-score floor for ``openrouter/pareto-code`` only.
       clarify_callback: ``(question, choices) -> str``; None → the clarify tool errors.
       reasoning_config: None → ``{"enabled": True, "effort": "medium"}`` on OpenRouter.
@@ -2229,6 +2238,7 @@ def init_agent(
         setattr(agent, _name, _params[_name])
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
+    agent.session_cwd = cwd or None
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's

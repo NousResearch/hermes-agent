@@ -694,8 +694,21 @@ def execute_code(
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
     # but the identical command inside `os.system(...)` / `subprocess.run([...])` here sailed through and
     # SIGTERM'd the gateway mid-task.
+    # The identity probe ends in a kernel process query that has wedged on macOS
+    # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
+    from agent.deadline import run_bounded_sync
     from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+    from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
+    _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+    _probe = run_bounded_sync(
+        _is_supervised_gateway_process, _probe_timeout, label="execute_code.lifecycle-guard",
+    )
+    if _probe.timed_out:
+        return tool_error(
+            f"execute_code lifecycle guard did not finish within {_probe_timeout}s "
+            "(process-identity probe wedged); the code was not run. Retry the call."
+        )
+    if _probe.value:
         from cron.lifecycle_guard import contains_gateway_lifecycle_command
         if contains_gateway_lifecycle_command(code):
             return tool_error(
@@ -722,9 +735,9 @@ def execute_code(
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
     # Arbitrary Python can call open/os.replace/ctypes directly, so no source
-    # parser can reliably identify its write targets. Enforce the config.yaml
-    # invariant at the trusted parent boundary instead: snapshot immediately
-    # before execution and atomically roll back any mutation before returning.
+    # parser can reliably identify its write targets. Snapshot the config
+    # namespace entry and resolved target at the trusted parent boundary. This
+    # detects runtime-built paths without overwriting concurrent trusted edits.
     from tools.security_config_guard import ActiveConfigSnapshot
 
     _config_snapshot, _snapshot_error = ActiveConfigSnapshot.capture()
@@ -751,7 +764,7 @@ def execute_code(
             )
     finally:
         if _config_snapshot:
-            _integrity_error = _config_snapshot.restore_if_changed()
+            _integrity_error = _config_snapshot.mutation_error()
     return _error_result(_integrity_error) if _integrity_error else result
 
 

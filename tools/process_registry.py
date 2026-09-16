@@ -491,7 +491,6 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
-    config_snapshot: Any = field(default=None, repr=False)
 
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
@@ -970,8 +969,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
-        config_snapshot: Any = None) -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -982,9 +980,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(
-            command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-            config_snapshot=config_snapshot)
+        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1053,15 +1049,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
         session_key: str = "", owner_task_id: str = "", output_so_far: str = "",
-        notify_on_complete: bool = True, config_snapshot: Any = None) -> ProcessSession:
+        notify_on_complete: bool = True) -> ProcessSession:
         """Take over a still-running foreground Popen as a tracked background session
         (yield-to-background: the user sent a message while the command was running).
         The caller has stopped its own drain thread; the registry's reader continues from
         the pipe's current position and ``output_so_far`` seeds the buffer so nothing
         already captured is lost."""
-        session = self._new_session(
-            command, task_id, owner_task_id, session_key, cwd,
-            config_snapshot=config_snapshot)
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd)
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
@@ -1073,14 +1067,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "", config_snapshot: Any = None) -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
-        session = self._new_session(
-            command, task_id, owner_task_id, session_key, cwd, env_ref=env,
-            pid_scope="sandbox", config_snapshot=config_snapshot)
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1363,17 +1355,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         session.mark_exited(exit_code)
         self._move_to_finished(session)
 
-    def _move_to_finished(self, session: ProcessSession):
+    def _move_to_finished(self, session: ProcessSession) -> bool:
         """Move a session from running to finished.
         Idempotent: kill_process() and the reader thread can both call this; only
-        the FIRST move enqueues the completion notification, so no duplicates."""
-        snapshot, session.config_snapshot = session.config_snapshot, None
-        if snapshot is not None:
-            violation = snapshot.restore_if_changed()
-            if violation:
-                session.append_output(f"\n{violation}\n")
-                session.exit_code = 126
-                session.completion_reason = "blocked_config_write"
+        the FIRST move enqueues the completion notification, so no duplicates.
+        Returns True when this call is the one that persisted the session."""
         with self._lock:
             was_running = session.id in self._running
             if was_running:
@@ -1411,6 +1397,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             _redact_process_result(notification)
             self.completion_queue.put(notification)
         session._completion_event.set()
+        return was_running
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -1902,7 +1889,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
                 session.termination_source = source
-            self._move_to_finished(session)
+            # The reader thread can finalise the session while the signal path
+            # blocks in the SIGKILL grace window: its ``save_completed_result``
+            # then persists this kill as a plain ``exited``. Re-write the receipt
+            # so the durable record matches what the caller was told.
+            if not self._move_to_finished(session):
+                save_completed_result(session)
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,

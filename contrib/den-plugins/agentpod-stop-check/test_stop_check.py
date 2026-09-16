@@ -99,13 +99,48 @@ def _board(home: Path):
     return kb.connect(home / "board.db"), kb
 
 
+_WS_SEQ = [0]
+
+
+def owned_card(conn, kb, home: Path, *, title: str, assignee="software-engineer",
+               shared_with: str | None = None, **kw) -> tuple[str, str]:
+    """A card whose BOARD ROW carries a canonical per-card workspace path.
+
+    This is the real launch shape: the kernel resolves a workspace for the card
+    and records it on the row; a worker then runs with that directory as its
+    cwd. The path deliberately does NOT contain the card id — the binding comes
+    from the board row, never from a name convention.
+
+    ``shared_with`` reuses another card's workspace, reproducing the real board's
+    five-cards-one-directory shape.
+    """
+    if shared_with:
+        ws = shared_with
+    else:
+        _WS_SEQ[0] += 1
+        ws = str(home / "workspaces" / f"ws-{_WS_SEQ[0]}")
+    tid = kb.create_task(
+        conn, title=title, assignee=assignee,
+        workspace_kind="dir", workspace_path=ws, **kw,
+    )
+    return tid, ws
+
+
 def write_registry(home: Path, entries: list[dict]) -> None:
     """Write the isolated process-registry checkpoint this test owns."""
     (home / "processes.json").write_text(json.dumps(entries), encoding="utf-8")
 
 
-def registry_entry(proc, *, task_id: str, command: str | None = None, **over) -> dict:
-    """A registry row for a process THIS TEST spawned, with real identity."""
+def registry_entry(proc, *, task_id: str, cwd: str | None = None,
+                   bind_task_id: str | None = None,
+                   command: str | None = None, **over) -> dict:
+    """A registry row for a process THIS TEST spawned, with real identity.
+
+    ``cwd`` / ``bind_task_id`` are the ONLY binding surfaces (canonical
+    workspace / structured registry task binding). By default the row is
+    deliberately UNBOUND — naming a card in ``command`` must never create
+    ownership — so a test that wants attendance has to supply one.
+    """
     from gateway.status import get_process_start_time
 
     entry = {
@@ -114,9 +149,9 @@ def registry_entry(proc, *, task_id: str, command: str | None = None, **over) ->
         "pid": proc.pid,
         "pid_scope": "host",
         "host_start_time": get_process_start_time(proc.pid),
-        "cwd": f"/tmp/worktrees/{task_id}",
+        "cwd": cwd or f"/tmp/unbound-cwd/{proc.pid}",
         "started_at": time.time(),
-        "task_id": "",
+        "task_id": bind_task_id or "",
         "session_key": "",
         "notify_on_complete": True,
         "watcher_interval": 5,
@@ -394,7 +429,7 @@ def test_4_stopped_owner_yields_handoff_to_same_owner(home, procs):
 def test_5_overdue_checkpoint_forces_action(home, procs):
     """(5) An expired checkpoint is work, not a wait."""
     conn, kb = _board(home)
-    tid = kb.create_task(conn, title="checkpointed card", assignee="reviewer")
+    tid, ws = owned_card(conn, kb, home, title="checkpointed card", assignee="reviewer")
     kb.block_task(conn, tid, reason="waiting")
     kb.add_comment(
         conn, tid, author="supervisor",
@@ -407,16 +442,19 @@ def test_5_overdue_checkpoint_forces_action(home, procs):
     assert f.kind == "overdue_checkpoint"
     assert "do not simply extend the deadline" in f.next_action
 
-    # A FUTURE checkpoint whose wake target really exists is attended.
+    # A FUTURE checkpoint whose wake target really exists is attended. The
+    # named handle must be a process bound to THIS card (canonical workspace),
+    # not merely a live process that exists somewhere.
     worker = procs(120)
-    write_registry(home, [registry_entry(worker, task_id="other_card")])
+    write_registry(home, [registry_entry(worker, task_id=tid, cwd=ws)])
     kb.add_comment(
         conn, tid, author="supervisor",
         body=f"STOP-CHECK-CHECKPOINT: {iso(3600)} wake=process:proc_{worker.pid}",
     )
     assert helper_verdict(home).quiet_allowed
 
-    # ...but a checkpoint with no wake at all is not.
+    # ...but a checkpoint with no wake at all is not (no live owner covering it).
+    write_registry(home, [])
     kb.add_comment(
         conn, tid, author="supervisor",
         body=f"STOP-CHECK-CHECKPOINT: {iso(3600)} owner=reviewer",
@@ -481,10 +519,10 @@ def test_8_whole_board_coverage_allows_quiet(home, procs):
     live_card(conn, kb, procs)
     gated = kb.create_task(conn, title="human gate", assignee="cto")
     kb.block_task(conn, gated, reason="decision", kind="needs_input")
-    later = kb.create_task(conn, title="scheduled", assignee="reviewer")
+    later, later_ws = owned_card(conn, kb, home, title="scheduled", assignee="reviewer")
     kb.block_task(conn, later, reason="waiting for deploy window")
     worker = procs(120)
-    write_registry(home, [registry_entry(worker, task_id=later)])
+    write_registry(home, [registry_entry(worker, task_id=later, cwd=later_ws)])
     done = kb.create_task(conn, title="finished", assignee="reviewer")
     kb.claim_task(conn, done, claimer="fixture")
     kb.complete_task(conn, done, result="done")
@@ -565,9 +603,9 @@ def test_12_live_external_pi_owner_is_not_idle_and_liveness_is_not_progress(home
     idle, and the evidence must say *live*, never *progressing*.
     """
     conn, kb = _board(home)
-    tid = kb.create_task(conn, title="external review", assignee="reviewer")
+    tid, ws = owned_card(conn, kb, home, title="external review", assignee="reviewer")
     worker = procs(120)
-    write_registry(home, [registry_entry(worker, task_id=tid)])
+    write_registry(home, [registry_entry(worker, task_id=tid, cwd=ws)])
     install_runtime(home)
 
     v = helper_verdict(home)
@@ -588,31 +626,32 @@ def test_12_live_external_pi_owner_is_not_idle_and_liveness_is_not_progress(home
     # death: it is unknown, and must be qualified rather than declared either.
     other = procs(120)
     write_registry(
-        home, [registry_entry(other, task_id=tid, host_start_time=1)]
+        home, [registry_entry(other, task_id=tid, cwd=ws, host_start_time=1)]
     )
     v3 = helper_verdict(home)
     f3 = next(f for f in v3.findings if f.task_id == tid)
     assert f3.kind == "owner_unknown"
     assert "recycled" in f3.detail and "NOT evidence" in f3.detail
 
-    # Small start-time drift (observed on macOS/psutil: a consistent 1.00s
-    # offset on live workers) must NOT read as a recycled pid — exact equality
-    # would declare a running owner dead.
+    # Identity is EXACT, with no tolerance window: a 1.00s-off record is a
+    # different process, not drift (see test_27), so it stays unknown rather
+    # than being laundered into attendance.
     worker2 = procs(120)
-    base = registry_entry(worker2, task_id=tid)
+    base = registry_entry(worker2, task_id=tid, cwd=ws)
     base["host_start_time"] = int(base["host_start_time"]) - 100
     write_registry(home, [base])
     v4 = helper_verdict(home)
-    assert v4.quiet_allowed, [f.line() for f in v4.findings]
+    assert not v4.quiet_allowed
+    assert next(f for f in v4.findings if f.task_id == tid).kind == "owner_unknown"
 
 
 def test_12b_owner_past_its_own_deadline_is_a_finding(home, procs):
     """Deadline is checked, not assumed: a live-but-overdue owner is work."""
     conn, kb = _board(home)
-    tid = kb.create_task(conn, title="long runner", assignee="reviewer")
+    tid, ws = owned_card(conn, kb, home, title="long runner", assignee="reviewer")
     worker = procs(120)
     entry = registry_entry(
-        worker, task_id=tid, command=f"gtimeout 60 pi --print 'work {tid}'"
+        worker, task_id=tid, cwd=ws, command=f"gtimeout 60 pi --print 'work {tid}'"
     )
     entry["started_at"] = time.time() - 600  # bound expired 9 minutes ago
     write_registry(home, [entry])
@@ -628,9 +667,9 @@ def test_12b_owner_past_its_own_deadline_is_a_finding(home, procs):
 def test_13_dead_owner_is_not_hidden_by_a_future_marker(home, procs):
     """A4: a dead owner plus a self-written future checkpoint is NOT attended."""
     conn, kb = _board(home)
-    tid = kb.create_task(conn, title="worker card", assignee="software-engineer")
+    tid, ws = owned_card(conn, kb, home, title="worker card")
     worker = procs(120)
-    write_registry(home, [registry_entry(worker, task_id=tid)])
+    write_registry(home, [registry_entry(worker, task_id=tid, cwd=ws)])
     kb.add_comment(
         conn, tid, author="software-engineer",
         body=f"STOP-CHECK-CHECKPOINT: {iso(86400)} wake=dispatcher",
@@ -1037,3 +1076,487 @@ def test_23_duplicate_supervision_turns_stay_bounded_and_identical(home):
     set_turn_context(SUPERVISION_MSG)
     assert fire_pre_verify(changed_paths=[])
     assert fire_pre_verify(changed_paths=[]) is None
+
+
+# ------------------- 24-32: re-review findings R1-R8 as invariants ---------
+
+def test_24_a_scope_that_matches_nothing_is_an_error_not_a_clean_board(home):
+    """R2: a configured scope selecting 0 of N cards must fail loudly.
+
+    Reproduces the real board's shape: every card carries ``project_id=NULL``
+    (observed 437/437), which is exactly what made the previously documented
+    ``project_id: agentpod`` example silently vacuous.
+    """
+    conn, kb = _board(home)
+    tid = kb.create_task(conn, title="genuinely unattended", assignee="software-engineer")
+    kb.block_task(conn, tid, reason="hold")
+    install_runtime(home)
+
+    # Control: the real None-project pattern, unscoped -> the card is found.
+    rows = conn.execute("SELECT project_id, tenant FROM tasks").fetchall()
+    assert all(r[0] is None and r[1] is None for r in rows), rows
+    unscoped = helper_verdict(home)
+    assert unscoped.findings and not unscoped.quiet_allowed
+
+    # Unmatched filter -> explicit error, NOT a quiet clean board.
+    for scope in ({"project_id": "agentpod"}, {"tenant": "acme"},
+                  {"project_id": "agentpod", "tenant": "acme"}):
+        v = helper_verdict(home, cfg=dict(scope))
+        assert v.ok is False, scope
+        assert v.quiet_allowed is False, scope
+        assert "scope matched 0 of 1 cards" in (v.error or ""), v.error
+
+    from contrib_stopcheck import stopcheck  # type: ignore
+
+    text = stopcheck.render_report(helper_verdict(home, cfg={"project_id": "agentpod"}))
+    assert "STOP-CHECK ERROR" in text and "scope matched 0 of" in text
+
+    # Right scope, positive: cards that really carry the id are swept, and
+    # cards outside it are never read into the verdict.
+    other = kb.create_task(conn, title="other project card", assignee="reviewer")
+    kb.block_task(conn, other, reason="hold")
+    conn.execute("UPDATE tasks SET project_id='agentpod' WHERE id=?", (tid,))
+    conn.execute("UPDATE tasks SET project_id='somethingelse' WHERE id=?", (other,))
+    conn.commit()
+    scoped = helper_verdict(home, cfg={"project_id": "agentpod"})
+    assert scoped.ok is True
+    assert [f.task_id for f in scoped.findings] == [tid]
+    assert scoped.unfinished == 1
+
+
+def test_25_ownership_is_structural_never_a_mention(home, procs):
+    """R3: one live process may not launder every card its prompt names.
+
+    The launch shape under test is the real one: a bounded ``pi`` run whose cwd
+    is the workspace the BOARD ROW records, with a prompt that also names the
+    cards it must not touch.
+    """
+    conn, kb = _board(home)
+    mine, ws = owned_card(conn, kb, home, title="the card this worker owns")
+    named_a, _ = owned_card(conn, kb, home, title="reviewer context card")
+    named_b, _ = owned_card(conn, kb, home, title="do-not-touch card")
+    install_runtime(home)
+
+    worker = procs(120)
+    command = (
+        f"gtimeout 1800 pi --print --mode json \"Reviewer {named_a}, rereview "
+        f"canonical {mine}. Author {named_b} concurrently fixes AgentPod; "
+        f"don't touch it.\""
+    )
+    write_registry(home, [registry_entry(worker, task_id=mine, cwd=ws, command=command)])
+
+    v = helper_verdict(home)
+    attended = {a.task_id for a in v.attended}
+    kinds = {f.task_id: f.kind for f in v.findings}
+    assert attended == {mine}, attended
+    # Merely being named in the prompt buys nothing: both stay unattended and
+    # actionable.
+    for named in (named_a, named_b):
+        assert named not in attended, (named, attended)
+        assert named in kinds, kinds
+
+    # A structured registry task binding is ownership even with an unrelated cwd.
+    other = procs(120)
+    write_registry(home, [registry_entry(
+        other, task_id=named_a, bind_task_id=named_a, cwd="/tmp/somewhere-else")])
+    v2 = helper_verdict(home)
+    assert named_a in {a.task_id for a in v2.attended}
+    ev = next(a for a in v2.attended if a.task_id == named_a)
+    assert "registry task_id" in ev.detail
+
+    # A workspace shared by several cards (the real board has a 5-card one) is
+    # ownership of NONE of them: a shared checkout cwd proves nothing.
+    shared_a, shared_ws = owned_card(conn, kb, home, title="shares a workspace A")
+    shared_b, _ = owned_card(conn, kb, home, title="shares a workspace B",
+                             shared_with=shared_ws)
+    third = procs(120)
+    write_registry(home, [registry_entry(third, task_id=shared_a, cwd=shared_ws)])
+    v3 = helper_verdict(home)
+    k3 = {f.task_id: f.kind for f in v3.findings}
+    attended3 = {a.task_id for a in v3.attended}
+    assert shared_a in k3 and shared_a not in attended3, (k3, attended3)
+    assert shared_b in k3 and shared_b not in attended3, (k3, attended3)
+    assert any("shared by more than one card" in n for n in v3.notes), v3.notes
+
+
+def test_26_identity_is_exact_and_agrees_with_the_runtime_guard(home, procs):
+    """R4: the plugin must never verify a pair the runtime's guard rejects."""
+    from contrib_stopcheck import owners as owners_mod  # type: ignore
+    from gateway.status import get_process_start_time
+    from tools.process_registry import ProcessRegistry
+
+    p = procs(120)
+    real = get_process_start_time(p.pid)
+    assert real is not None
+
+    def verdicts(recorded):
+        ev = owners_mod.evidence_from_entry(
+            {"session_id": "proc_x", "pid": p.pid, "host_start_time": recorded,
+             "started_at": time.time(), "command": "gtimeout 1800 pi", "cwd": "/tmp/x"},
+            binding="registry task_id",
+        )
+        return ev.identity_verified, ProcessRegistry._host_pid_is_ours(p.pid, recorded)
+
+    # Genuine process, correctly recorded: both say yes.
+    assert verdicts(int(real)) == (True, True)
+    # Values inside the OLD +-200 window: the runtime rejects them, so we must.
+    for skew in (-150, -100, -1, 1, 100, 150):
+        plugin_says, runtime_says = verdicts(int(real) + skew)
+        assert runtime_says is False, skew
+        assert plugin_says is False, f"skew={skew} laundered into 'verified'"
+    # A pid recycled onto an unrelated process (recorded start of a process
+    # that has since exited) is not our owner.
+    time.sleep(0.05)  # guarantee a different centisecond fingerprint
+    dead = procs(1)
+    dead_start = get_process_start_time(dead.pid)
+    assert dead_start is not None and int(dead_start) != int(real)
+    dead.kill(); dead.wait(timeout=5)
+    assert verdicts(int(dead_start)) == (False, False)
+    # No baseline at all: liveness only, and STRICTER than the runtime, which
+    # degrades to bare liveness. Evidence that silences a board must not.
+    ev = owners_mod.evidence_from_entry(
+        {"session_id": "proc_y", "pid": p.pid, "host_start_time": None,
+         "started_at": time.time(), "command": "pi", "cwd": "/tmp/y"},
+        binding="registry task_id",
+    )
+    assert (ev.alive, ev.identity_verified, ev.usable) == (True, False, False)
+    assert ProcessRegistry._host_pid_is_ours(p.pid, None) is True
+
+
+def test_27_start_time_is_stable_across_reads_and_interpreters(home, procs):
+    """R4 diagnosis: the record/live gap was never derivation drift.
+
+    If the fingerprint drifted, an exact-equality guard would be unusable. It
+    does not: the same live process yields a bit-identical value over time and
+    from a SEPARATE interpreter, for the direct-spawn shape and for the
+    ``sh -c 'gtimeout ...'`` shape the real workers use.
+    """
+    from gateway.status import get_process_start_time
+
+    direct = procs(60)
+    shelled = subprocess.Popen("gtimeout 60 /bin/sleep 60", shell=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for pid in (direct.pid, shelled.pid):
+            reads = []
+            for _ in range(5):
+                reads.append(get_process_start_time(pid))
+                time.sleep(0.15)
+            assert len(set(reads)) == 1, (pid, reads)
+            assert reads[0] is not None
+
+            probe = (
+                f"import sys; sys.path.insert(0, {str(REPO)!r});"
+                f"from gateway.status import get_process_start_time;"
+                f"print(get_process_start_time({pid}))"
+            )
+            r = subprocess.run([sys.executable, "-c", probe],
+                               capture_output=True, text=True, timeout=120)
+            assert r.returncode == 0, r.stderr[-1000:]
+            assert int(r.stdout.strip()) == int(reads[0]), (pid, r.stdout, reads)
+    finally:
+        shelled.kill()
+        shelled.wait(timeout=5)
+
+
+def test_28_live_owner_without_a_wake_is_bounded_not_silent(home, procs):
+    """R5: liveness with nothing to wake the conversation is a finding."""
+    conn, kb = _board(home)
+    tid, ws = owned_card(conn, kb, home, title="owned but unwakeable")
+    install_runtime(home)
+
+    worker = procs(120)
+    row = registry_entry(worker, task_id=tid, cwd=ws,
+                         notify_on_complete=False, watcher_interval=0)
+    write_registry(home, [row])
+
+    v = helper_verdict(home)
+    assert v.quiet_allowed is False
+    f = next(f for f in v.findings if f.task_id == tid)
+    assert f.kind == "owner_without_wake"
+    assert "NOTHING will re-enter this conversation" in f.detail
+    assert "register a real wake" in f.next_action
+
+    # A recorded, verifiable wake on the CARD covers the exit -> attended.
+    kb.add_comment(
+        conn, tid, author="supervisor",
+        body=f"STOP-CHECK-CHECKPOINT: {iso(3600)} wake=dispatcher",
+    )
+    kb.unblock_task(conn, tid) if hasattr(kb, "unblock_task") else None
+    v2 = helper_verdict(home)
+    att = [a for a in v2.attended if a.task_id == tid]
+    assert att and "recorded wake" in att[0].detail, (att, [f.line() for f in v2.findings])
+
+    # ...and a completion handle on the process is the other valid cover.
+    write_registry(home, [registry_entry(worker, task_id=tid, cwd=ws)])
+    v3 = helper_verdict(home)
+    assert tid in {a.task_id for a in v3.attended}
+
+
+def test_29_cap_exhaustion_is_fail_explicit_under_both_plugin_orders(home):
+    """R7: the LAST continuation carries the fail-explicit demand.
+
+    It is delivered through ``pre_verify``, which runs before any transform, so
+    the outcome is identical whichever way ``transform_llm_output`` plugins
+    sort. What the transform ordering can still preempt is only the *fallback*
+    text, and that limitation is stated rather than hidden.
+    """
+    conn, kb = _board(home)
+    tid = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, tid, reason="hold")
+
+    def competing_transform(order_name: str):
+        """A real transform plugin sorting before/after ours by directory name."""
+        pdir = home / "plugins" / order_name
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": order_name, "version": "0.0.1",
+                            "description": "ordering probe", "entry": "__init__.py"})
+        )
+        (pdir / "__init__.py").write_text(
+            "def _t(response_text='', **_):\n"
+            "    return 'PREEMPTED BY " + order_name + "'\n"
+            "def register(ctx):\n"
+            "    ctx.register_hook('transform_llm_output', _t)\n"
+        )
+        return pdir
+
+    for order_name in ("aaa-earlier-plugin", "zzz-later-plugin"):
+        for stale in home.glob("plugins/*-plugin"):
+            shutil.rmtree(stale, ignore_errors=True)
+        competing_transform(order_name)
+        install_runtime(home, extra_cfg={"max_continuations": 2})
+        cfgfile = yaml.safe_load((home / "config.yaml").read_text())
+        cfgfile["plugins"] = {"enabled": ["agentpod-stop-check", order_name]}
+        (home / "config.yaml").write_text(yaml.safe_dump(cfgfile))
+        from hermes_cli import plugins as P
+
+        P.discover_plugins(force=True)
+        (home / "stopcheck-ledger.json").unlink(missing_ok=True)
+        set_turn_context(SUPERVISION_MSG)
+
+        first = fire_pre_verify(changed_paths=[])
+        last = fire_pre_verify(changed_paths=[])
+        spent = fire_pre_verify(changed_paths=[])
+
+        assert first and "STOP-CHECK" in first, order_name
+        assert "FINAL supervision continuation" not in first, order_name
+        assert last and "FINAL supervision continuation" in last, order_name
+        assert "not permitted" in last and tid in last, order_name
+        assert spent is None, order_name  # bounded: no infinite extension
+        # Identical enforcement regardless of transform ordering.
+        assert first.split("\n")[0] == last.split("\n")[0], order_name
+
+        # A long draft answer does not blow the continuation budget.
+        (home / "stopcheck-ledger.json").unlink(missing_ok=True)
+        set_turn_context(SUPERVISION_MSG)
+        long_msg = fire_pre_verify(final_response="x" * 20000, changed_paths=[])
+        assert long_msg and len(long_msg) <= 2000, (order_name, len(long_msg or ""))
+
+    for stale in home.glob("plugins/*-plugin"):
+        shutil.rmtree(stale, ignore_errors=True)
+
+
+def test_30_unchanged_state_is_rate_bounded_per_window_not_exempt(home):
+    """R6: state the window policy and prove the bound it actually gives."""
+    from contrib_stopcheck import plugin  # type: ignore
+
+    cfg = {"max_continuations": 2, "continuation_window_seconds": 1,
+           "ledger_path": str(home / "ledger.json")}
+    fp = "t_x:idle_card"
+
+    windows = []
+    for _ in range(3):
+        grants = [plugin._grant_continuation(SESSION, fp, cfg) for _ in range(5)]
+        windows.append([g for g, _t in grants])
+        time.sleep(1.2)
+
+    for w in windows:
+        assert w == [True, True, False, False, False], windows
+    # Exactly `cap` per window, and the window's last grant is the terminal one.
+    granted_terminal = [
+        t for _ in range(1)
+        for g, t in [plugin._grant_continuation(SESSION, fp + "!", cfg) for _ in range(3)]
+    ]
+    assert granted_terminal == [False, True, False], granted_terminal
+
+
+def test_31_turn_context_expires_and_the_latest_user_message_wins(home):
+    """R8: stale context must not revive supervision on an unrelated turn."""
+    from contrib_stopcheck import plugin  # type: ignore
+
+    cfg = {"enabled": True, "session_ids": [SESSION]}
+    plugin.reset_state()
+
+    # No pre_llm_call at all -> inert (absence already failed closed).
+    assert plugin._supervision_turn(cfg, SESSION) is False
+
+    plugin.on_pre_llm_call(session_id=SESSION, user_message=SUPERVISION_MSG)
+    assert plugin._supervision_turn(cfg, SESSION) is True
+
+    # A 7-day-old context belongs to an earlier turn -> inert.
+    with plugin._LOCK:
+        msg, _at = plugin._TURN_CONTEXT[SESSION]
+        plugin._TURN_CONTEXT[SESSION] = (msg, time.time() - 7 * 86400)
+    assert plugin._supervision_turn(cfg, SESSION) is False
+    # Not merely a shorter default: an explicit TTL governs it.
+    assert plugin._supervision_turn({**cfg, "turn_context_ttl_seconds": 8 * 86400},
+                                    SESSION) is True
+
+    # The CURRENT user message always wins over the recorded history.
+    plugin.on_pre_llm_call(session_id=SESSION, user_message=SUPERVISION_MSG)
+    plugin.on_pre_llm_call(session_id=SESSION, user_message=UNRELATED_MSG)
+    assert plugin._supervision_turn(cfg, SESSION) is False
+    plugin.on_pre_llm_call(session_id=SESSION, user_message="stop the board sweep")
+    assert plugin._supervision_turn(cfg, SESSION) is False
+
+    # And the normal current-user pre_llm_call flow still works unchanged.
+    plugin.on_pre_llm_call(session_id=SESSION, user_message=SUPERVISION_MSG)
+    assert plugin._supervision_turn(cfg, SESSION) is True
+
+
+def test_32_activation_preflight_refuses_an_old_core_and_an_empty_scope(home):
+    """R1: the deployment cannot silently enable a gate the core cannot run."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "stopcheck_preflight", PLUGIN_SRC / "activation_preflight.py")
+    pf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pf)
+
+    # An "installed" checkout without the core half must REFUSE.
+    old_core = home / "old-core"
+    (old_core / "agent").mkdir(parents=True)
+    (old_core / "agent" / "verify_hooks.py").write_text(
+        "def max_verify_nudges(config=None):\n    return 3\n")
+    (old_core / "agent" / "conversation_loop.py").write_text(
+        "def run_conversation(*a, **kw):\n    return {}\n")
+    (old_core / "agent" / "__init__.py").write_text("")
+    gate = pf.Gate()
+    pf.probe_core(old_core, gate)
+    assert gate.failures, gate.lines
+    assert any("MISSING" in ln or "does NOT reference" in ln for ln in gate.lines)
+
+    # This reviewed tree DOES carry it, and default-off is confirmed by import.
+    gate2 = pf.Gate()
+    pf.probe_core(REPO, gate2)
+    assert not gate2.failures, gate2.lines
+    assert any("default-off" in ln and "PASS" in ln for ln in gate2.lines)
+
+    # An empty session scope is refused, and so is a scope matching no cards.
+    conn, kb = _board(home)
+    kb.create_task(conn, title="card", assignee="reviewer")
+    cfg_path = home / "preflight-config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"agentpod_stop_check": {"session_ids": []}}))
+    g3 = pf.Gate()
+    pf.probe_scope(cfg_path, home / "board.db", g3)
+    assert "session scope" in g3.failures, g3.lines
+
+    cfg_path.write_text(yaml.safe_dump({"agentpod_stop_check": {
+        "session_ids": [SESSION], "project_id": "agentpod"}}))
+    g4 = pf.Gate()
+    pf.probe_scope(cfg_path, home / "board.db", g4)
+    assert "project scope" in g4.failures, g4.lines
+    assert any("would sweep nothing" in ln for ln in g4.lines)
+
+    # A scope that really matches passes.
+    conn.execute("UPDATE tasks SET project_id='agentpod'")
+    conn.commit()
+    g5 = pf.Gate()
+    pf.probe_scope(cfg_path, home / "board.db", g5)
+    assert not g5.failures, g5.lines
+
+    # The preflight is read-only: it never writes to the config or the board.
+    assert not (home / "plugins" / "agentpod-stop-check").exists()
+
+
+def test_33_continuation_drives_a_real_tool_action_through_real_dispatch(home, monkeypatch):
+    """The loop's continuation reaches a REAL tool, not a stubbed executor.
+
+    ``run_agent.handle_function_call`` is NOT patched here: the model's
+    post-continuation tool call is dispatched through the real tool registry
+    and the real ``terminal`` tool, which records the action in this test's own
+    temp directory. No real card, board, product or process is touched.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    workdir = home / "action-workspace"
+    workdir.mkdir()
+    action_log = workdir / "stop-check-action.log"
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(workdir))
+
+    conn, kb = _board(home)
+    tid = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, tid, reason="hold")
+    install_runtime(home, extra_cfg={"max_continuations": 1})
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["agent"] = {"pre_verify_on_no_edit_turns": True, "max_verify_nudges": 3}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    from run_agent import AIAgent
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            session_id=SESSION, api_key="k", base_url="https://example.invalid/v1",
+            provider="openai-compat", model="test/model", max_iterations=6,
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+        )
+    agent._cached_system_prompt = "stable test prompt"
+    agent._session_db = None
+    agent._session_json_enabled = False
+    agent.save_trajectories = False
+    agent.compression_enabled = False
+    agent._cleanup_task_resources = lambda *_a, **_kw: None
+    agent._save_trajectory = lambda *_a, **_kw: None
+    agent.valid_tool_names = {"terminal"}
+
+    calls: list[str] = []
+
+    def _msg(content=None, tool_calls=None):
+        return SimpleNamespace(content=content, tool_calls=tool_calls, reasoning=None)
+
+    def model_call(_api_kwargs):
+        calls.append("api")
+        if len(calls) == 1:
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=_msg(QUIET), finish_reason="stop")],
+                model="test/model", usage=None)
+        if len(calls) == 2:
+            # A safe, local, recording command — the unattended card's id is
+            # written to this test's own file. Nothing product-facing.
+            tc = SimpleNamespace(
+                id="call_1", type="function",
+                function=SimpleNamespace(name="terminal", arguments=json.dumps(
+                    {"command": f"printf 'acted-on {tid}\\n' >> {action_log}"})))
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=_msg(None, [tc]),
+                                         finish_reason="tool_calls")],
+                model="test/model", usage=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=_msg(f"Recorded an action for {tid}; nothing else is unattended."),
+                finish_reason="stop")],
+            model="test/model", usage=None)
+
+    agent._interruptible_api_call = model_call
+    set_turn_context(SUPERVISION_MSG)
+    result = agent.run_conversation(SUPERVISION_MSG)
+
+    # The REAL tool ran and left a real, observable record.
+    assert action_log.exists(), "the real terminal tool did not execute"
+    assert f"acted-on {tid}" in action_log.read_text()
+    # The tool result really came back through the loop as a tool message.
+    tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert tool_msgs, [m.get("role") for m in result["messages"]]
+    # ...and only then did the turn conclude, naming the card.
+    assert tid in result["final_response"]
+    assert "no material change" not in result["final_response"].lower()
+    roles = [m["role"] for m in result["messages"]]
+    for a, b in zip(roles, roles[1:]):
+        assert not (a == b == "user"), roles

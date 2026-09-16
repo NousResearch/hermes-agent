@@ -26,19 +26,33 @@ continue a no-edit turn.
 Attendance requires **observable, verifiable** evidence:
 
 * **Verified external owner** — a row in the runtime process registry
-  (`$HERMES_HOME/processes.json`) whose pid is alive **and** whose kernel start
-  time still matches the value recorded at spawn (small drift tolerated;
-  measured on macOS/psutil as a consistent 1.00s offset on live workers, so
-  exact equality would have declared running owners dead). Its **deadline**
-  (`gtimeout N` in the command, else the configured ceiling) is checked, and
-  its **completion handle** (`notify_on_complete` / watcher) is reported.
+  (`$HERMES_HOME/processes.json`) that is **structurally bound** to the card and
+  whose identity verifies **exactly**:
+  * *binding* is either the registry's own `task_id` recorded at spawn, or a cwd
+    inside the workspace path the **board row** carries, and only when that
+    workspace belongs to exactly one card. A card id appearing in the process's
+    `command` is **never** a binding — supervisor/reviewer prompts routinely
+    name cards they must not touch, and a shared checkout is not ownership of
+    every card that ever pointed at it. (On the real board five unfinished cards
+    share one workspace directory; that directory binds none of them.)
+  * *identity* is decided by the runtime's own PID-reuse guard
+    (`ProcessRegistry._host_pid_is_ours`) — exact equality, no tolerance window,
+    so the plugin can never verify a `(pid, start)` pair the runtime rejects. A
+    row with no recorded start time is liveness-only and is not evidence.
+  Its **deadline** (`gtimeout N` in the command, else the configured ceiling) is
+  checked, and it only buys silence when something will actually re-enter the
+  conversation: a **completion handle** (`notify_on_complete` / watcher) on the
+  process, or a verified wake recorded on the card. A live owner with neither is
+  a bounded `owner_without_wake` finding, not silence.
 * **Live kanban claim** — active run + live pid + fresh heartbeat + unexpired
   claim.
 * **Verified wake** — `wake=cron:<job_id>` checked against the real job store
   (exists, enabled, armed, fires before the deadline), `wake=process:<handle>`
-  checked against a live registry row, `wake=dispatcher` checked against the
-  card actually being dispatchable. A bare mechanism word (`wake=cron`) is
-  **not** a wake.
+  checked against a registry row that is bound to **this** card, identity-
+  verified, and carries a completion handle (a process that exists somewhere,
+  or one nothing will report on, is not a wake), `wake=dispatcher` checked
+  against the card actually being dispatchable. A bare mechanism word
+  (`wake=cron`) is **not** a wake.
 * **Qualified human gate** — a `STOP-CHECK-GATE:` comment written by a
   configured authority (never by the card's own worker), carrying `until=<ts>`
   or younger than `max_gate_age_seconds`, and not superseded by a later
@@ -62,22 +76,41 @@ Three properties are stated, never blurred:
 A dead owner is never hidden by a future checkpoint someone wrote. A comment —
 however recent, however substantive — is never execution proof.
 
-Failed or zero-row board reads are explicit errors, never "no work".
+Failed or zero-row board reads are explicit errors, never "no work" — and so is
+a configured scope that matches **zero of N** cards, which would otherwise
+disable the gate while the config reads as if it were on.
 
 ## Honest limitations
 
-* `transform_llm_output` is first-non-empty-wins (`agent/turn_finalizer.py`),
-  and registration order is directory-name sort. A transform plugin sorting
-  earlier **can preempt the fallback text** — proven in `test_19`. That is
-  precisely why enforcement lives in `pre_verify`, which runs before any
-  transform and is unaffected by transform ordering; `test_19` also proves the
-  continuation still fires under that adverse ordering.
+* **Enforcement is ordering-independent; the fallback text is not.** The
+  bounded continuations run in `pre_verify`, before any transform, so they are
+  unaffected by plugin order — and the **last** continuation in a window carries
+  the fail-explicit demand ("a quiet ending is not permitted"), so the
+  fail-loud step is delivered through that ordering-independent path
+  (`test_29`, both orders). What remains preemptable is only the
+  `transform_llm_output` **fallback** after the budget is spent:
+  `agent/turn_finalizer.py` is first-non-empty-wins in directory-name order and
+  exposes no priority, so a transform plugin sorting earlier can replace that
+  text. Combined with an exhausted budget, a quiet answer can still reach the
+  user in that configuration. This is a real, disclosed gap, not a covered one.
+* **The continuation cap is per `(session, board-fingerprint)` per rolling
+  `continuation_window_seconds`** — rate-bounded, not one-shot-forever. An
+  unchanged board buys at most `max_continuations` per window and each window's
+  last grant is terminal (`test_30`); the runtime's own
+  `agent.max_verify_nudges` bounds a single turn independently. There is no
+  second timer and no unbounded extension.
+* **Supervision context expires.** `pre_llm_call` records the turn's user
+  message with a TTL (`turn_context_ttl_seconds`, default 900s). Absence already
+  failed closed; staleness now does too, so a supervision message from an
+  earlier turn cannot gate an unrelated later one (`test_31`).
 * The continuation bound is a real cross-process ledger under `$HERMES_HOME`
   (`test_21` proves a separate OS process is denied). It bounds
   **continuations**, not dispatches — there are no dispatches to duplicate.
-* Precision is improved, not perfect. On a read-only copy of the live board the
-  unattended count went from 10 to 8, with both live external workers correctly
-  attended; the remaining 8 are genuinely unowned, parked, or stopped.
+* **Precision moved in the safe direction.** Ownership now requires a
+  structural binding, so external workers launched without one (no registry
+  `task_id`, cwd outside the card's recorded workspace) classify as
+  `owner_unknown` — actionable, never quiet. That is deliberate: the previous
+  rule attended cards on the strength of a prompt mentioning them.
 
 ## Configuration
 
@@ -88,17 +121,57 @@ agent:
 agentpod_stop_check:
   enabled: true
   board: agentpod                     # or db_path:
-  project_id: agentpod                # optional narrowing (with tenant:)
+  # project_id / tenant: OMIT unless the board's cards really carry them. A
+  # scope matching zero cards is now a hard error (it used to silently sweep
+  # nothing); on this board every card has project_id=NULL and tenant=NULL, so
+  # the whole board is the correct scope.
   session_ids: ["<supervisor session id>"]
   gate_authorities: ["den"]           # who may record a human gate
   heartbeat_stale_seconds: 900
   max_gate_age_seconds: 259200
   max_hold_age_seconds: 259200
   max_owner_runtime_seconds: 3600
+  turn_context_ttl_seconds: 900       # supervision context expiry
   max_findings: 5
   max_report_chars: 700               # platform budget for the fallback text
   max_continuations: 2
+  continuation_window_seconds: 900
 ```
+
+## Activation (staged, reversible, core first)
+
+The plugin is useless — and silently so — against an installed core that lacks
+`agent.pre_verify_on_no_edit_turns`: `pre_verify` never fires on a no-edit
+turn, only the preemptable fallback survives, and the config reads as if the
+gate were on. `activation_preflight.py` exists so that cannot happen unnoticed.
+It is read-only: it writes nothing, installs nothing and restarts nothing.
+
+```bash
+# 0. BEFORE any installation: independent review of this branch.
+# 1. Land the CORE half into the installed checkout through the sanctioned
+#    fork mechanism (no self-approve, no self-restart, no disguised external
+#    cron restart), then read it back independently.
+python contrib/den-plugins/agentpod-stop-check/activation_preflight.py \
+    --core-root ~/.hermes/hermes-agent
+# -> REFUSES while the installed core predates the change. Reversal: no-op.
+
+# 2. Stage the plugin INERT: copy it to ~/.hermes/plugins/ with
+#    `enabled: false` and `agent.pre_verify_on_no_edit_turns` still false.
+#    Confirm no hook fires. Reversal: delete the directory.
+
+# 3. Scope it, still off, then re-run the preflight against the real config:
+python contrib/den-plugins/agentpod-stop-check/activation_preflight.py \
+    --core-root ~/.hermes/hermes-agent \
+    --config ~/.hermes/config.yaml --board-db ~/.hermes/kanban/<board>.db
+# -> REFUSES an empty session scope or a project/tenant scope matching 0 cards.
+
+# 4. Only on exit 0, flip `enabled: true` and
+#    `agent.pre_verify_on_no_edit_turns: true` as one separately authorised
+#    change. Reversal: set both back to false.
+# 5. Restart is a separate, human-authorised step.
+```
+
+Nothing in this branch performs any of those steps.
 
 Scope: only the listed session, only the configured board/project. Other
 projects, profiles, boards and sessions are never read. A same-session user
@@ -112,9 +185,12 @@ scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py 
 scripts/run_tests.sh tests/run_agent/test_pre_verify_no_edit_turns.py tests/agent/test_verify_hooks.py -q
 ```
 
-24 tests: the 10 acceptance scenarios plus the independent review's adversarial
-findings converted into invariants (`test_11`–`test_23`), including a real
-`AIAgent.run_conversation` run proving a no-edit turn continues into a tool call
-and then completes (`test_20`). Test 10 is a mutation control. Red-green: check
-the previous plugin revision out over this directory and re-run — 14 of these
-tests fail against it.
+24 tests: the 10 acceptance scenarios, the first independent review's
+adversarial findings as invariants (`test_11`–`test_23`), and the re-review's
+R1–R8 as invariants (`test_24`–`test_33`) — including a real
+`AIAgent.run_conversation` run whose post-continuation tool call is dispatched
+through the **unpatched** `handle_function_call` into the real `terminal` tool
+(`test_33`), and a controlled start-time fixture showing the fingerprint is
+stable across reads and interpreters (`test_27`). Test 10 is a mutation
+control. Red-green: check the previous plugin revision out over this directory
+and re-run (command in the receipt).

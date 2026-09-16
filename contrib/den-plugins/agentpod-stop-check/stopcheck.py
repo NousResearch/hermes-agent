@@ -8,11 +8,17 @@ Evidence rules (each one exists because its absence produced a false verdict):
 
 * **Owners are processes, not prose.** Attendance needs a verified owner: a
   kanban run whose pid is alive with a fresh heartbeat and unexpired claim, or
-  an entry in the runtime process registry whose pid AND kernel start time
-  still match (``owners.py``). Comments are never execution proof, and a recent
-  comment is never liveness.
-* **Liveness is not progress.** Verified owners are reported as *live*, with
-  that word, and never as "making progress".
+  a process-registry row that is **structurally bound** to the card (registry
+  ``task_id``, or a cwd inside the workspace the board row itself records and
+  that no other card shares) AND whose pid + kernel start time match exactly,
+  decided by the runtime's own PID-reuse guard (``owners.py``). A card id
+  appearing in a command line is never a binding; comments are never execution
+  proof, and a recent comment is never liveness.
+* **Liveness is not progress, and liveness alone is not silence.** Verified
+  owners are reported as *live*, with that word. A live owner buys quiet only
+  when its exit will re-enter the conversation — a completion handle on the
+  process, or a verified wake recorded on the card. Otherwise it is a bounded
+  ``owner_without_wake`` finding.
 * **A dead owner cannot be hidden by a marker.** If a recorded owner is gone,
   the card is `owner_stopped` regardless of any future checkpoint someone wrote.
 * **A wake must name a target that exists.** ``wake=cron`` as a bare word is not
@@ -24,7 +30,9 @@ Evidence rules (each one exists because its absence produced a false verdict):
   performing the gated action.
 * **Unknown is explicit, never quiet.** No evidence either way yields
   `owner_unknown`, whose action is a bounded qualification step.
-* **A refused or empty board read is an error**, never "no work".
+* **A refused or empty board read is an error**, never "no work" — and so is a
+  configured scope matching zero of N cards, which would otherwise disable the
+  sweep silently.
 """
 from __future__ import annotations
 
@@ -69,6 +77,7 @@ KIND_IDLE = "idle_card"
 KIND_OWNER_STOPPED = "owner_stopped"
 KIND_OWNER_UNKNOWN = "owner_unknown"
 KIND_OWNER_OVERDUE = "owner_overdue"
+KIND_OWNER_NO_WAKE = "owner_without_wake"
 KIND_UNQUALIFIED_GATE = "unqualified_gate"
 
 DEFAULT_MAX_GATE_AGE = 3 * 86400        # a human gate must be re-confirmed
@@ -246,6 +255,7 @@ def verify_wake(
     deadline: Optional[int],
     registry: list[dict],
     cfg: dict,
+    ambiguous: frozenset = frozenset(),
 ) -> tuple[bool, str]:
     """Does this wake name a target that actually exists? (ok, detail).
 
@@ -290,15 +300,37 @@ def verify_wake(
         )
         if entry is None:
             return (False, f"process handle '{target}' is not in the process registry")
+        bound = owners_mod.binding_for(entry, task, ambiguous=ambiguous)
+        if not bound:
+            # "A live process exists somewhere" is not a wake for THIS card.
+            return (
+                False,
+                f"process handle '{target}' is live but is not bound to {task.id} "
+                f"(no registry task_id and no canonical workspace relationship)",
+            )
         ev = owners_mod.evidence_from_entry(
             entry,
             default_max_runtime=int(
                 cfg.get("max_owner_runtime_seconds", DEFAULT_MAX_OWNER_RUNTIME)
             ),
+            binding=bound,
         )
         if not ev.usable:
             return (False, f"process handle '{target}' is not a live verified process")
-        return (True, f"process {target} pid {ev.pid} live")
+        if not ev.completion_handle:
+            # A wake has to re-enter the conversation. A live process with no
+            # completion handle is something to poll, not something that wakes.
+            return (
+                False,
+                f"process handle '{target}' is live but has no completion handle "
+                f"(no notify_on_complete, no watcher) — nothing would re-enter "
+                f"the conversation when it exits",
+            )
+        return (
+            True,
+            f"process {target} pid {ev.pid} live, bound by {bound}, "
+            f"completion via {ev.completion_handle}",
+        )
 
     if kind in ("dispatcher", "kanban-wake", "kanban"):
         if task.status not in DISPATCHABLE_STATUSES:
@@ -326,6 +358,7 @@ def _classify(
     cfg: dict,
     parents_unfinished: bool,
     last_activity_at: int = 0,
+    ambiguous: frozenset = frozenset(),
 ) -> tuple[Optional[Finding], Optional[Attended]]:
     heartbeat_stale = int(cfg.get("heartbeat_stale_seconds", 900))
     human_kinds = tuple(cfg.get("human_gate_kinds", DEFAULT_HUMAN_GATE_KINDS))
@@ -341,8 +374,8 @@ def _classify(
     def ok(reason, detail):
         return (None, Attended(tid, task.status, reason, detail))
 
-    # 1. A verified LIVE external owner (process registry). Liveness only —
-    #    never claimed as progress.
+    # 1. A structurally-bound, identity-verified LIVE external owner. Liveness
+    #    only — never claimed as progress, and never silence on its own.
     live = [e for e in owner_evidence if e.usable]
     for ev in live:
         late = ev.overdue_by(now)
@@ -354,7 +387,45 @@ def _classify(
                 f"deadline, or stop it and hand the card back to {owner or 'an owner'}",
             )
     if live:
-        ev = live[0]
+        # A live owner buys silence ONLY if something will actually re-enter the
+        # conversation when it exits or when its deadline lands. Either the
+        # process itself carries a completion handle, or the CARD carries a
+        # recorded, verifiable wake. With neither, "someone will tell me when it
+        # lands" is an assumption, so the card stays a bounded finding.
+        wakeable = [e for e in live if e.completion_handle]
+        if not wakeable:
+            ev = live[0]
+            cp = markers.checkpoint
+            okw, why = (False, "no checkpoint wake recorded on the card")
+            if cp is not None and cp.at > now:
+                okw, why = verify_wake(
+                    cp.wake,
+                    task=task,
+                    now=now,
+                    deadline=cp.at,
+                    registry=registry,
+                    cfg=cfg,
+                    ambiguous=ambiguous,
+                )
+            if okw:
+                return ok(
+                    "live_external_owner",
+                    f"{ev.describe(now)} — liveness, not progress; exit covered by "
+                    f"recorded wake {cp.wake} ({why})",
+                )
+            due = ev.deadline_at
+            when = f"in {int(due - now)}s" if due else "at an unrecorded time"
+            return find(
+                KIND_OWNER_NO_WAKE,
+                f"{ev.describe(now)} — live, but NOTHING will re-enter this "
+                f"conversation when it exits: no notify_on_complete, no watcher, "
+                f"and {why}. Its deadline lands {when}",
+                f"register a real wake for {tid}: re-poll the handle {ev.handle} at "
+                f"its deadline, or record a checkpoint with a verifiable wake "
+                f"(cron:<job_id> / process:<handle> / dispatcher). Do not treat "
+                f"'it is still running' as an answer",
+            )
+        ev = wakeable[0]
         return ok(
             "live_external_owner",
             f"{ev.describe(now)} — liveness, not progress",
@@ -494,7 +565,13 @@ def _classify(
                 f"do not simply extend the deadline",
             )
         okw, detail = verify_wake(
-            cp.wake, task=task, now=now, deadline=cp.at, registry=registry, cfg=cfg
+            cp.wake,
+            task=task,
+            now=now,
+            deadline=cp.at,
+            registry=registry,
+            cfg=cfg,
+            ambiguous=ambiguous,
         )
         if not okw:
             return find(
@@ -551,8 +628,20 @@ def _classify(
 
 # -------------------------------------------------------------- evaluate ---
 
+class ScopeMatchedNothing(Exception):
+    """A configured scope selected zero cards from a board that HAS cards."""
+
+
 def _scope_tasks(tasks, cfg) -> list:
-    """Restrict the sweep to the opted-in project. No other project is read."""
+    """Restrict the sweep to the opted-in project. No other project is read.
+
+    A configured scope that matches **zero of N** rows is a configuration
+    error, not a clean board: it would otherwise produce ``ok=True`` with no
+    findings, i.e. the gate silently disables itself while the config reads as
+    if it were on. (Observed on the real board: every card carries
+    ``project_id=NULL``, so the previously documented ``project_id: agentpod``
+    example selected nothing.)
+    """
     project_id = cfg.get("project_id")
     tenant = cfg.get("tenant")
     out = list(tasks)
@@ -560,6 +649,13 @@ def _scope_tasks(tasks, cfg) -> list:
         out = [t for t in out if (getattr(t, "project_id", None) or None) == project_id]
     if tenant is not None:
         out = [t for t in out if (getattr(t, "tenant", None) or None) == tenant]
+    if (project_id is not None or tenant is not None) and tasks and not out:
+        raise ScopeMatchedNothing(
+            f"scope matched 0 of {len(tasks)} cards "
+            f"(project_id={project_id!r}, tenant={tenant!r}). The board's cards "
+            f"do not carry these values, so the sweep would cover nothing and "
+            f"report a clean board. Fix or remove the scope keys."
+        )
     return out
 
 
@@ -611,9 +707,9 @@ def evaluate_board(
         from pathlib import Path
 
         conn = kb.connect(Path(db_path)) if db_path else kb.connect(board=board)
-        tasks = kb.list_tasks(
-            conn, include_archived=False, tenant=cfg.get("tenant") or None
-        )
+        # Read the board unscoped so "scope matched nothing" can be told apart
+        # from "board is empty". Only SCOPED cards are ever evaluated below.
+        tasks = kb.list_tasks(conn, include_archived=False)
         if not tasks:
             return Verdict(
                 ok=False,
@@ -622,7 +718,21 @@ def evaluate_board(
                 error="board read returned zero cards — treat as an unreadable "
                 "board, not as an empty backlog",
             )
-        tasks = _scope_tasks(tasks, cfg)
+        try:
+            tasks = _scope_tasks(tasks, cfg)
+        except ScopeMatchedNothing as exc:
+            return Verdict(
+                ok=False,
+                board=str(board or db_path or ""),
+                scope=scope_desc,
+                error=str(exc),
+            )
+        ambiguous = owners_mod.ambiguous_workspaces(tasks)
+        if ambiguous:
+            notes.append(
+                f"{len(ambiguous)} workspace path(s) shared by more than one card "
+                f"— not treated as ownership of any of them"
+            )
         unfinished = [t for t in tasks if t.status in UNFINISHED_STATUSES]
         unfinished_ids = {t.id for t in unfinished}
 
@@ -648,12 +758,12 @@ def evaluate_board(
             except Exception:
                 parents = []
             evidence = owners_mod.owners_for_task(
-                task.id,
+                task,
                 registry or [],
                 default_max_runtime=int(
                     cfg.get("max_owner_runtime_seconds", DEFAULT_MAX_OWNER_RUNTIME)
                 ),
-                start_time_tolerance=int(cfg.get("start_time_tolerance", 200)),
+                ambiguous=ambiguous,
             )
             f, a = _classify(
                 task,
@@ -665,6 +775,7 @@ def evaluate_board(
                 cfg=cfg,
                 parents_unfinished=any(p in unfinished_ids for p in parents),
                 last_activity_at=last_activity_at,
+                ambiguous=ambiguous,
             )
             if f is not None:
                 findings.append(f)
@@ -706,7 +817,11 @@ def kanban_db_module():
 
 
 def render_report(
-    verdict: Verdict, *, continuation: bool = False, max_chars: int = 0
+    verdict: Verdict,
+    *,
+    continuation: bool = False,
+    terminal: bool = False,
+    max_chars: int = 0,
 ) -> str:
     """Explicit, fail-loud text. Never claims an action was taken."""
     if not verdict.ok:
@@ -745,6 +860,17 @@ def render_report(
             "a verifiable wake. (The stop-check itself started nothing and wrote "
             "nothing — it only blocked a quiet ending.)"
         )
+        if terminal:
+            # Last grant in this window: the gate will not ask again, so the
+            # fail-explicit demand is delivered HERE, through pre_verify, which
+            # runs before any transform and is unaffected by transform ordering.
+            tail.append(
+                "FINAL supervision continuation for this board state — the "
+                "continuation budget is now spent and you will not be asked "
+                "again. Your next answer MUST state the unattended cards above "
+                "and their blocker explicitly. Concluding 'no material change' "
+                "or any equivalent quiet ending is not permitted."
+            )
     else:
         tail.append(
             "Blocked quiet ending — nothing above was executed or dispatched."

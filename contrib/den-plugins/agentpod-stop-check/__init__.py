@@ -28,11 +28,16 @@ Honest limits (tested, stated in the README, not papered over):
 
 * The gate **dispatches nothing**. It does not spawn, claim, write to the
   board, or kill anything. "Requested" and "executed" are never conflated.
-* ``transform_llm_output`` is first-non-empty-wins in
-  ``agent/turn_finalizer.py``; a transform plugin registered earlier can
-  preempt the fallback text. That is why enforcement lives in ``pre_verify``,
-  which runs before any transform and is unaffected by transform ordering.
-* Verified owners prove **liveness**, not progress.
+* Enforcement is ordering-independent — ``pre_verify`` runs before any
+  transform, and the LAST continuation in a window carries the fail-explicit
+  demand. The ``transform_llm_output`` **fallback** after the budget is spent
+  is not: it is first-non-empty-wins in ``agent/turn_finalizer.py`` with no
+  priority surface, so an earlier-sorting transform plugin can preempt it.
+* Verified owners prove **liveness**, not progress — and only buy silence when
+  a completion handle or a recorded, verified wake covers their exit.
+* Ownership requires a structural binding (registry ``task_id`` or the card's
+  own recorded workspace). A worker launched without one is ``owner_unknown``:
+  actionable, never quiet.
 
 Scope: inert unless ``agentpod_stop_check.enabled`` is true AND the turn's
 ``session_id`` is listed in ``agentpod_stop_check.session_ids``. Only the
@@ -43,13 +48,19 @@ config.yaml (default profile):
     agentpod_stop_check:
       enabled: true
       board: agentpod
-      project_id: agentpod          # optional narrowing (with tenant:)
+      # project_id/tenant: omit unless the cards really carry them — a scope
+      # matching zero of N cards is a hard error, not a clean board.
       session_ids: ["<supervisor session id>"]
       gate_authorities: ["den"]     # who may record a human gate
       heartbeat_stale_seconds: 900
+      turn_context_ttl_seconds: 900
       max_findings: 5
       max_report_chars: 700         # platform budget for the fallback text
       max_continuations: 2
+
+Activation is staged, reversible and core-first — see ``README.md`` and the
+read-only ``activation_preflight.py``, which refuses an installed core that
+cannot run the gate and a config scope that selects nothing.
 """
 from __future__ import annotations
 
@@ -97,6 +108,12 @@ DEFAULT_STOP_PATTERNS = (
 _LOCK = threading.Lock()
 # session_id -> (user_message, recorded_at). Per-turn supervision context.
 _TURN_CONTEXT: dict[str, tuple[str, float]] = {}
+# How long a recorded user message may govern. `pre_llm_call` fires once per
+# turn, so a context older than this belongs to an earlier turn whose hook call
+# did not repeat (hook error, adapter that skips it, subagent path) — and a
+# turn the user never framed as supervision must not be gated by a stale one.
+# Absence already fails closed; this makes STALENESS fail closed too.
+DEFAULT_TURN_CONTEXT_TTL = 900.0
 
 
 # ---------------------------------------------------------------- config ---
@@ -143,7 +160,11 @@ def _supervision_turn(cfg: dict, session_id: str) -> bool:
         # No recorded user message for this turn: fail CLOSED (stay inert)
         # rather than guessing supervision from the model's own text.
         return False
-    message, _at = entry
+    message, at = entry
+    ttl = float(cfg.get("turn_context_ttl_seconds", DEFAULT_TURN_CONTEXT_TTL))
+    if ttl > 0 and (time.time() - float(at or 0)) > ttl:
+        # Stale context: it describes an earlier turn, not this one.
+        return False
     return is_supervision_message(message, cfg)
 
 
@@ -168,14 +189,26 @@ def _ledger_path(cfg: dict) -> Path:
     return base / "agentpod-stop-check" / "continuations.json"
 
 
-def _grant_continuation(session_id: str, fingerprint: str, cfg: dict) -> bool:
+def _grant_continuation(session_id: str, fingerprint: str, cfg: dict) -> tuple[bool, bool]:
     """Bounded continuation budget shared across processes.
 
-    The cap must hold for the whole (session, board-state) pair even when a
-    second gateway/worker process runs the same session, so the ledger is a
-    file under ``$HERMES_HOME`` guarded by an atomic lock directory. If the
-    lock cannot be taken the answer is **no** (fail closed: fall through to the
-    explicit report rather than grant an unbounded extra turn).
+    Returns ``(granted, terminal)`` where ``terminal`` marks the LAST grant for
+    this ``(session, board-fingerprint)`` pair — the one that carries the
+    fail-explicit demand, because the gate will not ask again.
+
+    **Window policy (explicit).** The cap is ``max_continuations`` per
+    ``(session, fingerprint)`` per rolling ``continuation_window_seconds``. A
+    board whose findings never change is therefore *rate*-bounded, not exempt:
+    it can buy at most ``cap`` continuations per window and no more, and each
+    window's last grant is terminal. It is bounded, not one-shot-forever — a
+    board that is still unattended an hour later is a genuinely new supervision
+    occasion, while a loop inside one turn cannot exceed the cap (the runtime's
+    own ``agent.max_verify_nudges`` bounds the turn independently).
+
+    The cap must hold for the whole pair even when a second gateway/worker
+    process runs the same session, so the ledger is a file under
+    ``$HERMES_HOME`` guarded by an atomic lock directory. If the lock cannot be
+    taken the answer is **no** (fail closed).
     """
     cap = int(cfg.get("max_continuations", 2))
     window = float(cfg.get("continuation_window_seconds", 900))
@@ -186,7 +219,7 @@ def _grant_continuation(session_id: str, fingerprint: str, cfg: dict) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
-        return False
+        return (False, False)
 
     acquired = False
     for _ in range(40):
@@ -203,9 +236,9 @@ def _grant_continuation(session_id: str, fingerprint: str, cfg: dict) -> bool:
                 pass
             time.sleep(0.025)
         except Exception:
-            return False
+            return (False, False)
     if not acquired:
-        return False
+        return (False, False)
 
     try:
         try:
@@ -221,16 +254,17 @@ def _grant_continuation(session_id: str, fingerprint: str, cfg: dict) -> bool:
         }
         count, first = data.get(key, [0, now])
         if int(count) >= cap:
-            granted = False
+            granted, terminal = False, False
         else:
-            data[key] = [int(count) + 1, float(first)]
-            granted = True
+            used = int(count) + 1
+            data[key] = [used, float(first)]
+            granted, terminal = True, used >= cap
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         os.replace(tmp, path)
-        return granted
+        return (granted, terminal)
     except Exception:
-        return False
+        return (False, False)
     finally:
         try:
             os.rmdir(lock)
@@ -302,17 +336,19 @@ def on_pre_verify(
             return None
         if _already_reports(final_response or "", verdict):
             return None
-        if not _grant_continuation(session_id, verdict.fingerprint(), cfg):
+        granted, terminal = _grant_continuation(session_id, verdict.fingerprint(), cfg)
+        if not granted:
             return None
         logger.warning(
-            "[%s] continuing supervision turn (session=%s ok=%s findings=%d)",
-            PLUGIN_ID, session_id, verdict.ok, len(verdict.findings),
+            "[%s] continuing supervision turn (session=%s ok=%s findings=%d terminal=%s)",
+            PLUGIN_ID, session_id, verdict.ok, len(verdict.findings), terminal,
         )
         return {
             "action": "continue",
             "message": stopcheck.render_report(
                 verdict,
                 continuation=True,
+                terminal=terminal,
                 max_chars=int(cfg.get("max_continuation_chars", 2000)),
             ),
         }

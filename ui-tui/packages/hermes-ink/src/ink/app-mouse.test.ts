@@ -11,14 +11,20 @@ const makeApp = () => {
     lastHoverCol: -1,
     lastHoverRow: -1,
     mouseCaptureTarget: undefined,
+    pendingHyperlinkTimer: null,
     props: {
+      getHyperlinkAt: vi.fn(),
       getSelectedText: vi.fn(() => 'selected text'),
+      onClickAt: vi.fn(),
       onCopySelectionNoClear: vi.fn(async () => 'selected text'),
       onHoverAt: vi.fn(),
       onMouseDownAt: vi.fn(),
       onMouseDragAt: vi.fn(),
       onMouseUpAt: vi.fn(),
+      onMultiClick: vi.fn(),
+      onOpenHyperlink: vi.fn(),
       onSelectionChange: vi.fn(),
+      onSelectionDrag: vi.fn(),
       selection
     }
   } as any
@@ -112,6 +118,17 @@ describe('handleMouseEvent right-click selection behavior', () => {
     expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
   })
 
+  it('does not dispatch right-button motion as paste when no text is selected', () => {
+    const app = makeApp()
+
+    handleMouseEvent(app, { action: 'press', button: 34, col: 3, kind: 'mouse', row: 1 })
+
+    expect(app.props.onCopySelectionNoClear).not.toHaveBeenCalled()
+    expect(app.props.onMouseDownAt).not.toHaveBeenCalled()
+    expect(app.props.onMouseDragAt).not.toHaveBeenCalled()
+    expect(app.props.onSelectionDrag).not.toHaveBeenCalled()
+  })
+
   it('still dispatches right-click handlers when no text is selected', () => {
     const app = makeApp()
 
@@ -119,5 +136,29 @@ describe('handleMouseEvent right-click selection behavior', () => {
 
     expect(app.props.onCopySelectionNoClear).not.toHaveBeenCalled()
     expect(app.props.onMouseDownAt).toHaveBeenCalledWith(2, 0, 2)
+  })
+})
+
+describe('handleMouseEvent modified left-button releases', () => {
+  it('opens links after a button-8 press and button-11 release', () => {
+    vi.useFakeTimers()
+    vi.stubEnv('TERM_PROGRAM', '')
+
+    try {
+      const app = makeApp()
+
+      app.props.getHyperlinkAt.mockReturnValue('https://example.com')
+
+      handleMouseEvent(app, { action: 'press', button: 8, col: 10, kind: 'mouse', row: 5 })
+      handleMouseEvent(app, { action: 'release', button: 11, col: 10, kind: 'mouse', row: 5 })
+
+      expect(app.props.getHyperlinkAt).toHaveBeenCalledWith(9, 4)
+      vi.runOnlyPendingTimers()
+      expect(app.props.onOpenHyperlink).toHaveBeenCalledWith('https://example.com')
+    } finally {
+      vi.clearAllTimers()
+      vi.unstubAllEnvs()
+      vi.useRealTimers()
+    }
   })
 })

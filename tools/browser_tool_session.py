@@ -245,7 +245,14 @@ def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
 def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     """Fresh session for ``task_id`` (runs OUTSIDE the lock: cloud mode makes a network call).
     Precedence: CDP override > hybrid local sidecar (never real-profile) > cloud > local."""
-    cdp_override = _cdp._get_cdp_override()
+    named = ""
+    key = (task_id or "").strip()
+    if key.startswith("bu-named-"):
+        named = key[len("bu-named-"):].split("@", 1)[0]
+    try:
+        cdp_override = _cdp._get_cdp_override(endpoint=named or None)
+    except TypeError:
+        cdp_override = _cdp._get_cdp_override()
     if cdp_override and not force_local:
         return _create_cdp_session(task_id, cdp_override)
     if force_local:

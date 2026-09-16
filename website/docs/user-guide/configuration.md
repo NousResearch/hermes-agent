@@ -2570,6 +2570,10 @@ browser:
   # Optional CDP override — when set, Hermes attaches directly to your own
   # Chromium-family browser (via /browser connect) rather than starting a headless browser.
   cdp_url: ""
+  # Optional name → CDP URL map. session=<name> / /browser connect <name> /
+  # BROWSER_CDP_ENDPOINT bind here; unnamed calls keep cdp_url. See
+  # /user-guide/features/cdp-endpoints
+  cdp_endpoints: {}
   # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
   # are handled when a CDP backend is attached (Browserbase, local Chromium-family
   # browser via /browser connect). Ignored on Camofox and default local agent-browser mode.

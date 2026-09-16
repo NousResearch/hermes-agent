@@ -12,8 +12,12 @@ _CDP_SCHEMES = {"http", "https", "ws", "wss"}
 
 def _resolve_browser_cdp_url() -> str:
     """Configured browser CDP override without network I/O (``/browser status`` must be fast;
-    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence (env,
-    then ``browser.cdp_url``) minus WS resolution; ``browser_navigate`` normalizes on the next call."""
+    ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence as
+    ``_get_cdp_override_raw`` (env URL, then ``cdp_endpoints`` name, then ``browser.cdp_url``)
+    minus WS resolution; ``browser_navigate`` normalizes on the next call."""
+    with contextlib.suppress(Exception):
+        from tools.browser_tool_cdp import _get_cdp_override_raw
+        return (_get_cdp_override_raw() or "").strip()
     if env_url := os.environ.get("BROWSER_CDP_URL", "").strip():
         return env_url
     with contextlib.suppress(Exception):
@@ -102,6 +106,9 @@ def _browser_connect(rid, params: dict) -> dict:
     if raw_url is not None and not isinstance(raw_url, str):
         return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
     url = (raw_url or "").strip() or DEFAULT_BROWSER_CDP_URL
+    with contextlib.suppress(Exception):
+        from tools.browser_tool_cdp import expand_cdp_connect_target
+        url = expand_cdp_connect_target(url) or url
     sid, system, messages = params.get("session_id") or "", platform.system(), []
 
     def announce(message: str, *, level: str = "info") -> None:

@@ -548,6 +548,18 @@ browser:
   # (same per-page budget as web_extract).
   # snapshot_threshold: 15000
 
+  # Optional persistent CDP attach (unnamed default). When set, Hermes connects to this
+  # Chromium instead of launching a throwaway. ADA CapSolver stay-put: 127.0.0.1:9222.
+  # cdp_url: "http://127.0.0.1:9222"
+  #
+  # Optional name → CDP URL map. ``browser_exec(session=<name>)``, ``/browser connect <name>``,
+  # or BROWSER_CDP_ENDPOINT=<name> bind a sidecar without replacing cdp_url. Unnamed calls
+  # keep cdp_url. Does not add a Desktop Screen button; does not spawn displays.
+  # cdp_endpoints:
+  #   capsolver: "http://127.0.0.1:9222"
+  #   lab2: "http://127.0.0.1:9223"
+  #   lab3: "http://127.0.0.1:9224"
+
   # JavaScript evaluation guardrails (both default false). restrict_evaluate
   # opts into a denylist that blocks sensitive primitives (cookies, storage,
   # clipboard, network, form values) in browser_console(expression=...) — use

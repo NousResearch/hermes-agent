@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
+from agent.turn_failure_copy import site_copy
 from agent.turn_recovery import interruptible_backoff_sleep
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -131,11 +132,7 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
     agent._emit_status(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
     )
-    return (
-        "⚠️ The model produced only internal reasoning and no final answer, despite retries"
-        + (" and fallback" if agent._fallback_chain else "")
-        + ". Its last reasoning, which may contain the answer:\n\n" + reasoning_preview
-    )
+    return site_copy("reasoning_only", model=agent.model, preview=reasoning_preview)
 
 
 def recover_empty_response(

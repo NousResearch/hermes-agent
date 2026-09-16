@@ -10,34 +10,52 @@ import { buildTileView } from './session-tile'
 import { PRIMARY_SESSION_VIEW } from './session-view'
 
 vi.mock('./index', () => ({ ChatView: () => null }))
-afterEach(() => { clearAllSessionStates(); clearClarifyRequest(); $sessionTiles.set([]); $activeSessionId.set(null) })
 
-it('tiles share the primary runtime projection while another runtime and request stay isolated', () => {
-  const a = { ...createClientSessionState('stored-A'), messages: [{ id: 'raw-A', role: 'assistant' as const, parts: [] }] }
-  const b = { ...createClientSessionState('stored-B'), messages: [{ id: 'raw-B', role: 'assistant' as const, parts: [] }] }
+afterEach(() => {
+  clearAllSessionStates()
+  clearClarifyRequest()
+  $sessionTiles.set([])
+  $activeSessionId.set(null)
+})
+
+it('PRIMARY and the real tile reader share the gate without leaking across runtime switches', () => {
+  const a = {
+    ...createClientSessionState('stored-A'),
+    messages: [{ id: 'old-A', role: 'assistant' as const, parts: [] }]
+  }
+
+  const b = { ...createClientSessionState('stored-B'), messages: [{ id: 'B', role: 'user' as const, parts: [] }] }
   publishSessionState('A', a)
   publishSessionState('B', b)
-  $sessionTiles.set([{ storedSessionId: 'stored-A', runtimeId: 'A' }, { storedSessionId: 'stored-B', runtimeId: 'B' }])
+  $sessionTiles.set([
+    { storedSessionId: 'stored-A', runtimeId: 'A' },
+    { storedSessionId: 'stored-B', runtimeId: 'B' }
+  ])
   $activeSessionId.set('A')
   const tileA = buildTileView('stored-A')
   const tileB = buildTileView('stored-B')
-  const stopA = tileA.$messages.listen(() => {})
-  const stopB = tileB.$messages.listen(() => {})
+  const stop = tileA.$messages.listen(() => {})
+  const release = holdTranscriptView('A', Symbol('test'), a.messages)
 
   try {
-    const requestB = { sessionId: 'B', requestId: 'RB', question: 'B?', choices: null, multiSelect: false }
-    setClarifyRequest(requestB)
-    holdTranscriptView('A')
-    setClarifyRequest({ ...requestB, sessionId: 'A', requestId: 'RA', question: 'A?' })
+    setClarifyRequest({ sessionId: 'A', requestId: 'req-A', question: 'A?', choices: null, multiSelect: false })
     expect(tileA.$messages.get()).toEqual(PRIMARY_SESSION_VIEW.$messages.get())
-    expect(tileA.$messages.get()[0].id).toBe('pending-clarify:A:RA')
+    expect(tileA.$messages.get().flatMap(message => message.parts)).toContainEqual(
+      expect.objectContaining({ toolName: 'clarify' })
+    )
     expect(tileB.$messages.get()).toBe(b.messages)
     const projected = tileA.$messages.get()
     publishSessionState('A', { ...a, busy: true })
-    setClarifyRequest({ ...requestB, question: 'B changed?' })
+    setClarifyRequest({ sessionId: 'B', requestId: 'req-B', question: 'B?', choices: null, multiSelect: false })
     expect(tileA.$messages.get()).toBe(projected)
-    $sessionTiles.set([{ storedSessionId: 'stored-A', runtimeId: 'B' }])
-    expect(tileA.$messages.get()).toBe(b.messages)
-    expect(tileB.$messages.get()).toEqual([])
-  } finally { stopA(); stopB() }
+    $activeSessionId.set('B')
+    expect(PRIMARY_SESSION_VIEW.$messages.get()).toBe(b.messages)
+    expect(tileA.$messages.get()).toBe(projected)
+    clearClarifyRequest('req-A', 'A')
+    expect(tileA.$messages.get()).toEqual([])
+    release()
+    expect(tileA.$messages.get()).toBe(a.messages)
+  } finally {
+    stop()
+  }
 })

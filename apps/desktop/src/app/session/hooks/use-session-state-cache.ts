@@ -179,6 +179,8 @@ export function useSessionStateCache({
           }
 
           sessionStateCache.set(sessionId, updated)
+          // A no-op updater must still expose the authoritative identity to readers.
+          publishSessionState(sessionId, updated)
         }
 
         return sessionStateCache.get(sessionId)!
@@ -209,10 +211,9 @@ export function useSessionStateCache({
     }
   }, [])
 
-  const holdSessionTranscriptView = useCallback(
-    (runtimeId: string, storedSessionId?: string) => holdTranscriptView(runtimeId, transcriptViewOwner, storedSessionId),
-    [transcriptViewOwner]
-  )
+  const holdSessionTranscriptView = useCallback((runtimeId: string): (() => void) => {
+    return holdTranscriptView(runtimeId, transcriptViewOwner, sessionStateCache.get(runtimeId)?.messages ?? [])
+  }, [sessionStateCache, transcriptViewOwner])
 
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
@@ -241,13 +242,10 @@ export function useSessionStateCache({
     // an out-of-funds error) onto this one — then cascade it everywhere as the
     // polluted view becomes the next switch's baseline. Only carry errors
     // across a same-session refresh; our cached state already keeps its own.
-    const transcriptHeld = Boolean($sessionTranscriptViewGates.get()[pending.sessionId])
-    const viewState = suppressTranscriptForView(pending.state, transcriptHeld, pending.sessionId)
-
     const nextMessages =
-      !transcriptHeld && viewSessionIdRef.current === pending.sessionId
-        ? preserveLocalAssistantErrors(viewState.messages, currentMessages)
-        : viewState.messages
+      viewSessionIdRef.current === pending.sessionId
+        ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+        : pending.state.messages
 
     if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
       setMessages(nextMessages)
@@ -280,7 +278,7 @@ export function useSessionStateCache({
         return
       }
 
-      const viewState = suppressTranscriptForView(state, Boolean($sessionTranscriptViewGates.get()[sessionId]), sessionId)
+      const viewState = suppressTranscriptForView(state, Boolean($sessionTranscriptViewGates.get()[sessionId]))
 
       syncRuntimeMetadataToView(viewState)
       pendingViewStateRef.current = { sessionId, state: viewState }
@@ -352,9 +350,7 @@ export function useSessionStateCache({
 
       // If the updater returned the same reference, nothing changed for this
       // session — skip the store write, publishSessionState, and view sync.
-      // The cache entry was already updated by ensureSessionState (if
-      // storedSessionId rotated); the caller gets its return value from the
-      // cache, so stale reads don't regress.
+      // Identity changes were already published by ensureSessionState.
       if (next === previous) {
         return previous
       }

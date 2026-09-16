@@ -189,7 +189,7 @@ def _todo_state_from_history(history) -> dict | None:
 
 
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
-    from tools.tool_gateway.names import is_connector_name
+    from tools.connectors import is_connector_name
 
     if name == "manage_connections" or is_connector_name(name):
         return True
@@ -224,6 +224,8 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
             transport = current_transport() or _stdio_transport
     frame = _event_frame(event, sid, payload)
     _stamp_event(frame)
+    from tui_gateway.hosted_room_member_activity import project_room_member_activity
+    project_room_member_activity(frame, _sessions)
     transport.write(frame)
 
 

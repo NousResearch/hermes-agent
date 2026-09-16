@@ -37,9 +37,11 @@ export function KeybindSettings() {
   const bindings = useStore($bindings)
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
-  // Subscribe so contributed actions appear/disappear live in the map.
-  useContributions(KEYBINDS_AREA)
-  const actionList = allKeybindActions()
+  // Subscribe so contributed actions appear/disappear live in the map. The
+  // snapshot feeds the list: under React Compiler an independently called
+  // allKeybindActions() stays memoized across that registration.
+  const contributions = useContributions(KEYBINDS_AREA)
+  const actionList = allKeybindActions(contributions)
   const [query, setQuery] = useState('')
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]

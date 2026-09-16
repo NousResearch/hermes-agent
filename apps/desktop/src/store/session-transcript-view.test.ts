@@ -2,90 +2,82 @@ import { atom } from 'nanostores'
 import { afterEach, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { createClientSessionState } from '@/lib/chat-runtime'
 
-import { clearClarifyRequest, setClarifyRequest } from './clarify'
-import { clearAllSessionStates, dropSessionState, publishSessionState, releaseSessionTranscript } from './session-states'
-import {
-  $sessionTranscriptViewGates, clearTranscriptViewGates, holdTranscriptView, transcriptMessagesForView
-} from './session-transcript-view'
+import { clearClarifyRequest } from './clarify'
+import { $connectionRequests, normalizeConnectionRequest, setConnectionRequest } from './connection-request'
+import { clearAllSessionStates } from './session-states'
+import { $sessionTranscriptViewGates, holdTranscriptView, transcriptMessagesForView } from './session-transcript-view'
 
-const question = (id: string, requestId = 'R') => ({
-  sessionId: id, requestId, question: 'Continue?', choices: ['Yes'], multiSelect: false
+afterEach(() => {
+  clearAllSessionStates()
+  clearClarifyRequest()
+  $connectionRequests.set({})
 })
 
-const raw: ChatMessage[] = [{ id: 'raw', role: 'assistant', parts: [{ type: 'text', text: 'UNVERIFIED' }] }]
-afterEach(() => { clearAllSessionStates(); clearClarifyRequest() })
+it('keeps real deltas and tool results while withholding the unchanged cached prefix', () => {
+  const baseline: ChatMessage[] = [
+    {
+      id: 'old',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'old history' },
+        { type: 'tool-call', toolName: 'terminal', toolCallId: 'tool', args: {}, argsText: '{}' }
+      ]
+    }
+  ]
 
-it('isolates attempt tokens and cache owners, including stale release after cleanup and rebind', () => {
-  const owner = Symbol('first cache')
-  const nextOwner = Symbol('second cache')
-  const stale = holdTranscriptView('A', owner)
-  const current = holdTranscriptView('A', nextOwner)
-  holdTranscriptView('B', owner)
-  stale()
-  clearTranscriptViewGates(owner)
-  expect(Object.keys($sessionTranscriptViewGates.get())).toEqual(['A'])
-  current()
+  const messages = atom(baseline)
+  const view = transcriptMessagesForView(atom<string | null>('A'), messages)
+  holdTranscriptView('A', Symbol('test'), baseline)
+  expect(view.get()).toEqual([])
+  messages.set([
+    {
+      ...baseline[0],
+      parts: [
+        { type: 'text', text: 'old history plus live delta' },
+        { ...baseline[0].parts[1], result: 'live result' } as ChatMessage['parts'][number],
+        { type: 'text', text: 'new response' }
+      ]
+    }
+  ])
+  expect(view.get().flatMap(message => message.parts)).toEqual([
+    { type: 'text', text: ' plus live delta' },
+    expect.objectContaining({ toolCallId: 'tool', result: 'live result' }),
+    { type: 'text', text: 'new response' }
+  ])
+  expect(baseline[0].parts).toHaveLength(2)
+})
+
+it('an obsolete release cannot open a newer gate; session teardown clears it', () => {
+  const owner = Symbol('test')
+  const releaseOld = holdTranscriptView('A', owner, [])
+  holdTranscriptView('A', owner, [])
+  releaseOld()
+  expect($sessionTranscriptViewGates.get()['A']).toBeDefined()
+  clearAllSessionStates()
   expect($sessionTranscriptViewGates.get()).toEqual({})
-  const rebound = holdTranscriptView('A', nextOwner)
-  stale()
-  current()
-  expect($sessionTranscriptViewGates.get().A).toBeDefined()
-  rebound()
 })
 
-it('projects only the selected runtime and preserves reference identity through unrelated updates', () => {
-  const runtime = atom<string | null>('A')
-  const messages = atom(raw)
-  const view = transcriptMessagesForView(runtime, messages)
-  const stop = view.listen(() => {})
-
-  try {
-    holdTranscriptView('A')
-    setClarifyRequest(question('A'))
-    const projected = view.get()
-    expect(projected[0].id).toBe('pending-clarify:A:R')
-    setClarifyRequest(question('B'))
-    holdTranscriptView('B')
-    messages.set([...raw])
-    expect(view.get()).toBe(projected)
-    setClarifyRequest(question('A', 'new'))
-    expect(view.get()[0].id).toBe('pending-clarify:A:new')
-    clearClarifyRequest('R', 'A')
-    expect(view.get()[0].id).toBe('pending-clarify:A:new')
-    clearClarifyRequest('new', 'A')
-    expect(view.get()).toEqual([])
-    runtime.set('B')
-    expect(view.get()[0].id).toBe('pending-clarify:B:R')
-    runtime.set(null)
-    expect(view.get()).toBe(messages.get())
-  } finally { stop() }
-})
-
-it.each(['drop', 'release', 'clear'] as const)('cleans gates when sessions %s without retaining a registry entry', operation => {
-  publishSessionState('A', { ...createClientSessionState('stored-A'), messages: raw })
-  const stale = holdTranscriptView('A')
-
-  if (operation === 'drop') {dropSessionState('A')}
-
-  if (operation === 'release') {releaseSessionTranscript('A')}
-
-  if (operation === 'clear') {clearAllSessionStates()}
-  expect($sessionTranscriptViewGates.get()).toEqual({})
-  const next = holdTranscriptView('A')
-  stale()
-  expect($sessionTranscriptViewGates.get().A).toBeDefined()
-  next()
-})
-
-it('retires an old binding gate after the replacement state is published', () => {
-  const state = { ...createClientSessionState('old'), messages: raw, needsInput: true }
-  publishSessionState('A', state)
-  const release = holdTranscriptView('A')
-  publishSessionState('A', { ...state, storedSessionId: 'new' })
-  expect($sessionTranscriptViewGates.get()).toEqual({})
-  holdTranscriptView('A')
-  release()
-  expect($sessionTranscriptViewGates.get().A).toBeDefined()
+it('preserves the upstream pending connection projection behind the history gate', () => {
+  const messages = atom<ChatMessage[]>([])
+  const view = transcriptMessagesForView(atom<string | null>('A'), messages)
+  holdTranscriptView('A', Symbol('test'), [])
+  setConnectionRequest(
+    normalizeConnectionRequest(
+      {
+        op_id: 'op-A',
+        tool_call_id: 'connection-tool',
+        deadline_at: 123,
+        timeout_seconds: 60,
+        targets: [{ name: 'test-service', kind: 'mcp', action: 'install', state: 'pending' }]
+      },
+      'A'
+    )!
+  )
+  expect(view.get().flatMap(message => message.parts)).toContainEqual(
+    expect.objectContaining({ toolName: 'manage_connections', toolCallId: 'connection-tool' })
+  )
+  expect(messages.get()).toEqual([])
+  $connectionRequests.set({})
+  expect(view.get()).toEqual([])
 })

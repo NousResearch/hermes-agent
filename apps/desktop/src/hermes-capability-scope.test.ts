@@ -7,16 +7,13 @@ import {
   getSkills,
   getToolsets,
   getUsageAnalytics,
-  getWisdomStatus,
   installSkillFromHub,
   profileScopeKey,
-  reviseWisdomDraft,
   saveMcpServers,
   setApiRequestConnection,
   setApiRequestProfile,
   setSkillEnabled,
-  setToolsetEnabled,
-  suggestWisdomSkill
+  setToolsetEnabled
 } from './hermes'
 
 // Contract: the Capabilities surface (skills / toolsets / MCP / hub / config)
@@ -41,7 +38,7 @@ describe('capability helpers are connection-scoped', () => {
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
   })
 
-  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string }
+  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string; priority?: string }
 
   it('omits both scopes when none are active (single-source users unaffected)', () => {
     void getSkills()
@@ -77,6 +74,22 @@ describe('capability helpers are connection-scoped', () => {
     expect(last().connectionId).toBe('gw-tailscale')
   })
 
+  it('marks an explicitly scoped Settings / Capabilities read as foreground (#111651)', () => {
+    // A scope-selector pick is a visible user action: its cold dial must take
+    // the pool's reserved foreground slot instead of queueing behind hydration.
+    getHermesConfigRecord('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+
+    void getSkills('coder')
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+  })
+
+  it('keeps ambient config reads unprioritized for background hydration', () => {
+    getHermesConfigRecord()
+
+    expect(last()).not.toHaveProperty('priority')
+  })
+
   it('object scopes pin every read and write to the named connection', () => {
     void getSkills({ connectionId: 'homelab', profile: 'inbox-bot' })
     void getToolsets({ connectionId: 'homelab', profile: 'inbox-bot' })
@@ -85,57 +98,11 @@ describe('capability helpers are connection-scoped', () => {
     void setToolsetEnabled('browser', true, { connectionId: 'homelab', profile: 'inbox-bot' })
     void saveMcpServers({}, { connectionId: 'homelab', profile: 'inbox-bot' })
     void installSkillFromHub('official/research/arxiv', { connectionId: 'homelab', profile: 'inbox-bot' })
-    void getWisdomStatus({ connectionId: 'homelab', profile: 'inbox-bot' })
-    void suggestWisdomSkill(
-      'local-skill',
-      { connectionId: 'homelab', profile: 'inbox-bot' },
-      {
-        description: 'Owner copy',
-        systemSpecification: { hermes: { minimum_version: '0.17.0' } }
-      },
-      'local-skill-id'
-    )
-    void reviseWisdomDraft(
-      'draft-1',
-      'Owner copy',
-      [{ path: 'SKILL.md', content_utf8: '# Skill' }],
-      {
-        content: 'sha256:content',
-        author_description: 'sha256:description',
-        package_manifest: 'sha256:manifest'
-      },
-      { connectionId: 'homelab', profile: 'inbox-bot' }
-    )
 
     for (const call of api.mock.calls) {
       expect((call[0] as { connectionId?: string }).connectionId).toBe('homelab')
       expect(call[0].profile).toBe('inbox-bot')
     }
-  })
-
-  it('keeps local candidate evidence out of Wisdom mutation bodies', () => {
-    void suggestWisdomSkill(
-      'local-skill',
-      'research',
-      {
-        description: 'Owner copy',
-        systemSpecification: { hermes: { minimum_version: '0.17.0' } }
-      },
-      'local-skill-id'
-    )
-
-    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({
-      body: {
-        description: 'Owner copy',
-        local_skill_id: 'local-skill-id',
-        skill: 'local-skill',
-        system_specification: { hermes: { minimum_version: '0.17.0' } }
-      },
-      method: 'POST',
-      path: '/api/wisdom/suggest',
-      profile: 'research'
-    })
-    expect(JSON.stringify(api.mock.calls.at(-1)?.[0])).not.toMatch(/usage|refinement|candidate|ranking|stability/)
   })
 
   it("a 'local' pin carries an explicit connectionId even while a remote gateway is active", () => {

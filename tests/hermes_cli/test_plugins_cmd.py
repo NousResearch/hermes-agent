@@ -798,6 +798,51 @@ class TestSubdirInstallE2E:
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
 
 
+class TestInstallReadabilityGate:
+    """A clone that lands unreadable is repaired or rolled back, never shipped (#111804)."""
+
+    def _clone_with_unreadable_manifest(self, monkeypatch, pc):
+        real_chmod = os.chmod  # the rollback test replaces os.chmod after this fixture runs
+
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: badperm\nmanifest_version: 1\n", encoding="utf-8")
+            real_chmod(tmp_clone / "plugin.yaml", 0)
+            return "0" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: None)
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unreadable_file_is_repaired_before_install(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+
+        target, manifest, name = pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert name == "badperm"  # manifest read after repair, not the URL fallback
+        assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unrepairable_tree_rolls_back_and_names_the_fix(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+        monkeypatch.setattr(pc.os, "chmod", lambda *a, **k: (_ for _ in ()).throw(PermissionError(1, "nope")))
+
+        with pytest.raises(PluginOperationError, match=r"plugin.yaml is not readable.*chmod -R u\+rX"):
+            pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert list(plugins_dir.iterdir()) == []  # no half-installed dir, no staging leftovers
+
+
 def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
     import json
 

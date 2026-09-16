@@ -1,66 +1,134 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
-import { type ChatMessage, restorePendingClarifyToolCall } from '@/lib/chat-messages'
+import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
+import { type ChatMessage, restorePendingBlockingToolCall, restorePendingClarifyToolCall } from '@/lib/chat-messages'
 
 import { $clarifyRequests } from './clarify'
+import { $connectionRequests } from './connection-request'
 
-interface TranscriptViewGate {
+interface TranscriptGate {
   token: symbol
-  owner?: symbol
-  storedSessionId?: string
+  owner: symbol
+  baseline: ChatMessage[]
 }
 
-/** Ephemeral display authority only; canonical session history stays untouched. */
-export const $sessionTranscriptViewGates = atom<Record<string, TranscriptViewGate>>({})
+/** Display authority only: never replace the canonical/cache transcript. */
+export const $sessionTranscriptViewGates = atom<Record<string, TranscriptGate>>({})
 
-export function holdTranscriptView(runtimeId: string, owner?: symbol, storedSessionId?: string): () => void {
+export function holdTranscriptView(runtimeId: string, owner: symbol, baseline: ChatMessage[]): () => void {
   const token = Symbol(runtimeId)
-  $sessionTranscriptViewGates.set({ ...$sessionTranscriptViewGates.get(), [runtimeId]: { token, owner, storedSessionId } })
+  const gates = $sessionTranscriptViewGates.get()
+  $sessionTranscriptViewGates.set({
+    ...gates,
+    [runtimeId]: { token, owner, baseline: gates[runtimeId]?.baseline ?? baseline }
+  })
 
   return () => {
-    if ($sessionTranscriptViewGates.get()[runtimeId]?.token === token) {clearTranscriptViewGate(runtimeId)}
+    if ($sessionTranscriptViewGates.get()[runtimeId]?.token === token) {
+      clearTranscriptViewGate(runtimeId)
+    }
   }
 }
 
-export function clearTranscriptViewGate(runtimeId: string) {
-  const current = $sessionTranscriptViewGates.get()
+export function clearTranscriptViewGate(runtimeId: string): void {
+  const { [runtimeId]: removed, ...rest } = $sessionTranscriptViewGates.get()
 
-  if (!current[runtimeId]) {return}
-  const { [runtimeId]: _removed, ...rest } = current
-  $sessionTranscriptViewGates.set(rest)
+  if (removed) {
+    $sessionTranscriptViewGates.set(rest)
+  }
 }
 
-export function clearTranscriptViewGates(owner?: symbol) {
-  const current = $sessionTranscriptViewGates.get()
-  const next = owner ? Object.fromEntries(Object.entries(current).filter(([, gate]) => gate.owner !== owner)) : {}
-
-  if (Object.keys(next).length !== Object.keys(current).length) {$sessionTranscriptViewGates.set(next)}
+export function clearTranscriptViewGates(owner: symbol): void {
+  for (const [id, gate] of Object.entries($sessionTranscriptViewGates.get())) {
+    if (gate.owner === owner) {
+      clearTranscriptViewGate(id)
+    }
+  }
 }
 
-const NO_MESSAGES: ChatMessage[] = []
+const EMPTY: ChatMessage[] = []
 
-/** Select each runtime input before projecting, so unrelated requests and
- * metadata heartbeats cannot rebuild the displayed message array. */
+function liveMessages(messages: ChatMessage[], baseline: ChatMessage[]): ChatMessage[] {
+  const baselineById = new Map(baseline.map(message => [message.id, message]))
+
+  return messages.flatMap(message => {
+    const previous = baselineById.get(message.id)
+
+    if (!previous) {
+      return [message]
+    }
+
+    // A replay can append a tool to an old assistant row. Only the new
+    // parts (and actual text deltas) are authority, not its old commentary.
+    const parts = message.parts.flatMap((part, index): ChatMessage['parts'] => {
+      const old = previous.parts[index]
+
+      if (!old) {
+        return [part]
+      }
+
+      if ((part.type === 'text' || part.type === 'reasoning') && old.type === part.type) {
+        const text = part.text.startsWith(old.text) ? part.text.slice(old.text.length) : part.text
+
+        return text ? [{ ...part, text }] : []
+      }
+
+      return part.type === 'tool-call' &&
+        old.type === 'tool-call' &&
+        (part.result !== old.result || part.argsText !== old.argsText)
+        ? [part]
+        : []
+    })
+
+    return parts.length ? [{ ...message, parts }] : []
+  })
+}
+
 export function transcriptMessagesForView(
   $runtimeId: ReadableAtom<string | null>,
   $messages: ReadableAtom<ChatMessage[]>
 ): ReadableAtom<ChatMessage[]> {
-  const $held = computed([$runtimeId, $sessionTranscriptViewGates], (id, gates) => Boolean(id && gates[id]))
+  const $gate = computed([$runtimeId, $sessionTranscriptViewGates], (id, gates) => (id ? gates[id] : undefined))
+  const $request = computed([$runtimeId, $clarifyRequests], (id, requests) => (id ? requests[id] : undefined))
+  const $connection = computed([$runtimeId, $connectionRequests], (id, requests) => (id ? requests[id] : undefined))
 
-  const $request = computed([$runtimeId, $clarifyRequests], (id, requests) =>
-    id && requests[id]?.sessionId === id ? requests[id] : undefined
-  )
+  return computed([$gate, $request, $connection, $messages], (gate, request, connection, messages) => {
+    if (!gate) {
+      return messages
+    }
 
-  const $projection = computed([$held, $request], (held, request) => {
-    if (!held || !request) {return NO_MESSAGES}
+    const live = liveMessages(messages, gate.baseline)
+
+    // Request lifetime owns the temporary card, including answer/cancel while
+    // REST is pending. Do not preserve a synthetic replay after it is gone.
+    let visible = live.flatMap(message => {
+      const parts = message.parts.filter(
+        part => part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined
+      )
+
+      return parts.length ? [{ ...message, parts }] : []
+    })
+
+    if (connection && !connection.settled) {
+      visible = restorePendingBlockingToolCall(
+        [
+          ...visible,
+          { id: `pending-connection:${connection.sessionId}:${connection.opId}`, role: 'assistant', parts: [] }
+        ],
+        connectionRequestToolPayload(connection),
+        connection.receivedAt ?? 0
+      ).messages
+    }
+
+    if (!request) {
+      return visible.length ? visible : EMPTY
+    }
 
     return restorePendingClarifyToolCall(
-      [{ id: `pending-clarify:${request.sessionId}:${request.requestId}`, role: 'assistant', parts: [] }],
+      [...visible, { id: `pending-clarify:${request.sessionId}:${request.requestId}`, role: 'assistant', parts: [] }],
       pendingClarifyToolPayload(request),
       request.receivedAt ?? 0
     ).messages
   })
-
-  return computed([$held, $projection, $messages], (held, projection, messages) => held ? projection : messages)
 }

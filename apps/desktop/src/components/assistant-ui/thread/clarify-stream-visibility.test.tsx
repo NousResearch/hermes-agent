@@ -1,30 +1,21 @@
 import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { act, cleanup, fireEvent, render, renderHook, waitFor, within } from '@testing-library/react'
-import { useMemo, useRef, useState } from 'react'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+import { afterEach, expect, it, vi } from 'vitest'
 
-import { useComposerSubmit } from '@/app/chat/composer/hooks/use-composer-submit'
 import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
-import {
-  advanceSessionTranscriptWindow,
-  selectTranscriptWindow,
-  type SessionWindowMemo
-} from '@/app/chat/transcript-window'
 import { renderMessageStream } from '@/app/session/hooks/use-message-stream/test-harness'
-import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
+import { resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
-import { $sessionStates } from '@/store/session-states'
-import { clearTranscriptViewGates, holdTranscriptView } from '@/store/session-transcript-view'
+import { $sessionStates, clearAllSessionStates } from '@/store/session-states'
+import { holdTranscriptView } from '@/store/session-transcript-view'
 
 import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
-
-import { TranscriptWindowProvider } from './transcript-window'
 
 import { Thread } from '.'
 
@@ -36,57 +27,12 @@ vi.mock('@/components/wisdom-mediation-card', () => ({ WisdomMediationCard: () =
 stubThreadEnvironment()
 stubThreadViewportSize()
 
-const SID = 'clarify-runtime-a'
-
-const QUESTION = 'Synthetic clarify navigation check: choose a test-only option.'
-
-const CHOICES = ['Choose the test-only option', 'Cancel the test-only check']
-const ARGS = { questions: [{ choices: CHOICES, question: QUESTION }] }
-const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
-
-function seed(tool = true): ChatMessage[] {
-  return [
-    { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Run the synthetic check' }] },
-    { id: 'commentary', role: 'assistant', parts: [{ type: 'text', text: 'A test-only choice is required.' }] },
-    ...(tool
-      ? [
-          {
-            id: 'codex-tool',
-            role: 'assistant' as const,
-            parts: [
-              {
-                type: 'tool-call' as const,
-                toolCallId: 'call-codex',
-                toolName: 'clarify',
-                args: ARGS,
-                argsText: JSON.stringify(ARGS)
-              }
-            ]
-          }
-        ]
-      : [])
-  ]
-}
-
 function FullThread() {
   const view = PRIMARY_SESSION_VIEW
   const messages = useStore(view.$messages)
   const busy = useStore(view.$busy)
   const sessionId = useStore(view.$runtimeId)
-  const windows = useRef(new Map<string, SessionWindowMemo>())
-  const [windowPages, setWindowPages] = useState(1)
-
-  const windowed = useMemo(
-    () => advanceSessionTranscriptWindow(windows.current, sessionId ?? '', messages, windowPages).window,
-    [messages, sessionId, windowPages]
-  )
-
-  const transcriptWindow = useMemo(
-    () => ({ olderAvailable: windowed.windowed, expandWindow: () => setWindowPages(pages => pages + 1) }),
-    [windowed.windowed]
-  )
-
-  const repository = useRuntimeMessageRepository(windowed.messages)
+  const repository = useRuntimeMessageRepository(messages)
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: repository,
@@ -96,252 +42,114 @@ function FullThread() {
 
   return (
     <SessionViewProvider value={view}>
-      <TranscriptWindowProvider value={transcriptWindow}>
-        <AssistantRuntimeProvider runtime={runtime}>
-          <Thread sessionId={sessionId} />
-        </AssistantRuntimeProvider>
-      </TranscriptWindowProvider>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread sessionId={sessionId} />
+      </AssistantRuntimeProvider>
     </SessionViewProvider>
   )
 }
 
-function mount(messages = seed(), busy = true) {
-  const state = { ...createClientSessionState(), messages, busy }
-  const states = new Map([[SID, state]])
-  const activeSessionIdRef = { current: SID as string | null }
-  $activeSessionId.set(SID)
-  $sessionStates.set({ [SID]: state })
-
-  const stream = renderMessageStream(SID, {
-    states,
-    activeSessionIdRef,
-    updateSessionState: (id, updater) => {
-      const next = updater(states.get(id) ?? createClientSessionState())
-      states.set(id, next)
-      $sessionStates.set({ ...$sessionStates.get(), [id]: next })
-
-      return next
-    }
-  })
-
-  const rendered = render(<FullThread />)
-
-  const event = (type: string, payload: Record<string, unknown>, sessionId = SID) =>
-    act(() => stream.handleEvent({ type, payload, session_id: sessionId }))
-
-  const clarify = (sessionId = SID, requestId = 'req-independent') =>
-    event('clarify.request', { questions: [{ ...ARGS.questions[0], qid: 'q0' }], request_id: requestId }, sessionId)
-
-  return { ...rendered, stream, event, clarify, activeSessionIdRef }
-}
-
-async function visibleCard(container: HTMLElement) {
-  await waitFor(() => expect(container.querySelectorAll('[data-clarify-batch="1"]')).toHaveLength(1))
-  const card = container.querySelector<HTMLElement>('[data-clarify-batch="1"]')!
-
-  // jsdom can prove DOM/CSS visibility, but cannot prove on-screen geometry.
-  for (let node: HTMLElement | null = card; node; node = node.parentElement) {
-    expect(node.hidden).toBe(false)
-    expect(getComputedStyle(node).display).not.toBe('none')
-    expect(getComputedStyle(node).visibility).not.toBe('hidden')
-  }
-
-  expect(within(card).getByText(QUESTION)).toBeTruthy()
-
-  for (const choice of CHOICES)
-    {expect(
-      within(card).getByRole('button', { name: new RegExp(choice.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })
-    ).toBeTruthy()}
-
-  expect(within(card).getByRole('button', { name: /Confirm and continue/ })).toBeTruthy()
-
-  return card
-}
-
-beforeEach(() => {
-  clearClarifyRequest()
-  request.mockClear()
-  $gateway.set({ request } as never)
-})
 afterEach(() => {
   cleanup()
-  clearTranscriptViewGates()
+  clearAllSessionStates()
   clearClarifyRequest()
-  $sessionStates.set({})
+  resetServerRequestsForTests()
   $activeSessionId.set(null)
   $gateway.set(null)
 })
 
-it('renders the hydrated Codex tool-only batch through the real stream, store, repository and Thread, then answers q0', async () => {
-  const app = mount()
-  app.clarify()
-  const card = await visibleCard(app.container)
-  expect($clarifyRequests.get()[SID]?.requestId).toBe('req-independent')
-  const confirm = within(card).getByRole('button', { name: /Confirm and continue/ }) as HTMLButtonElement
-  expect(confirm.disabled).toBe(true)
-  fireEvent.click(within(card).getByRole('button', { name: new RegExp(CHOICES[0]) }))
-  expect(request).not.toHaveBeenCalled()
-  expect(confirm.disabled).toBe(false)
-  fireEvent.click(confirm)
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledExactlyOnceWith('clarify.respond', {
-      request_id: 'req-independent',
-      question_id: 'q0',
-      answer: CHOICES[0]
-    })
-  )
-})
+it.each(['answer', 'cancel', 'finish', 'batch'] as const)(
+  'the real Thread handles %s for a background replay while history remains held',
+  async ending => {
+    const state = createClientSessionState('stored-A')
+    state.messages = [{ id: 'old', role: 'assistant', parts: [{ type: 'text', text: 'unverified history' }] }]
+    state.busy = true
+    const states = new Map([['A', state]])
+    const activeSessionIdRef = { current: 'B' as string | null }
+    $activeSessionId.set('B')
+    const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
+    $gateway.set({ request } as never)
+    $sessionStates.set({ A: state, B: createClientSessionState('stored-B') })
 
-it.each(['before', 'after'])('keeps one answerable card when request arrives %s tool.start', async order => {
-  const app = mount(seed(false))
-  const start = () => app.event('tool.start', { args: ARGS, name: 'clarify', tool_id: 'call-codex' })
+    const stream = renderMessageStream('B', {
+      states,
+      activeSessionIdRef,
+      updateSessionState: (id, updater) => {
+        const next = updater(states.get(id) ?? createClientSessionState())
+        states.set(id, next)
+        $sessionStates.set({ ...$sessionStates.get(), [id]: next })
 
-  if (order === 'before') {
-    app.clarify()
-    start()
-  } else {
-    start()
-    app.clarify()
-  }
-
-  await visibleCard(app.container)
-})
-
-it('keeps the pending request answerable with turn running=false', async () => {
-  const app = mount(seed(), false)
-  app.clarify()
-  expect(app.stream.state().busy).toBe(false)
-  const card = await visibleCard(app.container)
-  fireEvent.click(within(card).getByRole('button', { name: new RegExp(CHOICES[1]) }))
-  fireEvent.click(within(card).getByRole('button', { name: /Confirm and continue/ }))
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledExactlyOnceWith('clarify.respond', {
-      request_id: 'req-independent',
-      question_id: 'q0',
-      answer: CHOICES[1]
-    })
-  )
-})
-
-it('parks a background request and answers only its own request after switching back', async () => {
-  const app = mount()
-  const other = 'clarify-runtime-b'
-  act(() => {
-    app.activeSessionIdRef.current = other
-    $activeSessionId.set(other)
-  })
-  app.clarify()
-  expect(app.container.querySelector('[data-clarify-batch="1"]')).toBeNull()
-  expect($clarifyRequests.get()[SID]?.requestId).toBe('req-independent')
-  app.clarify(other, 'req-other')
-  await visibleCard(app.container)
-  act(() => {
-    app.activeSessionIdRef.current = SID
-    $activeSessionId.set(SID)
-  })
-  const card = await visibleCard(app.container)
-  fireEvent.click(within(card).getByRole('button', { name: new RegExp(CHOICES[0]) }))
-  fireEvent.click(within(card).getByRole('button', { name: /Confirm and continue/ }))
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledExactlyOnceWith('clarify.respond', {
-      request_id: 'req-independent',
-      question_id: 'q0',
-      answer: CHOICES[0]
-    })
-  )
-  expect($clarifyRequests.get()[other]?.requestId).toBe('req-other')
-})
-
-it('keeps a new pending card in the visible tail beyond an old completed identical question', async () => {
-  const old: ChatMessage = {
-    id: 'old-tool',
-    role: 'assistant',
-    parts: [
-      {
-        type: 'tool-call',
-        toolName: 'clarify',
-        toolCallId: 'old-call',
-        args: ARGS,
-        argsText: JSON.stringify(ARGS),
-        result: { responses: [{ question: QUESTION, user_response: CHOICES[1] }] }
+        return next
       }
-    ]
+    })
+
+    holdTranscriptView('A', Symbol('test'), state.messages)
+    const app = render(<FullThread />)
+    let respond!: ReturnType<typeof vi.fn>
+    act(() => {
+      respond = stream.handleRequest(
+        'clarify',
+        ending === 'batch'
+          ? {
+              session_id: 'A',
+              questions: [
+                { qid: 'q0', question: 'Which path?', choices: ['safe', 'fast'] },
+                { qid: 'q1', question: 'Name?' }
+              ],
+              answers: { q0: 'safe' }
+            }
+          : { session_id: 'A', question: 'Which path?', choices: ['safe', 'fast'] },
+        'req-A'
+      )
+    })
+    expect(app.queryByText('Which path?')).toBeNull()
+    act(() => {
+      activeSessionIdRef.current = 'A'
+      $activeSessionId.set('A')
+    })
+    await waitFor(() => expect(app.getByText('Which path?')).toBeTruthy())
+    expect(app.queryByText('unverified history')).toBeNull()
+    const choice = app.getByRole('button', { name: /safe/ })
+
+    for (let node: HTMLElement | null = choice; node; node = node.parentElement) {
+      expect(node.hidden).toBe(false)
+      expect(getComputedStyle(node).display).not.toBe('none')
+      expect(getComputedStyle(node).visibility).not.toBe('hidden')
+    }
+
+    if (ending === 'batch') {
+      expect(app.getByText('1 of 2 answered')).toBeTruthy()
+      fireEvent.change(app.getByPlaceholderText('Type your answer…'), { target: { value: 'test name' } })
+      fireEvent.click(app.getByRole('button', { name: /Confirm and continue/ }))
+      await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+      expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+        request_id: 'req-A',
+        question_id: 'q0',
+        answer: 'safe'
+      })
+      expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
+        request_id: 'req-A',
+        question_id: 'q1',
+        answer: 'test name'
+      })
+    } else if (ending === 'answer') {
+      fireEvent.click(choice)
+      fireEvent.click(app.getByRole('button', { name: 'Continue' }))
+      await waitFor(() => expect(respond).toHaveBeenCalledExactlyOnceWith({ answer: 'safe' }))
+    } else {
+      act(() =>
+        stream.handleEvent({
+          session_id: 'A',
+          type: ending === 'cancel' ? 'request.cancel' : 'message.complete',
+          payload: ending === 'cancel' ? { id: 'req-A', method: 'clarify', reason: 'timeout' } : {}
+        })
+      )
+    }
+
+    // Settled cards may offer a follow-up choice; the blocking request form must disappear.
+    await waitFor(() => expect(app.container.querySelector('[data-clarify-choices]')).toBeNull())
+    expect(app.container.querySelector('[data-clarify-batch]')).toBeNull()
+    expect($clarifyRequests.get()['A']).toBeUndefined()
+    expect(app.queryByText('unverified history')).toBeNull()
   }
-
-  const history: ChatMessage[] = Array.from({ length: 800 }, (_, i) => ({
-    id: `history-${i}`,
-    role: i % 2 ? 'assistant' : 'user',
-    parts: [{ type: 'text', text: `历史 ${i}` }]
-  }))
-
-  const messages = [old, ...history, ...seed()]
-  expect(selectTranscriptWindow(messages).windowed).toBe(true)
-  expect(selectTranscriptWindow(messages).messages.some(message => message.id === old.id)).toBe(false)
-  const app = mount(messages)
-  app.clarify()
-  const card = await visibleCard(app.container)
-  expect(app.stream.state().messages[0]).toBe(old)
-  fireEvent.click(within(card).getByRole('button', { name: new RegExp(CHOICES[0]) }))
-  fireEvent.click(within(card).getByRole('button', { name: /Confirm and continue/ }))
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledExactlyOnceWith('clarify.respond', {
-      request_id: 'req-independent',
-      question_id: 'q0',
-      answer: CHOICES[0]
-    })
-  )
-})
-
-it('ordinary composer text skips with an empty answer and never approves the choice', async () => {
-  const app = mount(seed(), false)
-  app.clarify()
-  await visibleCard(app.container)
-  const onSubmit = vi.fn().mockResolvedValue(true)
-
-  const { result } = renderHook(() =>
-    useComposerSubmit({
-      activeQueueSessionKey: SID,
-      activeQueueSessionKeyRef: { current: SID },
-      attachments: [],
-      busy: false,
-      compacting: false,
-      clearDraft: vi.fn(),
-      disabled: false,
-      draftRef: { current: '允许' },
-      drainNextQueued: vi.fn().mockResolvedValue(false),
-      editorRef: { current: null },
-      exitQueuedEdit: vi.fn(),
-      focusInput: vi.fn(),
-      inputDisabled: false,
-      loadIntoComposer: vi.fn(),
-      onCancel: vi.fn(),
-      onSteer: vi.fn(),
-      onSubmit,
-      queueCurrentDraft: vi.fn(),
-      queueEdit: null,
-      queuedPrompts: [],
-      sessionId: SID,
-      setComposerText: vi.fn(),
-      stashAt: vi.fn()
-    })
-  )
-
-  act(() => result.current.submitDraft())
-  await waitFor(() =>
-    expect(request).toHaveBeenCalledExactlyOnceWith('clarify.respond', { request_id: 'req-independent', answer: '' })
-  )
-  expect(onSubmit).toHaveBeenCalledWith('允许', { attachments: [], composerScope: SID })
-  expect($clarifyRequests.get()[SID]).toBeUndefined()
-})
-
-it('expires a held request through the real event path without exposing cached history', async () => {
-  holdTranscriptView(SID)
-  const app = mount([{ id: 'raw', role: 'assistant', parts: [{ type: 'text', text: 'UNVERIFIED history' }] }])
-  app.clarify()
-  await visibleCard(app.container)
-  expect(app.container.textContent).not.toContain('UNVERIFIED')
-  app.event('clarify.expire', { request_id: 'req-independent' })
-  await waitFor(() => expect(app.container.querySelectorAll('form[data-clarify-batch]')).toHaveLength(0))
-  expect(PRIMARY_SESSION_VIEW.$messages.get()).toEqual([])
-  expect(app.container.textContent).not.toContain('UNVERIFIED')
-})
+)

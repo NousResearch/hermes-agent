@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -1545,7 +1545,7 @@ describe('resolveResumedBusy', () => {
   })
 })
 
-const runningProjection = (user: string): SessionResumeResponse =>
+const runningProjection = (user: string): SessionResumeResult =>
   ({
     session_id: 'runtime-1',
     session_key: 'stored-1',
@@ -1554,7 +1554,7 @@ const runningProjection = (user: string): SessionResumeResponse =>
     messages: [],
     running: true,
     inflight: { user, assistant: 'partial answer', streaming: true }
-  }) as SessionResumeResponse
+  }) as SessionResumeResult
 
 describe('dedupeInflightUserAgainstTranscript', () => {
   it('retains the in-flight user source only when it already exists after the runtime anchor', () => {
@@ -1680,33 +1680,32 @@ describe('removeRepresentedLocalLiveProjection', () => {
 })
 
 describe('overlayConcurrentMessageChanges', () => {
-  it.each([false, true])('projects only concurrent content from a suppressed baseline (shared authoritative id: %s)', sharedId => {
-    const oldTool = { type: 'tool-call' as const, toolCallId: 'work', toolName: 'shell', args: {}, argsText: '{}', result: { output: 'old result' } }
+  it.each([false, true])('preserves only concurrent parts of an unverified row (same id: %s)', sameId => {
+    const baseline = [msg('old', 'assistant', 'unverified prefix', { parts: [
+      { type: 'text', text: 'unverified prefix' },
+      { type: 'tool-call', toolCallId: 'tool', toolName: 'terminal', args: {}, argsText: '{}', result: 'old result' }
+    ] })]
 
-    const baseline = [{ ...msg('runtime', 'assistant', 'Old prefix'), pending: true,
-      parts: [{ type: 'text' as const, text: 'Old prefix' }, oldTool] }]
-
-    const current = [{ ...baseline[0], pending: false, parts: [
-      { type: 'text' as const, text: 'Old prefix + new text', completedAt: 10 },
-      { ...oldTool, result: { output: 'new result' }, completedAt: 10 },
-      { type: 'text' as const, text: 'New part' }
+    const current = [{ ...baseline[0], parts: [
+      { type: 'text' as const, text: 'unverified prefix fresh delta' },
+      { ...baseline[0].parts[1], result: 'fresh result' }
     ] }]
 
-    const authoritative = [msg(sharedId ? 'runtime' : 'verified', 'assistant', 'Verified history')]
+    const authoritative = [msg(sameId ? 'old' : 'trusted', 'assistant', 'trusted answer')]
     const result = overlayConcurrentMessageChanges(authoritative, baseline, current, { baselineSuppressed: true })
-    expect(result.flatMap(row => row.parts)).toEqual([
-      { type: 'text', text: 'Verified history' },
-      { type: 'text', text: ' + new text', completedAt: 10 },
-      { ...oldTool, result: { output: 'new result' }, completedAt: 10 },
-      { type: 'text', text: 'New part' }
-    ])
-    expect(result.at(-1)?.pending).toBe(false)
+    expect(JSON.stringify(result)).not.toContain('unverified prefix')
+    expect(result.flatMap(row => row.parts)).toEqual(expect.arrayContaining([
+      { type: 'text', text: 'trusted answer' },
+      { type: 'text', text: ' fresh delta' },
+      expect.objectContaining({ toolCallId: 'tool', result: 'fresh result' })
+    ]))
+  })
 
-    const onlySettled = [{ ...baseline[0], pending: false,
-      parts: [{ ...baseline[0].parts[0], completedAt: 10 }, oldTool] }]
-
-    expect(overlayConcurrentMessageChanges(authoritative, baseline, onlySettled, { baselineSuppressed: true })
-      .flatMap(row => row.parts)).toEqual(authoritative.flatMap(row => row.parts))
+  it('retains a prefix independently confirmed by authority while applying its live delta', () => {
+    const baseline = [msg('old', 'assistant', 'confirmed prefix')]
+    const current = [msg('old', 'assistant', 'confirmed prefix fresh delta')]
+    expect(overlayConcurrentMessageChanges([...baseline], baseline, current, { baselineSuppressed: true }))
+      .toEqual(current)
   })
 
   it('does not replace an authoritative row with an unchanged baseline cache row', () => {

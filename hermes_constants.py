@@ -51,6 +51,25 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def sudo_invoker_default_home() -> Path | None:
+    """The invoking user's native ``~/.hermes`` when this process is root under ``sudo``, else None.
+
+    sudo strips HERMES_HOME and sets HOME=/root, so the process's own default is root's; the profile
+    store and the system service being operated on belong to SUDO_USER.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if not sudo_user or sudo_user == "root":
+        return None
+    import pwd
+
+    try:
+        return Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes"
+    except KeyError:  # SUDO_USER not in passwd (chroot/container)
+        return None
+
+
 def _warn_profile_fallback_once() -> None:
     """Warn once when HERMES_HOME is unset but a non-default profile is sticky-active (wrong fallback)."""
     global _profile_fallback_warned
@@ -137,6 +156,12 @@ def get_process_hermes_home() -> Path:
     val = os.environ.get("HERMES_HOME", "").strip()
     return Path(val) if val else _get_platform_default_hermes_home()
 
+
+# Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
+# managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
+# ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the
+# default profile) so the two lists cannot drift apart.
+LOCAL_RUNTIME_ROOT_DIRS: frozenset[str] = frozenset({"models", "runtimes", "node"})
 
 # get_default_hermes_root() memo keyed on (native home, HERMES_HOME) so it stays
 # fresh when a test or plugin mutates HERMES_HOME; saves ~80us/call at 31+ sites.
@@ -1156,6 +1181,47 @@ PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 FINISH_REASON_LENGTH = "length"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
+
+# OpenRouter request-time routing variants (docs: guides/routing/model-variants).
+# These suffixes are per-request routing modifiers valid on ANY model id —
+# ":nitro" sorts the endpoint pool by throughput and admits priority-tier
+# endpoints, ":floor" sorts by price and admits flex-tier endpoints, ":exacto"
+# applies quality-first provider sorting, ":online" attaches the web plugin.
+# They are never separate catalog entries: /models lists only the base id, so
+# every catalog lookup must key on the BASE while the suffixed id stays on the
+# wire.
+# NOT in this set: ":free", ":batch", ":thinking", ":extended" — those ARE
+# distinct catalog SKUs with their own /models entries (and their own context
+# windows), so stripping them would resolve the wrong window.
+OPENROUTER_VARIANT_SUFFIXES: frozenset[str] = frozenset(
+    {"nitro", "floor", "exacto", "online"}
+)
+
+
+def openrouter_variant_base(model_id: str) -> str | None:
+    """Return the base model id when ``model_id`` carries a recognized
+    OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
+    ``x-ai/grok-4``), else ``None``.
+
+    Lives here rather than in ``hermes_cli.models`` so the metadata layer
+    (``agent.model_metadata``) can share one definition without importing the
+    CLI — this module is dependency-free by contract.
+
+    >>> openrouter_variant_base("x-ai/grok-4:nitro")
+    'x-ai/grok-4'
+    >>> openrouter_variant_base("x-ai/grok-4:free") is None
+    True
+    >>> openrouter_variant_base("x-ai/grok-4") is None
+    True
+    """
+    base, sep, suffix = (model_id or "").rpartition(":")
+    if not sep or not base:
+        return None
+    if suffix.lower() in OPENROUTER_VARIANT_SUFFIXES:
+        return base
+    return None
+
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 

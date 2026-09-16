@@ -80,13 +80,9 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
   return $field
 }
 
-const NO_MESSAGES: ChatMessage[] = []
-
 const $primaryMessages = transcriptMessagesForView(
   $activeSessionId,
-  computed([$activeSessionId, $primaryState, $messages], (runtimeId, state, draft) =>
-    runtimeId ? state?.messages ?? NO_MESSAGES : draft
-  )
+  primaryField<ChatMessage[]>(state => state.messages, $messages)
 )
 
 /**

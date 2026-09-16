@@ -120,7 +120,22 @@ def _validate_moa(req: _Request) -> dict[str, Any]:
         return _reject(f"Could not read MoA presets: {exc}")
 
 
+def _is_custom(req: _Request) -> bool:
+    if req.normalized == "custom" or req.normalized.startswith("custom:"):
+        return True
+    if req.base_url and not (
+        base_url_host_matches(req.base_url, "openrouter.ai")
+        or base_url_host_matches(req.base_url, "api.openai.com")
+        or base_url_host_matches(req.base_url, "api.anthropic.com")
+        or base_url_host_matches(req.base_url, "api.x.ai")
+    ):
+        return True
+    return False
+
+
 def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
+    if _is_custom(req):
+        return None
     if any(ch.isspace() for ch in req.requested):
         return _reject("Model names cannot contain spaces.")
     return None
@@ -496,10 +511,6 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
 
 
 # ── Orchestrator ─────────────────────────────────────────────────────────
-
-def _is_custom(req: _Request) -> bool:
-    return req.normalized == "custom" or req.normalized.startswith("custom:")
-
 
 def _for(*providers: str) -> Callable[[_Request], bool]:
     return lambda req: req.normalized in providers

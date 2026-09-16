@@ -394,7 +394,13 @@ import {
 } from './translucency'
 import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
 import { waitForUpdateClearance } from './update-gate'
-import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
+import { quiesceKanbanWorkersForUpdate } from './kanban-quiesce-before-update'
+import {
+  readLiveUpdateMarker,
+  removeUpdateMarkerIfOwned,
+  updateHandoffConflict,
+  writeUpdateMarker
+} from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
   collectRelaunchArgs,
@@ -3966,6 +3972,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   }
 
   updateInFlight = true
+  let preflightMarkerOwned = false
 
   try {
     const updater = resolveUpdaterBinary()
@@ -4075,6 +4082,36 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       }
     }
 
+    // The shared update marker pauses dispatch before we reclaim in-flight
+    // workers. This prevents both a new claim during teardown and crash
+    // recovery re-dispatching a worker the updater intentionally stopped.
+    // Preserve compatibility with staged updaters too old to adopt a marker.
+    const scriptHandoffAvailable = Boolean(resolveUpdateScriptHandoff(updateRoot))
+    const canCoordinateKanban =
+      IS_WINDOWS && (scriptHandoffAvailable || Boolean(updater && stagedUpdaterSupportsPrewrittenMarker(updater)))
+
+    if (canCoordinateKanban) {
+      writeUpdateMarker(HERMES_HOME, process.pid)
+      preflightMarkerOwned = true
+
+      const quiesce = quiesceKanbanWorkersForUpdate(updateRoot, HERMES_HOME)
+
+      rememberLog(
+        `[updates] kanban quiesce: reclaimed=${quiesce.reclaimed.length} failed=${quiesce.failed.length}` +
+          (quiesce.error ? ` error=${quiesce.error}` : '')
+      )
+
+      if (!quiesce.ok) {
+        const message =
+          'Update aborted: Desktop could not pause background kanban workers safely. ' +
+          'Retry the update; if it persists, run `hermes update` in a terminal for diagnostics.'
+
+        emitUpdateProgress({ stage: 'error', message, percent: null })
+
+        return { ok: false, error: 'kanban-quiesce-failed', message }
+      }
+    }
+
     // Stop our own backend(s) and wait for the venv shim to unlock BEFORE we
     // spawn the updater. Without this the updater races a still-locked
     // hermes.exe (held by the backend child / its grandchildren) and the update
@@ -4087,9 +4124,13 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // guarantees a half-updated venv — abort loudly instead and let the
       // user close the holder and retry. Restart our own backend so the app
       // keeps working after the failed attempt.
+      const scanOutcome = await scanVenvBlockers(updateRoot)
       const message =
-        'Update aborted: another process is holding the Hermes install open ' +
-        '(a second Hermes window or a terminal running hermes?). Close it and retry.'
+        scanOutcome.kind === 'blocked'
+          ? formatBlockerMessage(scanOutcome.result)
+          : scanOutcome.kind === 'probe-failure'
+            ? formatProbeFailedMessage(scanOutcome.error)
+            : 'Update aborted: another process is holding the Hermes install open. Close it and retry.'
 
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
@@ -4100,7 +4141,12 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
       }
 
-      return { ok: false, error: message }
+      return {
+        ok: false,
+        error: 'venv-locked',
+        message,
+        ...(scanOutcome.kind === 'blocked' ? { blockers: scanOutcome.result.processes } : {})
+      }
     }
 
     // Preflight: after releasing our own backends, check for remaining
@@ -4310,6 +4356,9 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
     return { ok: true, handedOff: true, updater }
   } finally {
+    if (preflightMarkerOwned) {
+      removeUpdateMarkerIfOwned(HERMES_HOME, process.pid)
+    }
     updateInFlight = false
   }
 }

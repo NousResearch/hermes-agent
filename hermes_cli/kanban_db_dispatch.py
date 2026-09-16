@@ -129,6 +129,9 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    skipped_update: bool = False
+    """True while a live in-place updater owns the shared update marker.  No
+    recovery or claim writes run, so quiesced tasks cannot respawn mid-swap."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -1528,6 +1531,10 @@ def dispatch_once(
     resolved DB path so unrelated boards tick in parallel.
     """
     def _locked_tick() -> DispatchResult:
+        from hermes_cli.kanban_update_coordination import update_dispatch_paused
+
+        if update_dispatch_paused():
+            return DispatchResult(skipped_update=True)
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,

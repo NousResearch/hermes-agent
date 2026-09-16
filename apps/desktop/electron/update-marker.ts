@@ -160,6 +160,25 @@ export function writeUpdateMarker(
   }
 }
 
+/** Remove the marker only while `pid` still owns it. */
+export function removeUpdateMarkerIfOwned(hermesHome, pid) {
+  const file = markerPath(hermesHome)
+
+  try {
+    const [ownerLine] = fs.readFileSync(file, 'utf8').split('\n')
+
+    if (Number.parseInt((ownerLine || '').trim(), 10) !== pid) {
+      return false
+    }
+
+    fs.unlinkSync(file)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Whether a NEW updater hand-off must be refused because a different,
  * already-alive updater currently owns the marker (#75778).

@@ -9,6 +9,8 @@ wrapper in run_agent.AIAgent._spawn_background_review:
 - dispatch requires sustained process-quiet AND server idle
 - aged-out items dispatch regardless of idleness (delay, never lose)
 - preempted deferred reviews requeue with a bounded attempt cap
+- the dispatch-time enabled re-check reads the enqueuing profile's own config
+- a popped item whose owner already holds a live run is requeued, never clobbers it
 """
 
 import contextvars
@@ -59,6 +61,28 @@ class _FakeAgent:
 
     def _spawn_background_review_now(self, **kwargs):
         self.spawned.append(kwargs)
+
+
+@pytest.fixture(autouse=True)
+def clear_review_admission_state():
+    """A published run must not leak into later tests when an assertion fails mid-test."""
+    from agent import review_admission
+
+    with review_admission._lock:
+        review_admission._review_runs.clear()
+    yield
+    with review_admission._lock:
+        review_admission._review_runs.clear()
+
+
+class _NoopThread:
+    """Constructed like threading.Thread but never runs its target: the prepared run stays live."""
+
+    def __init__(self, *, target, daemon=None, name=None):
+        self._target = target
+
+    def start(self):
+        pass
 
 
 def _make_queue(now=None, server_idle=True):
@@ -300,6 +324,51 @@ def test_dispatch_enabled_gate_uses_the_enqueued_profile_context(monkeypatch):
     assert len(agent.spawned) == 1
 
 
+def _write_review_config(home, enabled: bool) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "auxiliary:\n  background_review:\n"
+        f"    enabled: {'true' if enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "default_enabled,profile_enabled,expected_spawns",
+    [(True, False, 0), (False, True, 1)],
+    ids=["profile_disabled_wins", "profile_enabled_wins"],
+)
+def test_dispatch_enabled_gate_reads_the_enqueuing_profiles_own_config(
+    tmp_path, monkeypatch, caplog, default_enabled, profile_enabled, expected_spawns
+):
+    """Real config path, no mocks: the dispatcher thread is outside the turn's profile scope, so
+    the enabled re-check must read the config of the HOME the review was queued under, not the
+    process default. Two temp homes with opposite settings pin both directions."""
+    import hermes_constants
+
+    default_home = tmp_path / "default"
+    profile_home = tmp_path / "profile-b"
+    _write_review_config(default_home, default_enabled)
+    _write_review_config(profile_home, profile_enabled)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    override = hermes_constants.set_hermes_home_override(profile_home)
+    try:
+        q.enqueue(agent, ("profile-b", "sess-x"), {"task_cfg": {}})
+    finally:
+        hermes_constants.reset_hermes_home_override(override)
+    with q._lock:
+        item = q._pending.pop(("profile-b", "sess-x"))
+
+    with caplog.at_level("INFO"):
+        q._dispatch_item(item)
+
+    assert len(agent.spawned) == expected_spawns
+    dropped = "reviews were disabled while it was queued" in caplog.text
+    assert dropped is (expected_spawns == 0)
+
+
 def test_wrapper_spawns_immediately_for_non_managed(monkeypatch):
     spawn, calls = _wrapper_agent(monkeypatch, defer="auto", managed=False)
     spawn([{"role": "user", "content": "hi"}], review_skills=True)
@@ -449,6 +518,68 @@ def test_popped_deferred_review_requeues_when_prepare_slot_is_busy(monkeypatch):
         retry = q._pending[queue_key]
     assert retry.kwargs["_requeue_attempts"] == 1
     assert retry.kwargs["messages_snapshot"][0]["content"] == "newest"
+
+
+def test_popped_deferred_review_requeues_while_the_owner_slot_is_occupied(monkeypatch):
+    """The real refusal branch: a live run is already published under the owner key. The popped
+    item is requeued (bounded) without clobbering that run, and dispatches once it exits."""
+    import run_agent
+    from agent import background_review, review_admission
+    from agent import review_idle_queue as riq
+
+    q, _clock = _make_queue()
+    q._still_enabled = lambda _item: True
+    monkeypatch.setattr(riq, "QUEUE", q)
+    monkeypatch.setattr(
+        run_agent, "threading", types.SimpleNamespace(Thread=_NoopThread)
+    )
+    held = background_review._BackgroundReviewRun()
+    assert review_admission.publish_review_run(held, "busy-session", "/profiles/alpha")
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "busy-session"
+    agent._background_review_agent = None
+    agent._background_review_run = held
+    agent._background_review_lock = threading.Lock()
+    agent._delegate_depth = 0
+    queue_key = ("/profiles/alpha", "busy-session")
+    q.enqueue(
+        agent,
+        queue_key,
+        {
+            "messages_snapshot": [{"role": "user", "content": "newest"}],
+            "task_cfg": {},
+            "_review_profile_key": "/profiles/alpha",
+            "_review_session_id": "busy-session",
+        },
+    )
+    with q._lock:
+        item = q._pending.pop(queue_key)
+
+    q._dispatch_item(item)
+
+    assert q.pending_count() == 1
+    with q._lock:
+        retry = q._pending[queue_key]
+    assert retry.kwargs["_requeue_attempts"] == 1
+    assert retry.kwargs["messages_snapshot"][0]["content"] == "newest"
+    assert review_admission.current_review_run("busy-session", "/profiles/alpha") is held
+    assert agent._background_review_run is held
+
+    background_review.finish_background_review_run(agent, held)
+    with q._lock:
+        item = q._pending.pop(queue_key)
+    q._dispatch_item(item)
+
+    assert q.pending_count() == 0
+    successor = agent._background_review_run
+    try:
+        assert successor is not None and successor is not held
+        assert (
+            review_admission.current_review_run("busy-session", "/profiles/alpha")
+            is successor
+        )
+    finally:
+        background_review.finish_background_review_run(agent, successor)
 
 
 def test_deferred_snapshot_is_dropped_if_parent_rotates_sessions(monkeypatch):

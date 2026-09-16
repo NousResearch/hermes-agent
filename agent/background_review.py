@@ -1494,7 +1494,7 @@ def _run_review_fork(
 
             logger.info(
                 "Background review refused at admission (session=%s): %s",
-                session_tag(getattr(agent, "session_id", None)), reason,
+                session_tag(review_session_id or getattr(agent, "session_id", None) or ""), reason,
             )
     finally:
         if durable_lease is not None:

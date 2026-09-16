@@ -843,7 +843,7 @@ class AIAgent(
             ):
                 logger.info(
                     "Background review skipped (session=%s): %s",
-                    review_admission.session_tag(getattr(self, "session_id", None)), blocked,
+                    review_admission.session_tag(review_session_id), blocked,
                 )
                 return
 
@@ -854,12 +854,12 @@ class AIAgent(
                 if not messages_snapshot:
                     logger.info(
                         "Background review skipped (session=%s): %s",
-                        review_admission.session_tag(getattr(self, "session_id", None)), replay_reason,
+                        review_admission.session_tag(review_session_id), replay_reason,
                     )
                     return
                 logger.info(
                     "Background review replay bounded (session=%s): %s",
-                    review_admission.session_tag(getattr(self, "session_id", None)), replay_reason,
+                    review_admission.session_tag(review_session_id), replay_reason,
                 )
 
         # Structural clone at the single chokepoint: the fork sanitizes in place, and a shallow copy would
@@ -961,7 +961,7 @@ class AIAgent(
                 ):
                     logger.info(
                         "Background review skipped after prepare (session=%s): %s",
-                        review_admission.session_tag(getattr(self, "session_id", None)), blocked,
+                        review_admission.session_tag(_review_session_id), blocked,
                     )
                     finish_background_review_run(self, review_run)
                     self._requeue_deferred_review(dict(

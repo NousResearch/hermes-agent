@@ -740,6 +740,94 @@ def test_admission_gate_refusal_logs_one_body_free_line(
     assert "private message body" not in refusal_text
 
 
+@pytest.mark.parametrize(
+    "hook_name,expected_line",
+    [
+        ("prepare_background_review_run", "skipped after prepare"),
+        ("build_cache_parity_fork", "refused at admission"),
+    ],
+)
+def test_late_gate_skip_line_tags_the_session_captured_at_spawn(
+    review_forks, monkeypatch, caplog, hook_name, expected_line
+):
+    """A parent may rotate sessions while its review is still being admitted; each late gate's
+    skip line must name the frozen review owner, not whatever the parent points at by then.
+
+    ``hook_name`` is the last production step before the gate: the post-prepare re-check runs
+    right after ``prepare_background_review_run``; ``begin_request`` right after
+    ``build_cache_parity_fork``. Both hooks rotate the parent and queue a follow-up, so the gate
+    refuses and logs — which session tag it carries is the contract.
+    """
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent("session-one")
+    queued = {"value": False}
+    agent.followup_pending_callback = lambda: queued["value"]
+    original = getattr(background_review_module, hook_name)
+
+    def hook_then_rotate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        agent.session_id = "session-two"
+        queued["value"] = True
+        return result
+
+    monkeypatch.setattr(background_review_module, hook_name, hook_then_rotate)
+
+    with caplog.at_level("INFO"):
+        AIAgent._spawn_background_review(
+            agent,
+            messages_snapshot=[{"role": "user", "content": "hello"}],
+            review_memory=True,
+        )
+
+    assert all(fork["history"] is None for fork in review_forks), (
+        "provider-capable run_conversation was admitted"
+    )
+    assert agent._background_review_run is None
+    refusals = [
+        record
+        for record in caplog.records
+        if review_admission.REASON_QUEUED_FOLLOWUP in record.getMessage()
+    ]
+    assert len(refusals) == 1, "gate refusal must log exactly once"
+    refusal_text = refusals[0].getMessage()
+    assert expected_line in refusal_text
+    assert review_admission.session_tag("session-one") in refusal_text
+    assert review_admission.session_tag("session-two") not in refusal_text
+
+
+def test_early_gate_skip_line_tags_the_frozen_review_session(
+    review_forks, monkeypatch, caplog
+):
+    """A gateway candidate freezes its owner at finalize and spawns after delivery; when the
+    parent rotated in between, the skip line must name the frozen owner the gate checked."""
+    _patch_config(monkeypatch, _config())
+    agent = _bare_agent("session-two")
+    profile_key = review_admission.current_profile_key()
+    token = review_admission.note_turn_started("session-one", profile_key)
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+                _review_profile_key=profile_key,
+                _review_session_id="session-one",
+            )
+    finally:
+        review_admission.note_turn_finished("session-one", token, profile_key)
+
+    assert review_forks == [], "review forked while a live turn held the frozen session"
+    skips = [
+        record
+        for record in caplog.records
+        if review_admission.REASON_LIVE_TURN in record.getMessage()
+    ]
+    assert len(skips) == 1, "early gate skip must log exactly once"
+    skip_text = skips[0].getMessage()
+    assert review_admission.session_tag("session-one") in skip_text
+    assert review_admission.session_tag("session-two") not in skip_text
+
+
 def test_cancelled_review_does_not_log_a_gate_refusal(
     review_forks, monkeypatch, caplog
 ):

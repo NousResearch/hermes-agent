@@ -58,25 +58,61 @@ def searchable_tree(tmp_path):
     return tmp_path / "skills"
 
 
+@pytest.fixture
+def posix_find(searchable_tree):
+    """Skip unless a POSIX ``find`` is actually usable against *searchable_tree*.
+
+    Probed by running the real query rather than ``find --version``: GNU find
+    supports ``--version``, BSD/macOS find does not, and Windows ships an
+    unrelated ``FIND.exe`` that exits 2 with "FIND: Parameter format not
+    correct" on this syntax. Running the query is the only probe that answers
+    the question these tests ask.
+
+    This runs at fixture time, not import time, so an unusable find is one
+    skipped test rather than a collection error that aborts the tree.
+    """
+    probe = subprocess.run(
+        f"find {searchable_tree} -type f -name '*.md'",
+        shell=True, capture_output=True, text=True,
+    )
+    if probe.returncode != 0 or "SKILL.md" not in probe.stdout:
+        pytest.skip(
+            f"no POSIX find here (exit {probe.returncode}): "
+            f"{probe.stderr.strip() or 'no output'}"
+        )
+
+
 class TestFindExcludesHiddenDirs:
     """_search_files uses find, which should exclude hidden directories."""
 
-    def test_find_skips_hub_cache_files(self, searchable_tree):
-        """find should not return files from .hub/ directory."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.json'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    @staticmethod
+    def _find(tree, *predicates):
+        cmd = f"find {tree} -not -path '*/.*' -type f {' '.join(predicates)}".strip()
+        return subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
+    def test_find_skips_hub_cache_files(self, searchable_tree, posix_find):
+        """find should not return files from hidden directories."""
+        result = self._find(searchable_tree)
+
+        # Positive control before the absence assertions. This test guards the
+        # #1558 fix, and "catalog.json is absent from stdout" is satisfied by an
+        # empty stdout -- so it passes on a find that failed outright, and it
+        # would pass just as happily if the traversal returned nothing at all,
+        # i.e. if the exclusion under test were completely broken. Requiring the
+        # visible file to be present proves the traversal really ran.
+        assert result.returncode == 0, result.stderr
+        assert "SKILL.md" in result.stdout, "traversal returned no visible files"
+
         assert "catalog.json" not in result.stdout
         assert ".hub" not in result.stdout
+        assert "pack-abc.idx" not in result.stdout
+        assert "notes.txt" not in result.stdout
 
-
-    def test_find_still_returns_visible_files(self, searchable_tree):
+    def test_find_still_returns_visible_files(self, searchable_tree, posix_find):
         """find should still return files from visible directories."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.md'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = self._find(searchable_tree, "-name", "'*.md'")
+
+        assert result.returncode == 0, result.stderr
         assert "SKILL.md" in result.stdout
 
 

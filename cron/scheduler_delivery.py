@@ -705,32 +705,33 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
-        if receipt is None and suppress_notification:
-            job["_notification_all_targets_suppressed"] = True
-            return None
         if receipt is None and not deferred:
             from cron.bot_chat_delivery import defer, read_pending
             from tools.bot_live_delivery import find_canonical_owner
 
             pending = read_pending(key)
-            if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
+            # Validate existing identity and settle only never-started requests under
+            # the producer lock. Suppression is a durable disposition, not a send.
+            if (pending is not None or suppress_notification
+                    or (find_canonical_live_owner(home) is None and find_canonical_owner(home))):
                 pending = defer(key, dict(job), content, profile, home,
-                                **({"for_failure": True} if for_failure else {}))
+                                for_failure=for_failure, suppressed=suppress_notification)
             if pending is not None:
-                if pending["content"] != content or pending["home"] != str(home):
-                    raise ValueError("delivery id already belongs to a different payload")
                 status = pending["status"]
                 target = f"bot-chat:{profile_label}"
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
                     "status": status, "delivery_id": key}
-                return None if status == "settled" else f"{target} {status} (receipt {key}): completion unverified; do not resend"
+                if status == "suppressed":
+                    job["_notification_all_targets_suppressed"] = True
+                return None if status in ("settled", "suppressed") else f"{target} {status} (receipt {key}): completion unverified; do not resend"
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:
                 receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
                     **({"notification_category": "diagnostic"} if for_failure else {}))
         if receipt is not None:
-            if receipt["message"] != message:
+            if (receipt["message"] != message
+                    or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
                 raise ValueError("delivery id already belongs to a different payload")
             status = receipt["status"]
             target = f"bot-chat:{profile_label}"
@@ -1746,6 +1747,10 @@ def _deliver_result(
 
         _record_delivery_verification(job, [])
         error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
+        from cron.delivery_queue import get_status
+        delivery_status = get_status(external_execution)
+        if delivery_status and delivery_status["status"] == "suppressed":
+            job["_notification_all_targets_suppressed"] = True
         from cron.jobs import get_job
         refreshed = get_job(job["id"]) or {}
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")

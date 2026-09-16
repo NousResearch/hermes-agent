@@ -44,7 +44,8 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     return records
 
 
-def defer(key: str, job: dict, content: str, profile: str, home: Path, *, for_failure: bool = False) -> dict:
+def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
+          for_failure: bool = False, suppressed: bool = False) -> dict:
     root = _root()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _FileLock(root / ".lock"):
@@ -53,9 +54,12 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *, for_fa
             if (record["content"] != content or record["home"] != str(home)
                     or bool(record.get("for_failure")) != for_failure):
                 raise ValueError("delivery id already belongs to a different payload")
+            if suppressed and record["status"] == "queued":
+                record.update(status="suppressed", error=None)
+                atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
             return record
         sequence = max((record["sequence"] for _, record in _records(root)), default=0) + 1
-        record = dict(id=key, status="queued", job=job, content=content,
+        record = dict(id=key, status="suppressed" if suppressed else "queued", job=job, content=content,
                       profile=profile, home=str(home), sequence=sequence)
         if for_failure:
             record["for_failure"] = True

@@ -12460,6 +12460,42 @@ def test_session_steer_on_idle_session_is_rejected_not_parked():
     assert agent.steered == []
 
 
+def test_session_steer_can_render_externally_accepted_message(monkeypatch):
+    emitted = []
+
+    class _Agent:
+        def steer(self, text):
+            return True
+
+    # running=True: idle steers are rejected per #64578 and never reach the
+    # render path; only accepted steers on a live turn may emit a user row.
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.steer",
+                "params": {
+                    "render_user_message": True,
+                    "session_id": "sid",
+                    "text": "message from Telegram",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert response["result"]["status"] == "queued"
+    assert emitted == [
+        ("message.user", "sid", {"text": "message from Telegram"})
+    ]
+
+
 def test_steer_slash_on_idle_session_sends_as_next_turn():
     """#64578: idle `/steer <text>` via command.dispatch must go out as a normal next-turn message
     with a notice saying so, not claim "Steer queued" while stashing the text on the agent."""

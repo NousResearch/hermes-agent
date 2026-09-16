@@ -608,6 +608,7 @@ class CorrectionStatus(WireEnum):
 
 class SessionCorrectionParams(SessionParams):
     text: str
+    render_user_message: bool = False
 
 
 class SessionCorrectionResult(Result):

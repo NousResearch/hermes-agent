@@ -8,6 +8,8 @@ constants with tolerance bands, not change-detecting catalog snapshots).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from hermes_cli.local_runtime.context_policy import (
@@ -338,6 +340,18 @@ def test_spill_overrides_prefer_expert_and_recurrent_ffn():
     assert spill_overrides(dense()) == []
 
 
+def test_hybrid_spill_placement_names_only_recurrent_layers():
+    """Regression for #113329: the hybrid -ot pattern must name the recurrent layer
+    indices — the old block-agnostic pattern also evicted full-attention FFNs."""
+    p = hybrid(full_layers=16, recurrent_layers=48)
+    args = spill_overrides(p)
+    pat = args[args.index("-ot") + 1]
+    assert not re.search(pat, "blk.0.ffn_down.weight=CPU")
+    assert not re.search(pat, "blk.15.ffn_down.weight=CPU")
+    assert re.search(pat, "blk.16.ffn_down.weight=CPU")
+    assert re.search(pat, "blk.63.ffn_up.weight=CPU")
+
+
 def test_launch_args_contract():
     p = moe()
     spilled = WindowDecision(window=FLOOR, spill_bytes=4 * GIB, kv_on_gpu=True)
@@ -407,11 +421,11 @@ def test_launch_args_uma_never_pins_tensors():
 
 def test_ub_logits_bytes_prices_the_flag_choice():
     """The logits-buffer price must match the microbatch launch_args
-    chooses: 2048 x vocab x 4 for non-MTP, 512 x vocab x 4 x 2 for MTP
-    (draft context doubles it). 248320-vocab receipts: ~1.9 GiB at
-    ub2048, ~0.95 GiB under MTP."""
+    chooses: 512 x vocab x 4 for non-MTP (decode microbatch — no GPU-side
+    n_ubatch x vocab logits buffer materializes in the lean path, #113329),
+    512 x vocab x 4 x 2 for MTP (draft context doubles it)."""
     v = 248320
-    assert ub_logits_bytes(v, mtp_capable=False) == 2048 * v * 4
+    assert ub_logits_bytes(v, mtp_capable=False) == 512 * v * 4
     assert ub_logits_bytes(v, mtp_capable=True) == 512 * v * 4 * 2
     assert ub_logits_bytes(0, mtp_capable=True) == 0   # unknown vocab: no charge
 

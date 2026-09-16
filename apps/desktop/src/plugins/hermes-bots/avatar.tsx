@@ -9,6 +9,7 @@
 import * as sdk from '@hermes/plugin-sdk'
 import { profileColor } from '@hermes/plugin-sdk'
 
+import { blobatarExpressionFor, blobatarMotionComponent } from './avatar-motion'
 import type { AvatarAppearance, AvatarShape, BotMeta, FaceMood } from './types'
 
 // Deterministic blob avatars (name → face). Feature-detected: older SDKs
@@ -191,7 +192,7 @@ export function blobShapeString(seedPart: string, kind: string) {
 
 /** Static SVG markup for a blob face, tagged data-bot-face so the roster's
  *  PNG backfill (pushLocalAvatars → rasterizeSvgToPng) still finds it. */
-function blobMarkup(shape: null | string | undefined, name: string, size: number) {
+export function blobMarkup(shape: null | string | undefined, name: string, size: number) {
   if (!blobatarSvg) {
     return null
   }
@@ -1014,11 +1015,33 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   }
 
   // Blobatar shapes: the library draws the whole face (body + eyes + its own
-  // name-derived palette). Inline SVG via innerHTML so the roster PNG
-  // backfill's `svg[data-bot-face=…]` query still finds it; the math clock
-  // ignores it (no data-hb-math). Falls back to the legacy math face when the
-  // SDK predates the export.
+  // name-derived palette). When the motion layer is present, render the
+  // library's own animated component — pure-CSS idle motion (blink, gaze,
+  // breathe, bob; zero JS per frame) plus the mood's expression pose — through
+  // the same `data-bot-face` hook the roster PNG backfill queries. Falls back
+  // to the static string renderer (identical face, no motion) on an older SDK.
   if (isBlobShape(shape)) {
+    const MotionFace = blobatarMotionComponent()
+
+    if (MotionFace) {
+      const expression = blobatarExpressionFor(mood)
+
+      // data-bot-face rides through to the library's own <svg> (it spreads
+      // unknown props), keeping the roster PNG backfill query working on the
+      // animated path exactly as the static one did.
+      return (
+        <MotionFace
+          animate="always"
+          aria-hidden
+          {...(expression ? { expression } : {})}
+          data-bot-face={name}
+          name={name}
+          size={size}
+          style={{ display: 'block', lineHeight: 0 }}
+        />
+      )
+    }
+
     const markup = blobMarkup(shape, name, size)
 
     if (markup) {

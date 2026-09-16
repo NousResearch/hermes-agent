@@ -246,7 +246,7 @@ def _cmd_list_unmanaged(args) -> int:
         return 0
     print(f"unmanaged skills ({len(rows)}):")
     for r in sorted(rows, key=lambda x: x["name"]):
-        why = "created_by:null" if r.get("has_provenance_key") else "no marker"
+        why = f"created_by:{r.get('created_by') or 'null'}" if r.get("has_provenance_key") else "no marker"
         print(
             f"  {r['name']:44s} activity={r.get('activity_count', 0):4d}  "
             f"last_activity={_fmt_ts(r.get('last_activity_at')):14s}  ({why})")

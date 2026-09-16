@@ -1,4 +1,4 @@
-import type { ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionsResult } from '@hermes/shared'
 import { type QueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
@@ -60,7 +60,7 @@ export function useModelControls({
       profile = cacheProfile || $activeGatewayProfile.get(),
       ownerConnectionId = cacheOwnerConnectionId
     ) => {
-      const patch = (prev: ModelOptionsResponse | undefined) => {
+      const patch = (prev: ModelOptionsResult | undefined) => {
         // Selection state can update before the catalog query has resolved.
         // Keep that optimistic cache structurally complete; the composer
         // interprets a response without `providers` as an empty catalog.
@@ -73,10 +73,10 @@ export function useModelControls({
         return { ...prev, provider, model, providers }
       }
 
-      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
+      queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
+        queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
       }
     },
     [cacheOwnerConnectionId, cacheProfile, queryClient]

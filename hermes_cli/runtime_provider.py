@@ -74,7 +74,11 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     """
     cfg_provider_norm = (cfg_provider or "").strip().lower()
     bu = (cfg_base_url or "").strip()
-    return bool(bu) and (cfg_provider_norm == "custom" or _resolves_to_custom(cfg_provider_norm)
+    # A bare or ``auto`` provider is the caller currently resolving auto. Asking
+    # ``resolve_provider`` whether it aliases custom re-enters that same path.
+    return bool(bu) and (cfg_provider_norm == "custom" or (
+        cfg_provider_norm not in {"", "auto"} and _resolves_to_custom(cfg_provider_norm)
+    )
                          or (not base_url_host_matches(bu, "openrouter.ai") and _loopback_hostname(base_url_hostname(bu))))
 
 
@@ -445,6 +449,13 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
     if provider in _POOL_ENTRY_SIMPLE_MODES:
         api_mode, default_url = _POOL_ENTRY_SIMPLE_MODES[provider]
+        if provider == "openai-codex":
+            # Pool entries retain the canonical ChatGPT URL, but the profile-wide
+            # HERMES_CODEX_BASE_URL override must apply consistently to every
+            # credential source, including pooled OAuth credentials.
+            override_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            if override_url:
+                return api_mode, override_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
@@ -849,7 +860,29 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
-    return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    return runtime
+
+
+def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
+    """Reject a bare ``custom`` placeholder request that fell through the whole ladder to the
+    OpenRouter default endpoint with no credential. Every other custom rung (named entry, local
+    bypass, pool, ``key_cmd``) yields a key, a callable or the ``no-key-required`` placeholder, so
+    an EMPTY key on a ``custom`` runtime is exactly the dead shape that otherwise dies at agent
+    construction as ``No LLM provider configured``. Keyed on the literal request, not the resolved
+    shape: local aliases (``ollama``, ``vllm``) are resolved tolerantly by ``/model`` direct-alias
+    switching, which supplies the alias endpoint AFTER this call and must not fail here. Typed
+    ``AuthError`` so every caller's fallback chain (CLI, gateway, TUI, cron) still advances (#17929).
+    """
+    if requested_provider != "custom" or runtime.get("provider") != "custom" or runtime.get("api_key"):
+        return
+    raise AuthError(
+        f"provider '{requested_provider}' resolved without credentials (no endpoint or API key configured). "
+        "If this is a named custom provider, use its real name (see providers: in config.yaml).",
+        provider=requested_provider,
+        code="missing_api_key",
+    )
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):

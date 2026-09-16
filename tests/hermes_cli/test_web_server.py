@@ -775,15 +775,17 @@ class TestWebServerEndpoints:
         seen = {}
 
         def _pid(pid_path=None, **kw):
-            seen["pid_path"] = pid_path
+            # The served-profile probe also verifies the DEFAULT home's gateway identity; the
+            # contract here is that the worker's OWN pid file is what the scoped rung reads.
+            seen.setdefault("pid_paths", []).append(pid_path)
             return None
 
         def _runtime(path=None):
-            seen["status_path"] = path
+            seen.setdefault("status_paths", []).append(path)
             return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
-            seen["expected_home"] = expected_home
+            seen.setdefault("expected_homes", []).append(expected_home)
             return None
 
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", _pid)
@@ -795,9 +797,9 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/messaging/platforms?profile=worker")
 
         assert resp.status_code == 200
-        assert seen["pid_path"] == worker_home / "gateway.pid"
-        assert seen["status_path"] == worker_home / "gateway_state.json"
-        assert seen["expected_home"] == worker_home
+        assert worker_home / "gateway.pid" in seen["pid_paths"]
+        assert worker_home / "gateway_state.json" in seen["status_paths"]
+        assert worker_home in seen["expected_homes"]
 
 
 
@@ -4538,6 +4540,51 @@ class TestDashboardPluginManifestExtensions:
         assert len(entries) == 1
         assert entries[0]["tab"]["path"] == "/from-profile"
 
+    def test_unreadable_plugin_paths_do_not_block_discovery(self, tmp_path, monkeypatch, caplog):
+        """A denied plugin directory or manifest must not prevent valid plugins loading."""
+        from pathlib import Path
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "valid", {
+            "name": "valid",
+            "label": "Valid Plugin",
+            "entry": "dist/index.js",
+        })
+        denied_root = tmp_path / "denied-root"
+        denied_root.mkdir()
+        denied_plugin = tmp_path / "plugins" / "denied"
+        (denied_plugin / "dashboard").mkdir(parents=True)
+        (denied_plugin / "dashboard" / "manifest.json").write_text("{}", encoding="utf-8")
+
+        from hermes_cli import web_server_dashboard
+        original_search_dirs = web_server_dashboard._dashboard_plugin_search_dirs
+        original_scandir = web_server_dashboard.os.scandir
+        original_exists = Path.exists
+
+        def search_dirs():
+            return [(denied_root, "user"), *original_search_dirs()]
+
+        def guarded_scandir(path):
+            if Path(path) == denied_root:
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_scandir(path)
+
+        def guarded_exists(path):
+            if path == denied_plugin / "dashboard" / "manifest.json":
+                raise PermissionError("[WinError 5] Access is denied")
+            return original_exists(path)
+
+        monkeypatch.setattr(web_server_dashboard, "_dashboard_plugin_search_dirs", search_dirs)
+        monkeypatch.setattr(web_server_dashboard.os, "scandir", guarded_scandir)
+        monkeypatch.setattr(Path, "exists", guarded_exists)
+
+        plugins = web_server_dashboard._discover_dashboard_plugins()
+
+        assert "valid" in {plugin["name"] for plugin in plugins}
+        assert "denied" not in {plugin["name"] for plugin in plugins}
+        assert "Skipping unreadable dashboard plugin root" in caplog.text
+        assert "Skipping unreadable dashboard plugin" in caplog.text
+
 
 
 
@@ -4668,7 +4715,7 @@ class TestPtyWebSocket:
             notice = conn.receive_text()
             with pytest.raises(WebSocketDisconnect) as exc:
                 conn.receive_text()
-        assert "Chat unavailable" in notice
+        assert "Chat could not start" in notice
         assert exc.value.code == 1011
         if expect_detail is not None:
             assert expect_detail in notice

@@ -179,8 +179,13 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         """A2A_PUBLIC_URL > X-Forwarded-Host / Host (scheme from X-Forwarded-Proto) > "" (bind host).
 
         Empty means "caller has no info, fall back to bind host". See #41711.
+
+        A2A_PUBLIC_URL is read from ``self.adapter`` (captured at construction time, inside profile
+        scope) rather than os.getenv here: do_GET/do_POST run on ThreadingHTTPServer's per-connection
+        OS threads, which never inherit the profile scope contextvar, so a secondary multiplex
+        profile's own A2A_PUBLIC_URL would otherwise resolve to the default profile's env value.
         """
-        explicit = os.getenv("A2A_PUBLIC_URL", "").strip()
+        explicit = self.adapter._public_url
         if explicit:
             return explicit
         host = (self.headers.get("X-Forwarded-Host", "") or self.headers.get("Host", "")).split(",")[0].strip()
@@ -271,6 +276,10 @@ class A2AAdapter(BasePlatformAdapter):
         configured_toolsets = list(extra.get("advertised_toolsets") or []) or _get_scoped_secret("A2A_ADVERTISED_TOOLSETS", "").split(",")
         self._advertised_toolsets = [t.strip() for t in configured_toolsets if str(t).strip()]
         self._active_profile = _active_profile_name()
+        # Captured here (construction runs inside _profile_runtime_scope), not read at request time:
+        # do_GET/do_POST run on ThreadingHTTPServer's per-connection OS threads, which never inherit
+        # the profile scope contextvar (same class as A2A_PORT above).
+        self._public_url = _get_scoped_secret("A2A_PUBLIC_URL", "").strip()
         self._agents = self._load_served_agents(extra)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._server_thread = self._watchdog_thread = None  # type: Optional[threading.Thread]
@@ -576,9 +585,11 @@ class A2AAdapter(BasePlatformAdapter):
                 profile, "SELECT id FROM sessions WHERE title = ? ORDER BY started_at DESC LIMIT 1",
                 (session_title,), "A2A: could not lookup forwarded session")
             cmd = ["hermes", "chat", "-q", framed_text, "-Q", "--source", "a2a"] + (["--resume", session_id] if session_id else [])
-            env = {**os.environ, "HERMES_A2A_PEER": peer}
-            if home := _profile_home(profile):
-                env["HERMES_HOME"] = home
+            # The child IS the target profile's turn: build its env for that home (launch .env /
+            # TERMINAL_* residue dropped, the target's own secrets overlaid), not the gateway's raw environ.
+            from tools.environments.local import served_profile_child_env
+            env = served_profile_child_env(target_home=_profile_home(profile), inherit_credentials=True)
+            env["HERMES_A2A_PEER"] = peer
             start = time.time()
             try:
                 proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",

@@ -414,7 +414,7 @@ _TOOL_RESULT_MEDIA_PROVIDERS = frozenset({
 _GEMINI_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-vertex-gemini"})
 
 
-def _profile_rejects_tool_media(provider: str) -> bool:
+def _profile_rejects_tool_media(provider: str, model: str = "") -> bool:
     """Hard veto: the provider's ``ProviderProfile`` declares
     ``supports_vision_tool_messages=False`` — images are accepted in user
     messages but list-type tool-result content is rejected with 400
@@ -423,9 +423,8 @@ def _profile_rejects_tool_media(provider: str) -> bool:
     and the image never enters context (#89981).
     """
     try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(str(provider or "").strip().lower())
-        return profile is not None and profile.supports_vision_tool_messages is False
+        from providers import routed_model_rejects_vision_tool_messages
+        return routed_model_rejects_vision_tool_messages(provider, model)
     except Exception:
         return False
 
@@ -435,7 +434,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     providers are False (caller falls back to aux-LLM text) unless their ``ProviderProfile``
     declares ``supports_vision``; ``supports_vision_tool_messages=False`` is a hard veto."""
     p = provider.strip().lower() if isinstance(provider, str) else ""
-    if not p or _profile_rejects_tool_media(p):
+    if not p or _profile_rejects_tool_media(p, model):
         return False
     if p in _TOOL_RESULT_MEDIA_PROVIDERS:
         return True
@@ -466,7 +465,7 @@ def _should_use_native_vision_fast_path() -> bool:
         # The profile veto applies ahead of the capability lookup too: a
         # model marked vision-capable by models.dev / custom_providers must
         # not re-open the multimodal-envelope route the profile rejects.
-        if _profile_rejects_tool_media(provider):
+        if _profile_rejects_tool_media(provider, model):
             return False
         return (
             _supports_media_in_tool_results(provider, model)
@@ -797,7 +796,7 @@ async def vision_analyze_tool(
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
 
-def check_vision_requirements() -> bool:
+def check_video_requirements() -> bool:
     """True when ``call_llm(task="vision")`` could resolve a client.
 
     Mirrors its fallback chain: explicit ``auxiliary.vision.provider``, then auto (main
@@ -813,6 +812,15 @@ def check_vision_requirements() -> bool:
         return any(
             resolve_vision_provider_client(**kw)[1] is not None for kw in ({}, {"provider": "auto"})
         )
+
+
+def check_vision_requirements() -> bool:
+    """Image gate (``vision_analyze``, ``browser_vision``): an aux vision client OR the native fast
+    path. Both handlers attach pixels straight to a vision-capable main model, so a main model on a
+    provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
+    ``video_analyze`` keeps the aux-only gate — its handler has no native path.
+    """
+    return _should_use_native_vision_fast_path() or check_video_requirements()
 
 
 from tools.registry import registry, tool_error
@@ -1044,7 +1052,7 @@ registry.register(
     toolset="video",
     schema=VIDEO_ANALYZE_SCHEMA,
     handler=_handle_video_analyze,
-    check_fn=check_vision_requirements,
+    check_fn=check_video_requirements,
     is_async=True,
     emoji="🎬")
 

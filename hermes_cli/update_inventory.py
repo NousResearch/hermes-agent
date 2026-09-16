@@ -8,6 +8,7 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import sys
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Optional
@@ -172,7 +173,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
@@ -185,13 +186,13 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 declared = record.get("supervisor")
                 sup = str(declared) if declared else supervisor(pid)
             else:
+                # Verified identity, not bare PID existence: a ``stopped`` record whose PID was recycled
+                # by an unrelated process fabricated a phantom gateway the restart phase could never
+                # touch, so `hermes update` exited partial (#109680).
+                pid = live_gateway_pid_for_home(home)
+                if pid is None or pid in seen:
+                    continue
                 record = read_runtime_status(home / "gateway_state.json") or {}
-                try:
-                    pid = int(record.get("pid"))
-                except (TypeError, ValueError):
-                    continue
-                if not _pid_exists(pid):
-                    continue
                 seen.add(pid)
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
@@ -318,11 +319,15 @@ def match_runtime_outcomes(
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed`` or ``unaccounted`` (no
-    bookkeeping mentions it — the blind-spot tripwire). Never raises. Serve/dashboard runtimes are
-    reconciled in their OWN vocabulary and never borrow the gateway's outcome: with
-    ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as ``restarted``, one
-    still alive is ``unaccounted``; without the probe an untouched serve stays ``unaccounted``.
+    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
+    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
+    outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
+    ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
+    ``unaccounted``. A Desktop-supervised serve still alive is ``deferred`` instead: the restart phase
+    is forbidden to restart it out from under the app (it hosts the live Desktop chats), so it is
+    handed back to its supervisor and surfaced — never counted as a missed restart the updater could
+    have discharged. See #111494.
 
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
@@ -343,10 +348,16 @@ def match_runtime_outcomes(
                     return "stopped"
                 if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
                     return "failed"
-                if stale_serves is not None:
+                if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
-                    # dashboard cleanup respawn / the Desktop app) or it is still alive on pre-update code.
-                    return "unaccounted" if r.pid in stale_serves else "restarted"
+                    # dashboard cleanup respawn / the Desktop app).
+                    return "restarted"
+                if r.supervisor == "desktop":
+                    # Still alive on pre-update code, but the Desktop app owns it and the restart phase
+                    # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
+                    return "deferred"
+                if stale_serves is not None:
+                    return "unaccounted"
                 return "restarted" if any(_serve_unit_matches_profile(r.profile, s) for s in restarted_set) else "unaccounted"
             if r.profile in relaunched:
                 return "restarted"
@@ -373,6 +384,14 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     STALE/DOWN fleet row (exit 1) — a promised restart silently missed is the class this phase
     exists to kill.
     """
+    deferred = [o for o in outcomes if o.get("outcome") == "deferred"]
+    if deferred:
+        # Surfaced but not escalated: the updater has no authority over these, so holding
+        # ``fleet_restart_pending`` for them would never be discharged. See #111494.
+        print()
+        print("  ℹ Left to the Desktop app (still on pre-update code until it is relaunched):")
+        for o in deferred:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — relaunch the Desktop app to pick up the update")
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False
@@ -387,8 +406,9 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     if any(o.get("kind") in _SERVE_KINDS for o in missed):
         # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
         # See #100479.
-        print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
-        print("      relaunch `hermes serve` / `hermes dashboard` / the Desktop app")
+        if sys.platform == "linux":
+            print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+        print("      relaunch `hermes serve` / `hermes dashboard`")
     return True
 
 

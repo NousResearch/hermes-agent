@@ -3,6 +3,7 @@ headers, redirect header stripping, exception-group unwrapping, auth/session-exp
 method-not-found detection and connect-error formatting. Split from tools/mcp_tool.py."""
 
 import asyncio
+import contextlib
 import errno
 import importlib
 import logging
@@ -231,31 +232,133 @@ def _make_redirect_header_stripper(original_url, *, strict: bool = False,
     return _strip_on_cross_origin_redirect
 
 
+# Wire-body cap, applied at the httpx transport before the SDK buffers/JSON-parses a response. A
+# hostile or misbehaving remote MCP server can stream an unbounded catalog/tool-result body and none
+# of the post-parse limits (resource cap, tool-result truncation) run before the parse blows up.
+# Finite HTTP bodies are capped at this many bytes (a larger Content-Length is rejected up front);
+# each SSE *event* is capped, with the counter reset at completed event boundaries so a long-lived
+# stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
+# flow through the ordinary transport teardown/reconnect path (#66092).
+_MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
+_SSE_EVENT_BOUNDARIES = (b"\n\n", b"\r\n\r\n")
+
+
+def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
+    """Wrap ``inner_transport`` so every response body is size-capped. ``httpx_mod`` must be the SDK's
+    own httpx module (``sdk_httpx()``): the transport is handed to that SDK's ``AsyncClient``."""
+
+    class _CappedStream(httpx_mod.AsyncByteStream):
+        def __init__(self, inner, is_sse: bool, url: str):
+            self._inner, self._is_sse, self._url = inner, is_sse, url
+
+        def _reject(self, kind: str):
+            return httpx_mod.ReadError(f"MCP {kind} exceeds {limit} bytes (from {self._url})")
+
+        async def __aiter__(self):
+            counted = 0
+            async for chunk in self._inner:
+                if self._is_sse:
+                    # Bytes up to the last completed event boundary belong to finished events (they must
+                    # still fit the per-event cap together with the carried prefix); the remainder starts
+                    # the next event's budget.
+                    boundary_end = max(chunk.rfind(sep) + len(sep) if sep in chunk else -1 for sep in _SSE_EVENT_BOUNDARIES)
+                    if boundary_end != -1:
+                        if counted + boundary_end > limit:
+                            raise self._reject("SSE event")
+                        counted = len(chunk) - boundary_end
+                    else:
+                        counted += len(chunk)
+                else:
+                    counted += len(chunk)
+                if counted > limit:
+                    raise self._reject("SSE event" if self._is_sse else "HTTP response")
+                yield chunk
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    class _BodyCapTransport(httpx_mod.AsyncBaseTransport):
+        def __init__(self, inner):
+            self._inner = inner
+
+        async def handle_async_request(self, request):
+            response = await self._inner.handle_async_request(request)
+            declared = response.headers.get("content-length")
+            with contextlib.suppress(ValueError):  # malformed header: the streamed cap still applies
+                if declared is not None and int(declared) > limit:
+                    await response.aclose()
+                    raise httpx_mod.ReadError(f"MCP HTTP response declares Content-Length {declared} > {limit} "
+                                              f"bytes cap (from {request.url})")
+            is_sse = "text/event-stream" in response.headers.get("content-type", "").lower()
+            response.stream = _CappedStream(response.stream, is_sse, str(request.url))
+            return response
+
+        async def aclose(self):
+            await self._inner.aclose()
+
+    return _BodyCapTransport(inner_transport)
+
+
+# Node budget for ``_iter_exception_nodes`` (the visited set breaks cycles; this bounds acyclic blow-ups).
+# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
+_EXC_TRAVERSAL_MAX_NODES = 10_000
+
+
 def _exc_children(exc: BaseException) -> List[BaseException]:
-    """Sub-exceptions of a group, else ``__cause__``/``__context__`` when they are exceptions."""
-    nested = getattr(exc, "exceptions", None)
-    return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
+    """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
+    group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
+    skipped."""
+    nested = getattr(exc, "exceptions", None) or ()
+    return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
+
+
+def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+    """Pre-order, left-to-right walk of an exception tree/chain, each node once. ``__cause__``/``__context__``
+    can point back at an ancestor (a raised-and-caught pair does this routinely, e.g. the same OAuth error
+    raised on the Streamable-HTTP attempt and again on the SSE fallback), so a naive recursive walk dies with
+    RecursionError and hides the real connect error; the visited set breaks cycles, the budget bounds acyclic
+    blow-ups."""
+    stack = [exc]
+    seen: set[int] = set()
+    ordered: List[BaseException] = []
+    while stack and len(ordered) < _EXC_TRAVERSAL_MAX_NODES:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        ordered.append(current)
+        stack.extend(reversed(_exc_children(current)))
+    return ordered
 
 
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
-            if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
-            if match:
-                return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
+    nodes = _iter_exception_nodes(exc)
 
-    def _flatten_messages(current: BaseException) -> List[str]:
-        # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+    def _find_missing() -> Optional[str]:
+        for current in nodes:
+            if isinstance(current, FileNotFoundError):
+                if getattr(current, "filename", None):
+                    return str(current.filename)
+                match = re.search(r"No such file or directory: '([^']+)'", str(current))
+                if match:
+                    return match.group(1)
+        return None
+
+    def _flatten_messages() -> List[str]:
+        messages: List[str] = []
+        for current in nodes:
+            # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
+            text = "" if getattr(current, "exceptions", None) else str(current).strip()
+            if text:
+                messages.append(text)
+            elif not _exc_children(current):
+                messages.append(current.__class__.__name__)
+        return messages or [exc.__class__.__name__]
+
+    missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
@@ -310,34 +413,20 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "unknown session", "session terminated", "closedresourceerror", "closed resource",
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
-# Node budget for ``_is_session_expired_error`` (the visited set breaks cycles; this bounds acyclic blow-ups).
-# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
-_EXC_TRAVERSAL_MAX_NODES = 10_000
-
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """True if ``exc`` looks like a transport session expiry (Streamable-HTTP servers GC session state on idle TTL /
     restart / pod rotation while the OAuth token stays valid) — the fix is a transport reconnect, not an OAuth
-    refresh. Iterative walk over ``exceptions`` / ``__cause__`` / ``__context__`` with a visited set AND a node
-    budget; every reachable node is inspected so an InterruptedError anywhere overrides transport markers, and the
-    chain walk matters because SDK wrappers raise a generic RuntimeError *from* a message-less ClosedResourceError."""
+    refresh. Every node ``_iter_exception_nodes`` reaches is inspected so an InterruptedError anywhere overrides
+    transport markers; the chain walk matters because SDK wrappers raise a generic RuntimeError *from* a
+    message-less ClosedResourceError."""
     # AnyIO stream exceptions are often message-less, so type checks complement marker matching.
     transport_error_types = tuple(_optional_types("anyio", "BrokenResourceError", "ClosedResourceError", "EndOfStream"))
-    stack: "list[BaseException | None]" = [exc]
-    seen: set[int] = set()
     found = False
-    budget = _EXC_TRAVERSAL_MAX_NODES
-    while stack and budget > 0:
-        current = stack.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        budget -= 1
+    for current in _iter_exception_nodes(exc):
         if isinstance(current, InterruptedError):
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()
         found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
-        stack.extend((*getattr(current, "exceptions", ()), getattr(current, "__cause__", None),
-                      getattr(current, "__context__", None)))
     return found

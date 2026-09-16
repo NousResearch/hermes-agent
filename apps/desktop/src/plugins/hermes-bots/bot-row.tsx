@@ -225,8 +225,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     <RowButton
       aria-label={rowTooltip}
       className={cn(
-        'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
+        'flex h-7 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
+
         isActive && 'bg-(--ui-row-active-background)',
         // The row being dragged fades in place; the browser's drag image is
         // the row itself, so the ghost under the pointer is the full row.
@@ -250,7 +251,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
           mood={botMood}
           name={bot.name}
           shape={shape}
-          size={34}
+          size={16}
         />
       </div>
       <div className="min-w-0 flex-1">
@@ -489,7 +490,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
     <RowButton
       aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
       className={cn(
-        'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
+        'flex h-7 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md px-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',
         active && 'bg-(--ui-row-active-background)'
       )}
@@ -498,7 +499,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
         onOpen(group)
       }}
     >
-      <div className="relative flex w-[34px] shrink-0 items-center justify-center">
+      <div className="relative flex w-4 shrink-0 items-center justify-center">
         {room.image ? (
           <img
             alt=""

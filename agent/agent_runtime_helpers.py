@@ -24,7 +24,8 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, credential_pool_matches_provider, resolve_runtime_pool_key
+    STATUS_EXHAUSTED, claude_code_credentials_mtime, credential_pool_matches_provider,
+    resolve_runtime_pool_key
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
@@ -716,6 +717,46 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     return False
 
 
+def _mark_claude_code_unrecoverable_at(agent, refresh_key, entry) -> None:
+    """Stamp the credentials file's mtime when a borrowed entry is given up on.
+
+    Only ``claude_code`` entries are stamped: they are the ones whose token
+    authority is a file some *other* process rewrites, so "unrecoverable" is a
+    statement about this moment, not about the credential.
+    """
+    if getattr(entry, "source", "") != "claude_code":
+        return
+    if getattr(agent, "_auth_pool_unrecoverable_mtimes", None) is None:
+        agent._auth_pool_unrecoverable_mtimes = {}
+    agent._auth_pool_unrecoverable_mtimes[refresh_key] = claude_code_credentials_mtime()
+
+
+def _claude_code_rotated_since_unrecoverable(agent, refresh_key, entry) -> bool:
+    """True when a capped ``claude_code`` entry's credentials file has since been rewritten.
+
+    Giving up on a borrowed entry used to pin the whole run to the fallback
+    provider even though the official ``claude`` CLI wrote a valid pair a
+    second later (#105797). The refresh above already re-synced from that
+    file, so a new mtime means there is something new to try: drop the cap and
+    let the primary back in instead of serving the rest of the run on the
+    fallback.
+    """
+    if getattr(entry, "source", "") != "claude_code":
+        return False
+    stamps = getattr(agent, "_auth_pool_unrecoverable_mtimes", None)
+    if not stamps or refresh_key not in stamps:
+        return False
+    current = claude_code_credentials_mtime()
+    if not current or current == stamps[refresh_key]:
+        return False
+    del stamps[refresh_key]
+    _ra().logger.info(
+        "Credentials file rotated since pool entry %s was benched — retrying the primary.",
+        refresh_key[1],
+    )
+    return True
+
+
 def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
     if _is_entitlement_403(agent, status_code, error_context):
         _ra().logger.info(
@@ -742,8 +783,11 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             agent._auth_pool_refresh_counts = {}
         refresh_counts = agent._auth_pool_refresh_counts
         refresh_key = (agent.provider, refreshed_id)
+        if _claude_code_rotated_since_unrecoverable(agent, refresh_key, refreshed):
+            refresh_counts.pop(refresh_key, None)
         refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
         if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
+            _mark_claude_code_unrecoverable_at(agent, refresh_key, refreshed)
             _ra().logger.warning(
                 "Credential auth failure persists after %s refreshes for "
                 "pool entry %s — treating as unrecoverable and allowing "

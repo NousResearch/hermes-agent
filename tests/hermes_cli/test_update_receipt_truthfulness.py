@@ -8,15 +8,12 @@ a fleet E2E (that lives in the CI install/update harness).
 
 Invariants pinned, and WHERE each is enforced:
 
-1. RECEIPT ALWAYS FINALIZED — ``begin → steps → finalize`` writes a
-   parseable receipt for success/failed/refused (#91283 made every
-   post-begin run leave a record). A begun-but-never-finalized run
-   (simulated crash) writes NOTHING to disk, so the reader the Desktop
-   uses (``read_latest_receipt``, surfaced via
-   ``/api/hermes/update/receipt`` — #92780) can never interpret a crash
-   as success. The HTTP-layer gating of an ``outcome == "running"``
-   receipt is already pinned in test_update_receipt_endpoint.py and is
-   deliberately not duplicated here.
+1. RECEIPT ALWAYS DURABLE — ``begin`` seeds an ``outcome == "running"``
+   receipt and each step rewrites it, so a lost module singleton still
+   leaves an audit record and the command boundary can recover it (#112465).
+   Finalization rewrites that record with success/failed/refused. The
+   HTTP layer's refusal to treat ``running`` as success is pinned in
+   test_update_receipt_endpoint.py.
 
 2. SUCCESS IMPLIES ACCOUNTING — #92902 made the pre-update plan the
    restart worklist. The final refuse-success decision is INLINE in
@@ -65,13 +62,6 @@ def receipt_home(tmp_path, monkeypatch):
     ur._current = None
 
 
-def _receipt_files(home):
-    directory = home / "logs" / "update_receipts"
-    if not directory.is_dir():
-        return []
-    return sorted(directory.glob("*.json"))
-
-
 def _plan_with_runtimes(records):
     plan = UpdatePlan(install_method="git", updatable_in_place=True)
     plan.profiles = sorted({r.profile for r in records})
@@ -111,28 +101,28 @@ class TestReceiptAlwaysFinalized:
         assert latest is not None
         assert latest["outcome"] == outcome
 
-    def test_nothing_on_disk_until_finalize(self, receipt_home):
-        """The receipt is written atomically at finalize — a run that is
-        still going (or that dies) has NO on-disk artifact to misread."""
+    def test_running_receipt_is_durable_before_finalize(self, receipt_home):
+        """A run that loses in-memory state still leaves an auditable artifact."""
         ur.begin_update_receipt()
         ur.record_step("pre_update_backup", True)
-        assert _receipt_files(receipt_home) == []
+        latest = ur.read_latest_receipt()
+        assert latest is not None
+        assert latest["outcome"] == "running"
+        assert latest["steps"][0]["name"] == "pre_update_backup"
 
-    def test_crash_without_finalize_never_claims_success(self, receipt_home):
-        """Simulated crash: begin + steps, then the process dies (fresh
-        module state). The Desktop's reader (#92780 reads the receipt via
-        read_latest_receipt) must see NO successful update."""
+    def test_lost_singleton_is_recovered_at_command_boundary(self, receipt_home):
+        """A fresh module object can finalize the receipt seeded by begin."""
         ur.begin_update_receipt()
         ur.record_step("git_pull", True)
         ur.record_step("pip_install", True)
-        # Crash: module singleton is gone, finalize never ran.
         ur._current = None
 
-        assert _receipt_files(receipt_home) == []
+        path = ur.finalize_pending_update_receipt(1, "sys.exit(1)")
+
+        assert path is not None
         latest = ur.read_latest_receipt()
-        # No receipt at all — the reader cannot report success. If this
-        # ever returns a dict, it must not claim a completed success.
-        assert latest is None or latest.get("outcome") != "success"
+        assert latest["outcome"] == "failed"
+        assert [step["name"] for step in latest["steps"]] == ["git_pull", "pip_install"]
 
     def test_boundary_safety_net_records_crash_as_not_success(
         self, receipt_home
@@ -145,6 +135,18 @@ class TestReceiptAlwaysFinalized:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["outcome"] == "failed"
         assert ur.read_latest_receipt()["outcome"] == "failed"
+
+    def test_finalize_write_failure_is_visible(self, receipt_home, monkeypatch, capsys):
+        ur.begin_update_receipt()
+
+        def fail_write(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ur, "_persist_receipt", fail_write)
+
+        assert ur.finalize_update_receipt("failed") is None
+
+        assert "Update receipt write failed: disk full" in capsys.readouterr().out
 
 
 class TestSuccessImpliesAccounting:

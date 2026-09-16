@@ -62,6 +62,7 @@ class UpdateReceipt:
             "pre_update": _code_identity(), "post_update": {},
             "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
         }
+        self.path: Optional[Path] = None
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})
@@ -122,14 +123,59 @@ def _receipt_dir() -> Path:
     return get_hermes_home() / "logs" / "update_receipts"
 
 
+def _persist_receipt(receipt: UpdateReceipt, *, prune: bool = False) -> Path:
+    """Write the receipt and stable pointer, assigning its per-run path once."""
+    directory = _receipt_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    if receipt.path is None:
+        receipt.path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
+    body = json.dumps(receipt.data, indent=2, default=str)
+    receipt.path.write_text(body, encoding="utf-8")
+    with suppress(OSError):
+        (directory / "latest.json").write_text(body, encoding="utf-8")
+    if prune:
+        _prune_old_receipts(directory)
+    return receipt.path
+
+
+def _recover_running_receipt() -> Optional[UpdateReceipt]:
+    """Recover this process's durable in-progress receipt after module-state loss."""
+    try:
+        candidates = sorted(
+            _receipt_dir().glob(f"update_*_{os.getpid()}.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                isinstance(data, dict)
+                and data.get("pid") == os.getpid()
+                and data.get("outcome") == "running"
+                and data.get("finished_at") is None
+            ):
+                receipt = UpdateReceipt.__new__(UpdateReceipt)
+                receipt.data = data
+                receipt.path = path
+                return receipt
+    except Exception as exc:
+        logger.debug("Could not recover pending update receipt: %s", exc)
+    return None
+
+
 def begin_update_receipt() -> None:
-    """Start recording a new update receipt. Never raises."""
+    """Start and durably seed a new update receipt. Never raises."""
     global _current
     try:
         _current = UpdateReceipt()
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not start update receipt: %s", exc)
+        print(f"⚠ Update receipt could not be started: {exc}")
         _current = None
+        return
+    try:
+        _persist_receipt(_current)
+    except Exception as exc:  # keep the in-memory receipt so finalize can retry
+        print(f"⚠ Update receipt could not be persisted: {exc}")
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
@@ -137,6 +183,7 @@ def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
     try:
         if _current is not None:
             getattr(_current, method)(*args, **kwargs)
+            _persist_receipt(_current)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not record %s: %s", what, exc)
 
@@ -163,7 +210,7 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
     command-boundary safety net after an inner path already finalized) is a no-op returning None.
     """
     global _current
-    receipt = _current
+    receipt = _current or _recover_running_receipt()
     _current = None
     if receipt is None:
         return None
@@ -173,17 +220,9 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
-        directory = _receipt_dir()
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
-        body = json.dumps(receipt.data, indent=2, default=str)
-        path.write_text(body, encoding="utf-8")
-        with suppress(OSError):  # stable pointer for the dashboard/desktop
-            (directory / "latest.json").write_text(body, encoding="utf-8")
-        _prune_old_receipts(directory)
-        return path
+        return _persist_receipt(receipt, prune=True)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not write update receipt: %s", exc)
+        print(f"⚠ Update receipt write failed: {exc}")
         return None
 
 
@@ -198,8 +237,11 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     No-op when no receipt is open (the inner paths already finalized — exactly-once via the popped
     singleton) or when recording was never started. See #91283.
     """
-    if _current is None:
+    global _current
+    receipt = _current or _recover_running_receipt()
+    if receipt is None:
         return None
+    _current = receipt
     outcome = "success" if exit_code in (0, None) else "refused" if exit_code == 2 else "failed"
     if exit_code is not None:
         with suppress(Exception):

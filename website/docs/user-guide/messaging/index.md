@@ -805,37 +805,49 @@ display:
       long_running_notifications: false
 ```
 
-### Engine warning notifications
+### Warning and error notifications (opt-in suppression)
 
-Engine warnings are delivered by default. Operators can suppress these extra
-notifications globally or per platform without hiding the assistant's answer:
+Automatic warning and error notifications are shown by default. To suppress
+these notifications, enable `suppress_warning_notifications` globally or for
+an individual surface:
 
 ```yaml
 display:
-  warning_notifications: false
+  suppress_warning_notifications: true
   platforms:
     telegram:
-      warning_notifications: true
+      suppress_warning_notifications: false
 ```
 
-This controls automatic compression failure/blocked notices, retry and model
-fallback diagnostics, credit-service notices, subagent failure notices, inactivity
-warnings, and startup session-database warnings. Existing logs, retry decisions,
-failure state, and credit/delegation bookkeeping are unchanged. Suppressing a
-notification does not repair its cause or add another logging destination.
+This example suppresses notifications globally while keeping them visible on
+Telegram. Omit the setting or use `false` to preserve normal delivery. Platform
+overrides take precedence; `null` inherits. Invalid values do not enable
+suppression.
 
-Normal assistant messages, tool progress, working heartbeats, final failed-task
-responses, manual command responses (including `/compress`), and approval or
-clarification prompts remain visible. Setup and security notices, restart
-notifications, requested background-process results, and asynchronous delegation
-results retain their own delivery rules. Cron jobs still use `failure_deliver`.
-Local and programmatic API/webhook surfaces keep their diagnostic stream.
+The setting controls automatic engine warnings, retry/fallback diagnostics,
+watchdog and database notices, cron failure notifications, Kanban failure
+notifications, background/delegation diagnostics, and adapter-generated error
+notices. It applies to messaging platforms, CLI/TUI presentation and API
+notification presentation. Classification belongs to the producer: warning-like
+text in a user request or an ordinary result is not filtered by its wording.
 
-Platform overrides take precedence; `null` inherits. Boolean `false` and the
-strings `false`, `off`, `no`, or `0` suppress delivery; invalid values leave it
-enabled. Agent callbacks use the configuration loaded for that turn; automatic
-hygiene, inactivity and startup warnings read the active profile's configuration
-when they are sent. Already delivered messages are not removed.
+Suppression changes presentation, not execution. Existing logs, stored diagnostic
+content, retry decisions, failure state, scheduler bookkeeping and notification
+cursors remain available. A diagnostic-only internal wake can still execute, but
+its unsolicited text, media and streaming presentation are muted. Structured
+approval and clarification controls, direct command/API outcomes and requested
+results are not converted into success or discarded. API failure flags, status
+codes and usage remain truthful even when diagnostic text is hidden.
+
+Cron `failure_deliver` still selects the destination; the destination's warning
+policy determines whether an automatic failure notice is presented there.
+Suppressed deliveries are settled without claiming a successful send. Already
+admitted deliveries retain their delivery identity and outcome.
+
+Policy is resolved for the owning profile and logical destination. Agent turns
+use their turn policy; independent notifications and deferred deliveries evaluate
+policy at their own delivery boundary. Already delivered messages are not removed.
+Suppression does not fix an underlying failure or add another logging destination.
 
 ### Progress bubble cleanup (opt-in)
 

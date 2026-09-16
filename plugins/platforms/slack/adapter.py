@@ -428,6 +428,19 @@ def _first_truthy(mapping: Dict[str, Any], keys: Tuple[str, ...]) -> Any:
     return None
 
 
+def _slack_error_is(exc: BaseException, code: str) -> bool:
+    """True when a Slack API exception carries ``code`` as its structured ``error`` field.
+
+    Reads ``exc.response["error"]`` (slack_sdk's SlackApiError shape); never matches on the
+    message text, which embeds the whole response body and would match on unrelated codes.
+    """
+    response = getattr(exc, "response", None)
+    try:
+        return bool(response) and response.get("error") == code
+    except Exception:  # noqa: BLE001 - response is a foreign object
+        return False
+
+
 def _slack_str_field(el: dict, name: str) -> str:
     """Read a string field of a Block Kit element; non-strings (text objects) would break ``str.join``."""
     value = el.get(name)
@@ -2050,34 +2063,58 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 client = self._get_client(chat_id, team_id=stream.team_id)
                 if not stream.stream_ts:
-                    start_payload: Dict[str, Any] = {
-                        "channel": chat_id, "thread_ts": stream.thread_ts,
-                        "task_display_mode": "plan"}
-                    md = metadata or {}
-                    recipients = (
-                        ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
-                        ("recipient_user_id", ("recipient_user_id", "user_id")))
-                    for key, sources in recipients:
-                        value = _first_truthy(md, sources)
-                        if value:
-                            start_payload[key] = value
-                    result = await client.api_call("chat.startStream", json=start_payload)
-                    if hasattr(result, "get"):
-                        stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
-                    if not stream.stream_ts:
-                        raise RuntimeError("Slack startStream returned no stream timestamp")
+                    await self._start_native_task_card_stream(client, stream, metadata)
                 chunks: List[Dict[str, Any]] = [{"type": "plan_update", "title": str(title)[:256]}]
                 chunks.extend(self._task_update_chunk(task) for task in tasks)
-                append_payload: Dict[str, Any] = {
-                    "channel": chat_id, "ts": stream.stream_ts, "chunks": chunks}
                 # chunks-only: Slack rejects markdown_text alongside chunks
                 # (cannot_provide_both_markdown_text_and_chunks, #87743); the gateway owns
                 # the editable-text fallback rail that fallback_text feeds when this call fails.
-                await client.api_call("chat.appendStream", json=append_payload)
+                try:
+                    await client.api_call(
+                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
+                except Exception as exc:
+                    if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                        raise
+                    # Slack seals a native stream server-side after a few minutes of a long
+                    # turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
+                    # documented). The sealed message is a regular message now, so reopen a
+                    # fresh card in the same thread. Every frame already carries the FULL
+                    # visible projection, so nothing is lost; the user sees the card
+                    # continue instead of degrading to text bubbles. One reopen per update:
+                    # a second rejection is a real failure.
+                    logger.info(
+                        "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
+                        "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
+                    stream.stream_ts = ""
+                    await self._start_native_task_card_stream(client, stream, metadata)
+                    await client.api_call(
+                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
                 return SendResult(success=False, error=str(exc), retryable=True)
+
+    @staticmethod
+    async def _start_native_task_card_stream(
+        client, stream: "_NativeTaskCardStream", metadata: Optional[Dict[str, Any]]
+    ) -> None:
+        """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
+        start_payload: Dict[str, Any] = {
+            "channel": stream.channel, "thread_ts": stream.thread_ts,
+            "task_display_mode": "plan"}
+        md = metadata or {}
+        recipients = (
+            ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
+            ("recipient_user_id", ("recipient_user_id", "user_id")))
+        for key, sources in recipients:
+            value = _first_truthy(md, sources)
+            if value:
+                start_payload[key] = value
+        result = await client.api_call("chat.startStream", json=start_payload)
+        if hasattr(result, "get"):
+            stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
+        if not stream.stream_ts:
+            raise RuntimeError("Slack startStream returned no stream timestamp")
 
     @staticmethod
     def _task_update_chunk(task: Dict[str, str]) -> Dict[str, Any]:

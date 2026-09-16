@@ -262,12 +262,15 @@ def _run_boot_agent(content: str) -> None:
     against custom endpoints, aggregators, and OAuth-based providers alike.
     """
     try:
-        from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+        from gateway.run import (
+            _adopt_runtime_model, _resolve_gateway_model, _resolve_runtime_agent_kwargs)
         from run_agent import AIAgent
 
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        model, runtime_kwargs = _adopt_runtime_model(_resolve_gateway_model(), runtime_kwargs)
         agent = AIAgent(
-            model=_resolve_gateway_model(),
-            **_resolve_runtime_agent_kwargs(),
+            model=model,
+            **runtime_kwargs,
             platform="gateway",
             quiet_mode=True,
             skip_context_files=True,
@@ -303,12 +306,13 @@ async def handle(event_type: str, context: dict) -> None:
     thread.start()
 ```
 
-两个关键行：
+三个关键调用：
 
 - `_resolve_gateway_model()` 读取 gateway 当前配置的模型。
 - `_resolve_runtime_agent_kwargs()` 以与普通 gateway 轮次相同的方式解析 provider 凭据——包括 API 密钥、base URL、OAuth token 和凭据池。
+- `_adopt_runtime_model()` 协调两者。`custom_providers` 条目可以自带 `model`，因此解析出的 kwargs 中可能已包含模型；该调用决定采用哪一个，并移除内部的模型字段。若直接将 kwargs 展开传入 `AIAgent()`，同时又传入自己的 `model=`，会抛出 `TypeError`。
 
-若不使用这两行，裸 `AIAgent()` 会回退到内置默认值，并在任何非默认端点上返回 401。
+若不使用这些调用，裸 `AIAgent()` 会回退到内置默认值，并在任何非默认端点上返回 401。
 
 #### 第三步：测试
 

@@ -445,9 +445,13 @@ def build_whole_comment_prompt(
 
 def _resolve_model_and_runtime() -> Tuple[str, dict]:
     """Resolve model and provider credentials, same as gateway message handling."""
-    from gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs
+    from gateway.run import (
+        _adopt_runtime_model, _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs)
     model = _resolve_gateway_model(_load_gateway_config())
     runtime_kwargs = _resolve_runtime_agent_kwargs()
+    # A custom_providers entry's bundled model before the provider catalog default, so comment
+    # replies use the same model as gateway message handling.
+    model, runtime_kwargs = _adopt_runtime_model(model, runtime_kwargs)
     try:
         if not model and runtime_kwargs.get("provider"):  # fall back to the provider's default model
             from hermes_cli.models import get_default_model_for_provider

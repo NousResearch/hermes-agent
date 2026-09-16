@@ -270,12 +270,15 @@ def _run_boot_agent(content: str) -> None:
     against custom endpoints, aggregators, and OAuth-based providers alike.
     """
     try:
-        from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+        from gateway.run import (
+            _adopt_runtime_model, _resolve_gateway_model, _resolve_runtime_agent_kwargs)
         from run_agent import AIAgent
 
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        model, runtime_kwargs = _adopt_runtime_model(_resolve_gateway_model(), runtime_kwargs)
         agent = AIAgent(
-            model=_resolve_gateway_model(),
-            **_resolve_runtime_agent_kwargs(),
+            model=model,
+            **runtime_kwargs,
             platform="gateway",
             quiet_mode=True,
             skip_context_files=True,
@@ -311,10 +314,11 @@ async def handle(event_type: str, context: dict) -> None:
     thread.start()
 ```
 
-The two key lines:
+The three key calls:
 
 - `_resolve_gateway_model()` reads the gateway's currently-configured model.
 - `_resolve_runtime_agent_kwargs()` resolves provider credentials the same way a normal gateway turn does — including API keys, base URLs, OAuth tokens, and credential pools.
+- `_adopt_runtime_model()` reconciles the two. A `custom_providers` entry can carry its own `model`, so the resolved kwargs may hold one; this call decides which model wins and strips the internal model keys. Splatting the kwargs straight into `AIAgent()` alongside your own `model=` raises `TypeError`.
 
 Without these, a bare `AIAgent()` falls back to built-in defaults and will 401 against any non-default endpoint.
 

@@ -3299,8 +3299,19 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
+    home = hermes_home_key()
+
+    def _key_matches(key) -> bool:
+        if not key:
+            return False
+        # Production keys are (home, provider, ...).
+        if len(key) > 1 and key[0] == home and _normalize_aux_provider(str(key[1])) == normalized:
+            return True
+        # Legacy / fixture keys used provider as the first field.
+        return _normalize_aux_provider(str(key[0])) == normalized
+
     with _client_cache_lock:
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]:
+        for key in [key for key in _client_cache if _key_matches(key)]:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
                 _close_cached_client(client)
@@ -3349,6 +3360,7 @@ _POOL_PROVIDER_BY_HOST = (
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
     ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
     ("api.anthropic.com", "anthropic"), ("inference-api.nousresearch.com", "nous"),
+    ("api.x.ai", "xai-oauth"),
 )
 
 
@@ -7120,6 +7132,10 @@ def _ladder_credential_rungs(
         if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
+            if pool_provider != _normalize_aux_provider(resolved_provider):
+                # The stale client is cached under the route label (e.g. "auto"), not the
+                # concrete backend we recovered.
+                _evict_cached_clients(resolved_provider)
             try:
                 return (yield _LadderStep(
                     "retry_same_provider", (resolved_provider, route.resolved_model))), None

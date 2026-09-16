@@ -6,6 +6,8 @@ an OAuth2 access token has expired.  These tests verify the three fixes:
 1. _is_auth_error detects xAI 403 as an auth failure
 2. _recoverable_pool_provider maps api.x.ai to xai-oauth
 3. _refresh_provider_credentials includes xai-oauth refresh logic
+4. auto-routed api.x.ai clients resolve xai-oauth for singleton refresh
+5. successful pool recovery also evicts a client cached under "auto"
 """
 
 import pytest
@@ -127,3 +129,92 @@ class TestRefreshProviderCredentialsXaiOAuth:
         """Unknown providers fall through to return False."""
         result = self.refresh("unknown-provider-xyz")
         assert result is False
+
+
+# ── _auth_refresh_provider_for_route ────────────────────────────────────────
+
+def _import_auth_refresh_provider_for_route():
+    from agent.auxiliary_client import _auth_refresh_provider_for_route
+    return _auth_refresh_provider_for_route
+
+
+class TestAuthRefreshProviderForRouteXaiOAuth:
+    """Auto-routed api.x.ai clients must refresh xai-oauth, not skip as 'auto'."""
+
+    @pytest.fixture(autouse=True)
+    def _import(self):
+        self.route = _import_auth_refresh_provider_for_route()
+
+    def test_auto_api_x_ai_resolves_xai_oauth(self):
+        assert self.route("auto", "https://api.x.ai/v1") == "xai-oauth"
+
+    def test_auto_api_x_ai_trailing_slash_resolves_xai_oauth(self):
+        assert self.route("auto", "https://api.x.ai/v1/") == "xai-oauth"
+
+    def test_explicit_xai_oauth_passthrough(self):
+        assert self.route("xai-oauth", "https://api.x.ai/v1") == "xai-oauth"
+
+    def test_auto_unknown_host_stays_auto(self):
+        assert self.route("auto", "https://unknown.example.com/v1") == "auto"
+
+
+# ── pool recovery must not retry a dead auto-cached client ──────────────────
+
+class TestPoolRecoveryEvictsAutoCachedXaiClient:
+    """After pool recovery, retry must not reuse a client cached under 'auto'."""
+
+    def test_successful_pool_recovery_evicts_auto_cache_entry(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from agent import auxiliary_client as ac
+
+        stale = MagicMock()
+        stale.base_url = "https://api.x.ai/v1"
+        stale.api_key = "dead-token"
+        cache_key = ac._client_cache_key(
+            "auto",
+            async_mode=False,
+            base_url="https://api.x.ai/v1",
+            api_key="dead-token",
+            task="mattermost_thread_title",
+            model="grok-4.6",
+        )
+        ac._client_cache.clear()
+        ac._client_cache[cache_key] = (stale, "grok-4.6", None)
+
+        exc = Exception(
+            "Error code: 403 - {'code': 'unauthenticated:bad-credentials', "
+            "'error': 'The OAuth2 access token could not be validated.'}"
+        )
+        exc.status_code = 403
+
+        route = ac._LadderRoute(
+            client=stale,
+            task="mattermost_thread_title",
+            tag="",
+            async_mode=False,
+            base_info="https://api.x.ai/v1",
+            resolved_provider="auto",
+            resolved_model="grok-4.6",
+            resolved_base_url="https://api.x.ai/v1",
+            resolved_api_key="dead-token",
+            resolved_api_mode=None,
+            final_model="grok-4.6",
+            main_runtime=None,
+            route_info=None,
+        )
+
+        # Isolate the pool rung: singleton refresh is a different path.
+        monkeypatch.setattr(ac, "_refresh_provider_credentials", lambda *a, **k: False)
+        monkeypatch.setattr(ac, "_recover_provider_pool", lambda *a, **k: True)
+
+        try:
+            gen = ac._ladder_credential_rungs(exc, route, {}, client_is_nous=False)
+            step = next(gen)
+            assert step.kind == "retry_same_provider"
+            assert not any(entry[0] is stale for entry in ac._client_cache.values()), (
+                "stale auto-routed api.x.ai client survived pool recovery; "
+                "retry would reuse the dead bearer cached under 'auto'"
+            )
+        finally:
+            ac._client_cache.clear()

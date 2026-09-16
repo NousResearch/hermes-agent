@@ -46,7 +46,9 @@ export function TimelineRail({ activeIndex, entries, loadingId, onJump }: Timeli
     const measure = () => {
       const rem = parseFloat(getComputedStyle(element.ownerDocument.documentElement).fontSize)
 
-      if (Number.isFinite(rem) && rem > 0) {setPitch(rem * 0.4375)}
+      if (Number.isFinite(rem) && rem > 0) {
+        setPitch(rem * 0.4375)
+      }
     }
 
     const observer = new ResizeObserver(measure)

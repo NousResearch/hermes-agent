@@ -30,7 +30,9 @@ export async function fetchHistoryWindow(
   const route = capabilityScoped(scope)
   const query = new URLSearchParams({ row_id: String(rowId), limit: String(HISTORY_WINDOW_LIMIT) })
 
-  if (route.profile) {query.set('profile', route.profile)}
+  if (route.profile) {
+    query.set('profile', route.profile)
+  }
 
   // The Electron REST bridge cannot transfer AbortSignal over IPC. Cancellation
   // below releases the caller immediately and fences the eventual bounded read;
@@ -84,51 +86,67 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
     setSelection(null)
   }, [cancel])
 
-  const revealRow = useCallback(async (rowId: number, signal: AbortSignal): Promise<string | null> => {
-    cancel()
+  const revealRow = useCallback(
+    async (rowId: number, signal: AbortSignal): Promise<string | null> => {
+      cancel()
 
-    if (signal.aborted || !Number.isSafeInteger(rowId) || rowId <= 0) {return null}
-    const captured = latest.current
-
-    if (!captured.storedId || !captured.isCurrent()) {return null}
-    const controller = new AbortController()
-    pending.current = controller
-    const abort = () => controller.abort()
-    signal.addEventListener('abort', abort, { once: true })
-    let release!: () => void
-
-    const aborted = new Promise<null>(resolve => {
-      release = () => resolve(null)
-      controller.signal.addEventListener('abort', release, { once: true })
-    })
-
-    try {
-      const next = await Promise.race([
-        fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal),
-        aborted
-      ])
-
-      if (!next || controller.signal.aborted || latest.current.lifetime !== captured.lifetime || !captured.isCurrent()) {
+      if (signal.aborted || !Number.isSafeInteger(rowId) || rowId <= 0) {
         return null
       }
+      const captured = latest.current
 
-      const target = next.messages.find(message => message.rowId === rowId)
+      if (!captured.storedId || !captured.isCurrent()) {
+        return null
+      }
+      const controller = new AbortController()
+      pending.current = controller
+      const abort = () => controller.abort()
+      signal.addEventListener('abort', abort, { once: true })
+      let release!: () => void
 
-      if (!target) {return null}
-      setSelection({ lifetime: captured.lifetime, page: next })
+      const aborted = new Promise<null>(resolve => {
+        release = () => resolve(null)
+        controller.signal.addEventListener('abort', release, { once: true })
+      })
 
-      return target.id
-    } catch {
-      // Missing/older backend, unreadable row, and failed reads preserve the
-      // current page. The caller reports failure and can retry explicitly.
-      return null
-    } finally {
-      signal.removeEventListener('abort', abort)
-      controller.signal.removeEventListener('abort', release)
+      try {
+        const next = await Promise.race([
+          fetchHistoryWindow(captured.storedId, rowId, captured.scope, controller.signal),
+          aborted
+        ])
 
-      if (pending.current === controller) {pending.current = null}
-    }
-  }, [cancel])
+        if (
+          !next ||
+          controller.signal.aborted ||
+          latest.current.lifetime !== captured.lifetime ||
+          !captured.isCurrent()
+        ) {
+          return null
+        }
+
+        const target = next.messages.find(message => message.rowId === rowId)
+
+        if (!target) {
+          return null
+        }
+        setSelection({ lifetime: captured.lifetime, page: next })
+
+        return target.id
+      } catch {
+        // Missing/older backend, unreadable row, and failed reads preserve the
+        // current page. The caller reports failure and can retry explicitly.
+        return null
+      } finally {
+        signal.removeEventListener('abort', abort)
+        controller.signal.removeEventListener('abort', release)
+
+        if (pending.current === controller) {
+          pending.current = null
+        }
+      }
+    },
+    [cancel]
+  )
 
   return { page, revealRow, returnToLatest }
 }

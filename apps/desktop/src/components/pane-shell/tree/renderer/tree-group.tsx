@@ -17,15 +17,7 @@ import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
 import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS } from '@/components/ui/drop-affordance'
-import {
-  PANE_TAB_STRIP_LINE_LEFT,
-  PANE_TAB_STRIP_LINE_RIGHT,
-  PaneStripGlyph,
-  PaneTab,
-  paneTabCloseItems,
-  PaneTabLabel,
-  PaneTabStrip
-} from '@/components/ui/pane-tab'
+import { PaneStripGlyph, PaneTab, paneTabCloseItems, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
@@ -481,11 +473,8 @@ export function TreeGroup({
       {verticalCollapse && (
         <ZoneMenu {...zoneMenu}>
           <div
-            className={cn(
-              'flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)',
-              // Strip line faces the content the zone collapsed away from.
-              railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
-            )}
+            className="flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)"
+            data-glass-sidebar-rail=""
             onClick={() => restoreTreePane(activeId)}
             title={t.zones.restore}
           >

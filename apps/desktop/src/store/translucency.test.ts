@@ -293,9 +293,15 @@ describe('frost and area', () => {
     setTranslucencyScope('sidebar')
     setTranslucencyMode('glass')
 
-    const makeRail = () => {
+    const makeRail = (minimized = false) => {
       const rail = document.createElement('div')
-      rail.dataset.slot = 'sidebar'
+
+      if (minimized) {
+        rail.dataset.glassSidebarRail = ''
+      } else {
+        rail.dataset.slot = 'sidebar'
+      }
+
       vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue({ right: 240, left: 0 } as DOMRect)
 
       return rail
@@ -317,7 +323,7 @@ describe('frost and area', () => {
       await Promise.resolve()
       expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('0px')
 
-      const restoredRail = makeRail()
+      const restoredRail = makeRail(true)
       group.append(restoredRail)
       await Promise.resolve()
       expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('240px')

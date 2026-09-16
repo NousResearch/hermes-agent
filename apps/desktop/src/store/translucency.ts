@@ -177,7 +177,10 @@ let railTrackingOn = false
 
 const measureRailEdge = (): void => {
   const root = document.documentElement
-  const rail = document.querySelector('[data-slot="sidebar"]')
+  // The expanded sidebar owns the normal marker. A minimized side zone keeps
+  // only its vertical restore rail, which carries the fallback marker so the
+  // glass painter still covers that narrower side surface.
+  const rail = document.querySelector('[data-slot="sidebar"], [data-glass-sidebar-rail]')
 
   if (rail !== railTarget) {
     if (railObserver && railTarget) {

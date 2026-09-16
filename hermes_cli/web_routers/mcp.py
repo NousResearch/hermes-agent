@@ -418,7 +418,9 @@ async def list_mcp_catalog(profile: Optional[str] = None, detect_apps: bool = Fa
             # Discovery is read-only and backend-local. Keep filesystem work off the
             # event loop and OUTSIDE the profile/skills lock used for config reads.
             detected = await asyncio.to_thread(discover_catalog_apps, {
-                entry["name"]: (entry["suggest"] or {}).get("applications", []) for entry in entries
+                entry["name"]: (entry["suggest"] or {}).get("applications") or [
+                    entry["name"].replace("-", " ").replace("_", " ")
+                ] for entry in entries
             })
         except Exception:
             _log.warning("Backend application discovery unavailable")

@@ -24,6 +24,11 @@ function entry(name: string, patch: Partial<McpCatalogEntry> = {}): McpCatalogEn
 }
 
 it('recommends catalog entries from evidence and intent, never from installation as proof of access', () => {
+  const future = entry('future-paint', { suggest: null, detected_apps: ['Future Paint'] })
+  expect(onboardingRecommendations([future])).toMatchObject([{
+    name: future.name, description: future.description, examples: [], setupAction: 'install'
+  }])
+  expect(onboardingRecommendations([])).toEqual([])
   const local = entry('modeler', { detected_apps: ['Modeler'] })
   const newEntry = entry('future-studio', { detected_apps: ['Future Studio'] })
   const longerExample = 'Describe the lighting and materials in my scene before suggesting a different render treatment'

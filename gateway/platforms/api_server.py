@@ -3125,6 +3125,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
+        # Spending the budget without checking it refused every other caller while never
+        # refusing this route — and a fleet's cross-machine DMs all arrive here.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err
@@ -3147,6 +3153,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
         ctx, err = await self._prepare_session_chat(request)
         if err is not None:
             return err

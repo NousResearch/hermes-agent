@@ -3140,6 +3140,78 @@ def _is_transient_transport_error(exc: Exception) -> bool:
     return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
+def _is_recoverable_aux_fallback_error(exc: Exception) -> bool:
+    """Return whether another configured auxiliary route may recover.
+
+    The same-provider retry path already treats structured HTTP 408/5xx
+    responses as transient. Once those retries are exhausted they must also
+    be eligible for provider/model fallback; otherwise a persistent 5xx is
+    retried and then re-raised before ``fallback_chain`` is consulted.
+    """
+    return (
+        _is_auth_error(exc)
+        or _is_payment_error(exc)
+        or _is_connection_error(exc)
+        or _is_rate_limit_error(exc)
+        or _is_transient_transport_error(exc)
+        or _is_model_incompatible_error(exc)
+        or _is_invalid_aux_response_error(exc)
+    )
+
+
+def _is_capacity_aux_fallback_error(exc: Exception) -> bool:
+    """Return whether failure should override an explicit auxiliary route."""
+    return (
+        _is_payment_error(exc)
+        or _is_connection_error(exc)
+        or _is_rate_limit_error(exc)
+        or _is_transient_transport_error(exc)
+        or _is_model_incompatible_error(exc)
+        or _is_invalid_aux_response_error(exc)
+    )
+
+
+def _aux_fallback_reason(exc: Exception) -> str:
+    """Return one stable, user-safe reason label for fallback logging."""
+    if _is_auth_error(exc):
+        return "auth error"
+    if _is_payment_error(exc):
+        return "payment error"
+    if _is_rate_limit_error(exc):
+        return "rate limit"
+    if _is_model_incompatible_error(exc):
+        return "model incompatible with route"
+    if _is_invalid_aux_response_error(exc):
+        return "invalid provider response"
+    if _is_connection_error(exc):
+        return "connection error"
+    return "transient HTTP error"
+
+
+def _continue_after_aux_fallback_error(
+    *,
+    task: Optional[str],
+    label: str,
+    client: Any,
+    exc: Exception,
+    async_mode: bool = False,
+) -> bool:
+    """Log and clean up a recoverable candidate failure."""
+    if not _is_recoverable_aux_fallback_error(exc):
+        return False
+    if _is_connection_error(exc):
+        _evict_cached_client_instance(client)
+    logger.warning(
+        "Auxiliary %s%s: fallback candidate %s failed with %s; "
+        "continuing the fallback chain",
+        task or "call",
+        " (async)" if async_mode else "",
+        label,
+        _aux_fallback_reason(exc),
+    )
+    return True
+
+
 _DEFAULT_TRANSIENT_RETRIES = 2
 _TRANSIENT_RETRY_BACKOFF_BASE = 1.0  # Backoff base (seconds); overridable so tests can zero it out.
 
@@ -3833,6 +3905,10 @@ def _call_fallback_candidate_sync(
         return _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
+            if _continue_after_aux_fallback_error(
+                task=task, label=fb_label, client=fb_client, exc=fb_err
+            ):
+                return None
             raise
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -3843,6 +3919,10 @@ def _call_fallback_candidate_sync(
                 return _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
+                    if _continue_after_aux_fallback_error(
+                        task=task, label=fb_label, client=retry[0], exc=retry_err
+                    ):
+                        return None
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
@@ -3872,6 +3952,14 @@ async def _call_fallback_candidate_async(
         return await _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
+            if _continue_after_aux_fallback_error(
+                task=task,
+                label=fb_label,
+                client=fb_client,
+                exc=fb_err,
+                async_mode=True,
+            ):
+                return None
             raise
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -3882,6 +3970,14 @@ async def _call_fallback_candidate_async(
                 return await _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
+                    if _continue_after_aux_fallback_error(
+                        task=task,
+                        label=fb_label,
+                        client=retry[0],
+                        exc=retry_err,
+                        async_mode=True,
+                    ):
+                        return None
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err,
@@ -4041,10 +4137,14 @@ def _context_too_small(
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None,
+    excluded_labels: Optional[set[str]] = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
+
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
-    run after a model-scoped failure). Returns (client, model, provider_label) or (None, None, "")."""
+    run after a model-scoped failure). ``excluded_labels`` contains exact configured-entry labels
+    already called during this request, letting runtime fallback continue forward without reselecting
+    a failed entry. Returns (client, model, provider_label) or (None, None, "")."""
     if not task:
         return None, None, ""
     chain = _get_auxiliary_task_config(task).get("fallback_chain")
@@ -4053,6 +4153,7 @@ def _try_configured_fallback_chain(
     skip = _failed_backend_skip(
         failed_provider, failed_model, failed_base_url=failed_base_url, failure_scope=failure_scope)
     tried = []
+    excluded = excluded_labels or set()
     min_ctx = _task_minimum_context_length(task)
     for i, entry in enumerate(chain):
         if not isinstance(entry, dict):
@@ -4070,6 +4171,9 @@ def _try_configured_fallback_chain(
             continue
         fb_model = fb_model_raw or None
         label = f"fallback_chain[{i}]({fb_provider})"
+        if label in excluded:
+            continue
+
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception:
@@ -7171,8 +7275,15 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     # #52228. See #26803: daily token quota must fall back like a 402 credit error.
     is_auto = resolved_provider in {"auto", "", None}
     reason = next((label for predicate, label in _FALLBACK_REASONS if predicate(first_err)), None)
-    is_capacity_error = any(
-        predicate(first_err) for predicate, label in _FALLBACK_REASONS if label != "auth error")
+    if reason is None and _is_transient_transport_error(first_err):
+        # Exhausted same-provider retries on a structured 408/5xx: transient-transport
+        # predicates are not in ``_FALLBACK_REASONS`` (they overlap the specific
+        # labels above), but a persistent 5xx must still walk the configured chain
+        # instead of aborting the auxiliary task.
+        reason = "server error"
+    is_capacity_error = (
+        reason is not None and reason != "auth error"
+    ) or _is_capacity_aux_fallback_error(first_err)
     if reason is None or not (is_auto or is_capacity_error):
         return None
     if reason == "payment error":
@@ -7193,9 +7304,31 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         if reason == "payment error" and _custom_health_base_url(resolved_provider, route.base_info)
         else None
     )
-    fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-        task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,
-        failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
+    # Consume the user-configured chain forward, one candidate per pass, with a hard
+    # attempt bound: ``_try_configured_fallback_chain`` picks the first non-excluded
+    # eligible entry, and a candidate that fails recoverably (5xx/connection) must let
+    # the NEXT configured entry run instead of aborting the task. The excluded-label
+    # set prevents reselecting a failed entry, and the len(chain)+1 bound guarantees
+    # termination even if the selector ever produced a fresh label per iteration.
+    _configured_max_attempts = 1 + max(
+        len(_get_auxiliary_task_config(task).get("fallback_chain") or []) if isinstance(
+            _get_auxiliary_task_config(task).get("fallback_chain"), list) else 0, 0)
+    _excluded_labels: set[str] = set()
+    fb_client = None
+    for _attempt in range(_configured_max_attempts):
+        fb_client, fb_model, fb_label = _try_configured_fallback_chain(
+            task, resolved_provider or "auto", reason=reason,
+            failed_model=_chain_failed_model, failed_base_url=route.base_info,
+            failure_scope=_chain_failure_scope, excluded_labels=_excluded_labels)
+        if fb_client is None:
+            break
+        _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+        fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+        if fb_resp is not None:
+            return fb_resp
+        # Recoverable failure (or stale-credential quarantine): exclude this entry
+        # and let the next configured candidate run.
+        _excluded_labels.add(fb_label)
     if fb_client is None and is_auto:
         fb_client, fb_model, fb_label = _try_main_fallback_chain(
             task, resolved_provider or "auto", reason=reason, failed_model=_chain_failed_model,

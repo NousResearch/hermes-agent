@@ -93,6 +93,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if getattr(args, "json", False):
         _print_json({
+            # First, because it qualifies everything below: on a dry run the
+            # sweep counters are empty because the sweeps did not run.
+            "dry_run": res.dry_run,
             **{k: getattr(res, k)
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted")},
             "spawned": [
@@ -118,6 +121,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         if items:
             print(f"  {', '.join(items)}")
     print(f"Promoted:     {res.promoted}")
+    if args.dry_run:
+        # The zeros above are not "nothing to reclaim" — a dry run never runs
+        # those sweeps, so say so instead of letting an operator read them as a
+        # healthy board; the spawn preview below shares the caveat because its
+        # budget was computed before any reclaim.
+        print("(dry-run: reclaim/promotion sweeps skipped; counters above reflect no "
+              "work and the spawn preview is computed on the un-reclaimed board)")
     print(f"Spawned:      {len(res.spawned)}")
     tag = " (dry)" if args.dry_run else ""
     for tid, who, ws in res.spawned:

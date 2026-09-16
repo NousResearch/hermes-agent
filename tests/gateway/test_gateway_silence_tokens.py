@@ -89,13 +89,16 @@ def test_blank_and_prose_mentions_are_not_silence():
     assert not is_intentional_silence_response("The reply was [SILENT], intentionally.")
 
 
-def test_failed_agent_result_never_counts_as_intentional_silence():
+def test_human_silence_requires_success_without_changing_legacy_marker_policy():
     assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY")
     for unsuccessful in (
         {"failed": True}, {"partial": True}, {"completed": False},
         {"interrupted": True}, {"error": "provider failed"},
     ):
-        assert not is_intentional_silence_agent_result(unsuccessful, "NO_REPLY")
+        assert not is_intentional_silence_agent_result(
+            unsuccessful, "NO_REPLY", human_silence_opt_in=True,
+        )
+        assert is_intentional_silence_agent_result(unsuccessful, "NO_REPLY") is not bool(unsuccessful.get("failed"))
 
 
 @pytest.mark.asyncio
@@ -133,6 +136,7 @@ async def test_opted_in_human_turn_only_suppresses_successful_non_content(
         appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
         assert {"role": "assistant", "content": text}.items() <= appended[-1].items()
         assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+        assert all(not msg.get("display_kind") for msg in appended if msg.get("role") == "user")
 
 
 @pytest.mark.asyncio
@@ -236,8 +240,16 @@ async def test_non_opted_in_invisible_output_is_normalized(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+@pytest.mark.parametrize("allow_silence", [False, True])
+@pytest.mark.parametrize("status", [
+    {}, {"partial": True}, {"interrupted": True},
+    {"completed": False}, {"error": "provider detail"},
+])
+async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(
+    monkeypatch, tmp_path, allow_silence, status,
+):
     runner = _runner(monkeypatch, tmp_path)
+    runner.config.allow_human_silence_markers = allow_silence
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
         "messages": [
@@ -249,6 +261,7 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
         "last_prompt_tokens": 0,
         "api_calls": 1,
         "failed": False,
+        **status,
     })
 
     response = await runner._handle_message_with_agent(
@@ -259,6 +272,42 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("internal", [False, True])
+@pytest.mark.parametrize("allow_silence", [False, True])
+@pytest.mark.parametrize("status", [
+    {}, {"failed": True}, {"partial": True}, {"interrupted": True},
+    {"completed": False}, {"error": "provider detail"},
+])
+async def test_queued_silence_policy_belongs_to_each_turn(
+    monkeypatch, tmp_path, internal, allow_silence, status,
+):
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config.allow_human_silence_markers = allow_silence
+    kind = "internal_notification" if internal else None
+    result = {"final_response": "[SILENT]", "api_calls": 1, "failed": False, **status}
+    expected_silence = not result["failed"] if internal else allow_silence and not status
+
+    # The terminal kind overrides an opener with the opposite origin.
+    terminal_result = {**result, "queued_terminal_display_kind": kind,
+                       "queued_terminal_allow_human_silence": allow_silence}
+    _, silent, _ = await runner._hmwa_shape_agent_response(
+        terminal_result, _source(), [], SimpleNamespace(session_id="s"), None,
+        None, 1, "s", "telegram", 0,
+        persist_user_display_kind=None if internal else "internal_notification",
+    )
+    assert silent is expected_silence
+
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="key", stream_consumer_holder=[None],
+        persist_user_display_kind=kind, source=_source(), _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id="msg-42", run_generation=1,
+    )
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert runner._deliver_queued_first_response.await_count == (0 if expected_silence else 1)
 
 
 @pytest.mark.asyncio

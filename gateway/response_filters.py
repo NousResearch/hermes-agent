@@ -97,15 +97,18 @@ def is_autonomous_silence_response(response: Any) -> bool:
 
 
 def is_intentional_silence_agent_result(
-    agent_result: dict | None, response: Any, *, allow_invisible: bool = False,
+    agent_result: dict | None, response: Any, *, human_silence_opt_in: bool = False,
 ) -> bool:
-    """Only completed, successful turns may opt out of final delivery."""
-    return (
-        isinstance(agent_result, dict)
-        and not any(agent_result.get(key) for key in ("failed", "partial", "interrupted", "error"))
-        and agent_result.get("completed") is not False
-        and (is_intentional_silence_response(response)
-             or (allow_invisible and is_invisible_only_response(response)))
+    """Keep legacy marker policy; the human opt-in requires a healthy, completed turn."""
+    if not isinstance(agent_result, dict) or agent_result.get("failed"):
+        return False
+    if human_silence_opt_in and (
+        any(agent_result.get(key) for key in ("partial", "interrupted", "error"))
+        or agent_result.get("completed") is False
+    ):
+        return False
+    return is_intentional_silence_response(response) or (
+        human_silence_opt_in and is_invisible_only_response(response)
     )
 
 

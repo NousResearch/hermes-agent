@@ -1086,7 +1086,7 @@ hermes gateway restart
 
 The setting applies to **all human turns in the profile, including direct messages**. A multiplexed gateway reads the serving profile's setting; enabling it in the default profile does not enable it in other profiles.
 
-Successful turns containing only a recognized silence marker omit the final reply and usage footer. Output made only of whitespace and Unicode format controls (such as zero-width spaces) is also suppressed. Empty output still follows the existing empty-response handling. Failed, partial, or interrupted turns do not qualify for this opt-in; substantive text is delivered normally. Silent turns remain in conversation history.
+Successful human turns containing only a recognized silence marker omit the final reply and usage footer. Output made only of whitespace and Unicode format controls (such as zero-width spaces) is also suppressed. Empty output still follows the existing empty-response handling. Failed, partial, interrupted, or explicitly incomplete turns do not qualify for this opt-in; substantive text is delivered normally. Silent human turns remain human messages in conversation history. Internal notifications retain their existing marker policy regardless of this setting.
 
 In the bot's prompt, instruct it: **When no reply is warranted, return exactly `[SILENT]`, with no tools, explanation, or extra characters.** The setting controls final text delivery; it cannot undo tool actions, progress messages, or audio already streamed. A format-only final segment preserves earlier substantive text.
 

@@ -1441,12 +1441,13 @@ class GatewayTurnMixin:
         _allow_human_silence = agent_result.get("queued_terminal_allow_human_silence")
         if _allow_human_silence is None:
             _allow_human_silence = self._allows_human_silence_markers(source)
-        _intentional_silence = is_intentional_silence_agent_result(
-            agent_result, response, allow_invisible=_allow_human_silence,
-        )
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: human follow-ups require the same opt-in as standalone turns.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        _intentional_silence = is_intentional_silence_agent_result(
+            agent_result, response,
+            human_silence_opt_in=_allow_human_silence and not is_machinery_display_kind(_silence_kind),
+        )
         if (
             _intentional_silence
             and not is_machinery_display_kind(_silence_kind)
@@ -3575,9 +3576,12 @@ class GatewayTurnMixin:
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
         _allow_human_silence = self._allows_human_silence_markers(turn_ctx.source)
-        # Use the same successful-turn predicate as normal final delivery.
+        # Keep internal-notification policy independent of the human opt-in.
         _intentional_silence = is_intentional_silence_agent_result(
-            _delivery_result, first_response, allow_invisible=_allow_human_silence,
+            _delivery_result, first_response,
+            human_silence_opt_in=(
+                _allow_human_silence and not is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+            ),
         )
         if is_invisible_only_response(first_response) and not _intentional_silence:
             from gateway.run import _normalize_empty_agent_response, _sanitize_gateway_final_response

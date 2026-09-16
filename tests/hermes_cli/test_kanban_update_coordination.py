@@ -134,7 +134,7 @@ def test_quiesce_accepts_task_completion_during_reclaim(tmp_path, monkeypatch):
         task_id = kb.create_task(conn, title="finishing worker", assignee="dev")
         assert kb.claim_task(conn, task_id, claimer=f"{kb._host_prefix()}update-test") is not None
 
-    def complete_instead_of_reclaim(conn, finishing_task_id, **_kwargs):
+    def complete_instead_of_quiesce(conn, finishing_task_id):
         conn.execute(
             "UPDATE tasks SET status = 'done', claim_lock = NULL, claim_expires = NULL "
             "WHERE id = ?",
@@ -144,7 +144,7 @@ def test_quiesce_accepts_task_completion_during_reclaim(tmp_path, monkeypatch):
         return False
 
     monkeypatch.setattr(coordination, "update_dispatch_paused", lambda: True)
-    monkeypatch.setattr(kb, "reclaim_task", complete_instead_of_reclaim)
+    monkeypatch.setattr(coordination, "_quiesce_task_for_update", complete_instead_of_quiesce)
 
     assert coordination.quiesce_all_workers() == {"ok": True, "reclaimed": [], "failed": []}
     with kbc.connect_closing() as conn:

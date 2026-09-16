@@ -94,6 +94,25 @@ def _output_shows_cap(text: str) -> bool:
     return any(sig in low for sig in _CODEX_CAP_SIGNALS)
 
 
+_CODEX_AUTH_FAILURE_SIGNALS = (
+    "refresh token was already used",
+    "could not be refreshed",
+    "log out and sign in",
+    "401 unauthorized",
+)
+
+
+def _output_shows_auth_failure(text: Optional[str]) -> bool:
+    """True when Codex output shows the grant itself is dead (not quota).
+
+    These runs burn an attempt on a pool entry that can never succeed until
+    re-login, so the entry is marked exhausted (401 cooldown) to stop future
+    runs retrying it and to surface the re-auth need in pool state.
+    """
+    low = (text or "").lower()
+    return any(sig in low for sig in _CODEX_AUTH_FAILURE_SIGNALS)
+
+
 def _load_codex_pool():
     """Return Hermes' native Codex credential pool."""
     from agent.credential_pool import load_pool
@@ -271,6 +290,13 @@ def _generate_codex_image(full_prompt: str, out_path: str,
 
         if not copied_image:
             print(f"[blog_illustrator] no image found after codex run (attempt {attempt})")
+            if _output_shows_auth_failure(result.stdout) or _output_shows_auth_failure(result.stderr):
+                print(f"[blog_illustrator] auth failure for account {credential_id}; "
+                      "marking for rotation (re-login required)")
+                pool.mark_exhausted_and_rotate(
+                    status_code=401, credential_id=credential_id,
+                    api_key_hint=entry.access_token, failure_reason="auth",
+                )
             continue
 
         size_kb = Path(out_path).stat().st_size // 1024

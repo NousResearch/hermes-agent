@@ -7,7 +7,7 @@ refresher and never drop identity claims that are present.
 
 from types import SimpleNamespace
 
-from blog.blog_illustrator import _codex_auth_payload
+from blog.blog_illustrator import _codex_auth_payload, _output_shows_auth_failure
 
 
 def _entry(**overrides):
@@ -106,3 +106,16 @@ def test_payload_degrades_when_refresh_fails():
             "refresh_token": "refresh-def",
         }
     }
+
+
+def test_output_shows_auth_failure_markers():
+    dead = ("ERROR: Your access token could not be refreshed because your "
+            "refresh token was already used. Please log out and sign in again.")
+    assert _output_shows_auth_failure(dead)
+    assert _output_shows_auth_failure(
+        "failed to connect to websocket: HTTP error: 401 Unauthorized")
+    assert not _output_shows_auth_failure("")
+    assert not _output_shows_auth_failure(
+        "usage limit reached; try again at Aug 24th, 2026 7:45 PM")
+    assert not _output_shows_auth_failure("transient 500 from backend")
+    assert not _output_shows_auth_failure(None)

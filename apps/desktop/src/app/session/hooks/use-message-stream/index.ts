@@ -15,6 +15,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  toolCallOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -93,6 +94,11 @@ export function useMessageStream({
       seed: () => ChatMessagePart[],
       opts: {
         pending?: (message: ChatMessage) => boolean
+        // Resolve the message an event should mutate by payload identity
+        // rather than by the current stream position. A late `tool.complete`
+        // that crosses an interim/settle boundary must attach to the bubble
+        // that still owns the call, wherever that bubble now sits.
+        eventTarget?: (state: ClientSessionState) => string | null
       } = {},
       occurredAt = Date.now() / 1000
     ) => {
@@ -106,7 +112,8 @@ export function useMessageStream({
             return state
           }
 
-          const streamId = state.streamId ?? nextStreamMessageId('assistant-stream')
+          const reconciledId = opts.eventTarget?.(state) ?? null
+          const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -138,7 +145,11 @@ export function useMessageStream({
           return {
             ...state,
             messages: nextMessages,
-            streamId,
+            // A reconciled target keeps the stream bookkeeping untouched:
+            // the live stream (if any) keeps its own id, and a sealed one
+            // stays sealed — later deltas must not append into the bubble
+            // the late event just updated.
+            streamId: reconciledId ? state.streamId : streamId,
             sawAssistantPayload: true,
             awaitingResponse: false
           }
@@ -486,7 +497,16 @@ export function useMessageStream({
         sessionId,
         parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt)),
         () => upsertToolPart([], payload, phase, occurredAt),
-        { pending: m => phase !== 'complete' || (m.pending ?? false) },
+        {
+          pending: m => phase !== 'complete' || (m.pending ?? false),
+          // A completion belongs to the bubble that owns the call, not to
+          // whatever is streaming now. Long tools (browser scrapes run
+          // minutes) outlive the interim commentary boundary that seals
+          // their bubble: without this lookup the completion seeds a new
+          // bubble with a duplicate row while the sealed one keeps reading
+          // "Result unavailable" forever (#113035).
+          eventTarget: state => (phase === 'complete' ? toolCallOwnerMessageId(state.messages, payload) : null)
+        },
         occurredAt
       )
     },

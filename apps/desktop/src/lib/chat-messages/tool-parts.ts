@@ -374,6 +374,43 @@ export interface SettledClarifyProjection {
   streamId: string | null
 }
 
+/**
+ * Find the message that owns a tool call, by its stable call id, anywhere in
+ * the transcript — not just in the currently-streaming bubble.
+ *
+ * Interim commentary and turn settles seal the streaming bubble and drop the
+ * stream id while a long-running tool is still executing. When the completion
+ * finally arrives it must reconcile with the part that already exists (and,
+ * sealed with `completedAt` but no `result`, renders as "Result unavailable"),
+ * instead of seeding a fresh bubble with a duplicate row (#113035).
+ *
+ * Newest-first: interim boundaries append bubbles, so the owner of an
+ * in-flight call is the most recent message that carries the id. Idempotent
+ * for duplicate completions — `upsertToolPart` overwrites the same part.
+ */
+export function toolCallOwnerMessageId(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined
+): string | null {
+  const stableId = toolId(payload)
+
+  if (!stableId) {
+    return null
+  }
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    for (const part of message.parts) {
+      if (part.type === 'tool-call' && part.toolCallId === stableId) {
+        return message.id
+      }
+    }
+  }
+
+  return null
+}
+
 interface PendingClarifyLocation {
   messageIndex: number
   partIndex: number

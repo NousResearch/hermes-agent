@@ -106,6 +106,13 @@ describe('ModelPickerDialog download rows', () => {
     expect(startManualOnboarding).toHaveBeenCalledWith(undefined, scope)
   })
 
+  it('hides provider setup when the caller cannot supply an immutable owner descriptor', async () => {
+    renderPicker({ allowProviderSetup: false })
+    await screen.findByText('Qwen3.6-27B-UD-Q4_K_XL')
+
+    expect(screen.queryByRole('button', { name: 'Add provider' })).toBeNull()
+  })
+
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
     $localRuntimeJobs.set([DOWNLOAD_JOB])
     renderPicker()

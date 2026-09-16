@@ -8,7 +8,12 @@
  * same order as connection apply (#97046, #91668).
  */
 
-import { assertLegacyConnectionOwner, type ProfileRouteOptions, resolveProfileBackendRoute } from './connection-config'
+import {
+  assertConnectionOwner,
+  assertLegacyConnectionOwner,
+  type ProfileRouteOptions,
+  resolveProfileBackendRoute
+} from './connection-config'
 import {
   backendScopeKey,
   type ConnectionRegistry,
@@ -23,7 +28,12 @@ export type RecycleOwnedBackendTarget = 'pool' | 'primary'
 
 /** Resolve the same registry/local routing ladder as requests, without booting anything. */
 export async function recyclePinnedBackend(
-  owner: { connectionId?: null | string; profile?: null | string; legacyConnection?: ResolvedConnectionDescriptor },
+  owner: {
+    connectionId?: null | string
+    connectionOwner?: ResolvedConnectionDescriptor
+    profile?: null | string
+    legacyConnection?: ResolvedConnectionDescriptor
+  },
   deps: {
     registry: ConnectionRegistry
     routeOptions: ProfileRouteOptions
@@ -109,6 +119,8 @@ export async function recyclePinnedBackend(
 
   if (legacy) {
     assertLegacyConnectionOwner(legacy, descriptor)
+  } else if (Object.hasOwn(owner, 'connectionOwner')) {
+    assertConnectionOwner(owner.connectionOwner, descriptor)
   }
 
   if (source?.kind === 'ssh' && resolvedConnectionId(deps.registry, descriptor) !== connectionId) {

@@ -121,6 +121,41 @@ it('primary pins preserve recovery but reject unmanaged and changed owners befor
   expect(deps.notifyApplied).toHaveBeenCalledOnce()
 })
 
+it('rejects a same-id replacement that no longer matches the captured connection owner', async () => {
+  const original = {
+    mode: 'remote' as const,
+    remoteKind: 'ssh' as const,
+    connectionId: 'ssh-a',
+    baseUrl: 'http://127.0.0.1:1234',
+    token: 'original'
+  }
+
+  const replacement = { ...original, baseUrl: 'http://127.0.0.1:4321', token: 'replacement' }
+  const teardownSsh = vi.fn(async () => {})
+  const teardownPrimary = vi.fn(async () => {})
+
+  await expect(
+    recyclePinnedBackend(
+      { connectionId: 'ssh-a', connectionOwner: original, profile: 'default' },
+      {
+        registry,
+        routeOptions: { primaryProfile: 'default' },
+        effectiveSshFingerprint: async () => 'fixture',
+        primarySshKey: '',
+        primaryPromise: () => Promise.resolve(replacement),
+        pool: new Map(),
+        sshState: () => ({ remotePlatform: 'Linux' }),
+        teardownSsh,
+        teardownPool: vi.fn(async () => {}),
+        teardownPrimary,
+        notifyApplied: vi.fn()
+      }
+    )
+  ).rejects.toThrow('Backend changed')
+  expect(teardownSsh).not.toHaveBeenCalled()
+  expect(teardownPrimary).not.toHaveBeenCalled()
+})
+
 it('legacy SSH recovery validates the descriptor before the existing ordered teardown', async () => {
   const descriptor = {
     mode: 'remote' as const,

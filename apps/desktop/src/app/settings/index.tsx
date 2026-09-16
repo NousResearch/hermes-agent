@@ -210,6 +210,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
     try {
       const cfg = await getHermesConfigRecord(owner)
+
+      if ($settingsOwner.get() !== owner) {
+        return
+      }
+
       const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

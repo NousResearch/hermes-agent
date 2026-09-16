@@ -972,16 +972,22 @@ def read_record(
 
 
 def cleanup_bot_delivery_queue(max_age_hours: float | None = None) -> int:
-    """Hourly housekeeping hook (spec 3.1 trigger 4): sweep THIS home's queue.
+    """Hourly housekeeping hook (spec 3.1 trigger 4): sweep the queue.
 
     ``max_age_hours`` exists only for signature parity with the other
     ``cleanup_*`` chores; the queue's own TTL governs expiry.
+
+    Sweeps EVERY profile home under the root (default + named profiles), not
+    just the default home: a peer delivery is admitted into its target lane's
+    own home, so sweeping only the default home left a named lane's backlog
+    stuck without expiry or orphan-claim recovery.
     """
     del max_age_hours
     try:
-        from tools.bot_mode_probe import _default_home
+        from tools.bot_mode_probe import _default_home, _hermes_root, _roster
 
-        return sweep_delivery_queue(Path(_default_home()))
+        root = _hermes_root(Path(_default_home()))
+        return sum(sweep_delivery_queue(profile_home) for _name, profile_home in _roster(root))
     except Exception:  # pragma: no cover - housekeeping must not raise
         logger.debug("bot_delivery sweep failed", exc_info=True)
         return 0

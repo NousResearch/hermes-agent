@@ -156,6 +156,7 @@ def _restore_app_state_after_test(monkeypatch, *names):
         )
 
 
+@pytest.mark.requires_idle_host
 def test_start_server_loopback_sets_auth_required_false(monkeypatch):
     """Loopback bind: app.state.auth_required is False after start_server."""
     _stub_uvicorn_run(monkeypatch)
@@ -210,6 +211,7 @@ def test_start_server_public_without_insecure_records_auth_required(monkeypatch)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.requires_idle_host
 def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeypatch):
     """With at least one provider, public bind + no --insecure starts the server.
 
@@ -241,6 +243,7 @@ def test_start_server_gate_with_provider_proceeds_and_sets_proxy_headers(monkeyp
         clear_providers()
 
 
+@pytest.mark.requires_idle_host
 def test_start_server_passes_bounded_trusted_proxy_networks(monkeypatch, caplog):
     """A configured proxy network reaches uvicorn without broadening to all peers."""
     from hermes_cli.dashboard_auth import clear_providers, register_provider
@@ -351,6 +354,7 @@ def test_public_url_aware_gate_preserves_local_only_mode(monkeypatch):
     assert should_require_dashboard_auth("127.0.0.1") is False
 
 
+@pytest.mark.requires_idle_host
 def test_start_server_loopback_public_url_enables_gate(monkeypatch):
     """A declared external URL turns a loopback reverse proxy into gated mode."""
     from hermes_cli.dashboard_auth import clear_providers, register_provider

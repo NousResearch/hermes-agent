@@ -3,7 +3,7 @@
 import os
 import re
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -138,7 +138,14 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def test_default_is_none(self):
         """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
+        # The ambient environment is NOT the fixture. A machine that actually
+        # runs Hermes exports DISCORD_ALLOW_BOTS from its .env (the Vostro sets
+        # it to "mentions"), so reading os.environ here asserted on the
+        # OPERATOR'S config instead of on the documented default, and the test
+        # failed on exactly the hosts where Discord is configured. Clearing the
+        # variable pins the default on every host.
+        with patch.dict(os.environ, {}, clear=True):
+            default = os.getenv("DISCORD_ALLOW_BOTS", "none")
         self.assertEqual(default, "none")
 
 

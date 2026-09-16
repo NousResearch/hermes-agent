@@ -334,9 +334,17 @@ def _reload_process_scan_modules() -> None:
     bounded_probe_run``. If the update added a new symbol to ``_subprocess_compat`` (as #87134 did with
     ``bounded_probe_run``), the cached OLD module object doesn't have it and the cleanup step crashes with
     ImportError — after the code update itself already succeeded.
+    ``main_dashboard`` reloads first for the same reason one link further down the lazy chain: the kill
+    path resolves it at call time (``from hermes_cli import main_dashboard as _dash``), so a pre-pull
+    cache missing a helper the pull added (``_loaded_launchd_backend_jobs``) surfaces as AttributeError
+    after the update already succeeded.
     """
     _reload_modules(
-        ("hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"),
+        (
+            "hermes_cli._subprocess_compat",
+            "hermes_cli.main_dashboard",
+            "hermes_cli.dashboard_procs",
+        ),
         modules=sys.modules,
         # warning, not debug: a failed reload surfaces as ImportError seconds later.
         log=lambda name, exc: logger.warning(

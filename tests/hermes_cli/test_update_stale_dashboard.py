@@ -920,6 +920,28 @@ class TestPostUpdateStaleModuleReload:
             importlib.reload(sys.modules["hermes_cli._subprocess_compat"])
             importlib.reload(sys.modules["hermes_cli.dashboard_procs"])
 
+    def test_reload_restores_missing_dashboard_helper(self):
+        """Same staleness, one link further down the lazy chain: the kill path
+        resolves ``main_dashboard`` at call time, so a pre-pull cache missing
+        a helper the pull added (``_loaded_launchd_backend_jobs``) must be
+        refreshed by the process-scan reload — otherwise the post-update
+        cleanup crashes with AttributeError after the update succeeded."""
+        import hermes_cli.main_dashboard as dash
+        from hermes_cli import update_cmd
+
+        assert hasattr(dash, "_loaded_launchd_backend_jobs")
+        try:
+            delattr(dash, "_loaded_launchd_backend_jobs")
+            assert not hasattr(dash, "_loaded_launchd_backend_jobs")
+
+            update_cmd._reload_process_scan_modules()
+
+            stale = sys.modules["hermes_cli.main_dashboard"]
+            assert hasattr(stale, "_loaded_launchd_backend_jobs")
+        finally:
+            importlib.reload(sys.modules["hermes_cli.main_dashboard"])
+            importlib.reload(sys.modules["hermes_cli.dashboard_procs"])
+
     def test_reload_failure_is_nonfatal(self):
         """A reload failure must log and continue, never raise — the cleanup
         step runs after the update already succeeded."""
@@ -938,7 +960,13 @@ class TestPostUpdateStaleModuleReload:
             update_cmd._reload_config_modules()
 
         assert "hermes_cli._subprocess_compat" in reloaded
+        assert "hermes_cli.main_dashboard" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+        # Dependency-first: the kill path binds to main_dashboard at call time, so it must be
+        # refreshed before the module that consumes it.
+        assert reloaded.index("hermes_cli.main_dashboard") < reloaded.index(
+            "hermes_cli.dashboard_procs"
+        )
 
 
 class TestLaunchdSupervisedBackends:

@@ -104,8 +104,8 @@ async def set_dashboard_font(body: FontSetBody):
 def _plugin_enable_sets() -> tuple[set, set]:
     """(enabled, disabled) plugin name sets; empty on any failure."""
     try:
-        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-        return _get_enabled_set(), _get_disabled_set()
+        from hermes_cli.plugin_gate_sets import plugin_enable_sets
+        return plugin_enable_sets()
     except Exception:
         return set(), set()
 

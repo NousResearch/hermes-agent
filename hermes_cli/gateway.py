@@ -1827,14 +1827,22 @@ def stop_profile_gateway() -> bool:
 
     windows = is_windows()
     if windows:
+        from gateway.status import get_process_start_time
         from hermes_cli.gateway_windows import (
             _drain_gateway_pid,
             _force_terminate_known_gateway_pids,
+            _gateway_pid_identity_is_live,
             _windows_stop_drain_timeout,
         )
 
-        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
-            _force_terminate_known_gateway_pids([pid])
+        expected_start_time = get_process_start_time(pid)
+        if not _drain_gateway_pid(
+            pid, _windows_stop_drain_timeout(), expected_start_time
+        ):
+            _force_terminate_known_gateway_pids({pid: expected_start_time})
+        if _gateway_pid_identity_is_live(pid, expected_start_time):
+            print(f"⚠ Gateway PID {pid} is still running")
+            return False
     else:
         _mark_planned_stop(pid)
         try:

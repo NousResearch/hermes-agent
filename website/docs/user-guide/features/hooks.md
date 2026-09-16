@@ -383,10 +383,16 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
 - Callback exceptions are logged and skipped; later callbacks continue.
-- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
+- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call` and `append_runtime_footer`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. The same callback is suppressed while it is still running and for a short cooldown after a timeout, preventing repeated fires from accumulating workers. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
+
+### `append_runtime_footer`
+
+This Python-plugin-only observer fires after Hermes renders a non-empty enabled gateway runtime footer. It receives `footer`, `model`, `provider`, `context_tokens`, `context_length`, `cwd`, `turn_seconds`, `platform`, and `telemetry_schema_version`; it never receives gateway config, credentials, adapter handles, or a transcript. Return one optional display fragment as a string. Hermes collapses whitespace to one line and caps the result at 160 characters. Non-string, empty, failing, timed-out, or suppressed callback results are discarded, so plugins cannot suppress the built-in footer or a completed response. Shell hooks cannot register this event.
+
+Use precomputed local state only: rendering the final reply is not a network-I/O hook.
 
 ### Cache-safe system prompt sections
 

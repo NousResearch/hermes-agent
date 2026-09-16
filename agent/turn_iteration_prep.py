@@ -27,43 +27,81 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
     "solely because of this warning."
 )
 
+# Goal-mode Kanban workers: land at ~60/90, leaving room for comment + block/complete.
+# Ordinary conversations stay opt-in; non-goal Kanban workers keep the 90% continue notice.
+KANBAN_GOAL_LANDING_RATIO = 2 / 3
+KANBAN_LANDING_RESERVE_TURNS = 2
+KANBAN_GOAL_LANDING_CHECKPOINT_TEMPLATE = (
+    "[SYSTEM NOTICE — kanban landing checkpoint] You have used {used} of {maximum} "
+    "iterations. Stop product work. Remaining iterations are reserved for a terminal "
+    "handoff: persist a kanban_comment with verified current state, then call "
+    "kanban_block if human input or review is needed, or kanban_complete only if every "
+    "acceptance criterion is already verified. Do not start new implementation. Do not "
+    "invent a blocker. A diff or commit is not completion."
+)
 
-def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
-    """Append the opt-in one-shot warning to the newest tool result."""
+
+def _is_dispatcher_kanban_worker(agent: Any) -> bool:
     import os
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
+    return (
+        bool(os.environ.get("HERMES_KANBAN_TASK"))
+        and is_dispatcher_owned_worker_context()
+        and "kanban_complete" in getattr(agent, "valid_tool_names", ())
+    )
+
+
+def _is_kanban_goal_worker(agent: Any) -> bool:
+    import os
+
+    return _is_dispatcher_kanban_worker(agent) and os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1"
+
+
+def iteration_checkpoint_threshold(max_total: int, ratio: float, reserve: int) -> float:
+    """Used-count at/after which a checkpoint may fire, leaving ``reserve`` iterations."""
+    reserved = min(max(int(reserve), 1), max(int(max_total) - 1, 1))
+    return min(ratio * max_total, max_total - reserved)
+
+
+def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
+    """Append the opt-in one-shot warning to the newest tool result."""
     # Cancellation results still need persistence, but must not urge more work.
     if getattr(agent, "_interrupt_requested", False):
         return False
 
     ratio = getattr(agent, "budget_warning_ratio", None)
-    kanban_worker = (
-        bool(os.environ.get("HERMES_KANBAN_TASK"))
-        and is_dispatcher_owned_worker_context()
-        and "kanban_complete" in getattr(agent, "valid_tool_names", ())
-    )
-    if ratio is None and kanban_worker:
+    kanban_worker = _is_dispatcher_kanban_worker(agent)
+    goal_worker = _is_kanban_goal_worker(agent)
+    if ratio is None and goal_worker:
+        ratio = KANBAN_GOAL_LANDING_RATIO
+    elif ratio is None and kanban_worker:
         ratio = 0.9
     budget = getattr(agent, "iteration_budget", None)
+    reserve = KANBAN_LANDING_RESERVE_TURNS if goal_worker else 1
     if (
         ratio is None
         or budget is None
         or budget.max_total <= 1
         or budget.max_total >= sys.maxsize
         or getattr(agent, "_iteration_budget_warning_injected", False)
-        or budget.used < min(ratio * budget.max_total, budget.max_total - 1)
+        or budget.used < iteration_checkpoint_threshold(budget.max_total, ratio, reserve)
     ):
         return False
-    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
-        used=budget.used, maximum=budget.max_total
-    )
-    if kanban_worker:
-        notice += (
-            " While tools are still available, call kanban_complete only if all task "
-            "requirements are verified; otherwise persist a kanban_comment handoff and "
-            "continue. A diff or commit alone is not completion evidence."
+    if goal_worker:
+        notice = KANBAN_GOAL_LANDING_CHECKPOINT_TEMPLATE.format(
+            used=budget.used, maximum=budget.max_total
         )
+    else:
+        notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
+            used=budget.used, maximum=budget.max_total
+        )
+        if kanban_worker:
+            notice += (
+                " While tools are still available, call kanban_complete only if all task "
+                "requirements are verified; otherwise persist a kanban_comment handoff and "
+                "continue. A diff or commit alone is not completion evidence."
+            )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
     from agent.context_compressor import _DB_PERSISTED_MARKER
     if (not messages or messages[-1].get("role") != "tool"

@@ -247,6 +247,31 @@ class TestCallLlmStructuredOutputRetry:
                 )
         assert client.chat.completions.create.call_count == 1
 
+    def test_capable_model_dispatches_complete_json_schema(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        client.chat.completions.create.return_value = _dummy_response()
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "schema-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(client, "schema-model")),
+            patch("agent.models_dev.model_supports_json_schema", return_value=True),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task, **_kw: resp),
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=64,
+                extra_body={"response_format": dict(_TITLE_RESPONSE_FORMAT)},
+            )
+
+        assert result == {"ok": True}
+        dispatched = client.chat.completions.create.call_args.kwargs
+        assert dispatched["extra_body"]["response_format"] == _TITLE_RESPONSE_FORMAT
+
 
 def test_deepseek_uses_json_object_before_dispatch():
     extra_body = {"response_format": dict(_TITLE_RESPONSE_FORMAT)}

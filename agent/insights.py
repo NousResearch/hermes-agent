@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
+from agent.model_metadata import resolve_probe_api_key
 from hermes_cli.timefmt import coerce_epoch
 
 _TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
@@ -36,7 +37,10 @@ def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0
     else:
         model = session_or_model or ""
         usage = CanonicalUsage(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-    result = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
+    # Auth-gated providers 401 the /models probe without the configured key (#75479).
+    result = estimate_usage_cost(
+        model, usage, provider=provider, base_url=base_url,
+        api_key=resolve_probe_api_key(provider, base_url))
     return float(result.amount_usd or 0.0), result.status
 
 

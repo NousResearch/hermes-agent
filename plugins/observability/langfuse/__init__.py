@@ -482,13 +482,17 @@ def _canonical_usage_and_cost(canonical: Any, *, provider: str, model: str,
     cost_details: Dict[str, float] = {}
     try:
         from agent.usage_pricing import estimate_usage_cost, resolve_billing_route
+        from agent.model_metadata import resolve_probe_api_key
 
         # Subscription-included routes: Langfuse treats explicit cost_details
         # (even zeros) as authoritative, so omit them and let it estimate.
         route = resolve_billing_route(model, provider=provider, base_url=base_url)
         if getattr(route, "billing_mode", "") == "subscription_included":
             return usage_details, cost_details
-        cost = estimate_usage_cost(model, canonical, provider=provider, base_url=base_url, api_key="")
+        # Auth-gated providers 401 the /models probe without the configured key (#75479).
+        cost = estimate_usage_cost(
+            model, canonical, provider=provider, base_url=base_url,
+            api_key=resolve_probe_api_key(provider, base_url))
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"usage pricing failed: {exc}")
         return usage_details, cost_details

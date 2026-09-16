@@ -48,3 +48,17 @@ def test_snapshot_does_not_invent_persistence_or_enqueue_interrupted_turn():
     agent = SimpleNamespace(_memory_manager=SimpleNamespace(sync_all=lambda *a, **kw: pytest.fail("interrupted sync")))
     AIAgent._sync_external_memory_for_turn(agent, original_user_message="q", final_response="a",
                                          interrupted=True, messages=messages)
+
+
+def test_snapshot_preserves_event_timestamps_without_copying_untrusted_fields():
+    messages = [
+        {"role": "user", "content": "q", "timestamp": "2025-01-02T03:04:05+00:00",
+         "private_field": "must not cross the boundary"},
+        {"role": "assistant", "content": "a", "timestamp": "2025-01-02T03:04:07+00:00"},
+    ]
+    snapshot = snapshot_completed_turn(messages, session_id="s", user_content="q", assistant_content="a")
+
+    assert snapshot.messages() == [
+        {"role": "user", "content": "q", "timestamp": "2025-01-02T03:04:05+00:00"},
+        {"role": "assistant", "content": "a", "timestamp": "2025-01-02T03:04:07+00:00"},
+    ]

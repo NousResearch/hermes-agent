@@ -2982,9 +2982,10 @@ def _publish_rotated_compaction(
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.prompt_cache_scope import _agent_source
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
-        source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
+        source=_agent_source(agent, old_session_id, agent._session_db), model=agent.model,
         model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,

@@ -29,3 +29,11 @@ def test_session_source_falls_back_to_platform(monkeypatch):
     assert _session_source_for_agent("tui") == "tui"
 
 
+def test_single_query_cli_uses_oneshot_source_before_inherited_transport(monkeypatch):
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "tui")
+
+    assert _session_source_for_agent("cli") == "oneshot"
+    assert _session_source_for_agent("tui") == "tui"
+
+

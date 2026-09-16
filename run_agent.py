@@ -44,6 +44,8 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 
 
 def _session_source_for_agent(platform: Optional[str]) -> str:
+    if platform == "cli" and os.environ.get("HERMES_SINGLE_QUERY_SESSION") == "1":
+        return "oneshot"
     try:
         from gateway.session_context import get_session_env
 

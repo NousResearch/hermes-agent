@@ -69,3 +69,13 @@ def test_session_list_include_hidden(db):
 
     all_rows = _call("session.list", {"include_hidden": True})["result"]["sessions"]
     assert {s["id"] for s in all_rows} == {"plain-chat", "bot-chat"}
+
+
+def test_session_list_excludes_automatic_sources_without_hiding_interactive_tui(db):
+    for sid, source in (("tui-chat", "tui"), ("one-shot", "oneshot"), ("worker", "kanban")):
+        db.create_session(sid, source=source)
+        db.append_message(sid, "user", content="hello")
+
+    rows = _call("session.list", {"include_hidden": True})["result"]["sessions"]
+
+    assert {row["id"] for row in rows} == {"tui-chat"}

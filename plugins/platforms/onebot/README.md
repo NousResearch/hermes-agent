@@ -46,7 +46,7 @@ gateway:
       enabled: true
       extra:
         mode: reverse              # reverse | forward
-        host: "0.0.0.0"            # listen address (reverse: WS+API; forward: /api-only server)
+        host: "127.0.0.1"          # listen address (reverse: WS+API; forward: /api-only server); 0.0.0.0 requires access_token
         port: 8643                 # listen port (reverse: WS+API; forward: /api-only server)
         # url: "ws://127.0.0.1:3001"   # forward: bridge ws endpoint
         # access_token: ""         # must match the bridge's token; REQUIRED when host is 0.0.0.0
@@ -67,7 +67,7 @@ gateway:
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `reverse` | `reverse` (bridge dials in) / `forward` (adapter dials out) |
-| `host` / `port` | `0.0.0.0` / `8643` | reverse: WS + `/api/*` listener; forward: `/api/*`-only server (no `/ws`) |
+| `host` / `port` | `127.0.0.1` / `8643` | reverse: WS + `/api/*` listener; forward: `/api/*`-only server (no `/ws`). Non-loopback hosts like `0.0.0.0` require `access_token` |
 | `url` | `ws://127.0.0.1:3001` | forward target |
 | `access_token` | empty | OneBot token, must match the bridge |
 | `bot_qq` | empty | bot's QQ (empty = learned from meta events) |
@@ -138,6 +138,11 @@ token is read from the same config source as the adapter (or the
 `ONEBOT_ACCESS_TOKEN` environment override), so no extra setup is needed.
 Without a token they send no Authorization header and token-less loopback
 deployments keep working unchanged.
+
+**WS frame limit of 4 MiB** (declared explicitly, matching the aiohttp default —
+zero behavior change): NapCat frames larger than 4 MiB (e.g. base64-inline
+media) are rejected. Prefer URL-based image delivery (NapCat's file-to-URL
+switch) in production to stay under the limit.
 
 ### NapCat-side setup (required)
 

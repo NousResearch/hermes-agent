@@ -1058,6 +1058,10 @@ class MarkdownParser:
         return elements
 
 
+# D3 裁决（2026-09-16）：渲染总高上限（px）。超限抛 ValueError，由调用方
+# （adapter.send）走既有失败回退路径——降级为分段纯文本发送。
+MAX_RENDER_HEIGHT = 8000
+
 # ── 渲染器 ────────────────────────────────────────────────────────────
 class MarkdownRenderer:
     def __init__(self, font_size: int = 26, width: int = 800):
@@ -1078,6 +1082,17 @@ class MarkdownRenderer:
             total_height += el.calculate_height(self.width, self.font_size, chain)
         footer_height = 40
         total_height += 20 + footer_height
+
+        # D3 裁决（2026-09-16）：总高上限 8000px。超限不在渲染器内截断，
+        # 而是抛错走调用方（adapter.send）既有失败回退路径——降级为分段
+        # 纯文本。铁律核对：本检查位于第一遍测量（calculate_height 累加）
+        # 之后、Image.new/任何 draw* 绘制调用之前，不触碰任何绘制路径，
+        # 测量=绘制 与右缘 790 判定均不受影响。
+        if total_height > MAX_RENDER_HEIGHT:
+            raise ValueError(
+                f"rendered height {total_height}px exceeds "
+                f"MAX_RENDER_HEIGHT={MAX_RENDER_HEIGHT}px"
+            )
 
         image = Image.new("RGB", (self.width, max(100, total_height)), (255, 255, 255))
         draw = ImageDraw.Draw(image)

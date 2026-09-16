@@ -22,6 +22,7 @@ from plugins.platforms.onebot.adapter import (
     _is_loopback_peer,
     render_text_image,
 )
+from plugins.platforms.onebot import t2i_render
 from plugins.platforms.onebot.onebot_utils import (
     DEFAULT_SPLIT_LENGTH,
     _split_reply,
@@ -2267,4 +2268,143 @@ def test_forward_disconnect_releases_api_port(monkeypatch) -> None:
             probe.bind(("127.0.0.1", api_port))
         await napcat_runner.cleanup()
 
+
+
+# ---------------------------------------------------------------------------
+# T4 minor 批次新增测试
+# ---------------------------------------------------------------------------
+
+
+def test_local_command_mode_query_two_states() -> None:
+    """/mode 查询两态：无 override 时提示「默认 interim」且不得出现 instant
+    自相矛盾；/mode instant 覆盖后查询显示 instant（/mode 覆盖）。"""
+    adapter = _make_adapter(admin_users=[123456789])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    chat = "private:123456789"
+
+    def _last_reply_text() -> str:
+        payloads = [p for p in ws.sent if p["action"] == "send_msg"]
+        assert payloads, "expected a send_msg reply"
+        return "".join(
+            s.get("data", {}).get("text", "") for s in payloads[-1]["params"]["message"]
+        )
+
+    # 态 1：无 override —— 默认 interim，不能出现「instant + 默认 interim」矛盾
+    _command_process(adapter, ws, "/mode")
+    text = _last_reply_text()
+    assert "默认 interim" in text
+    assert "instant（逐条即时）" not in text
+    assert "（/mode 覆盖）" not in text
+
+    # 态 2：/mode instant 覆盖后 —— instant + （/mode 覆盖）
+    ws.sent.clear()
+    _command_process(adapter, ws, "/mode instant")
+    assert adapter._chat_interim_overrides.get(chat) is False
+    ws.sent.clear()
+    _command_process(adapter, ws, "/mode")
+    text = _last_reply_text()
+    assert "instant（逐条即时）" in text
+    assert "（/mode 覆盖）" in text
+    assert "默认 interim" not in text
+
+    # 补充：/mode interim 覆盖后 —— interim + （/mode 覆盖）
+    ws.sent.clear()
+    _command_process(adapter, ws, "/mode interim")
+    ws.sent.clear()
+    _command_process(adapter, ws, "/mode")
+    text = _last_reply_text()
+    assert "interim（合并卡片）" in text
+    assert "（/mode 覆盖）" in text
+    assert "默认 interim" not in text
+
+
+def test_t2i_render_height_limit_constant() -> None:
+    """渲染器导出总高上限常量 8000px（D3 裁决）。"""
+    assert t2i_render.MAX_RENDER_HEIGHT == 8000
+
+
+def test_t2i_render_under_limit_renders_png() -> None:
+    """边界：总高 ≤ 8000px（约 200 行正文）正常渲染为 PNG，不回退。"""
+    png = render_text_image("接近上限的正常行\n" * 200)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_t2i_render_over_limit_raises() -> None:
+    """超限：总高 > 8000px 抛 ValueError（不截断画布、不产生半渲染图）。"""
+    with pytest.raises(ValueError, match="MAX_RENDER_HEIGHT"):
+        render_text_image("超限的行\n" * 400)
+
+
+def test_send_t2i_over_limit_falls_back_to_text_chunks(monkeypatch) -> None:
+    """超限走既有失败回退路径：渲染抛 ValueError → 降级分段纯文本发送，
+    不发送任何图片段。"""
+    import plugins.platforms.onebot.adapter as adapter_mod
+
+    def boom(text, title=None):
+        raise ValueError("rendered height exceeds MAX_RENDER_HEIGHT=8000px")
+
+    monkeypatch.setattr(adapter_mod, "render_text_image", boom)
+    adapter = _make_adapter(text_image_threshold=50, split_length=50)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+
+    result = asyncio.run(adapter.send("private:1", "很长" * 40))
+    assert result.success
+    assert ws.sent, "fallback must still deliver text"
+    for payload in ws.sent:
+        assert all(seg["type"] == "text" for seg in payload["params"]["message"])
+
+
+def test_reverse_server_startup_warns_non_loopback_without_token(caplog) -> None:
+    """A4 启动期告警：绑定非 loopback host 且未配 access_token → 启动即
+    WARNING 一次；配 token 或 loopback host 不告警。"""
+    adapter = _make_adapter(host="0.0.0.0", port=0)
+
+    async def run():
+        await adapter._start_reverse_server()
+        try:
+            pass
+        finally:
+            await adapter._runner.cleanup()
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.onebot.adapter"):
+        asyncio.run(run())
+
+    warn_texts = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "non-loopback host" in t and "access_token" in t for t in warn_texts
+    ), warn_texts
+
+    # 反例 1：默认 loopback host 不告警
+    caplog.clear()
+    adapter2 = _make_adapter(port=0)
+
+    async def run2():
+        await adapter2._start_reverse_server()
+        await adapter2._runner.cleanup()
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.onebot.adapter"):
+        asyncio.run(run2())
+    assert not [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "non-loopback host" in r.getMessage()
+    ]
+
+    # 反例 2：非 loopback host 但已配 token 不告警
+    caplog.clear()
+    adapter3 = _make_adapter(host="0.0.0.0", port=0, access_token="s3cret")
+
+    async def run3():
+        await adapter3._start_reverse_server()
+        await adapter3._runner.cleanup()
+
+    with caplog.at_level(logging.WARNING, logger="plugins.platforms.onebot.adapter"):
+        asyncio.run(run3())
+    assert not [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "non-loopback host" in r.getMessage()
+    ]
     asyncio.run(run())

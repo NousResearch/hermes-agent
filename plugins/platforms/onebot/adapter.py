@@ -411,6 +411,17 @@ class OneBotAdapter(BasePlatformAdapter):
         app.router.add_post("/api/send_media", self._handle_send_media)
 
     async def _start_reverse_server(self) -> None:
+        # A4 启动期告警：非 loopback host + 未配 access_token 的裸奔部署，
+        # 启动即提示一次（运行期 _check_api_auth 仍有逐请求 WARNING 兜底）。
+        # 复用 _is_loopback_peer 判定；主机名等无法解析的取值按非 loopback
+        # 处理（fail-loud，宁多告警不漏裸奔）。
+        if not self._access_token and not _is_loopback_peer(self._host):
+            logger.warning(
+                "[onebot] reverse server binding non-loopback host %s without "
+                "access_token — any reachable host can connect as the bridge; "
+                "set access_token",
+                self._host,
+            )
         app = web.Application()
         app.router.add_get("/ws", self._handle_reverse_ws)
         app.router.add_get("/onebot", self._handle_reverse_ws)
@@ -607,10 +618,14 @@ class OneBotAdapter(BasePlatformAdapter):
         if self._access_token:
             auth = request.headers.get("Authorization", "")
             expected = f"Bearer {self._access_token}"
-            if auth != expected:
+            # compare_digest 按字节比较：凭证头出现非 ASCII 也不会 TypeError → 500
+            # （与 _check_api_auth 同语义）
+            if not hmac.compare_digest(auth.encode("utf-8"), expected.encode("utf-8")):
                 logger.warning("[onebot] reverse WS auth rejected")
                 return web.Response(status=401, text="unauthorized")
-        ws = web.WebSocketResponse(heartbeat=30)
+        # max_msg_size 显式声明（与 aiohttp 3.14.3 现行默认一致，零行为变化）：
+        # NapCat base64 大帧 >4MiB 会被拒收，生产传图以 URL 为主。
+        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=4 * 1024 * 1024)
         await ws.prepare(request)
         self._ws = ws
         logger.info("[onebot] NapCat connected via reverse WS")
@@ -708,6 +723,8 @@ class OneBotAdapter(BasePlatformAdapter):
         try:
             ws = await session.ws_connect(
                 self._url, headers=headers, heartbeat=30,
+                # max_msg_size 显式声明（与 aiohttp 3.14.3 现行默认一致，零行为变化）
+                max_msg_size=4 * 1024 * 1024,
                 timeout=aiohttp.ClientWSTimeout(ws_close=10.0),
             )
         except Exception:
@@ -1137,9 +1154,13 @@ class OneBotAdapter(BasePlatformAdapter):
         if cmd == "mode":
             if not arg:
                 cur = self._chat_interim_overrides.get(chat_id)
+                if cur is None:
+                    return (
+                        "当前出站模式：interim（合并卡片）（默认 interim）\n"
+                        "用法：/mode interim|instant"
+                    )
                 label = "interim（合并卡片）" if cur else "instant（逐条即时）"
-                state = "（/mode 覆盖）" if cur is not None else "（默认 interim）"
-                return f"当前出站模式：{label}{state}\n用法：/mode interim|instant"
+                return f"当前出站模式：{label}（/mode 覆盖）\n用法：/mode interim|instant"
             if arg in ("interim", "on", "merge"):
                 self._chat_interim_overrides[chat_id] = True
                 return "✅ 已切换为 interim（合并卡片）模式。下一条回复生效。"
@@ -1179,7 +1200,6 @@ class OneBotAdapter(BasePlatformAdapter):
         to 16 kHz mono WAV so the gateway's STT pipeline can transcribe
         them. Replies/at are normalized to plain text.
         """
-        image_urls = _load_onebot_utils()._CQ_IMAGE_RE.findall(raw)
         media_urls: List[str] = []
         media_types: List[str] = []
         # 完整解析每个 CQ:image 的 url/file 属性（url 可能为空，需 get_image 换取）
@@ -1189,7 +1209,7 @@ class OneBotAdapter(BasePlatformAdapter):
                 if "=" in kv:
                     k, _, v = kv.partition("=")
                     attrs[k.strip()] = _load_onebot_utils()._cq_unescape(v)
-            logger.info("[onebot] CQ:image attrs: %s", attrs)
+            logger.debug("[onebot] CQ:image attrs: %s", attrs)
             try:
                 path = await self._resolve_image(attrs.get("url", ""), attrs.get("file", ""))
                 if path:

@@ -44,7 +44,7 @@ gateway:
       enabled: true
       extra:
         mode: reverse              # reverse | forward
-        host: "0.0.0.0"            # 监听地址（reverse: WS+API；forward: 仅 /api 的 server）
+        host: "127.0.0.1"          # 监听地址（reverse: WS+API；forward: 仅 /api 的 server）；0.0.0.0 必须配 access_token
         port: 8643                 # 监听端口（reverse: WS+API；forward: 仅 /api 的 server）
         # url: "ws://127.0.0.1:3001"   # forward: 桥接 ws 端点
         # access_token: ""         # 必须与桥的 token 一致；host 为 0.0.0.0 时必配
@@ -65,7 +65,7 @@ gateway:
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `mode` | `reverse` | `reverse`（桥拨入）/ `forward`（适配器拨出） |
-| `host` / `port` | `0.0.0.0` / `8643` | reverse：WS + `/api/*` 监听；forward：仅 `/api/*` 的 server（无 `/ws`） |
+| `host` / `port` | `127.0.0.1` / `8643` | reverse：WS + `/api/*` 监听；forward：仅 `/api/*` 的 server（无 `/ws`）。绑 `0.0.0.0` 等非 loopback 地址必须配 `access_token` |
 | `url` | `ws://127.0.0.1:3001` | 正向目标 |
 | `access_token` | 空 | OneBot token，必须与桥一致 |
 | `bot_qq` | 空 | 机器人 QQ（空 = 从 meta 事件学习） |
@@ -127,6 +127,10 @@ forward 模式单独成 server——共用同一道鉴权闸门：
 自动附上 `Authorization: Bearer <token>`——凭证与 adapter 同源（gateway 配置中的
 `access_token`，或 `ONEBOT_ACCESS_TOKEN` 环境变量覆盖），无需额外配置。未配
 token 时不携带该头，loopback 部署行为不变。
+
+**WS 帧上限 4 MiB**（显式声明，与 aiohttp 现行默认一致，零行为变化）：NapCat 以
+base64 内嵌上报的大于 4 MiB 的帧会被拒收。生产传图以 URL（NapCat
+「文件转 URL」/ file-to-URL）方式为主，避免触发该上限。
 
 ### NapCat 侧配置（必做）
 

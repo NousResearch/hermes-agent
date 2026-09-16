@@ -158,6 +158,7 @@ import { ProjectDialog } from './project-dialog'
 import { resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
+  mergeProjectOverlaySessions,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -752,6 +753,20 @@ export function ChatSidebar({
   // instead of flattening the whole sidebar into an undated manual mode.
   const agentSessions = unpinnedAgentSessions
 
+  // Scheduled sessions arrive through their own feed, so they intentionally do
+  // not alter flat Recents. Projects, however, use the live overlay for both
+  // overview previews and drill-in lanes. Feed it the unpinned, filter-matching
+  // scheduled rows too, so a cron run files under its project (or Home when it
+  // has no project path) just like an agent session.
+  const projectOverlaySessions = useMemo(
+    () =>
+      mergeProjectOverlaySessions(
+        agentSessions,
+        visibleCronSessions.filter(session => !isHiddenFromProjects(session))
+      ),
+    [agentSessions, visibleCronSessions, isHiddenFromProjects]
+  )
+
   // Recents are local-only: messaging-platform sessions are fetched as their
   // own slice ($messagingSessions) and rendered in self-managed per-platform
   // sections below, so there is no source-grouping magic to untangle here.
@@ -1045,8 +1060,8 @@ export function ChatSidebar({
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
   const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
+    () => reconcileEnteredProjectSessions(projectOverlaySessions, overviewEnteredProject?.previewSessions),
+    [projectOverlaySessions, overviewEnteredProject?.previewSessions]
   )
 
   // Overlay live `$sessions` onto the entered project so a just-created session
@@ -1166,7 +1181,7 @@ export function ChatSidebar({
     () =>
       overlayLivePreviews(
         projectOverview ?? [],
-        agentSessions,
+        projectOverlaySessions,
         projects,
         showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
         {
@@ -1176,7 +1191,7 @@ export function ChatSidebar({
           rankIds: sortOrderIds
         }
       ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
+    [projectOverview, projectOverlaySessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
   )
 
   // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —

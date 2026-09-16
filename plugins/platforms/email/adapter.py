@@ -11,12 +11,14 @@ import re
 import smtplib
 import socket
 import ssl
+import threading
 import uuid
+from collections import OrderedDict
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parsedate_to_datetime
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,6 +58,11 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
+# Quoting the inbound mail under replies (opt-in, platforms.email.quote_original / EMAIL_QUOTE_ORIGINAL).
+_DEFAULT_QUOTE_HEADER = "On {date}, {name} <{address}> wrote:"
+_DEFAULT_QUOTE_MAX_CHARS = 10_000
+_QUOTE_TRUNCATED = "> [...]"
+_QUOTE_LOOKUP_MAX = 500  # remembered originals (oldest evicted first)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -317,6 +324,53 @@ def _extract_attachments(msg: email_lib.message.Message, skip_attachments: bool 
     return attachments
 
 
+def _format_quote_date(raw: str) -> str:
+    """Human-readable ``Date:`` value; the raw header when unparseable, '' when missing."""
+    if not (raw := (raw or "").strip()):
+        return ""
+    try:
+        return parsedate_to_datetime(raw).strftime("%a, %d %b %Y %H:%M %z").strip()
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return raw
+
+
+def _build_quote(original_body: str, *, date: str, name: str, address: str, header_fmt: str, max_chars: int) -> str:
+    """Classic ``> `` quote block for appending under a reply: ``"\n\n" + header + "\n" + quoted lines``.
+
+    *max_chars* bounds the quoted lines (prefixes included, header excluded); the cut lands on a line end and is
+    marked with ``> [...]``. Already-quoted lines just gain another level (``>> ``). Empty body (or no line fits) → ''."""
+    lines = [line.rstrip() for line in (original_body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while lines and not lines[-1]:
+        lines.pop()
+    while lines and not lines[0]:
+        lines.pop(0)
+    if not lines or max_chars <= 0:
+        return ""
+    quoted = [f">{line}" if line.startswith(">") else f"> {line}" if line else ">" for line in lines]
+    text = "\n".join(quoted)
+    if len(text) > max_chars:
+        kept: List[str] = []
+        used = len(_QUOTE_TRUNCATED)
+        for line in quoted:
+            if used + len(line) + 1 > max_chars:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        if not kept:
+            return ""
+        text = "\n".join([*kept, _QUOTE_TRUNCATED])
+    shown_date, shown_name = _format_quote_date(date), (name or "").strip() or address
+    fmt = header_fmt or _DEFAULT_QUOTE_HEADER
+    if not shown_date:  # "On {date}, X wrote:" -> "X wrote:"
+        fmt = re.sub(r"On\s*\{date\},?\s*", "", fmt).replace("{date}", "").strip()
+    try:
+        header = fmt.format(date=shown_date, name=shown_name, address=address)
+    except (KeyError, IndexError, ValueError):  # operator typo in quote_header must not break sending
+        header = _DEFAULT_QUOTE_HEADER.format(date=shown_date, name=shown_name, address=address) if shown_date \
+            else f"{shown_name} <{address}> wrote:"
+    return f"\n\n{header}\n{text}"
+
+
 def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
     """Attach *path* to *msg* as base64 application/octet-stream."""
     with open(path, "rb") as f:
@@ -362,6 +416,15 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
+        # Quote the inbound mail under the first reply to it (default off; env wins over config.yaml).
+        self._quote_original = _esecret_bool("EMAIL_QUOTE_ORIGINAL", is_truthy_value(extra.get("quote_original"), default=False))
+        self._quote_max_chars = _esecret_int("EMAIL_QUOTE_MAX_CHARS", coerce_port(extra.get("quote_max_chars"), _DEFAULT_QUOTE_MAX_CHARS))
+        self._quote_header = str(extra.get("quote_header") or _DEFAULT_QUOTE_HEADER)
+        # Originals by Message-ID so parallel mails from one sender quote the right one; the per-sender entry
+        # covers mails without a Message-ID. Only populated while quoting is on.
+        self._original_by_msg_id: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
+        self._last_original_by_sender: Dict[str, Dict[str, str]] = {}
+        self._quote_lock = threading.Lock()  # sends run concurrently in executor threads
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
@@ -668,6 +731,8 @@ class EmailAdapter(BasePlatformAdapter):
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
         self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
+        if self._quote_original:  # after _sender_accepted: pairing replies to unknown senders never quote
+            self._remember_original(msg_data)
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
@@ -678,6 +743,54 @@ class EmailAdapter(BasePlatformAdapter):
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+
+    def _remember_original(self, msg_data: Dict[str, Any]) -> None:
+        """Keep what a later reply needs to quote this mail (bounded)."""
+        message_id = (msg_data.get("message_id") or "").strip()
+        record = {"message_id": message_id, "body": msg_data.get("body") or "", "date": msg_data.get("date") or "",
+                  "name": msg_data.get("sender_name") or "", "address": msg_data["sender_addr"], "state": ""}
+        with self._quote_lock:
+            if message_id:
+                self._original_by_msg_id[message_id] = record
+                self._original_by_msg_id.move_to_end(message_id)
+                while len(self._original_by_msg_id) > _QUOTE_LOOKUP_MAX:
+                    self._original_by_msg_id.popitem(last=False)
+            self._last_original_by_sender[msg_data["sender_addr"]] = record
+
+    def _claim_quote(self, to_addr: str, body: str, reply_to_msg_id: Optional[str]) -> Tuple[str, Optional[Dict[str, str]]]:
+        """``(body with quote, claimed record)``; the record is ``None`` when nothing was quoted.
+
+        Only the first successful reply per inbound mail quotes: the claim marks the record pending so a
+        concurrent send skips it, ``_settle_quote`` finalizes it after SMTP success or releases it on failure.
+        The agent's own text is never shortened; the quote shrinks (or is dropped) to fit MAX_MESSAGE_LENGTH."""
+        if not self._quote_original:
+            return body, None
+        original_msg_id = (reply_to_msg_id or self._thread_context.get(to_addr, {}).get("message_id") or "").strip()
+        with self._quote_lock:
+            record = self._original_by_msg_id.get(original_msg_id) if original_msg_id else None
+            if record is None:
+                # Fall back to the sender's last mail only when it is the same mail (or carried no Message-ID),
+                # never quote a different mail than the one being replied to.
+                last = self._last_original_by_sender.get(to_addr)
+                if last is not None and (not original_msg_id or last["message_id"] == original_msg_id):
+                    record = last
+            if record is None or record["address"] != to_addr or record["state"]:
+                return body, None
+            fixed = len(_build_quote("x", date=record["date"], name=record["name"], address=record["address"],
+                                     header_fmt=self._quote_header, max_chars=3)) - len("> x")
+            budget = min(self._quote_max_chars, MAX_MESSAGE_LENGTH - len(body) - fixed)
+            quote = _build_quote(record["body"], date=record["date"], name=record["name"], address=record["address"],
+                                 header_fmt=self._quote_header, max_chars=budget)
+            if not quote:
+                return body, None
+            record["state"] = "pending"
+        return (body + quote if body else quote.lstrip("\n")), record
+
+    def _settle_quote(self, record: Optional[Dict[str, str]], sent: bool) -> None:
+        """Finalize a claimed quote after SMTP success, or release it so a retry quotes again."""
+        if record is not None:
+            with self._quote_lock:
+                record["state"] = "done" if sent else ""
 
     async def _run_send(self, fn, args: tuple, log_fmt: str, *log_args) -> SendResult:
         """Run a blocking SMTP sender in the executor; wrap its Message-ID in a SendResult."""
@@ -726,8 +839,14 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id)
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
-        self._smtp_send(msg)
+        try:
+            self._smtp_send(msg)
+        except BaseException:
+            self._settle_quote(quoted, sent=False)
+            raise
+        self._settle_quote(quoted, sent=True)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
@@ -735,15 +854,21 @@ class EmailAdapter(BasePlatformAdapter):
                          reply_to_msg_id: Optional[str] = None) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
         An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
-        msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
-        for path, name in files:
-            try:
-                _attach_file(msg, path, name)
-            except Exception as e:
-                if not lenient:
-                    raise
-                logger.warning("[Email] Failed to attach %s: %s", path, e)
-        self._smtp_send(msg)
+        body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id)
+        try:
+            msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
+            for path, name in files:
+                try:
+                    _attach_file(msg, path, name)
+                except Exception as e:
+                    if not lenient:
+                        raise
+                    logger.warning("[Email] Failed to attach %s: %s", path, e)
+            self._smtp_send(msg)
+        except BaseException:
+            self._settle_quote(quoted, sent=False)
+            raise
+        self._settle_quote(quoted, sent=True)
         return msg_id
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,

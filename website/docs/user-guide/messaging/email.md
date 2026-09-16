@@ -147,6 +147,25 @@ Replies are sent via SMTP with proper email threading:
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
 
+### Quoting the Original Email
+
+By default a reply contains only the agent's answer. To append the incoming email below the answer in the classic `>` quote style, add to your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    quote_original: true
+    quote_max_chars: 10000                               # optional, length limit of the quoted block
+    quote_header: "On {date}, {name} <{address}> wrote:" # optional, placeholders: {date} {name} {address}
+```
+
+or set `EMAIL_QUOTE_ORIGINAL=true` (and optionally `EMAIL_QUOTE_MAX_CHARS`) in `~/.hermes/.env`. The environment variables take precedence over `config.yaml`.
+
+- The quote is added only to replies to a received email, never to cron jobs or other proactive messages.
+- Each received email is quoted once: when a response is split into several emails, only the first one that is sent successfully carries the quote. A failed send releases it, so the retry quotes again.
+- The quote is shortened (or left out) so the email stays within the 50,000-character limit; the agent's answer is never shortened.
+- Replies stay plain text; attachments and HTML formatting of the original are not quoted.
+
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
@@ -226,3 +245,5 @@ Unless open access is on, Hermes acts on a message only when the `Authentication
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_QUOTE_ORIGINAL` | No | `false` | Quote the received email below the reply |
+| `EMAIL_QUOTE_MAX_CHARS` | No | `10000` | Maximum length of the quoted block |

@@ -2970,6 +2970,10 @@ class _FakeWinStdout:
     def __init__(self, chunks):
         self._chunks = list(chunks)
         self.read1_calls = 0
+        # _release_finished_handles closes the child's streams on the finish
+        # path and only suppresses OSError/ValueError (29b981c846), so a real
+        # stream interface must include close().
+        self.close_calls = 0
 
         outer = self
 
@@ -2984,6 +2988,9 @@ class _FakeWinStdout:
 
     def fileno(self):
         return 7
+
+    def close(self):
+        self.close_calls += 1
 
 
 class TestReaderLoopWindowsPeekBranch:
@@ -3090,6 +3097,8 @@ class TestReaderLoopWindowsPeekBranch:
         # The whole point of peeking: never call read1() while no bytes are
         # reported, because that call is what blocks forever.
         assert proc.stdout.read1_calls == 0
+        # The finish path released the pipe handle exactly once.
+        assert proc.stdout.close_calls == 1
         # Pin the polling cadence to the POSIX select() branch: three idle
         # windows, each a real 0.2s sleep followed by a re-peek (2 peeks per
         # window). The sleep spy pins the interval itself — a 0.6s sleep

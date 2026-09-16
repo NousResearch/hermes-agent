@@ -381,6 +381,7 @@ class McpRuntimeStatus(WireEnum):
     disabled = "disabled"
     connecting = "connecting"
     failed = "failed"
+    lazy = "lazy"
     configured = "configured"
 
 

@@ -14,6 +14,7 @@ from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
@@ -467,9 +468,10 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
 
 
 def _kanban_task_title() -> Optional[str]:
-    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere."""
+    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere
+    (including delegate_task children of the worker, which inherit the env var but are not the card)."""
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if not task_id:
+    if not task_id or not is_dispatcher_owned_worker_context():
         return None
     try:
         from hermes_cli import kanban_db, kanban_db_connect

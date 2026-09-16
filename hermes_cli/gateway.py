@@ -1482,6 +1482,19 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print("  can refuse to start another copy until this process stops.")
 
 
+def _print_multiplex_standalone_reason() -> None:
+    """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
+    try:
+        from gateway.status import read_runtime_status
+        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+    except Exception:
+        return
+    if reason:
+        print(f"⚠ Serving the default profile only (gateway.multiplex_profiles unset): {reason}")
+        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
+        print("  Keep per-profile gateways: hermes config set gateway.multiplex_profiles false")
+
+
 def _print_served_ingress_urls(profile: str | None = None) -> None:
     """Callback URLs of inbound-port platforms the live multiplexer serves for secondary profiles
     (the value to paste into the Twilio / LINE / Teams / BlueBubbles console)."""
@@ -2561,6 +2574,8 @@ def ensure_gateway_service(context: str = "setup") -> bool:
 
     try:
         if _is_service_running():
+            return True
+        if _served_profile_needs_no_service():
             return True
         if not _is_service_installed():
             if supports_systemd and has_conflicting_systemd_units():
@@ -3900,9 +3915,16 @@ def generate_launchd_plist() -> str:
     <true/>
     
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 
-    <!-- ThrottleInterval raises launchd's default 10s minimum respawn interval
+    <!-- SuccessfulExit=false parks a clean stop (exit 0), including gateway
+         EX_CONFIG 78 after stderr_timestamp maps it to 0 — launchd cannot
+         honor RestartPreventExitStatus, and KeepAlive=true respawned token
+         collisions forever (#89477). Exit 75 and crashes still relaunch.
+         ThrottleInterval raises launchd's default 10s minimum respawn interval
          to 30s so a crash-looping gateway can't hammer launchd into a rapid
          respawn storm; ExitTimeOut gives the gateway 25s of graceful-drain
          headroom before launchd escalates from SIGTERM to SIGKILL on stop. -->
@@ -4449,26 +4471,29 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         if recorded is not None:
             return normalize_profile_name(suffix) in {normalize_profile_name(p) for p in recorded}
 
-        from gateway.config import _env_multiplex_profiles_override
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path)
-
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
-            return False
-        if env_multiplex is not True:
-            if not cfg_path.exists():
-                return False
-            if not (cfg.get("multiplex_profiles") or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")):
-                return False
-
-        return True  # a multiplexing default gateway serves every named profile
+        # No record (older gateway): only an EXPLICIT opt-in counts. The unset default is settled by
+        # the gateway at boot (it may have stayed standalone); a CLI process must not guess it on.
+        from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+        return explicit_multiplex_flag(default_root) is True  # a multiplexer serves every named profile
     except Exception:
         logger.debug("Multiplexer-serving probe failed", exc_info=True)
         return False
+
+
+def _served_profile_needs_no_service() -> bool:
+    """Print the "already served" note and return True when a setup flow must not install a standalone
+    service: a live multiplexing default gateway already serves this named profile, so the unit/plist it
+    would register can only sit dead (the start guard refuses it) or double-bind its platforms.
+    Shared by ``hermes setup gateway`` / ``hermes setup`` / ``hermes import`` (``ensure_gateway_service``)
+    and the ``hermes gateway setup`` wizard. See #111958."""
+    if not named_profile_served_by_running_multiplexer():
+        return False
+    print_success(
+        f"Profile '{_current_profile_name()}' is already served by the default multiplexer."
+    )
+    print_info("  (served now by the running multiplexed gateway — add its bot token and it connects)")
+    print_info("  No standalone gateway service was installed or started.")
+    return True
 
 
 def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
@@ -5783,6 +5808,8 @@ def _wizard_post_setup() -> None:
     """Offer to install/start/restart the gateway once at least one platform has progress."""
     print()
     print(color("─" * 58, Colors.DIM))
+    if _served_profile_needs_no_service():
+        return
     service_installed = _is_service_installed()
     service_running = _is_service_running()
 
@@ -5841,7 +5868,8 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     """Dispatch start/stop/restart via s6 inside an s6 container; True iff dispatched (caller returns).
     Profile defaults to the current one; missing slot / s6 errors become actionable CLI messages."""
     from hermes_cli.service_manager import (
-        GatewayNotRegisteredError, S6CommandError, detect_service_manager, get_service_manager,
+        GatewayNotRegisteredError, detect_service_manager, get_service_manager,
+        register_unregistered_profile_gateway,
     )
 
     if detect_service_manager() != "s6":
@@ -5851,9 +5879,19 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
     mgr = get_service_manager()
     if action not in ("start", "stop", "restart"):
         return False
+    service = f"gateway-{profile}"
     try:
-        getattr(mgr, action)(f"gateway-{profile}")
-    except (GatewayNotRegisteredError, S6CommandError) as exc:
+        try:
+            getattr(mgr, action)(service)
+        except GatewayNotRegisteredError:
+            # A profile created from the HOST against a bind-mounted home has a directory but no
+            # slot (`profile create` cannot reach the container's /run/service). Only `start`
+            # repairs that; stop/restart on a missing slot stay an error.
+            if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
+                raise
+            print(f"✓ registered the s6 gateway slot for profile {profile!r}")
+            mgr.start(service)
+    except (RuntimeError, ValueError, OSError) as exc:  # S6Error is a RuntimeError
         print(f"✗ {exc}")
         sys.exit(1)
     return True
@@ -6403,6 +6441,7 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
@@ -6410,6 +6449,7 @@ def _cmd_status(args):
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
+            _print_multiplex_standalone_reason()
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])

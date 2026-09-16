@@ -93,9 +93,10 @@ import {
   resetTileRuntimeBindings
 } from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
-import { windowProfileOverride } from '@/store/windows'
+import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
+import { useDefaultProfilePreference } from './use-default-profile-preference'
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of
@@ -172,6 +173,8 @@ export function useGatewayBoot({
   refreshHermesConfig,
   refreshSessions
 }: GatewayBootOptions) {
+  useDefaultProfilePreference()
+
   const callbacksRef = useRef({
     beforeConnectionSwitch,
     handleGatewayEvent,
@@ -583,8 +586,31 @@ export function useGatewayBoot({
     // session id against the wrong backend — the HUD then falls back to the
     // default profile's last session (#82285). The override wins over the
     // stored preference; absent, behavior is unchanged.
-    async function adoptPrimaryProfile(shouldPublish: () => boolean = () => true): Promise<boolean> {
-      const override = windowProfileOverride()
+    async function getWindowBackend(startup = false): Promise<HermesConnection> {
+      const profile = windowProfileOverride()
+      const peer = isPeerInstanceWindow()
+      const route = profile
+        ? { profile, connectionId: peer ? new URLSearchParams(window.location.search).get('connectionId') : null }
+        : startup && !peer
+          ? await desktop.profile?.getDefault?.()
+          : null
+
+      // Initial registry publication can precede boot. Resolve captured launch
+      // intent explicitly rather than through that still-initializing mirror.
+      if (route?.connectionId && desktop.getConnectionFor) {
+        return desktop.getConnectionFor(route)
+      }
+
+      return desktop.getConnection(route?.profile ?? undefined)
+    }
+
+    async function adoptPrimaryProfile(
+      connection: HermesConnection,
+      shouldPublish: () => boolean = () => true
+    ): Promise<boolean> {
+      // The resolved descriptor reflects the explicit startup default. The
+      // legacy profile.get preference only remembers the last workspace used.
+      const override = windowProfileOverride() ?? connection.profile
 
       try {
         const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
@@ -667,7 +693,7 @@ export function useGatewayBoot({
         // shared backend-boot budget rather than the reconnect budget because
         // ensureBackend may cold-spawn a pooled helper backend here.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          getWindowBackend(),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
@@ -707,7 +733,7 @@ export function useGatewayBoot({
         // list rather than blanking the rail. NOT awaited: refreshProfiles
         // now carries a bounded retry chain (#70679), and switch completion
         // must not wait out backoff timers against an unhealthy backend.
-        if (!(await adoptPrimaryProfile(ownsSwitch)) || !ownsSwitch()) {
+        if (!(await adoptPrimaryProfile(conn, ownsSwitch)) || !ownsSwitch()) {
           return
         }
 
@@ -1128,13 +1154,13 @@ export function useGatewayBoot({
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
-        // Everything else keeps dialing the primary.
+        // Full peers use the source/profile Electron pinned before loading.
         // Bounded like the reconnect path (#93454): a wedged main-process
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
         // rides out a full backend cold spawn, so it gets the shared 45s
         // backend-boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
-          desktop.getConnection(windowProfileOverride() ?? undefined),
+          getWindowBackend(true),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
           'Timed out connecting to Hermes backend'
         )
@@ -1197,7 +1223,7 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(conn)
 
         setDesktopBootStep({
           phase: 'renderer.config',

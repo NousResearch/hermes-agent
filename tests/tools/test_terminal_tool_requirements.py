@@ -1,6 +1,7 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import logging
 
 import pytest
 
@@ -111,6 +112,39 @@ class TestCheckFnTransientFailureSuppression:
         t["now"] += reg._CHECK_FN_FAILURE_GRACE_SECONDS + 1
         # Different fn so last-good for `good` doesn't apply; bad has no success.
         assert reg._check_fn_cached(bad) is False
+
+    def test_expected_false_reprobe_logs_info_but_probe_exception_stays_warning(
+        self, monkeypatch, caplog
+    ):
+        import tools.registry as reg
+
+        calls = {"count": 0}
+
+        def unavailable():
+            calls["count"] += 1
+            return False
+
+        def broken():
+            raise RuntimeError("probe failed")
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
+
+        with caplog.at_level(logging.INFO, logger="tools.registry"):
+            assert reg._check_fn_cached(unavailable) is False
+            clock["now"] += reg._CHECK_FN_TTL_SECONDS + 1
+            assert reg._check_fn_cached(unavailable) is False
+            assert reg._check_fn_cached(broken) is False
+
+        expected_false = [
+            record for record in caplog.records if "returned False" in record.getMessage()
+        ]
+        raised = [record for record in caplog.records if "raised" in record.getMessage()]
+        assert calls["count"] == 2
+        assert [record.levelno for record in expected_false] == [logging.INFO, logging.INFO]
+        assert len(raised) == 1
+        assert raised[0].levelno == logging.WARNING
+        assert raised[0].exc_info is not None
 
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):

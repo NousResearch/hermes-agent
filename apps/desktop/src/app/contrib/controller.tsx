@@ -41,7 +41,7 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { translateNow } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
 import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Users, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
@@ -157,11 +157,23 @@ const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => vo
   return true
 }
 
+/** The sidebar tab's label. A live node rather than a registration-time
+ *  `title`: the app language is loaded after contributions register, so a
+ *  string resolved there would freeze to English (`PaneChrome.tabTitle`). */
+function SessionsPaneTabLabel() {
+  const { t } = useI18n()
+
+  return <>{t.sidebar.sessions}</>
+}
+
 registry.registerMany([
   {
     id: 'sessions',
     area: 'panes',
-    title: 'sessions',
+    // Registration-time, so this is the English fallback: the app language is
+    // loaded from the backend *after* contributions register (`i18n/context`),
+    // which is why the tab itself renders through `data.tabTitle` below.
+    title: translateNow('sidebar.sessions'),
     // Collapsible: leaves the grid on narrow viewports (edge overlay instead).
     // dock: where a RE-ADOPTED pane lands (healed from a stale dismissal) —
     // its default-ish spot beside main, not a random same-placement stack.
@@ -170,6 +182,7 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'left' },
       revealAliases: ['chat-sidebar'],
+      tabTitle: () => <SessionsPaneTabLabel />,
       // Standing chrome: no close gestures at all — the tab is shown/hidden
       // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
       hideOnly: true,

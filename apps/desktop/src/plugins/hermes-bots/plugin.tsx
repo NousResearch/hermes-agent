@@ -57,13 +57,14 @@ import {
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
-import { BOTS_LOCALES } from './i18n'
+import { BOTS_LOCALES, botsText } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
 import {
   botChatOwnsWorkspace,
   BotsPane,
+  BotsPaneTabLabel,
   releaseStaleOpenBotChat,
   selectedRosterBot,
   sessionOwnsWorkspace
@@ -366,7 +367,7 @@ export default {
     ctx.register({
       id: 'pane',
       area: 'panes',
-      title: 'Bots',
+      title: botsText().paneTitle,
       // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
       // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
       // two cramped panes down the column. Center is safe now: insertAtGroup
@@ -394,6 +395,9 @@ export default {
         width: '260px',
         collapsible: true,
         hideOnly: true,
+        // Live label, not the registration-time `title` above: the app language
+        // arrives after this contribution registers (`PaneChrome.tabTitle`).
+        tabTitle: () => <BotsPaneTabLabel />,
         dock: {
           pane: 'sessions',
           pos: 'center',

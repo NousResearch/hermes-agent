@@ -719,6 +719,51 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
 
 
+def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypatch, capsys):
+    """A current multiplexer discharges every profile named in its live record (#113350)."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "partial",
+                "exit_code": 1,
+                "plan": {
+                    "runtimes": [
+                        {"kind": "gateway", "profile": profile, "pid": pid}
+                        for profile, pid in (("default", 42), ("coder", 43))
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {
+                "profile": "default",
+                "pid": 42,
+                "code_sha": disk_sha,
+                "code_version": "0.21.0",
+                "state": "current",
+                "served_profiles": ["default", "coder"],
+            }
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    # The same live multiplexer coverage also discharges the receipt fallback
+    # after an operator has already removed the marker.
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
 @pytest.mark.parametrize(
     "disk_sha, fleet",
     [

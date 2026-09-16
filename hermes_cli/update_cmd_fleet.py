@@ -171,6 +171,29 @@ def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tup
     return None if unverified else owed
 
 
+def _fleet_row_covered_gateway_profiles(row: dict) -> set[str] | None:
+    """Profiles a current, identity-verified fleet row can vouch for.
+
+    A multiplexer writes its live ``served_profiles`` into the same runtime
+    status record that supplied the row.  Its default-profile row therefore
+    covers every listed satellite profile too.  Malformed entries are not
+    evidence: callers retain the pending obligation rather than guessing.
+    """
+    profile = row.get("profile")
+    if not isinstance(profile, str) or not profile or profile == "unknown":
+        return None
+    covered = {profile}
+    served_profiles = row.get("served_profiles")
+    if served_profiles is None:
+        return covered
+    if not isinstance(served_profiles, list) or not served_profiles:
+        return None
+    if any(not isinstance(name, str) or not name or name == "unknown" for name in served_profiles):
+        return None
+    covered.update(served_profiles)
+    return covered
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: set[tuple[str, str]] | None, *, accept_states: tuple = ("current",)) -> bool:
     """Require a successor at the expected SHA for every owed gateway identity."""
     if not expected_sha:
@@ -189,7 +212,13 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
             for row in fleet
         ):
             return False
-        return owed <= {("gateway", row.get("profile")) for row in fleet}
+        covered_profiles: set[str] = set()
+        for row in fleet:
+            covered = _fleet_row_covered_gateway_profiles(row)
+            if covered is None:
+                return False
+            covered_profiles.update(covered)
+        return owed <= {("gateway", profile) for profile in covered_profiles}
     except Exception as exc:
         logger.debug("Could not reconcile pending fleet identities: %s", exc)
         return False
@@ -246,13 +275,18 @@ def _marker_only_restart_obsolete() -> bool:
     for row in fleet:
         if not isinstance(row, dict):
             return False
-        profile = row.get("profile")
-        if not profile or profile == "unknown":
+        if _fleet_row_covered_gateway_profiles(row) is None:
             return False  # unidentified runtime: the matrix cannot vouch for it
         if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
             return False  # stale / down / unknown-identity row still owes the restart
-    if not owed <= {("gateway", row.get("profile")) for row in fleet}:
-        return False  # A gateway this marker owns is absent.
+    covered_profiles: set[str] = set()
+    for row in fleet:
+        covered = _fleet_row_covered_gateway_profiles(row)
+        if covered is None:
+            return False
+        covered_profiles.update(covered)
+    if not owed <= {("gateway", profile) for profile in covered_profiles}:
+        return False  # A gateway this marker owns is absent (down) or unidentifiable.
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",

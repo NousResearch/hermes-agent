@@ -71,7 +71,7 @@ def test_ensure_runtime_installed_forwards_staged_progress(tmp_path, monkeypatch
         install_dir = tmp_path / "b1" / "cuda"
 
     monkeypatch.setattr(binaries, "resolve_assets", lambda tag, backend: _Plan())
-    monkeypatch.setattr(binaries, "verify_install", lambda d, t: "ok")
+    monkeypatch.setattr(binaries, "verify_install", lambda d, t, b: "ok")
 
     def _fake_download(url, dest, progress=None):
         _make_zip(dest, {"f.bin": 2048})

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 import hashlib
 import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import urllib.request
@@ -21,8 +23,11 @@ logger = logging.getLogger(__name__)
 RELEASE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/{asset}"
 
 # Windows CUDA zips ship per CUDA major; the runtime zip must be paired with its cudart zip so
-# end users need no toolkit. 13.3 verified on 13.1 and 13.2 drivers.
+# end users need no toolkit. CUDA 13 requires the R580 driver family; older supported drivers use
+# the release's CUDA 12.4 build. Newer drivers remain backward-compatible, but Blackwell needs 13.x.
 _WIN_CUDA_VERSION = "13.3"
+_WIN_CUDA_COMPAT_VERSION = "12.4"
+_WIN_CUDA_13_MIN_DRIVER_MAJOR = 580
 # arm64 Windows CUDA prebuilts landed upstream (~b1036x) on CUDA 13.4. Tags at or before b10290
 # don't have them; resolution succeeds and the download 404s honestly if a user pins backward.
 _WIN_CUDA_VERSION_ARM64 = "13.4"
@@ -65,8 +70,16 @@ def runtimes_root() -> Path:
 def manifest_verified(manifest: Path) -> bool:
     """True when an install manifest records a verified_version (missing/damaged -> False)."""
     try:
-        return bool(json.loads(manifest.read_text(encoding="utf-8")).get("verified_version"))
-    except (json.JSONDecodeError, OSError):
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        if not data.get("verified_version"):
+            return False
+        os_name, arch = _host_os_arch()
+        if data.get("backend") == "cuda" and os_name == "win" and arch == "x64":
+            expected = set(resolve_assets(data["tag"], "cuda", os_name=os_name, arch=arch).assets)
+            if set((data.get("assets") or {}).keys()) != expected:
+                return False
+        return True
+    except (KeyError, TypeError, json.JSONDecodeError, OSError):
         return False
 
 
@@ -114,6 +127,18 @@ def select_backend(gpu_vendor: str | None, os_name: str | None = None) -> str:
     if vendor in ("amd", "intel") or "radeon" in vendor or "arc" in vendor:
         return "vulkan"
     return "cpu"
+
+
+def _windows_cuda_version() -> str:
+    """Choose the newest official x64 runtime supported by the installed Windows driver."""
+    from hermes_cli.local_runtime.hardware import _nvidia_driver_version
+
+    version = _nvidia_driver_version()
+    if version:
+        with suppress(ValueError):
+            if int(version.split(".", 1)[0]) < _WIN_CUDA_13_MIN_DRIVER_MAJOR:
+                return _WIN_CUDA_COMPAT_VERSION
+    return _WIN_CUDA_VERSION
 
 
 # Per-OS (human label, {backend: asset-name templates}). Windows CUDA pairs the runtime zip with
@@ -167,7 +192,9 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
             extension = "zip" if os_name == "win" else "tar.gz"
             return AssetPlan(tag, backend, [
                 f"llama-{tag}-bin-{os_name}-rocm-{rocm_ver}-{arch}.{extension}"])
-    cuda_ver = _WIN_CUDA_VERSION_ARM64 if arch == "arm64" else _WIN_CUDA_VERSION
+    cuda_ver = _WIN_CUDA_VERSION
+    if backend == "cuda":
+        cuda_ver = _WIN_CUDA_VERSION_ARM64 if arch == "arm64" else _windows_cuda_version()
     return AssetPlan(tag, backend, [t.format(tag=tag, arch=arch, cuda_ver=cuda_ver)
                                     for t in templates[backend]])
 
@@ -236,8 +263,8 @@ def server_binary(install_dir: Path) -> Path:
     raise BinaryResolutionError(f"llama-server not found under {install_dir}")
 
 
-def verify_install(install_dir: Path, tag: str) -> str:
-    """Run --version; require the tag's build number in the output (printed WITHOUT the 'b')."""
+def verify_install(install_dir: Path, tag: str, backend: str = "cpu") -> str:
+    """Verify the build identity and prove an accelerator backend actually initializes."""
     exe = server_binary(install_dir)
     out = subprocess.run([str(exe), "--version"], capture_output=True,
                          text=True, encoding="utf-8", errors="replace",
@@ -246,6 +273,16 @@ def verify_install(install_dir: Path, tag: str) -> str:
     if tag.lstrip("b") not in text:
         raise BinaryResolutionError(
             f"version check failed for {exe}: expected {tag}, got: {text[:120]}")
+    if backend == "cuda":
+        devices = subprocess.run([str(exe), "--list-devices"], capture_output=True,
+                                 text=True, encoding="utf-8", errors="replace",
+                                 timeout=60, cwd=str(exe.parent))
+        device_text = devices.stdout + devices.stderr
+        if devices.returncode != 0 or not re.search(r"(?m)^\s*CUDA\d+:", device_text):
+            detail = next((line.strip() for line in device_text.splitlines()
+                           if "failed to initialize cuda" in line.lower()),
+                          "no CUDA device reported")
+            raise BinaryResolutionError(f"CUDA runtime check failed: {detail}")
     return text.splitlines()[0] if text else ""
 
 
@@ -305,7 +342,7 @@ def ensure_runtime_installed(tag: str, backend: str,
 
     if progress is not None:
         progress("verify", 0, 0, "")
-    version = verify_install(install_dir, tag)
+    version = verify_install(install_dir, tag, backend)
     manifest_path.write_text(json.dumps({"tag": tag, "backend": plan.backend, "assets": recorded,
                                          "verified_version": version}, indent=2), encoding="utf-8")
     logger.info("installed llama.cpp %s (%s): %s", tag, backend, version)

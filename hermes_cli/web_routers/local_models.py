@@ -432,10 +432,12 @@ def _loaded_models(running: Dict[str, Any]) -> "tuple[Dict[str, str], Dict[str, 
 
 
 def _installed_backend(tag: str) -> str | None:
-    """Name of the first backend dir under ``tag`` with a working server binary."""
+    """Name of the first verified, driver-compatible backend under ``tag``."""
     root = binaries.runtimes_root() / tag
     dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.exists() else []
-    return next((d.name for d in dirs if _quiet(lambda: binaries.server_binary(d), None) is not None), None)
+    return next((d.name for d in dirs
+                 if binaries.manifest_verified(d / "manifest.json")
+                 and _quiet(lambda: binaries.server_binary(d), None) is not None), None)
 
 
 def _staged_row(gguf: Path) -> Dict[str, Any]:

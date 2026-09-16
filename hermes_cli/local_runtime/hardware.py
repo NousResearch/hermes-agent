@@ -142,6 +142,20 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
+def _nvidia_driver_version() -> str | None:
+    """First NVIDIA driver version, or None when the service cannot query it."""
+    exe = _nvidia_smi_path()
+    if exe is None:
+        return None
+    with suppress(OSError, subprocess.TimeoutExpired):
+        out = subprocess.run(
+            [exe, "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[0].strip()
+    return None
+
+
 def _nvidia_vram() -> tuple[int, int] | None:
     """(total, free) MiB->bytes from nvidia-smi, or None."""
     exe = _nvidia_smi_path()

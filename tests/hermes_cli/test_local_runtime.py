@@ -205,6 +205,48 @@ def test_windows_cuda_pairs_cudart():
     assert any(a.startswith("cudart-") for a in plan.assets)
 
 
+def test_windows_cuda_x64_tracks_driver_compatibility(tmp_path, monkeypatch):
+    """R555 cannot load CUDA 13, while R580 can and is required for Blackwell."""
+    from hermes_cli.local_runtime import binaries, hardware
+
+    monkeypatch.setattr(hardware, "_nvidia_driver_version", lambda: "555.97")
+    legacy = resolve_assets("b10679", "cuda", os_name="win", arch="x64")
+    assert all("cuda-12.4" in asset for asset in legacy.assets)
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
+        "tag": "b10679", "backend": "cuda", "verified_version": "10679",
+        "assets": {name: "hash" for name in (
+            "llama-b10679-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip")},
+    }), encoding="utf-8")
+    monkeypatch.setattr(binaries, "_host_os_arch", lambda: ("win", "x64"))
+    assert binaries.manifest_verified(manifest) is False
+
+    monkeypatch.setattr(hardware, "_nvidia_driver_version", lambda: "580.65.06")
+    current = resolve_assets("b10679", "cuda", os_name="win", arch="x64")
+    assert all("cuda-13.3" in asset for asset in current.assets)
+
+
+def test_cuda_install_rejects_silent_cpu_fallback(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli.local_runtime import binaries
+
+    exe = tmp_path / "llama-server.exe"
+    exe.touch()
+
+    def fake_run(argv, **kwargs):
+        if "--version" in argv:
+            return SimpleNamespace(returncode=0, stdout="version 10679", stderr="")
+        return SimpleNamespace(
+            returncode=0, stdout="Available devices:\n",
+            stderr="ggml_cuda_init: failed to initialize CUDA: (null)\n")
+
+    monkeypatch.setattr(binaries.subprocess, "run", fake_run)
+    with pytest.raises(BinaryResolutionError, match="failed to initialize CUDA"):
+        binaries.verify_install(tmp_path, "b10679", "cuda")
+
+
 def test_windows_cuda_arm64_pairs_cudart_on_its_own_version():
     """arm64 CUDA rides its own CUDA line (13.4 at b10362, verified live):
     both zips must agree on version and name the arch."""

@@ -328,6 +328,52 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     popen.assert_not_called()
 
 
+def test_subprocess_provider_launches_plain_worker_outside_systemd(tmp_path, monkeypatch):
+    import cron.scheduler as scheduler
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_kwargs: command,
+    )
+    monkeypatch.setattr(
+        scheduler, "mark_execution_handoff_pending",
+        Mock(return_value={"id": "exec-1", "handoff_pending": 1}),
+    )
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    spawned = []
+
+    def popen(command, **kwargs):
+        spawned.append((command, kwargs))
+        ack_path = Path(command[command.index("--ack-file") + 1])
+        ack_path.write_text(
+            json.dumps({"pid": 4321, "execution_id": "exec-1"}), encoding="utf-8"
+        )
+        return FakeProcess()
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    statuses = iter([
+        {"id": "exec-1", "status": "running"},
+        {"id": "exec-1", "status": "completed"},
+    ])
+    monkeypatch.setattr(scheduler, "get_execution", lambda _id: next(statuses))
+
+    assert scheduler._launch_external_cron_worker(job, force=True) is True
+    assert spawned[0][0][0] == sys.executable
+    assert spawned[0][0][1:3] == ["-m", "cron.scheduler"]
+    assert spawned[0][1]["start_new_session"] is True
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 
@@ -341,6 +387,23 @@ def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
 
     launch.assert_called_once_with(job)
     run.assert_not_called()
+
+
+def test_subprocess_provider_fire_claimed_forces_detached_worker(monkeypatch):
+    from plugins.cron_providers.subprocess import SubprocessCronScheduler
+
+    run = Mock(return_value=True)
+    monkeypatch.setattr("cron.scheduler.run_one_job", run)
+    job = {"id": "job-1", "execution_id": "exec-1"}
+
+    assert SubprocessCronScheduler().fire_claimed(job) is True
+    run.assert_called_once_with(
+        job,
+        adapters=None,
+        loop=None,
+        cancel_event=None,
+        detached_worker=True,
+    )
 
 
 def test_shutdown_does_not_interrupt_restart_safe_waiter():

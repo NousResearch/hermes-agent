@@ -112,6 +112,11 @@ class CronScheduler(ABC):
         """Optional eager teardown; stop_event is the primary signal."""
         return None
 
+    @property
+    def uses_detached_workers(self) -> bool:
+        """Whether claimed runs must cross the durable subprocess handoff."""
+        return False
+
     # Optional hooks for external providers — default-safe; keep NON-abstract.
 
     def on_jobs_changed(self) -> None:
@@ -179,7 +184,10 @@ class CronScheduler(ABC):
         cooperatively (e.g. dashboard lifespan drain)."""
         from cron.scheduler import run_one_job
 
-        run_one_job(claimed_job, adapters=adapters, loop=loop, cancel_event=cancel_event)
+        run_one_job(
+            claimed_job, adapters=adapters, loop=loop, cancel_event=cancel_event,
+            detached_worker=self.uses_detached_workers,
+        )
         return True
 
     def reconcile(self) -> None:
@@ -408,6 +416,7 @@ class InProcessCronScheduler(CronScheduler):
                     cron_tick(
                         verbose=False, adapters=adapters, loop=loop, sync=False,
                         can_dispatch=can_dispatch,
+                        detached_worker=self.uses_detached_workers,
                     )
                 ok = True
             except BaseException as e:
@@ -510,6 +519,7 @@ class InProcessCronScheduler(CronScheduler):
                                 cron_tick(
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
                                     sync=False, can_dispatch=can_dispatch,
+                                    detached_worker=self.uses_detached_workers,
                                 )
                         except CronTickYielded as e:
                             # Yield for THIS profile only; one fresh gateway must not stop others.

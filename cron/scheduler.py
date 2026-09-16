@@ -2508,6 +2508,7 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
 def run_one_job(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, cancel_event: Optional[_CancelEventLike] = None,
+    detached_worker: bool = False,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark. Shared by the built-in
     ticker and external providers' ``fire_due``; does NOT decide due-ness or acquire the initial
@@ -2526,7 +2527,12 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            if _launch_external_cron_worker(job):
+            launched = (
+                _launch_external_cron_worker(job, force=True)
+                if detached_worker
+                else _launch_external_cron_worker(job)
+            )
+            if launched:
                 return True
         except Exception as handoff_error:
             error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
@@ -3141,13 +3147,13 @@ def _wait_for_external_cron_worker(
                 pass
 
 
-def _launch_external_cron_worker(job: dict) -> bool:
-    """Launch *job* outside a managed gateway cgroup when required.
+def _launch_external_cron_worker(job: dict, *, force: bool = False) -> bool:
+    """Launch *job* in a detached worker when required.
 
-    Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology, failure to
-    establish the transient scope raises: falling back would recreate the
-    restart interruption this handoff exists to prevent.
+    Managed systemd gateways use a transient scope so workers survive gateway
+    restarts. ``cron.provider=subprocess`` uses the same durable handoff on
+    every platform even when no scope wrapper is available. Otherwise the
+    existing in-process path remains unchanged.
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3176,7 +3182,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
     )
-    if scoped_command == command:
+    if scoped_command == command and not force:
         return False
 
     if mark_execution_handoff_pending(execution_id) is None:
@@ -3637,7 +3643,9 @@ def _sweep_mcp_orphans() -> None:
         logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
 
-def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
+def _process_due_job(
+    job: dict, adapters, loop, verbose: bool, *, detached_worker: bool = False,
+) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
     claimed = claim_job_for_fire(job["id"], return_job=True)
@@ -3649,7 +3657,10 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
-    return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
+    return run_one_job(
+        claimed_job, adapters=adapters, loop=loop, verbose=verbose,
+        detached_worker=detached_worker,
+    )
 
 
 def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, process_job):
@@ -3763,7 +3774,9 @@ def _sweep_mcp_orphans_when_all_done(futures: list) -> None:
 
 
 def tick(
-    verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None):
+    verbose: bool = True, adapters=None, loop=None, sync: bool = True, *, can_dispatch=None,
+    detached_worker: bool = False,
+):
     """Check and run all due jobs. File-locked so only one tick runs at a time (gateway ticker vs
     standalone daemon / manual tick). ``can_dispatch``: optional gate; false leaves due jobs for the
     next allowed tick. Returns the number of jobs executed (0 if another tick holds the lock)."""
@@ -3830,7 +3843,9 @@ def tick(
                 _max_workers if _max_workers else "unbounded")
 
         def _process_job(job: dict) -> bool:
-            return _process_due_job(job, adapters, loop, verbose)
+            return _process_due_job(
+                job, adapters, loop, verbose, detached_worker=detached_worker,
+            )
 
         # Persistent pool, non-blocking dispatch. Already-running jobs are skipped; mark_job_run
         # re-arms next_run_at on completion, so no catch-up queue is needed.

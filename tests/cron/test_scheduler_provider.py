@@ -315,6 +315,60 @@ def test_resolve_available_provider_is_used(monkeypatch):
     assert prov.name == "fake"
 
 
+def test_resolve_subprocess_provider_from_config(monkeypatch):
+    import hermes_cli.config as cfg
+    from cron import scheduler_provider as sp
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "subprocess"}})
+
+    provider = sp.resolve_cron_scheduler()
+
+    assert provider.name == "subprocess"
+    assert isinstance(provider, sp.InProcessCronScheduler)
+    assert provider.uses_detached_workers is True
+    assert sp.InProcessCronScheduler().uses_detached_workers is False
+
+
+def test_subprocess_provider_remains_active_under_multiplex(monkeypatch):
+    import hermes_cli.config as cfg
+    from cron.scheduler_provider import resolve_cron_scheduler, scheduler_for_profile_mode
+
+    monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "subprocess"}})
+    provider = resolve_cron_scheduler()
+
+    assert scheduler_for_profile_mode(provider, multiplex_profiles=True) is provider
+
+
+def test_subprocess_provider_binds_detached_policy_into_ticks(monkeypatch):
+    import threading
+
+    from plugins.cron_providers.subprocess import SubprocessCronScheduler
+
+    calls = []
+    stop = threading.Event()
+
+    def fake_tick(*args, **kwargs):
+        calls.append(kwargs)
+        stop.set()
+        return 0
+
+    monkeypatch.setattr("cron.scheduler.tick", fake_tick)
+    monkeypatch.setattr("cron.jobs.record_ticker_heartbeat", lambda **_kwargs: None)
+    monkeypatch.setattr("cron.jobs.clear_ticker_error", lambda: None)
+    monkeypatch.setattr(SubprocessCronScheduler, "recover_interrupted", lambda self: 0)
+
+    SubprocessCronScheduler().start(stop, interval=0)
+
+    assert calls == [{
+        "verbose": False,
+        "adapters": None,
+        "loop": None,
+        "sync": False,
+        "can_dispatch": None,
+        "detached_worker": True,
+    }]
+
+
 def test_external_provider_falls_back_to_builtin_under_multiplex():
     from cron.scheduler_provider import (
         CronScheduler,

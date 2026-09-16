@@ -1,0 +1,7 @@
+name: subprocess
+description: >-
+  Runs the profile-aware built-in cron ticker in the gateway, but hands every
+  claimed job to a detached child process. Results return through the durable
+  delivery queue. Inert unless cron.provider=subprocess.
+version: 1.0.0
+author: Nous Research

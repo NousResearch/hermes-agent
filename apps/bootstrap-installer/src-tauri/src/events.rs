@@ -109,4 +109,167 @@ impl BootstrapEvent {
     /// Tauri event name. Single channel for all bootstrap events; the
     /// `type` tag tells the renderer how to interpret the payload.
     pub const CHANNEL: &'static str = "bootstrap";
+
+    /// Returns this event with terminal escape bytes removed from `Log`
+    /// lines. The webview renders log lines as plain text, so styling and
+    /// cursor codes from the install script would show up as mojibake
+    /// (#112675).
+    pub fn sanitized_for_ui(self) -> Self {
+        match self {
+            Self::Log {
+                stage,
+                line,
+                stream,
+            } => Self::Log {
+                stage,
+                line: strip_ansi(&line),
+                stream,
+            },
+            other => other,
+        }
+    }
+}
+
+/// Removes ANSI escape sequences from one raw installer log line.
+///
+/// install.sh (and the git/curl/uv children it drives) emits SGR styling,
+/// cursor movement, and OSC title commands even though its stdout is a pipe,
+/// not a TTY. The UI's log pane has no terminal emulator, so those bytes must
+/// not cross the event boundary. Carriage-return in-place redraws (progress
+/// meters) collapse to the last visible frame, which is what a terminal
+/// would be left showing.
+pub(crate) fn strip_ansi(line: &str) -> String {
+    const ESC: char = '\u{1b}';
+
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c != ESC {
+            out.push(c);
+            continue;
+        }
+
+        match chars.next() {
+            // CSI: parameters (0x30–0x3F) and intermediates (0x20–0x2F),
+            // closed by a final byte in 0x40–0x7E.
+            Some('[') => {
+                for b in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&b) {
+                        break;
+                    }
+                }
+            }
+            // String sequences (OSC/DCS/PM/APC): run until BEL or the ST
+            // terminator (ESC \).
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                for b in chars.by_ref() {
+                    if b == '\u{07}' {
+                        break;
+                    }
+                    if b == ESC {
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            // Charset selection ESC ( B and friends carry one trailing byte;
+            // every other two-character escape is fully consumed here.
+            Some('(') | Some(')') => {
+                let _ = chars.next();
+            }
+            Some(_) | None => {}
+        }
+    }
+
+    match out.split('\r').filter(|seg| !seg.is_empty()).next_back() {
+        Some(seg) => seg.to_string(),
+        None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_sgr_color_sequences() {
+        // The colored checkmark banners from install.sh seen in #112675.
+        assert_eq!(
+            strip_ansi("\u{1b}[0;32m✓\u{1b}[0m Detected: macos (macos)"),
+            "✓ Detected: macos (macos)"
+        );
+    }
+
+    #[test]
+    fn strips_cursor_movement_and_private_modes() {
+        assert_eq!(
+            strip_ansi("\u{1b}[2K\u{1b}[1GCloning repository…"),
+            "Cloning repository…"
+        );
+        assert_eq!(strip_ansi("down\u{1b}[?25lloading"), "downloading");
+    }
+
+    #[test]
+    fn strips_osc_title_commands_with_bel_and_st_terminators() {
+        assert_eq!(
+            strip_ansi("\u{1b}]0;hermes\u{07}Installing Hermes"),
+            "Installing Hermes"
+        );
+        assert_eq!(
+            strip_ansi("\u{1b}]2;hermes\u{1b}\\Installing Hermes"),
+            "Installing Hermes"
+        );
+    }
+
+    #[test]
+    fn carriage_return_redraws_keep_the_last_frame() {
+        // curl-style progress rewrites one line in place with \r.
+        assert_eq!(strip_ansi("\r 12%\r 67%\r100%"), "100%");
+        assert_eq!(
+            strip_ansi("Resolving dependencies…\r"),
+            "Resolving dependencies…"
+        );
+        assert_eq!(strip_ansi("\r\r"), "");
+    }
+
+    #[test]
+    fn keeps_plain_and_multibyte_text_verbatim() {
+        assert_eq!(
+            strip_ansi("Installed 12 packages in 1.2s"),
+            "Installed 12 packages in 1.2s"
+        );
+        assert_eq!(strip_ansi("Ready — café ✓ 中文"), "Ready — café ✓ 中文");
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn drops_an_unterminated_sequence_cut_by_the_pipe() {
+        assert_eq!(strip_ansi("ok\u{1b}[0;3"), "ok");
+        assert_eq!(strip_ansi("ok\u{1b}"), "ok");
+    }
+
+    #[test]
+    fn sanitized_for_ui_only_touches_log_lines() {
+        let log = BootstrapEvent::Log {
+            stage: None,
+            line: "\u{1b}[1;32mdone\u{1b}[0m\r".to_string(),
+            stream: LogStream::Stdout,
+        };
+        match log.sanitized_for_ui() {
+            BootstrapEvent::Log { line, .. } => assert_eq!(line, "done"),
+            other => panic!("expected Log, got {other:?}"),
+        }
+
+        let stage = BootstrapEvent::Failed {
+            stage: None,
+            error: "\u{1b}[0;31mfatal\u{1b}[0m".to_string(),
+        };
+        match stage.sanitized_for_ui() {
+            BootstrapEvent::Failed { error, .. } => assert_eq!(error, "\u{1b}[0;31mfatal\u{1b}[0m"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
 }

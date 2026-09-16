@@ -119,6 +119,80 @@ def test_container_path_normalization_uses_posix_path_syntax():
     assert str(resolved) == "/workspace/projects/bar"
 
 
+def test_selected_docker_repo_resolves_relative_and_host_absolute_paths(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {
+        "env_type": "docker", "docker_mount_cwd_to_workspace": True,
+        "host_cwd": None,
+    })
+    monkeypatch.setattr(terminal_tool, "_docker_session_isolation_enabled", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(repo), "cwd_source": "session"})
+
+    assert ftp._resolve_path_for_task("pyproject.toml", "chat") == PurePosixPath("/workspace/pyproject.toml")
+    assert ftp._resolve_path_for_task(str(repo / "pyproject.toml"), "chat") == PurePosixPath("/workspace/pyproject.toml")
+    assert ftp._resolve_path_for_task(str(tmp_path / "other.toml"), "chat") == PurePosixPath(str(tmp_path / "other.toml"))
+
+
+def test_selected_docker_repo_passes_mapped_paths_to_file_backend(monkeypatch, tmp_path):
+    from tools.file_operations_common import ReadResult, SearchResult
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {
+        "env_type": "docker", "docker_mount_cwd_to_workspace": True,
+        "host_cwd": None, "cwd": "/root", "timeout": 60,
+    })
+    monkeypatch.setattr(terminal_tool, "_docker_session_isolation_enabled", lambda: True)
+    monkeypatch.setattr(terminal_tool, "_resolve_container_task_id", lambda task_id: task_id)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.register_task_env_overrides("backend-chat", {"cwd": str(repo), "cwd_source": "session"})
+
+    seen = []
+
+    class FakeOps:
+        def read_file(self, path, offset, limit):
+            seen.append(("read", path))
+            return ReadResult(content="1|ok", total_lines=1, file_size=2)
+
+        def search(self, **kwargs):
+            seen.append(("search", kwargs["path"]))
+            return SearchResult()
+
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id: FakeOps())
+    ft.read_file_tool(str(repo / "pyproject.toml"), task_id="backend-chat")
+    ft.search_tool("needle", path=str(repo), task_id="backend-chat")
+    assert seen == [("read", "/workspace/pyproject.toml"), ("search", "/workspace")]
+
+
+def test_ssh_file_backend_keeps_relative_remote_paths(monkeypatch, tmp_path):
+    from tools.file_operations_common import ReadResult, SearchResult
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "ssh"})
+    seen = []
+
+    class FakeOps:
+        def read_file(self, path, offset, limit):
+            seen.append(("read", path))
+            return ReadResult(content="1|ok", total_lines=1, file_size=2)
+
+        def search(self, **kwargs):
+            seen.append(("search", kwargs["path"]))
+            return SearchResult()
+
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id: FakeOps())
+    ft.read_file_tool("remote.txt", task_id="ssh-remote")
+    ft.search_tool("needle", path="remote-dir", task_id="ssh-remote")
+    assert seen == [("read", "remote.txt"), ("search", "remote-dir")]
+
+
 def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypatch):
     """Relative Docker paths should stay under the container cwd textually."""
     host_project = tmp_path / "host-project"

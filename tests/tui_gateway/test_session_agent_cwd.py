@@ -182,3 +182,29 @@ def test_workspace_move_during_deferred_build_reaches_first_codex_thread(workspa
     assert runtime.providers[0]._session_key == runtime.old.name
     assert runtime.providers[0]._lazy_init_kwargs["cwd"] == str(runtime.old)
     assert agent._cached_system_prompt == f"Stable prompt for {agent.session_id}"
+
+
+@pytest.mark.parametrize("action", ["project-tool", "session.cwd.set", "session.workspace.move"])
+def test_failed_sandbox_switch_does_not_claim_new_workspace(workspace_runtime, monkeypatch, action):
+    runtime = workspace_runtime
+    server = runtime.server
+    agent = runtime.build(str(runtime.old))
+    session = {"agent": agent, "session_key": agent.session_id,
+               "cwd": str(runtime.old), "source": "desktop", "explicit_cwd": True}
+    server._sessions["ui-session"] = session
+
+    def refuse(candidate):
+        if candidate.get("cwd") == str(runtime.new):
+            raise RuntimeError("sandbox removal failed")
+
+    monkeypatch.setattr(server, "_register_session_cwd", refuse)
+    if action == "project-tool":
+        with pytest.raises(RuntimeError, match="sandbox removal failed"):
+            server._apply_project_workspace(agent.session_id, str(runtime.new))
+    else:
+        response = server._methods[action]("move", {
+            "session_id": "ui-session", "session_key": agent.session_id, "cwd": str(runtime.new),
+        })
+        assert "error" in response, response
+    assert session["cwd"] == str(runtime.old)
+    assert agent.session_cwd == str(runtime.old)

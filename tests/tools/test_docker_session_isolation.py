@@ -260,6 +260,24 @@ class TestRecordedHostCwdDiscardedOnContainers:
         )
         assert cwd == "/workspace/b"
 
+    def test_explicit_mounted_host_workdir_maps_into_container(self, monkeypatch, tmp_path):
+        _enable_isolation(monkeypatch)
+        repo = tmp_path / "repo"
+        subdir = repo / "subdir"
+        subdir.mkdir(parents=True)
+        monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {
+            "env_type": "docker", "docker_mount_cwd_to_workspace": True,
+            "host_cwd": None,
+        })
+        terminal_tool.register_task_env_overrides("chat", {"cwd": str(repo), "cwd_source": "session"})
+        assert terminal_tool.get_session_cwd("chat") == "/workspace"
+        assert terminal_tool._resolve_command_cwd(
+            workdir=str(subdir), default_cwd="/workspace", session_key="chat", env_type="docker",
+        ) == "/workspace/subdir"
+        assert terminal_tool._resolve_command_cwd(
+            workdir=str(tmp_path / "other"), default_cwd="/workspace", session_key="chat", env_type="docker",
+        ) == str(tmp_path / "other")
+
     def test_no_env_type_keeps_previous_behavior(self):
         """Callers that don't pass env_type (legacy sites) are unchanged."""
         terminal_tool.record_session_cwd("sess-1", "/home/me/project")
@@ -326,3 +344,137 @@ class TestSessionScopedContainerLifecycle:
         )
         assert captured["persist_across_processes"] is True
         assert getattr(env, "_session_scoped", False) is False
+
+
+def test_explicit_workspace_switch_replaces_only_its_existing_sandbox(monkeypatch, tmp_path):
+    """A running empty sandbox cannot keep its old /workspace after Desktop attaches a repo."""
+    _enable_isolation(monkeypatch)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"docker_mount_cwd_to_workspace": True})
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+
+    class Sandbox:
+        cwd = "/workspace"
+
+        def __init__(self):
+            self.removed = 0
+
+        def remove_for_workspace_change(self):
+            self.removed += 1
+
+    first, neighbor = Sandbox(), Sandbox()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"chat": first, "neighbor": neighbor})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {"chat": 1, "neighbor": 1})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    monkeypatch.setattr("tools.process_registry.process_registry.has_active_processes", lambda _: False)
+    invalidated = []
+    monkeypatch.setattr("tools.file_tools.clear_file_ops_cache", invalidated.append)
+
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(old), "cwd_source": "session"})
+    assert first.removed == 1
+    assert "chat" not in terminal_tool._active_environments
+    assert terminal_tool._active_environments["neighbor"] is neighbor
+    terminal_tool._active_environments["chat"] = first
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(new), "cwd_source": "session"})
+    assert first.removed == 2
+    assert terminal_tool._task_env_overrides["chat"]["cwd"] == str(new)
+    assert invalidated == ["chat", "chat"]
+
+
+def test_failed_workspace_switch_preserves_old_mount_and_override(monkeypatch, tmp_path):
+    _enable_isolation(monkeypatch)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"docker_mount_cwd_to_workspace": True})
+    old, new = tmp_path / "old", tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(old), "cwd_source": "session"})
+
+    class Sandbox:
+        cwd = "/workspace"
+
+        def remove_for_workspace_change(self):
+            raise RuntimeError("docker removal failed")
+
+    sandbox = Sandbox()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"chat": sandbox})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    active = [True]
+    monkeypatch.setattr("tools.process_registry.process_registry.has_active_processes", lambda _: active[0])
+    with pytest.raises(RuntimeError, match="process is running"):
+        terminal_tool.register_task_env_overrides("chat", {"cwd": str(new), "cwd_source": "session"})
+    active[0] = False
+    with pytest.raises(RuntimeError, match="docker removal failed"):
+        terminal_tool.register_task_env_overrides("chat", {"cwd": str(new), "cwd_source": "session"})
+    assert terminal_tool._active_environments["chat"] is sandbox
+    assert terminal_tool._task_env_overrides["chat"]["cwd"] == str(old)
+    assert terminal_tool.get_session_cwd("chat") == "/workspace"
+
+
+def test_process_fallback_changes_do_not_replace_empty_workspace(monkeypatch, tmp_path):
+    _enable_isolation(monkeypatch)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"docker_mount_cwd_to_workspace": True})
+
+    class Sandbox:
+        cwd = "/workspace"
+
+        def remove_for_workspace_change(self):
+            pytest.fail("process fallback must never change the sandbox mount")
+
+    sandbox = Sandbox()
+    monkeypatch.setattr(terminal_tool, "_active_environments", {"chat": sandbox})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(tmp_path), "cwd_source": "process"})
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(tmp_path / "other"), "cwd_source": "process"})
+    assert terminal_tool._active_environments["chat"] is sandbox
+
+
+def test_replacement_terminal_and_file_backends_mount_selected_repo(monkeypatch, tmp_path):
+    from tools import file_tools, terminal_tool_lifecycle
+
+    _enable_isolation(monkeypatch)
+    repo_a, repo_b = tmp_path / "a", tmp_path / "b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    config = {"env_type": "docker", "docker_mount_cwd_to_workspace": True,
+              "host_cwd": None, "cwd": "/workspace", "timeout": 60, "docker_image": "test"}
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_select_image", lambda *a: "test")
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr("tools.process_registry.process_registry.has_active_processes", lambda _: False)
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    seen = []
+    seen_cwds = []
+
+    class Sandbox:
+        cwd = "/workspace"
+
+        def remove_for_workspace_change(self):
+            pass
+
+    def create(*args, **kwargs):
+        seen.append(kwargs["host_cwd"])
+        seen_cwds.append(kwargs["cwd"])
+        return Sandbox()
+
+    monkeypatch.setattr(terminal_tool_lifecycle, "_create_configured_env", create)
+    monkeypatch.setattr(terminal_tool, "_create_configured_env", create)
+
+    # First tool starts in an intentionally empty sandbox; attaching a repo
+    # replaces it, and the next terminal creation uses that exact host mount.
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(repo_a), "cwd_source": "process"})
+    assert terminal_tool_lifecycle.ensure_task_env("chat") is not None
+    assert seen == [None]
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(repo_a), "cwd_source": "session"})
+    assert terminal_tool_lifecycle.ensure_task_env("chat") is not None
+    assert seen[-1] == str(repo_a)
+
+    # A second explicit move evicts it; a file tool used before terminal has
+    # the same mount policy rather than resurrecting the prior repo.
+    terminal_tool.register_task_env_overrides("chat", {"cwd": str(repo_b), "cwd_source": "session"})
+    _, file_env = file_tools._create_terminal_env_for_file_ops("chat", "chat")
+    assert file_env is not None
+    assert seen[-1] == str(repo_b)
+    assert seen_cwds[-1] == "/workspace"

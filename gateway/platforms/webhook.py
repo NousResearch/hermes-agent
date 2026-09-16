@@ -321,9 +321,10 @@ class WebhookAdapter(BasePlatformAdapter):
         while order and order[0][0] < cutoff:
             created_at, key = order.popleft()
             if created.get(key) == created_at:
+                if key in self._pending_callback:
+                    continue
                 self._delivery_info.pop(key, None)
                 created.pop(key, None)
-                self._pending_callback.pop(key, None)
 
     def _prune_seen_deliveries(self, now: float) -> None:
         """Occasionally prune expired delivery IDs without scanning every POST."""
@@ -977,9 +978,9 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
                     raise
 
+        self._pending_callback.pop(chat_id, None)
         logger.warning(
-            "[webhook] Callback delivery exhausted %d attempts for %s; "
-            "pending content retained for TTL cleanup",
+            "[webhook] Callback delivery exhausted %d attempts for %s",
             max_attempts,
             chat_id,
         )

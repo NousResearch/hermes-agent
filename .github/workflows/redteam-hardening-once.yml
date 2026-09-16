@@ -28,9 +28,27 @@ jobs:
           test -z "$(git status --porcelain)"
           echo "bootstrap_sha=$(git rev-parse HEAD)"
 
-      - name: Apply audited red-team patch
+      - name: Apply audited red-team patch without regressing concurrent hardening
         run: |
+          set -euo pipefail
+          current_head="$(git rev-parse HEAD)"
+          payload_base="9306321ca95a106b211b0698216e781dd773f66b"
+
+          # The payload was validated against payload_base. Since then the
+          # compressor trust boundary and workload benchmark landed directly on
+          # main in 42caf470. Feed the payload its validated baseline for those
+          # overlapping files only, then restore the current implementations.
+          git show "${payload_base}:agent/context_compressor.py" > agent/context_compressor.py
+          git show "${payload_base}:workstation/workload_benchmark.py" > workstation/workload_benchmark.py
+          git show "${payload_base}:workstation/benchmarks/workload_baseline.json" > workstation/benchmarks/workload_baseline.json
+
           python scripts/redteam_hardening_once.py
+
+          git checkout "${current_head}" -- \
+            agent/context_compressor.py \
+            workstation/workload_benchmark.py \
+            workstation/benchmarks/workload_baseline.json
+
           python - <<'PY'
           from pathlib import Path
           path = Path("tools/tool_result_storage.py")
@@ -99,7 +117,7 @@ jobs:
           git diff --check
           git status --short
 
-      - name: Commit validated hardening directly to main
+      - name: Commit, rebase on concurrent main, revalidate, and publish
         run: |
           set -euo pipefail
           git config user.name "hermes-redteam-bot"
@@ -119,7 +137,26 @@ jobs:
             apps/desktop/electron/workstation-browser-runtime.ts \
             workstation/tests/test_redteam_hardening.py
           git commit -m "fix(workstation): close red-team trust and durability gaps"
+
+          git fetch origin main
+          git rebase origin/main
+          git diff --check origin/main...HEAD
+
+          # A non-conflicting rebase can still change dependencies around the
+          # patch. Re-run the two behavioral gates before publishing.
+          source .venv/bin/activate
+          python -m pytest -q \
+            workstation/tests/test_redteam_hardening.py \
+            workstation/tests/test_browser_workstation_route.py \
+            workstation/tests/test_artifacts_and_verbosity.py \
+            workstation/tests/test_persistent_workers.py \
+            workstation/tests/test_browser_supervisor.py \
+            workstation/tests/test_browser_extract_items.py \
+            workstation/tests/test_workload_benchmark.py \
+            --tb=short
+          npm --prefix apps/desktop run typecheck
+
           git push origin HEAD:main
           echo "validated_commit=$(git rev-parse HEAD)"
 
-# redteam bootstrap revision 9
+# redteam bootstrap revision 10

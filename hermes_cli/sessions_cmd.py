@@ -96,6 +96,44 @@ def _write_output(output, text, summary) -> None:
     print(summary)
 
 
+def _open_session_store():
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    return SessionStore(sessions_dir=_sessions_dir(), config=GatewayConfig())
+
+
+def _cmd_overrides(args):
+    from hermes_cli.session_model_overrides import overrides_from_store
+    rows = overrides_from_store(_open_session_store())
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No persisted /model overrides.")
+        return
+    print(f"{'Model':<32} {'Provider':<16} {'ID'}")
+    print("─" * 80)
+    for row in rows:
+        print(f"{row['model']:<32} {row['provider']:<16} {row['session_id']}")
+
+
+def _cmd_clear_model(args):
+    from hermes_cli.session_model_overrides import clear_model_override, resolve_override_entry
+    needle = args.session
+    store = _open_session_store()
+    entry = resolve_override_entry(store, needle)
+    if entry is None:
+        return _not_found(needle)
+    ov = entry.model_override or {}
+    label = ov.get("model") or "(none)"
+    if not getattr(args, "yes", False):
+        if not _confirm_prompt(f"Clear /model override {label} on {entry.session_id}? [y/N] "):
+            print("Cancelled.")
+            return 1
+    clear_model_override(store, needle)
+    print(f"Cleared /model override on {entry.session_id}; session follows config default.")
+
+
 # -- handlers that must run BEFORE SessionDB() is opened ----------------------
 
 def _cmd_repair(args):
@@ -310,6 +348,10 @@ def _cmd_list(db, args):
         print(fmt(s))
     if truncated:
         print_truncated(None, f"use --limit {limit * 2} to see more")
+    if getattr(args, "with_model", False):
+        from hermes_cli.session_model_overrides import overrides_from_store
+        print()
+        _cmd_overrides(args)
 
 
 # -- export -----------------------------------------------------------------
@@ -963,7 +1005,7 @@ def _cmd_stats(db, args):
 
 # -- dispatch -----------------------------------------------------------------
 
-_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+_PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import, "overrides": _cmd_overrides, "clear-model": _cmd_clear_model}
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,

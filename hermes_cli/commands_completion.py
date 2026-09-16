@@ -25,28 +25,23 @@ _personalities_memo: Optional[
 
 
 def _personalities_from_cli_config() -> Dict[str, Any]:
-    """``available_personalities(load_cli_config())`` memoised on config path+mtime+size:
+    """``available_personalities(load_cli_config())`` memoised on config path+signature:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
     from cli import load_cli_config
+    from utils import file_signature
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
         cfg_path = get_config_path()
         st = cfg_path.stat()
-        sig = (str(cfg_path), st.st_mtime_ns, st.st_size)
+        sig = (str(cfg_path), *file_signature(st))
     except Exception:
-        sig = (None, None, None)
+        sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:
         _personalities_memo = (sig, available_personalities(load_cli_config()))
     return _personalities_memo[1]
-
-
-def _short_desc(info: Mapping[str, Any], default: str) -> str:
-    """50-char description preview used in completion menus."""
-    description = str(info.get("description", default))
-    return description[:50] + ("..." if len(description) > 50 else "")
 
 
 def _file_size_label(path: str) -> str:
@@ -335,7 +330,7 @@ class SlashCommandCompleter(Completer):
             # Exact match: trailing space keeps the dropdown open for the next stacked token.
             yield _completion(
                 f"{cmd} " if cmd == word_key else cmd, current_word, cmd,
-                f"⚡ {_short_desc(info, 'Skill command')}")
+                f"⚡ {info.get('description', 'Skill command')}")
 
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
@@ -455,16 +450,16 @@ class SlashCommandCompleter(Completer):
             if cmd[1:].startswith(word):
                 skill_count = len(info.get("skills", []))
                 yield _cmd_completion(
-                    cmd[1:], f"▣ {_short_desc(info, 'Skill bundle')} ({skill_count} skills)")
+                    cmd[1:], f"▣ {info.get('description', 'Skill bundle')} ({skill_count} skills)")
         for cmd, info in self._iter_skill_commands().items():
             if cmd[1:].startswith(word):
-                yield _cmd_completion(cmd[1:], f"⚡ {_short_desc(info, 'Skill command')}")
+                yield _cmd_completion(cmd[1:], f"⚡ {info.get('description', 'Skill command')}")
         try:
             from hermes_cli.plugins import get_plugin_commands
             for cmd_name, cmd_info in get_plugin_commands().items():
                 if cmd_name.startswith(word):
                     yield _cmd_completion(
-                        cmd_name, f"🔌 {_short_desc(cmd_info, 'Plugin command')}")
+                        cmd_name, f"🔌 {cmd_info.get('description', 'Plugin command')}")
         except Exception:
             pass
 

@@ -317,22 +317,26 @@ class TestHostPrefixList:
     refactor that moves the constant.
     """
 
-    def test_all_common_host_prefixes_present_in_constant(self):
-        """The shared prefix constant must list the common host-only roots."""
-        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
-            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
-                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
-                "Container backends need this to avoid using host paths."
-            )
-
     def test_all_common_host_paths_flagged_unusable(self):
-        """A host path under each prefix must be rejected as a container cwd."""
-        for host_path in ("/Users/me/proj", "/home/me/proj",
-                           "C:\\Users\\me", "C:/Users/me"):
+        """A host path under each user root must be rejected as a container cwd; in-sandbox
+        absolute paths pass."""
+        for host_path in ("/Users/me/proj", "/home/me/proj", "C:\\Users\\me", "C:/Users/me"):
             assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
                 f"Host path {host_path!r} should be rejected as a container "
                 "cwd but was accepted."
             )
+        for sandbox_path in ("/workspace", "/root/proj", "/srv/app"):
+            assert _tt_mod._is_unusable_container_cwd(sandbox_path) is False
+
+    def test_any_windows_drive_letter_is_a_host_cwd(self):
+        """The host-shape predicate is platform-independent data: every drive letter, either slash,
+        is a host path (#60962). On POSIX ``D:\\proj`` is also non-absolute so the container guard
+        already rejected it; on a Windows host it IS absolute and only this predicate catches it."""
+        from tools.terminal_tool_config import _is_host_cwd
+        for host_path in ("C:\\Users\\me", "D:\\proj", "e:/work", "Z:\\"):
+            assert _is_host_cwd(host_path) is True, host_path
+        for not_host in ("/workspace", "/srv/app", "relative/dir", "C", "C:"):
+            assert _is_host_cwd(not_host) is False, not_host
 
 
 # =========================================================================

@@ -27,15 +27,16 @@
 
 import crypto from 'node:crypto'
 
+import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
-import { assertBootstrapNotSuperseded } from './ssh-connection'
+import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
 // an old running dashboard unsafe to reattach to (token handling, readiness/spawn
 // args, served-token reconciliation). A mismatch forces a clean respawn.
 const PROTOCOL_VERSION = 1
-const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
+const READY_RE = READY_IN_MERGED_OUTPUT_RE // the remote log is `>> log 2>&1`: merged, not line-accurate
 const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
@@ -249,7 +250,9 @@ async function locateHermes(ssh, remoteHermesPath) {
 // connection uses, so a stale/unexpected install is visible.
 async function probeHermesVersion(ssh, hermesPath) {
   try {
-    const out = (await ssh.exec(`${expandRemotePath(hermesPath)} --version 2>&1`)).trim()
+    // Watchdogged: a hung remote CLI must die remotely instead of orphaning
+    // when the local ssh child is SIGKILLed (#110478).
+    const out = (await ssh.exec(withRemoteTimeout(`${expandRemotePath(hermesPath)} --version 2>&1`))).trim()
 
     return (out.split('\n')[0] || '').trim()
   } catch {
@@ -895,7 +898,9 @@ finally:
 // the marker check, spawns the backend, and publishes its initial lockfile.
 // Python keeps the descriptor close-on-exec by default and passes it explicitly
 // only to the intended outer shell; each detached child closes it before
-// execing Hermes.
+// execing Hermes. mutexPath is expandRemotePath() output — a complete shell
+// word ("$HOME"'/…' or '/abs/…') embedded raw so $HOME expands remotely; a
+// second shq() would hand python the quote characters as part of the path.
 function withRemoteUpdateMutex(command, mutexPath) {
   const script = `
 import fcntl,os,subprocess,sys
@@ -913,7 +918,7 @@ finally:
 sys.exit(result.returncode if result is not None else 1)
 `.trim()
 
-  return `python3 -c ${shq(script)} ${shq(mutexPath)} ${shq(command)}`
+  return `python3 -c ${shq(script)} ${mutexPath} ${shq(command)}`
 }
 
 /**
@@ -1062,7 +1067,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 
   const dashCmd =
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
-    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+    `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
 
   const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
@@ -1120,8 +1125,11 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 async function remoteSupportsSshOwnership(ssh, hermesPath) {
   const hermes = expandRemotePath(hermesPath)
 
+  // The watchdog wraps the inner `serve --help` so the hung CLI is its direct
+  // child and dies remotely instead of orphaning (#110478). The `$( (` space
+  // is load-bearing: without it the shell parses `$((` as arithmetic expansion.
   const out = await ssh.exec(
-    `help="$(${hermes} serve --help 2>&1)"; ` +
+    `help="$( ${withRemoteTimeout(`${hermes} serve --help 2>&1`)} )"; ` +
       `printf '%s' "$help" | grep -q ssh-session-token-file && ` +
       `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
   )
@@ -1168,7 +1176,15 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
 
 async function spawnRemoteDashboard(
   ssh,
-  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
+  {
+    hermesPath,
+    profile,
+    token,
+    ownershipId,
+    hermesHome = '~/.hermes',
+    guestOnboarding = false,
+    assertInstallClear = async () => {}
+  }
 ) {
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(
@@ -1238,6 +1254,7 @@ async function spawnRemoteDashboard(
         tokenFilePath,
         logPath,
         hermesHome,
+        guestOnboarding,
         ownershipId,
         reservationNonce: spawnNonce,
         lockMetadata: {
@@ -1387,13 +1404,14 @@ async function connect(deps) {
     adoptServedToken,
     rememberLog = () => {},
     readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    guestOnboarding = false,
     signal
   } = deps
 
   const log = msg => rememberLog(`[ssh-lifecycle] ${msg}`)
 
   assertBootstrapNotSuperseded(signal)
-  const platform = await probeRemotePlatform(ssh)
+  const platform = deps.platform ?? (await probeRemotePlatform(ssh))
   log(`remote platform ${platform.os}/${platform.arch}`)
   const hermesHome = await probeRemoteHermesHome(ssh)
   await assertRemoteInstallUpdateClear(ssh, hermesHome)
@@ -1540,6 +1558,7 @@ async function connect(deps) {
     token: spawnToken,
     ownershipId,
     hermesHome,
+    guestOnboarding,
     assertInstallClear: () => assertRemoteInstallUpdateClear(ssh, hermesHome)
   })
 

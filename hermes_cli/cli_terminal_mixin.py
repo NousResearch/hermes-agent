@@ -90,7 +90,11 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False) or getattr(self, "_resize_recovery_pending", False):
             return
         now = time.monotonic()
-        if hasattr(self, "_app") and self._app and (now - getattr(self, "_last_invalidate", 0.0)) >= min_interval:
+        # None sentinel, not 0.0 — monotonic's epoch is arbitrary (boot on Linux), so on
+        # a fresh VM ``now`` can be < min_interval and a 0.0 sentinel would swallow the
+        # first repaint (same class as _schedule_focus_regain_redraw below).
+        last = getattr(self, "_last_invalidate", None)
+        if hasattr(self, "_app") and self._app and (last is None or now - last >= min_interval):
             self._last_invalidate = now
             self._app_invalidate(self._app, "invalidate", swallow=False)
 
@@ -103,6 +107,9 @@ class CLITerminalMixin:
         """
         if getattr(self, "_terminal_io_broken", False):
             return
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is not None:
+            monitor.invalidate()
         app = getattr(self, "_app", None)
         if app is not None:
             self._app_invalidate(app, "paint_now", swallow=True)
@@ -135,7 +142,13 @@ class CLITerminalMixin:
         stacks on stale content (#60920, #25337); terminals without it never emit ``CSI I``.
         """
         now = time.monotonic()
-        if now - getattr(self, "_last_focus_regain_redraw", 0.0) < min_interval:
+        # Sentinel is None, not 0.0: time.monotonic() counts from an arbitrary epoch
+        # (boot on Linux). On a fresh VM (CI runners, containers) ``now`` can be smaller
+        # than ``min_interval``, and ``now - 0.0 < min_interval`` would suppress the
+        # FIRST redraw ever requested (CI run 32494557030: uptime < 60s made the
+        # min_interval=60 rate-limit test fail both attempts).
+        last = getattr(self, "_last_focus_regain_redraw", None)
+        if last is not None and now - last < min_interval:
             return
         self._last_focus_regain_redraw = now
         self._force_full_redraw()
@@ -216,6 +229,10 @@ class CLITerminalMixin:
         handled by ``_hermes_call_output_screen_diff`` (#83874). Suppression is cleared by
         a debounced timer so the bar returns during idle; next-submit stays a fast path.
         """
+        # A debounced composer resize can arrive after the alternate screen opens.
+        # Its erase/replay belongs to the suspended composer, not the monitor.
+        if getattr(getattr(self, '_subagent_monitor', None), 'opening', False):
+            return
         from cli import _replay_output_history
         self._status_bar_suppressed_after_resize = True
         try:
@@ -350,8 +367,10 @@ class CLITerminalMixin:
             CLI_CONFIG, _DIM, _RST, _TERMINAL_INPUT_MODE_RESET_SEQ,
             _cli_multiline_shortcuts_enabled, _cprint, _enable_extended_enter_keys, logger)
         now = time.monotonic()
-        # Rate-limit to avoid thrashing if a terminal floods reports.
-        if now - self._last_input_mode_recovery < 0.5:
+        # Rate-limit to avoid thrashing if a terminal floods reports. None = never
+        # (monotonic epoch is arbitrary, see _invalidate).
+        last = self._last_input_mode_recovery
+        if last is not None and now - last < 0.5:
             return
         self._last_input_mode_recovery = now
         app = getattr(self, "_app", None)
@@ -391,7 +410,8 @@ class CLITerminalMixin:
         if getattr(app, "_running_in_terminal", False):
             return
         now = time.monotonic()
-        if now - self._last_termios_drift_check < 1.0:
+        last = self._last_termios_drift_check  # None = never (monotonic epoch is arbitrary)
+        if last is not None and now - last < 1.0:
             return
         self._last_termios_drift_check = now
         try:

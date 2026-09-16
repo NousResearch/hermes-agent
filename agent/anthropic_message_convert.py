@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint,
+    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
 )
 
 logger = logging.getLogger(__name__)
@@ -565,7 +565,9 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
     is_kimi = _is_kimi_family_endpoint(base_url, model)
-    is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
+    is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
+        is_third_party and _model_name_is_deepseek_thinking(model)
+    )
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
     for idx, m in _assistant_block_lists(result):
         if is_kimi:

@@ -62,9 +62,11 @@ _load_image_gen_config = load_image_gen_config
 _IMAGE_API_ENV_PREFIX = "OPENROUTER_IMAGE_API_"
 # Separate connect budget: no TLS in 20s means the endpoint is down — don't wait out the read budget.
 _IMAGE_API_CONNECT_TIMEOUT = 20.0
-# ``/images/models`` probes keyed by base URL: ``(fetched_at, ids)``; empty sets cached too.
+# ``/images/models`` probes keyed by (base URL, key fingerprint): ``(fetched_at, ids)``; empty sets
+# are cached too, so the key must include the credential or one profile's 401 would pin a sibling
+# profile (same base URL, different key) to chat-completions for the whole TTL.
 _CATALOG_TTL_SECONDS = 900.0
-_CATALOG_CACHE: Dict[str, Tuple[float, frozenset]] = {}
+_CATALOG_CACHE: Dict[Tuple[str, Optional[str]], Tuple[float, frozenset]] = {}
 
 _GEMINI_RATIOS = (
     "1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9",
@@ -271,9 +273,12 @@ def _fetch_catalog(
 
 
 def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
-    """Model ids from ``GET {base_url}/images/models``, cached per base URL. Any failure caches an
-    empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
-    cached = _CATALOG_CACHE.get(base_url)
+    """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
+    an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
+    from agent.credential_persistence import fingerprint_secret_value
+
+    cache_key = (base_url, fingerprint_secret_value(api_key))
+    cached = _CATALOG_CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CATALOG_TTL_SECONDS:
         return cached[1]
     ids: set = set()
@@ -283,7 +288,7 @@ def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
     except Exception as exc:  # noqa: BLE001 - probe must never break generation
         logger.debug("image API catalog probe failed for %s: %s", base_url, exc)
     resolved = frozenset(ids)
-    _CATALOG_CACHE[base_url] = (time.monotonic(), resolved)
+    _CATALOG_CACHE[cache_key] = (time.monotonic(), resolved)
     return resolved
 
 

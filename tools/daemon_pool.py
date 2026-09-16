@@ -51,17 +51,27 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
         num_threads = len(self._threads)
         if num_threads < self._max_workers:
             thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+            executor_ref = weakref.ref(self, weakref_cb)
+            if hasattr(self, "_create_worker_context"):
+                # Python 3.14 replaced _initializer/_initargs with a factory
+                # that supplies the worker's initializer context.
+                worker_args = (
+                    executor_ref,
+                    self._create_worker_context(),
+                    self._work_queue,
+                )
+            else:
+                worker_args = (
+                    executor_ref,
+                    self._work_queue,
+                    self._initializer,
+                    self._initargs,
+                )
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile (#54937).
             t = threading.Thread(
-                name=thread_name,
-                target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._create_worker_context(),
-                    self._work_queue,
-                ),
-                daemon=True,
+                name=thread_name, target=_worker, daemon=True,
+                args=worker_args,
             )
             t.start()
             self._threads.add(t)

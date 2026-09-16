@@ -43,8 +43,8 @@ class _FeatureSpec:
 _FEATURES: Dict[str, _FeatureSpec] = {
     "web": _FeatureSpec(
         "Web tools", True, "firecrawl", "firecrawl", ("web", "backend"),
-        "Web search & extract (Firecrawl)", "Firecrawl/Exa/Parallel/Keenable key or SearXNG",
-        ("PARALLEL_API_KEY", "TAVILY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
+        "Web search & extract (Firecrawl)", "Firecrawl/Exa/Parallel/Tavily/Perplexity/Keenable key or SearXNG",
+        ("PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"),
     ),
     "image_gen": _FeatureSpec(
         "Image generation", True, "fal", "fal-queue", ("image_gen", "provider"), "Image generation (FAL)", "FAL key",
@@ -296,10 +296,11 @@ def _web_feature(web_cfg: Dict[str, object], tool_enabled: bool, managed: bool, 
         "firecrawl": direct_firecrawl,
         "parallel": _any_env("PARALLEL_API_KEY") and not web_gw,
         "tavily": (_any_env("TAVILY_API_KEY") or "tavily" in {backend, search_backend, extract_backend}) and not web_gw,
+        "perplexity": _any_env("PERPLEXITY_API_KEY") and not web_gw,
         "searxng": _any_env("SEARXNG_URL"),
     }
     web_managed = backend == "firecrawl" and managed and not direct_firecrawl
-    active = web_managed or direct.get(backend) or direct.get(search_backend) or (extract_backend == "tavily" and direct["tavily"])
+    active = web_managed or direct.get(backend) or direct.get(search_backend) or (extract_backend in ("tavily", "perplexity") and direct[extract_backend])
     return _state(
         "web", available=bool(managed or any(direct.values())), active=bool(tool_enabled and active),
         managed_by_nous=web_managed, toolset_enabled=tool_enabled,
@@ -527,7 +528,7 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
     fal_direct = fal_key_is_configured()
     audio_direct = bool(resolve_openai_audio_api_key())
     return {
-        "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
+        "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
         # Env-configured keyless local backend: a reachable self-hosted SearXNG is a working web setup even
         # with no stored selection (the autodetect cascade in tools/web_tools.py picks it up), so it must
         # not be classified "unconfigured" and pre-checked (#92647).

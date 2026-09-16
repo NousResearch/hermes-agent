@@ -24,7 +24,12 @@ _SYSTEM_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromi
 
 
 def profile_dir() -> Path:
-    """User-data-dir the bot's browser uses on this profile's screen (``AGENT_BROWSER_PROFILE`` wins)."""
+    """User-data-dir the bot's browser uses on this profile's screen (``AGENT_BROWSER_PROFILE`` wins).
+
+    Only an *absolute* path is honored — a relative or ``~``-prefixed value is silently ignored and the
+    default state-dir profile is used instead, matching a long-running bot's fixed working directory
+    rather than resolving against whatever the caller's CWD happens to be at launch.
+    """
     override = os.environ.get("AGENT_BROWSER_PROFILE", "").strip()
     if override and os.path.isabs(override):
         return Path(override)

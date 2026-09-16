@@ -31,6 +31,23 @@ def test_user_pinned_profile_wins(tmp_path, monkeypatch):
     assert browser.profile_dir() == tmp_path / "mine"
 
 
+def test_relative_and_tilde_profile_overrides_are_silently_ignored(tmp_path, monkeypatch):
+    """Only an absolute AGENT_BROWSER_PROFILE is honored per profile_dir()'s docstring — a relative or
+    ``~``-prefixed value must fall back to the default state-dir profile, not error and not resolve
+    against the process CWD."""
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
+    default = tmp_path / "bot-desktop" / "browser-profile"
+
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", "relative/sub/dir")
+    assert browser.profile_dir() == default
+
+    monkeypatch.setenv("AGENT_BROWSER_PROFILE", "~/my-profile")
+    assert browser.profile_dir() == default
+
+    monkeypatch.delenv("AGENT_BROWSER_PROFILE", raising=False)
+    assert browser.profile_dir() == default
+
+
 def test_dock_browser_advertises_a_devtools_port():
     """A human-started instance must be attachable, or the agent can never drive it afterwards."""
     assert "--remote-debugging-port=" in browser.dock_argv("/opt/chrome", "/p/dir")[2]

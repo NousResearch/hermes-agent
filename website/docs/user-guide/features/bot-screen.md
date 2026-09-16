@@ -121,7 +121,9 @@ controller drops back to watching.
 While the screen runs, the bot's browser tool and the dock's **Browser** icon are
 the same browser: the Chromium agent-browser drives, with one persistent
 user-data-dir per bot (`<HERMES_HOME>/bot-desktop/browser-profile`; set
-`AGENT_BROWSER_PROFILE` to pin your own). Click Browser during a takeover and you
+`AGENT_BROWSER_PROFILE` to an **absolute path** to pin your own — a relative or
+`~`-prefixed value is silently ignored and the default profile is used instead).
+Click Browser during a takeover and you
 are in the bot's own windows and cookie jar; what you sign in to is what the bot
 uses afterwards and in every later session, until the site expires the login.
 Set `browser.headed: true` so the bot's own browsing is visible on the screen too.

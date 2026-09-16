@@ -516,8 +516,9 @@ fi
 
 # --- Sync deploy-injected Nous routing overrides into every profile .env ---
 # Hosted deploys point an instance at a non-production Portal / inference
-# host with HERMES_PORTAL_BASE_URL and NOUS_INFERENCE_BASE_URL in the
-# container environment, and run the gateway with GATEWAY_MULTIPLEX_PROFILES.
+# host with HERMES_PORTAL_BASE_URL (or its NOUS_PORTAL_BASE_URL alias) and
+# NOUS_INFERENCE_BASE_URL in the container environment, and run the gateway
+# with GATEWAY_MULTIPLEX_PROFILES.
 # Under multiplex, hermes_cli.auth_nous resolves both through the profile
 # secret scope (agent.secret_scope.get_secret, #108319 / #111809), which is
 # built from <profile>/.env and never falls back to os.environ. A value that
@@ -531,7 +532,11 @@ fi
 # profile's .env". The container value wins over a stale line (the platform
 # is the authority on where this instance routes); operators who never set
 # the variable are untouched. Idempotent: an already-correct line is left
-# alone so the volume is not rewritten every boot.
+# alone so the volume is not rewritten every boot. Known gap: a profile
+# created while the container runs gets a placeholder .env and is not
+# re-synced until the next boot; the durable home for these stamps is the
+# managed scope (/etc/hermes/.env), once its profile-scope composition is
+# restored (reverted by #111600).
 sync_routing_override() {
     _name="$1"
     _value="$2"
@@ -564,7 +569,9 @@ sync_routing_override() {
     unset _rewritten
 }
 
-for _routing_name in HERMES_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
+# NOUS_PORTAL_BASE_URL is the alias _nous_portal_env_override() accepts beside
+# HERMES_PORTAL_BASE_URL; a deploy may set either.
+for _routing_name in HERMES_PORTAL_BASE_URL NOUS_PORTAL_BASE_URL NOUS_INFERENCE_BASE_URL; do
     eval "_routing_value=\${$_routing_name:-}"
     [ -n "$_routing_value" ] || continue
     sync_routing_override "$_routing_name" "$_routing_value" "$HERMES_HOME/.env"

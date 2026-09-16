@@ -53,6 +53,27 @@ const TOOL_PREVIEW_MAX = 96
 
 export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
 
+// A turn prunes display rows, not child identities. Keep retired IDs with the
+// session's current list so late starts/rosters cannot recreate completed work.
+// Clearing the session (or resetting the store) releases this history too.
+const retiredSubagents = new WeakMap<SubagentProgress[], Set<string>>()
+
+function setSessionSubagents(sid: string, previous: SubagentProgress[], next: SubagentProgress[]) {
+  const retired = retiredSubagents.get(previous) ?? new Set<string>()
+
+  for (const item of previous) {
+    if (TERMINAL.has(item.status)) {
+      retired.add(item.id)
+    }
+  }
+
+  if (retired.size) {
+    retiredSubagents.set(next, retired)
+  }
+
+  $subagentsBySession.set({ ...$subagentsBySession.get(), [sid]: next })
+}
+
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
@@ -212,6 +233,49 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   }
 }
 
+/** Reconcile a scoped, race-checked snapshot without replacing stream history. */
+export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload[]) {
+  const map = $subagentsBySession.get()
+  const previous = map[sid] ?? []
+  const ids = new Set(children.map(p => str(p.subagent_id)).filter(Boolean))
+  const next = previous.filter(item => TERMINAL.has(item.status) || ids.has(item.id))
+
+  for (const payload of children) {
+    const id = str(payload.subagent_id)
+
+    if (!id || retiredSubagents.get(previous)?.has(id)) {
+      continue
+    }
+
+    const index = next.findIndex(item => item.id === id)
+    const prev = next[index]
+
+    if (prev && TERMINAL.has(prev.status)) {
+      continue
+    }
+
+    const projected = toProgress(payload, prev)
+    projected.startedAt = (num(payload.started_at) ?? 0) * 1000 || prev?.startedAt || projected.startedAt
+    projected.updatedAt = prev?.updatedAt ?? projected.startedAt
+
+    // A roster records the last tool, not a currently executing call. Seed cold
+    // activity only; a repeated snapshot must not append over newer live text.
+    if (!projected.stream.length && str(payload.last_tool)) {
+      projected.stream = [{ at: projected.updatedAt, kind: 'tool', text: formatTool(str(payload.last_tool)) }]
+    }
+
+    if (index < 0) {
+      next.push(projected)
+    } else {
+      next[index] = JSON.stringify(prev) === JSON.stringify(projected) ? prev : projected
+    }
+  }
+
+  if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
+    setSessionSubagents(sid, previous, next)
+  }
+}
+
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 
@@ -249,7 +313,7 @@ export function pruneFinishedSessionSubagents(sid: string) {
     return
   }
 
-  $subagentsBySession.set({ ...map, [sid]: next })
+  setSessionSubagents(sid, list, next)
 }
 
 export function pruneDelegateFallbackSubagents(sid: string) {
@@ -266,7 +330,7 @@ export function pruneDelegateFallbackSubagents(sid: string) {
     return
   }
 
-  $subagentsBySession.set({ ...map, [sid]: next })
+  setSessionSubagents(sid, list, next)
 }
 
 export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
@@ -275,7 +339,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const id = idOf(payload)
   const idx = list.findIndex(item => item.id === id)
 
-  if (idx < 0 && !createIfMissing) {
+  if (retiredSubagents.get(list)?.has(id) || (idx < 0 && !createIfMissing)) {
     return
   }
 
@@ -288,7 +352,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const next = toProgress(payload, prev, eventType)
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
-  $subagentsBySession.set({ ...map, [sid]: nextList })
+  setSessionSubagents(sid, list, nextList)
 }
 
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {

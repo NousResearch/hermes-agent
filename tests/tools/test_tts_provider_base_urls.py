@@ -62,7 +62,7 @@ def test_mistral_no_base_url_omits_server_url(tmp_path):
 
     out = tmp_path / "out.mp3"
     with patch.object(tts, "_import_mistral_client", return_value=_FakeMistral), \
-         patch.object(tts, "get_env_value", lambda k, *a: "key" if k == "MISTRAL_API_KEY" else None):
+         patch("hermes_cli.config.get_env_value", lambda k, *a: "key" if k == "MISTRAL_API_KEY" else None):
         tts._generate_mistral_tts("hi", str(out), {"mistral": {}})
 
     assert "server_url" not in captured

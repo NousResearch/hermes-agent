@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
+import type { DesktopProfileRoute } from './desktop-profile'
+
 // Which translucency the OS can back. Asked synchronously because the renderer
 // needs it before its first paint, and answered by main because deciding it
 // needs `os.release()` — a sandboxed preload may only require electron, events,
@@ -18,7 +20,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: the app was started with --local, so the renderer may
   // show the local-models surfaces. Static for the window's lifetime.
   localModelsEnabled: launchFlags?.localModels === true,
-  getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
+  // Launch-flag fact: the Nous free tier is on for this launch
+  // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
+  // decision is stamped onto every backend the app spawns.
+  guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
+  // Launch-flag fact: skip the first-run film (HERMES_SKIP_INTRO=1 or
+  // --skip-intro). Rehearsal aid for the guided chat behind it.
+  skipIntro: launchFlags?.skipIntro === true,
+  getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),
   getProfileRoutes: profiles => ipcRenderer.invoke('hermes:plugin-profile-routes', profiles),
@@ -34,7 +43,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getAgentRoster: () => ipcRenderer.invoke('hermes:agents:roster'),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
-  openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
+  openWindow: (options?: DesktopProfileRoute) => ipcRenderer.invoke('hermes:window:openInstance', options),
   openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
   onBrowserPopoutClosed: callback => {
     const listener = (_event, tabId) => callback(tabId)
@@ -51,6 +60,30 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:wake-indicator:state', listener)
 
       return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
+    }
+  },
+  chatOnboarding: {
+    grow: request => ipcRenderer.send('hermes:chat-onboarding:grow', request),
+    soloBoot: () => ipcRenderer.send('hermes:chat-onboarding:solo-boot')
+  },
+  introReveal: {
+    open: (payload?: { hideMain?: boolean }) => ipcRenderer.invoke('hermes:intro-reveal:open', payload),
+    close: (payload?: { showMain?: boolean }) => ipcRenderer.invoke('hermes:intro-reveal:close', payload),
+    skip: () => ipcRenderer.send('hermes:intro-reveal:skip'),
+    ready: () => ipcRenderer.send('hermes:intro-reveal:ready'),
+    onSkip: callback => {
+      const listener = () => callback()
+
+      ipcRenderer.on('hermes:intro-reveal:skip', listener)
+
+      return () => ipcRenderer.removeListener('hermes:intro-reveal:skip', listener)
+    },
+    onClosed: callback => {
+      const listener = () => callback()
+
+      ipcRenderer.on('hermes:intro-reveal:closed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:intro-reveal:closed', listener)
     }
   },
   petOverlay: {
@@ -223,6 +256,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     agentSignIn: dashboardUrl => ipcRenderer.invoke('hermes:cloud:agent-sign-in', dashboardUrl)
   },
   profile: {
+    getDefault: () => ipcRenderer.invoke('hermes:profile:default:get'),
+    setDefault: (route: DesktopProfileRoute) => ipcRenderer.invoke('hermes:profile:default:set', route),
+    onDefaultChanged: (callback: (route: DesktopProfileRoute | null) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, route: DesktopProfileRoute | null) => callback(route)
+      ipcRenderer.on('hermes:profile:default:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:profile:default:changed', listener)
+    },
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
@@ -257,6 +298,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   saveImageBuffer: (data, ext, name) => ipcRenderer.invoke('hermes:saveImageBuffer', { data, ext, name }),
   capturePreview: payload => ipcRenderer.invoke('hermes:capturePreview', payload),
+  savePastedText: text => ipcRenderer.invoke('hermes:savePastedText', { text }),
   saveClipboardImage: () => ipcRenderer.invoke('hermes:saveClipboardImage'),
   getPathForFile: file => {
     try {
@@ -322,8 +364,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   desktopPluginsRoot: () => ipcRenderer.invoke('hermes:fs:desktopPluginsRoot'),
+  reconcileDesktopPlugins: () => ipcRenderer.invoke('hermes:fs:reconcileDesktopPlugins'),
   logsRoot: () => ipcRenderer.invoke('hermes:fs:logsRoot'),
-  agentPluginsRoot: () => ipcRenderer.invoke('hermes:fs:agentPluginsRoot'),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
   writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
@@ -494,13 +536,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
   relaunchApp: () => ipcRenderer.invoke('hermes:app:relaunch'),
+  getMachineProfile: () => ipcRenderer.invoke('hermes:machine:profile'),
   getRemoteDisplayReason: () => ipcRenderer.invoke('hermes:get-remote-display-reason'),
   uninstall: {
     summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
     run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
   },
   updates: {
-    check: () => ipcRenderer.invoke('hermes:updates:check'),
+    check: opts => ipcRenderer.invoke('hermes:updates:check', opts),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),

@@ -88,17 +88,11 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
 
 
 def load_env() -> Dict[str, str]:
-    """Load profile-scoped environment variables from HERMES_HOME/.env."""
-    env_path = get_hermes_home() / ".env"
-    env_vars: Dict[str, str] = {}
-    if env_path.exists():
-        # utf-8-sig: a Notepad BOM would otherwise glue U+FEFF onto the first key.
-        with env_path.open(encoding="utf-8-sig", errors="replace") as f:
-            for line in map(str.strip, f):
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.removeprefix("export ").partition("=")
-                    env_vars[key.strip()] = value.strip().strip("\"'")
-    return env_vars
+    """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
+    installs the profile scope, so a captured value never differs from the served one)."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(get_hermes_home() / ".env")
 
 
 def set_secret_capture_callback(callback) -> None:
@@ -316,6 +310,18 @@ def _under_any(path: Path, dirs) -> bool:
     return any(resolved.is_relative_to(d) for d in dirs)
 
 
+def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
+    """True when a legacy Markdown candidate belongs to an ancestor directory skill."""
+    try:
+        relative = path.relative_to(search_root)
+    except ValueError:
+        return False
+    return any(
+        (search_root.joinpath(*relative.parts[:depth]) / "SKILL.md").is_file()
+        for depth in range(1, len(relative.parts))
+    )
+
+
 def _collect_skill_candidates(name, local_category_name, all_dirs):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
@@ -333,26 +339,28 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
             seen_md.add(key)
             candidates.append((sd, smd))
 
-    def _record_direct(direct_path: Path) -> None:  # "mlops/axolotl" / "axolotl" or its flat .md sibling
+    def _record_direct(direct_path: Path, search_root: Path) -> None:  # "mlops/axolotl" / "axolotl" or its flat .md sibling
         flat = direct_path.with_suffix(".md")
         if not _is_skill_support_path(direct_path) and direct_path.is_dir() and (direct_path / "SKILL.md").exists():
             _record(direct_path, direct_path / "SKILL.md")
-        elif flat.exists() and not _is_skill_support_path(flat):
+        elif (flat.exists() and not _is_skill_support_path(flat)
+              and not _is_package_owned_markdown(flat, search_root)):
             _record(None, flat)
 
     for search_dir in all_dirs:
         for direct in filter(None, (name, local_category_name)):  # "p:x" with no plugin p → "p/x"
-            _record_direct(search_dir / direct)
+            _record_direct(search_dir / direct, search_dir)
         # Recursive by directory name plus frontmatter `name:` — skills_list()
         # exposes the frontmatter name, so skill_view(name) must accept it too.
         for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
             if (found_skill_md.parent.name == name
                     or _safe_frontmatter(found_skill_md).get("name") == name):
                 _record(found_skill_md.parent, found_skill_md)
-        # Legacy flat <name>.md anywhere under the dir; support docs are excluded
-        # (they load via file_path and must not shadow real skills sharing the basename).
+        # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
+        # directory skill loads through file_path and must not shadow a real skill.
         for found_md in search_dir.rglob(f"{name}.md"):
-            if found_md.name != "SKILL.md" and not _is_skill_support_path(found_md):
+            if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
+                    and not _is_package_owned_markdown(found_md, search_dir)):
                 _record(None, found_md)
     return candidates
 
@@ -412,7 +420,8 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
     required_env_vars = _get_required_environment_variables(frontmatter)
-    backend = str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+    from tools.terminal_scope import terminal_env
+    backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
     env_snapshot = load_env()
     missing_required_env_vars = [
         e for e in required_env_vars

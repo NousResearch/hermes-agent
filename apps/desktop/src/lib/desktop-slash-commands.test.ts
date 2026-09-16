@@ -19,8 +19,10 @@ import {
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
-  slashCompletionGroup
+  slashCompletionGroup,
+  TS_ONLY_NO_DESKTOP_SURFACE
 } from './desktop-slash-commands'
+import desktopSlashRegistry from './desktop-slash-registry.json'
 
 function registryCatalog(
   modes: Record<string, DesktopSlashArgumentMode | null>,
@@ -365,6 +367,12 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
+  it('does not run /login on desktop before the catalog is loaded', () => {
+    rememberDesktopCommandsCatalog(undefined)
+    expect(isDesktopSlashCommand('/login')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/login')).toBe('/login is managed from the desktop sidebar.')
+  })
+
   it('routes /wake through the desktop wake action instead of the slash worker', () => {
     expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
     expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
@@ -663,5 +671,42 @@ describe('rankSkillCommands', () => {
     })
 
     expect(ranked.map(row => row.text)).toEqual(['/sessions', '/research'])
+  })
+})
+
+describe('registry-derived block-list (contract with hermes_cli/commands.py)', () => {
+  beforeEach(() => rememberDesktopCommandsCatalog(undefined))
+
+  it('marks registry-only rows unavailable offline while preserving local desktop overrides', () => {
+    for (const [name, reason] of Object.entries(desktopSlashRegistry)) {
+      if (reason === 'hidden') {
+        continue
+      }
+
+      const spec = resolveDesktopCommand(name)
+
+      // A desktop-owned surface may intentionally override the offline registry
+      // for compatibility with older backends (for example the review-only
+      // /skills spec). The generated block-list owns every remaining row.
+      if (spec?.surface.kind === 'unavailable') {
+        expect(spec.surface.reason).toBe(reason)
+        expect(isDesktopSlashSuggestion(name)).toBe(false)
+
+        continue
+      }
+
+      expect(isDesktopSlashCommand(name)).toBe(true)
+      expect(isDesktopSlashSuggestion(name)).toBe(true)
+    }
+  })
+
+  it('keeps the TS-only list disjoint from the registry dump', () => {
+    for (const names of Object.values(TS_ONLY_NO_DESKTOP_SURFACE)) {
+      for (const name of names) {
+        expect(name in desktopSlashRegistry, `${name} is in the Python registry — drop the TS row`).toBe(false)
+        expect(isDesktopSlashSuggestion(name)).toBe(false)
+        expect(isDesktopSlashCommand(name)).toBe(false)
+      }
+    }
   })
 })

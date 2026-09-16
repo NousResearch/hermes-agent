@@ -98,6 +98,7 @@ vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
   return {
+    $activeGatewayRoute: atom('default'),
     $gateway: atom(null),
     activeGateway: vi.fn(() => null),
     activeGatewayConnectionId: vi.fn(() => 'local'),
@@ -534,6 +535,39 @@ describe('connection-aware plugin host APIs', () => {
     })
   })
 
+  it('forwards { spawnPriority: "foreground" } to the route dial and keeps timeoutMs positional (#105104)', async () => {
+    // An explicit user action (Bot Chat roster click) must reach the pool as a
+    // foreground dial; the SDK passes the options object through so the
+    // registry secondary's probe + connect carry it. The numeric fourth arg is
+    // still the timeout, so a caller can set both.
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'session.list', { title: 'Bot Chat' }, 45_000, { spawnPriority: 'foreground' })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'session.list',
+      { title: 'Bot Chat' },
+      45_000,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+  })
+
+  it('forwards the foreground tag on the profile-only overload without inventing a timeout', async () => {
+    await host.requestProfile('legacy-worker', 'session.list', {}, undefined, { spawnPriority: 'foreground' })
+
+    expect(requestGatewayForProfile).toHaveBeenCalledWith('legacy-worker', 'session.list', {}, undefined, undefined, {
+      spawnPriority: 'foreground'
+    })
+  })
+
   it('keeps the profile-only request overload as a legacy fallback', async () => {
     const result = await host.requestProfile('legacy-worker', 'profiles.list', { include_sessions: true })
 
@@ -607,7 +641,11 @@ describe('profile-aware plugin session opens', () => {
 
     await host.openSession('remote-chat', { route })
 
-    expect(openGatewayForAgent).toHaveBeenCalledWith('source-a', 'default')
+    expect(openGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'default',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('remote-worker')
@@ -1158,7 +1196,10 @@ describe('profile-aware plugin session opens', () => {
     })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })
@@ -1169,7 +1210,10 @@ describe('profile-aware plugin session opens', () => {
     await host.openSession('bot-chat', { profile: 'worker' })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
+    expect(openGatewayForProfile).toHaveBeenCalledWith(
+      'worker',
+      expect.objectContaining({ spawnPriority: 'foreground' })
+    )
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })

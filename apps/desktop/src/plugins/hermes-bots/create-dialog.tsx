@@ -140,7 +140,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
   const [provider, setProvider] = useState('')
   const [soul, setSoul] = useState('')
   const [noSkills, setNoSkills] = useState(false)
-  const [shareAuth, setShareAuth] = useState(true)
+  const [mirrorCredentials, setMirrorCredentials] = useState(true)
   const [advTab, setAdvTab] = useState('general')
   // Where the profile is created: '' = the active gateway (unchanged default),
   // else a registry connection id — the profiles.create lands on THAT
@@ -273,7 +273,7 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     setProvider('')
     setSoul('')
     setNoSkills(false)
-    setShareAuth(true)
+    setMirrorCredentials(true)
     setAdvTab('general')
     setCreatedForCaps(null)
     setCaps(null)
@@ -388,10 +388,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
         // the remote box doesn't have.
         clone_from: cloneFrom === '__none__' ? null : remoteTarget ? 'default' : cloneFrom,
         no_skills: noSkills,
-        // Shared (not copied) auth keeps ONE OAuth/token pool with the main
-        // profile, so refreshes can't invalidate each other. Older gateways
-        // ignore the param and copy — still functional, just forked.
-        share_auth: shareAuth,
+        // Copies the main profile's API keys (.env + auth.json) into the new profile. OAuth
+        // logins are never copied (single-use refresh tokens fork) and never inherited: a
+        // profile only reads its own auth.json, so sign the bot in itself for those.
+        mirror_credentials: mirrorCredentials,
         soul: composeSoul({
           name: slug,
           title,
@@ -786,12 +786,16 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
                     />
                   )}
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
-                    <Checkbox checked={shareAuth} onCheckedChange={value => setShareAuth(Boolean(value))} />
-                    Share keys & accounts with the main profile
+                    <Checkbox
+                      checked={mirrorCredentials}
+                      onCheckedChange={value => setMirrorCredentials(Boolean(value))}
+                    />
+                    Copy API keys from the main profile
                   </label>
                   <div className="pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
-                    Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never
-                    invalidate each other. Uncheck for an isolated snapshot copy.
+                    Each profile owns its credentials. API keys are copied; OAuth logins (Claude, Codex, xAI, Nous)
+                    are not — sign the bot in with <code>hermes -p &lt;name&gt; model</code>. Uncheck to start with
+                    no credentials.
                   </div>
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />

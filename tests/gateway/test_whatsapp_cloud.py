@@ -913,6 +913,65 @@ class TestGroupMessageGuard:
         adapter.handle_message.assert_not_called()
 
 
+class TestContentlessEnvelopeGuard:
+    """Meta delivers non-conversational payloads on the same ``messages``
+    webhook field: ``system`` (user_changed_number, and since Aug 11 2026
+    user_changed_user_id BSUID-rotation events), ``reaction`` (emoji taps),
+    and ``unsupported``/``unknown``. None carry a user utterance — without
+    the guard they'd become MessageEvents with empty text and trigger a
+    blank agent turn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("msg_type,extra", [
+        (
+            "system",
+            {"system": {
+                "type": "user_changed_user_id",
+                "previous_user_id": "bsuid-old",
+                "user_id": "bsuid-new",
+            }},
+        ),
+        (
+            "system",
+            {"system": {"type": "user_changed_number", "body": "changed number"}},
+        ),
+        ("reaction", {"reaction": {"message_id": "wamid.orig", "emoji": "👍"}}),
+        ("unsupported", {"errors": [{"code": 131051, "title": "Unsupported message type"}]}),
+        ("unknown", {}),
+    ])
+    async def test_contentless_envelope_dropped(self, msg_type, extra):
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        raw = {
+            "from": "15551234567",
+            "id": f"wamid.{msg_type}1",
+            "timestamp": "0",
+            "type": msg_type,
+            **extra,
+        }
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+        assert event is None
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_text_still_processed(self):
+        adapter = _make_adapter()
+        raw = {
+            "from": "15551234567",
+            "id": "wamid.text1",
+            "timestamp": "0",
+            "type": "text",
+            "text": {"body": "hello"},
+        }
+        event = await adapter._build_message_event_from_cloud(
+            raw, {"15551234567": "Alice"}, {}
+        )
+        assert event is not None
+        assert event.text == "hello"
+
+
 # =========================================================================
 # Phase 9 — Interactive button messages (clarify / approval / slash-confirm)
 # =========================================================================
@@ -1332,14 +1391,12 @@ class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):
         from collections import OrderedDict
 
-        from gateway.platforms.whatsapp_cloud import (
-            INTERACTIVE_STATE_CACHE_SIZE,
-            WhatsAppCloudAdapter,
-        )
+        from gateway.platforms.helpers import bounded_put
+        from gateway.platforms.whatsapp_cloud import INTERACTIVE_STATE_CACHE_SIZE
 
         cache: OrderedDict = OrderedDict()
         for i in range(INTERACTIVE_STATE_CACHE_SIZE + 10):
-            WhatsAppCloudAdapter._bounded_put(cache, f"id-{i}", "sess")
+            bounded_put(cache, f"id-{i}", "sess", INTERACTIVE_STATE_CACHE_SIZE)
         assert len(cache) == INTERACTIVE_STATE_CACHE_SIZE
         assert "id-0" not in cache
         assert f"id-{INTERACTIVE_STATE_CACHE_SIZE + 9}" in cache
@@ -1399,4 +1456,30 @@ class TestReplyContextResolution:
         assert event.reply_to_message_id is None
         assert event.reply_to_text is None
         assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_sent_image_attaches_the_file(self, tmp_path):
+        """The bot sends an uncaptioned image (a cron job delivering a chart); the user quotes it
+        and asks "what is this?". Meta's ``context`` carries only the wamid, so the bytes must come
+        from the outbound index written at send time — otherwise the agent never sees the image."""
+        adapter = _make_adapter()
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG fake")
+        adapter._upload_media = AsyncMock(return_value=("MEDIA-ID", None))
+        adapter._post_messages = AsyncMock(return_value=([{"id": "wamid.BOT_IMG"}], None))
+        adapter._http_client = MagicMock()
+
+        sent = await adapter.send_image_file("15551234567", str(image))
+        assert sent.success and sent.message_id == "wamid.BOT_IMG"
+
+        event = await adapter._build_message_event_from_cloud(
+            {"from": "15551234567", "id": "wamid.REPLY", "type": "text",
+             "text": {"body": "what is this?"},
+             "context": {"id": "wamid.BOT_IMG", "from": "15550000000"}},
+            {"15551234567": "Alice"}, {"display_phone_number": "15550000000"},
+        )
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.media_urls == [str(image)]
+        assert event.media_types == ["image/png"]
 

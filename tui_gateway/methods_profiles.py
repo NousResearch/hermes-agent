@@ -72,7 +72,10 @@ def _resolve_profile(rid, params):
     if not name:
         return name, None, _err(rid, 4063, "name required")
     from hermes_cli.profiles import get_profile_dir
-    profile_dir = Path(get_profile_dir(name))
+    try:
+        profile_dir = Path(get_profile_dir(name))
+    except ValueError:
+        return name, None, _err(rid, 4064, f"profile '{name}' not found")
     if not profile_dir.is_dir():
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
     return name, profile_dir, None
@@ -312,24 +315,27 @@ def _inherit_launch_model(path) -> bool:
 
 def _mirror_launch_credentials(path, params: dict) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
-    ``share_auth`` reports ``auth: "shared"`` and skips the auth copy; ``mirror_credentials``
-    false skips everything. ``model_inherited`` is filled in by the caller."""
-    share_auth = is_truthy_value(params.get("share_auth", False))
-    mirrored = {"env": False, "auth": "shared" if share_auth else False, "model_inherited": False,
-                "voice": False}
+    ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
+
+    ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
+    profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
     if not is_truthy_value(params.get("mirror_credentials", True)):
         return mirrored
     launch_home = get_hermes_home()
     # .env: only over the seeded comment-only stub (never a clone's secrets).
     mirrored["env"] = _try(lambda: _mirror_secret(path, launch_home, ".env", lambda src, dst: (
         _env_has_content(src) and not _try(lambda: _env_has_content(dst), False))), False)
-    if not share_auth:  # a copy forks token state: the first refresh in either store strands the other
-        mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
-                                                       lambda src, dst: not dst.exists()), False)
-        if mirrored["auth"]:
-            # Drop single-use OAuth grants (first refresh strands every sibling); they read from the
-            # root grant via the pool fallback. API keys stay.
-            _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+    if mirrored["env"] and not is_truthy_value(params.get("clone_channels", False)):
+        # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
+        # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
+        _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
+    mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
+                                                   lambda src, dst: not dst.exists()), False)
+    if mirrored["auth"]:
+        # Drop single-use OAuth grants (a copy forks token state: the first refresh in either store
+        # strands the other); the new profile signs into those providers itself. API keys stay.
+        _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
     mirrored["voice"] = _mirror_voice_sections(path)
     return mirrored
 
@@ -337,9 +343,11 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
 @method("profiles.create")
 def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
-    ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``no_skills``, ``soul``,
-    ``model`` + ``provider``, ``share_auth``, ``mirror_credentials`` (default true: a bare
-    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
+    ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
+    source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
+    ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (default true: a bare
+    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless);
+    ``share_auth`` is accepted from older clients and ignored."""
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
@@ -351,7 +359,8 @@ def _(rid, params: dict) -> dict:
             name=name, clone_from=clone_from, clone_all=clone_all,
             clone_config=bool(clone_from) and not clone_all,
             no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None)
+            description=str(params.get("description") or "").strip() or None,
+            clone_channels=is_truthy_value(params.get("clone_channels", False)))
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         return _err(rid, 4062, str(e))
     except Exception as e:
@@ -359,7 +368,8 @@ def _(rid, params: dict) -> dict:
     # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
     if not clone_from:
         _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
-    _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
+    if not is_truthy_value(params.get("no_alias", False)):
+        _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
     soul = params.get("soul")
     soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
         lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
@@ -645,6 +655,12 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
                              "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
     return _ok(rid, {"found": False})
+
+
+@_profile_handler("profiles.remember_onboarding", 5067)
+def _(rid, params: dict) -> dict:
+    from tui_gateway.onboarding_personalization import remember_onboarding
+    return _ok(rid, remember_onboarding(params.get("answers")))
 
 
 def register(server) -> None:

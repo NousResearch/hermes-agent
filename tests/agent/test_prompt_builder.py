@@ -932,18 +932,20 @@ class TestEnvironmentHints:
         assert _pb._probe_remote_backend("singularity") is not None
         assert calls == ["bare"]
 
-    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
-        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
-        socket shared with the agent's real environment, so the probe must
-        leave it alone (nothing leaks — ControlPersist expires the master)."""
+    def test_probe_remote_backend_ssh_is_probe_only_and_torn_down(self, monkeypatch):
+        """SSH probe: a normal SSHEnvironment would create remote dirs, force-upload
+        ~/.hermes and snapshot a session just to run `uname`, and its __del__ would
+        later sync_back() and close the ControlMaster shared with the agent's real
+        environment. The probe must request a probe-only instance (own socket, no
+        setup/sync) and tear it down itself."""
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         _pb._clear_backend_probe_cache()
 
-        calls = []
+        created, calls = {}, []
 
-        class _SharedSshEnv:
+        class _ProbeSshEnv:
             def execute(self, cmd, timeout=None):
                 return {
                     "returncode": 0,
@@ -957,11 +959,16 @@ class TestEnvironmentHints:
                 calls.append("cleanup")
 
         import tools.terminal_tool_backends as _tt
-        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+
+        def _fake_create(**kw):
+            created.update(kw)
+            return _ProbeSshEnv()
+
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create)
 
         assert _pb._probe_remote_backend("ssh") is not None
-        assert calls == []
-
+        assert created["probe_only"] is True
+        assert calls == ["cleanup"]
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""

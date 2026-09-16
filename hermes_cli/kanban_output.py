@@ -20,7 +20,7 @@ _TASK_DICT_FIELDS = (
     "workspace_kind", "workspace_path", "branch_name", "project_id",
     "created_by", "created_at", "started_at", "completed_at", "result",
     "skills", "max_retries", "model_override", "provider_override",
-    "session_id", "workflow_template_id", "current_step_key",
+    "session_id", "workflow_template_id", "current_step_key", "completion_contract", "last_failure_error",
 )
 _SHOW_RUN_FIELDS = (
     "id", "profile", "step_key", "status", "outcome", "summary", "error",

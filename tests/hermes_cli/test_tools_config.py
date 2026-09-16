@@ -1086,6 +1086,13 @@ def test_gui_selection_of_krea_row_writes_a_krea_model_when_none_is_set(monkeypa
     assert config["image_gen"]["model"] in KREA_MODEL_IDS
 
 
+def test_gui_model_catalog_follows_each_managed_image_row_backend():
+    from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin
+
+    assert _resolve_toolset_model_plugin("image_gen", _image_gen_row("krea")) == "krea"
+    assert _resolve_toolset_model_plugin("image_gen", _image_gen_row("fal")) == "fal"
+
+
 # ── Windows console-flash guard for post-setup subprocess spawns ──────────────
 #
 # The desktop GUI runs post-setup hooks through a detached, console-less

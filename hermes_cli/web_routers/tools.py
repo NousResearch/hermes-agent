@@ -149,12 +149,10 @@ def _resolve_toolset_model_plugin(ts_key: str, provider_row: dict) -> Optional[s
     """Map a provider picker row to its model-catalog plugin name.
 
     Plugin-backed rows carry ``image_gen_plugin_name`` / ``video_gen_plugin_name``;
-    the managed "Nous Subscription" image row instead carries the legacy
-    ``imagegen_backend: "fal"`` marker (same underlying FAL catalog).
+    a managed image row's ``imagegen_backend`` names its catalog plugin.
     """
     if ts_key == "image_gen":
-        return provider_row.get("image_gen_plugin_name") or (
-            "fal" if provider_row.get("imagegen_backend") else None)
+        return provider_row.get("image_gen_plugin_name") or provider_row.get("imagegen_backend")
     if ts_key == "video_gen":
         return provider_row.get("video_gen_plugin_name")
     return None

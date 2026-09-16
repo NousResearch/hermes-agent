@@ -196,7 +196,8 @@ class TestRunningFireOwnerRegistry:
             release.wait(timeout=2)
             return True
 
-        def mark(_job_id, _success, _reason, *, expected_fire_owner):
+        def mark(_job_id, _success, _reason, *, expected_fire_owner, status=None):
+            assert status == "interrupted"
             marked_owners.append(expected_fire_owner)
             return True
 
@@ -234,11 +235,12 @@ class TestRunningFireOwnerRegistry:
             object(): ("owner-b", profile_b),
         }
 
-        def mark(job_id, success, reason, *, expected_fire_owner):
+        def mark(job_id, success, reason, *, expected_fire_owner, status=None):
             observed.append(
                 (
                     job_id,
                     success,
+                    status,
                     expected_fire_owner,
                     cron_jobs._current_cron_store().jobs_file,
                 )
@@ -249,8 +251,8 @@ class TestRunningFireOwnerRegistry:
 
         assert sched.mark_running_jobs_interrupted("shutdown") == ["same-job", "same-job"]
         assert set(observed) == {
-            ("same-job", False, "owner-a", profile_a / "cron" / "jobs.json"),
-            ("same-job", False, "owner-b", profile_b / "cron" / "jobs.json"),
+            ("same-job", False, "interrupted", "owner-a", profile_a / "cron" / "jobs.json"),
+            ("same-job", False, "interrupted", "owner-b", profile_b / "cron" / "jobs.json"),
         }
 
 

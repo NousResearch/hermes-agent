@@ -3490,15 +3490,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_list_job_executions(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id}/executions?limit=&before= — durable run history."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        cron_err = self._check_jobs_available()
-        if cron_err:
-            return cron_err
-        job_id, id_err = self._check_job_id(request)
-        if id_err:
-            return id_err
+        job_id, err = self._cron_request_guard(request, need_job_id=True)
+        if err:
+            return err
         try:
             job = _cron_get(job_id)
             if not job:
@@ -3524,15 +3518,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     async def _handle_get_job_output(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id}/output[/{timestamp}] — a saved run's output text."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-        cron_err = self._check_jobs_available()
-        if cron_err:
-            return cron_err
-        job_id, id_err = self._check_job_id(request)
-        if id_err:
-            return id_err
+        job_id, err = self._cron_request_guard(request, need_job_id=True)
+        if err:
+            return err
         try:
             job = _cron_get(job_id)
             if not job:

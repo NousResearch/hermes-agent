@@ -1871,6 +1871,8 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         t = kb.create_task(conn, title="x", assignee="a")
         host = kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
+        # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
 
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)

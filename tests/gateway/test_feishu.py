@@ -189,18 +189,22 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
     }, clear=True)
-    def test_connect_websocket_sets_channel_ua_tag(self):
-        """Verify that FeishuWSClient receives extra_ua_tags=["channel"].
+    def test_connect_websocket_sets_channel_ua_tag_and_uses_owned_executor(self):
+        """Verify the WebSocket client uses the channel tag and owned executor.
 
         Without this UA tag the Feishu server does not push group @mention
-        events over the WebSocket transport.  See
+        events over the WebSocket transport. The long-lived client must also
+        stay off asyncio's shared default executor. See
         https://github.com/NousResearch/hermes-agent/issues/50656
+        https://github.com/NousResearch/hermes-agent/issues/78318
         """
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         ws_client = SimpleNamespace()
+        owned_executor = object()
+        submitted_executors = []
 
         with (
             patch("plugins.platforms.feishu.adapter.FEISHU_AVAILABLE", True),
@@ -214,6 +218,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("plugins.platforms.feishu.adapter.release_scoped_lock"),
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
+            patch.object(adapter, "_get_sdk_executor", return_value=owned_executor),
         ):
             _mock_event_dispatcher_builder(mock_handler_class)
 
@@ -222,7 +227,8 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             future.set_result(None)
 
             class _Loop:
-                def run_in_executor(self, *_args, **_kwargs):
+                def run_in_executor(self, executor, *_args, **_kwargs):
+                    submitted_executors.append(executor)
                     return future
                 def is_closed(self):
                     return False
@@ -243,6 +249,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                       "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
                          "extra_ua_tags must be ['channel'] to enable group event routing")
+        self.assertEqual(submitted_executors, [owned_executor])
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -952,6 +959,8 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+        # Reply anchors / slash-command thread checks read source.message_id, not event.message_id.
+        self.assertEqual(event.source.message_id, "om_text")
 
 
     @patch.dict(
@@ -969,14 +978,18 @@ class TestAdapterBehavior(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter.handle_message = AsyncMock()
-        source = SessionSource(
-            platform=adapter.platform,
-            chat_id="oc_chat",
-            chat_name="Feishu DM",
-            chat_type="dm",
-            user_id="ou_user",
-            user_name="张三",
-        )
+
+        def _source(message_id: str) -> SessionSource:
+            # Each inbound message carries its own source, pinned to that message's id.
+            return SessionSource(
+                platform=adapter.platform,
+                chat_id="oc_chat",
+                chat_name="Feishu DM",
+                chat_type="dm",
+                user_id="ou_user",
+                user_name="张三",
+                message_id=message_id,
+            )
 
         async def _sleep(_delay):
             return None
@@ -984,13 +997,13 @@ class TestAdapterBehavior(unittest.TestCase):
         async def _run() -> None:
             with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="A", message_type=MessageType.TEXT, source=source, message_id="om_1")
+                    MessageEvent(text="A", message_type=MessageType.TEXT, source=_source("om_1"), message_id="om_1")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="B", message_type=MessageType.TEXT, source=source, message_id="om_2")
+                    MessageEvent(text="B", message_type=MessageType.TEXT, source=_source("om_2"), message_id="om_2")
                 )
                 await adapter._dispatch_inbound_event(
-                    MessageEvent(text="C", message_type=MessageType.TEXT, source=source, message_id="om_3")
+                    MessageEvent(text="C", message_type=MessageType.TEXT, source=_source("om_3"), message_id="om_3")
                 )
                 pending = list(adapter._pending_text_batch_tasks.values())
                 self.assertEqual(len(pending), 1)
@@ -1003,6 +1016,10 @@ class TestAdapterBehavior(unittest.TestCase):
         second = adapter.handle_message.await_args_list[1].args[0]
         self.assertEqual(first.text, "A\nB")
         self.assertEqual(second.text, "C")
+        # Coalescing advances the event id to the latest message; the reply anchor
+        # (source.message_id) must move with it or replies/session tools disagree.
+        self.assertEqual(first.message_id, "om_2")
+        self.assertEqual(first.source.message_id, first.message_id)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
@@ -1692,25 +1709,32 @@ class TestDedupTTL(unittest.TestCase):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
-        writes = []
-        calls = [0]
+        # The class-level env wipe drops the per-test HERMES_HOME, so the adapter resolves
+        # its dedup store under the operator's real ~/.hermes and every id a live gateway
+        # persisted leaks into writes[-1]. Pin the store to a scratch path instead.
+        # Kept open for the whole test: _persist_seen_message_ids mkdirs the store's
+        # parent back, so closing it early leaks an empty scratch dir per run.
+        with tempfile.TemporaryDirectory() as scratch:
+            with patch("plugins.platforms.feishu.adapter.get_hermes_home", return_value=Path(scratch)):
+                adapter = FeishuAdapter(PlatformConfig())
+            writes = []
+            calls = [0]
 
-        def slow_first_write(path, data, *args, **kwargs):
-            idx = calls[0]
-            calls[0] += 1
-            if idx == 0:
-                time.sleep(0.05)
-            writes.append(sorted(data["message_ids"]))
+            def slow_first_write(path, data, *args, **kwargs):
+                idx = calls[0]
+                calls[0] += 1
+                if idx == 0:
+                    time.sleep(0.05)
+                writes.append(sorted(data["message_ids"]))
 
-        async def run():
-            first = asyncio.create_task(adapter._is_duplicate("om_a"))
-            await asyncio.sleep(0.005)
-            second = asyncio.create_task(adapter._is_duplicate("om_b"))
-            await asyncio.gather(first, second)
+            async def run():
+                first = asyncio.create_task(adapter._is_duplicate("om_a"))
+                await asyncio.sleep(0.005)
+                second = asyncio.create_task(adapter._is_duplicate("om_b"))
+                await asyncio.gather(first, second)
 
-        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
-            asyncio.run(run())
+            with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
+                asyncio.run(run())
 
         self.assertEqual(writes[-1], ["om_a", "om_b"])
 
@@ -2154,6 +2178,22 @@ class TestFeishuPostMentionParsing(unittest.TestCase):
         self.assertEqual(result.text_content, "@Alice hello")
 
 
+class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
+    def test_text_elements_keep_markdown_characters_and_style_wrappers(self):
+        """Inbound post text reaches the model verbatim (no backslash escapes) while the
+        structured style flags still render as markdown (#9816)."""
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        payload = {"zh_cn": {"content": [[
+            {"tag": "text", "text": "run `print('hi')` for **emphasis** [x](y)"},
+            {"tag": "text", "text": "strong", "style": {"bold": True}},
+        ]]}}
+        text = parse_feishu_post_payload(payload).text_content
+        self.assertIn("run `print('hi')` for **emphasis** [x](y)", text)
+        self.assertIn("**strong**", text)
+        self.assertNotIn("\\", text)
+
+
 class TestFeishuNormalizeWithMentions(unittest.TestCase):
     def test_text_message_renders_mention_by_name(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message, _FeishuBotIdentity
@@ -2523,5 +2563,4 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
 

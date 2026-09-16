@@ -2,8 +2,16 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
 import { buildSpawnCommand } from './remote-lifecycle'
+
+test('skipIntroEnabled: exactly "1" in env or --skip-intro on argv skips the first-run film', () => {
+  assert.equal(skipIntroEnabled([], { HERMES_SKIP_INTRO: '1' }), true)
+  assert.equal(skipIntroEnabled(['electron', '.', '--skip-intro'], {}), true)
+
+  assert.equal(skipIntroEnabled([], {}), false)
+  assert.equal(skipIntroEnabled([], { HERMES_SKIP_INTRO: 'true' }), false)
+})
 
 test('guestOnboardingEnabled: exactly "1" in env or --guest-onboarding on argv turns the free tier on', () => {
   assert.equal(guestOnboardingEnabled([], { HERMES_GUEST_ONBOARDING: '1' }), true)

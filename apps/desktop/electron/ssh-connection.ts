@@ -39,6 +39,13 @@ import path from 'node:path'
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+
+// Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
+// LOCAL ssh child on timeout, but the remote command keeps running as an
+// orphan (ppid=1) — a hung remote CLI (e.g. a wedged `hermes --version`)
+// accumulates orphans that busy-loop (#110478). Kept under
+// DEFAULT_EXEC_TIMEOUT_MS so the remote kill lands before the local timeout.
+const REMOTE_PROBE_TIMEOUT_SECS = 15
 // No-mux tunnels are one `ssh -N -L` child each; a transient child death
 // (network blip, sshd restart, laptop resume) used to instantly poison
 // isAlive() and cascade upstream into a full teardown that SIGTERM'd a
@@ -319,6 +326,40 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
   }
 
   return args
+}
+
+// Wrap a remote probe command in a POSIX watchdog so a hung remote CLI is
+// killed REMOTELY after `timeoutSecs` instead of orphaning when the local ssh
+// child is SIGKILLed (#110478). Pure POSIX sh (dash, macOS sh) — deliberately
+// not GNU `timeout`, which macOS remotes do not ship.
+//
+// The wrapped command must be a SINGLE command: the watchdog kills its direct
+// child, so the exact invocation that can hang must be the direct child —
+// a hung grandchild of a compound wrapper would orphan anyway. (The ownership
+// probe nests the watchdog around the inner `serve --help` inside its
+// `$( ... )` for this reason; note the load-bearing space in `$( (`.)
+// The wrapped command keeps its stdout; the shell exits non-zero when the
+// watchdog fires and the probe's existing failure path handles it.
+//
+// The sleeper's stdio is detached (</dev/null >/dev/null 2>&1): killing the
+// sleeper subshell orphans its `sleep` grandchild, and an orphan holding the
+// session pipes would keep the ssh channel open until the full timeout even on
+// the healthy path. Detached, the orphan is a benign self-reaping `sleep`.
+function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
+  const secs = Number.isFinite(timeoutSecs) && timeoutSecs > 0 ? Math.floor(timeoutSecs) : REMOTE_PROBE_TIMEOUT_SECS
+
+  // Job control (`set -m`) puts the probe in its own process group so the
+  // watchdog can also reach a grandchild left behind by a launcher that runs
+  // the CLI without exec. Non-interactive zsh exits when asked to enable
+  // monitor mode, so skip that setup there and fall back to killing the direct
+  // child. Other shells retain the process-group cleanup where supported.
+  return (
+    `[ -n "\${ZSH_VERSION-}" ] || set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
+    `wait $__htp; __htrc=$?; ` +
+    `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
+    `exit $__htrc`
+  )
 }
 
 // Bind the local end to 127.0.0.1 ONLY — never 0.0.0.0 — so the tunnel does not
@@ -1137,6 +1178,7 @@ export {
   hostArgs,
   pickLocalPort,
   redactSecrets,
+  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1144,5 +1186,6 @@ export {
   stopTunnelChild,
   target,
   validateKeyPath,
-  validateSshTarget
+  validateSshTarget,
+  withRemoteTimeout
 }

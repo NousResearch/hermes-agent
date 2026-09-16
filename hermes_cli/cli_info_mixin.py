@@ -16,7 +16,7 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname
+from utils import base_url_hostname, file_signature
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -238,9 +238,7 @@ class CLIInfoMixin:
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
             return self._fast_command_available()
-        from hermes_cli.commands import command_available, resolve_command
-        command = resolve_command(slash_command)
-        return command is None or command_available(command)
+        return True
 
     def show_help(self, arg: str = ""):
         """Display help. Bare /help shows categorized core commands with the skill list collapsed
@@ -461,7 +459,7 @@ class CLIInfoMixin:
         Dispatched from the input loop BEFORE slash routing and before anything is queued for the
         agent, so a bang command never becomes a turn: nothing touches ``conversation_history``,
         zero tokens, role alternation / prompt caching untouched by construction
-        (tests/cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
+        (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
         from cli import _rich_text_from_ansi
@@ -656,10 +654,16 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
+        except Exception:
+            file_lines = []
+
         print()
         print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
         print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True):
+        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
             print(f"  {line}")
         print()
 
@@ -774,9 +778,12 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_state import SessionDB
+            from hermes_state import SessionDB, _default_db_path
             from agent.insights import InsightsEngine
-            db = SessionDB()
+            if not _default_db_path().exists():
+                print("  No session data yet.")
+                return
+            db = SessionDB(read_only=True)
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))
@@ -811,13 +818,13 @@ class CLIInfoMixin:
         if not cfg_path.exists():
             return
         try:
-            mtime = cfg_path.stat().st_mtime
+            sig = file_signature(cfg_path.stat())
         except OSError:
             return
-        if mtime == self._config_mtime:
+        if sig == self._config_sig:
             return  # unchanged — fast path
 
-        self._config_mtime = mtime
+        self._config_sig = sig
         try:
             with open(cfg_path, encoding="utf-8") as f:
                 new_cfg = _yaml.safe_load(f) or {}

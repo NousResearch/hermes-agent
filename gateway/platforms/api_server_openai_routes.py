@@ -555,6 +555,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            route="chat_completions",
         )
         if err is not None:
             return err
@@ -599,16 +600,25 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: List[str]) -> tuple:
-        """Run ``compute()`` once per Idempotency-Key + body fingerprint ->
-        ``((result, usage), None)`` or ``(None, 500 response)``."""
-        from gateway.platforms.api_server import (
-            _error_response, _idem_cache, _make_request_fingerprint)
+        log_label: str, fingerprint_keys: List[str], route: str) -> tuple:
+        """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
+        -> ``((result, usage), None)`` or ``(None, 500 response)``.
+
+        ``_idem_cache`` is process-global: under ``gateway.multiplex_profiles`` every profile's
+        ``/p/<profile>/v1/...`` mirror shares it, so the key carries ``_run_idempotency_scope`` (the same
+        ``sha256(profile, expected API key)`` namespace the durable ``/v1/runs`` API uses) — a client key
+        colliding across profiles, or a rotated API_SERVER_KEY, never replays another principal's response.
+        ``route`` is the logical endpoint (``/v1/...`` and its ``/p/<profile>/v1/...`` alias are the same
+        route), folded into the key because the store keeps the fingerprint only as the slot's value.
+        """
+        from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             if idempotency_key:
+                principal_scope = self._run_idempotency_scope(request)
+                scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, compute)
+                result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
                 result, usage = await compute()
             return (result, usage), None
@@ -884,6 +894,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            route="responses",
         )
         if err is not None:
             return err

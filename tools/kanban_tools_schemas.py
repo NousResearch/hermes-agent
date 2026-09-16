@@ -480,6 +480,11 @@ KANBAN_CREATE_SCHEMA = _schema(
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
+        "execution_contract": _prop("object", (
+            "Immutable terminal authority for this card. Currently supports only "
+            "{kind: 'argocd', targets: [{server, application, operation}]}; opted-in "
+            "profiles deny mutating ArgoCD commands outside these exact targets."
+        )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "
                 "continuation turns the worker may take before the task "

@@ -849,9 +849,16 @@ class _ApprovalVerdict:
 
 
 def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *, force: bool) -> _ApprovalVerdict:
-    """Run tirith + dangerous-command guards; ``force`` skips them entirely.
+    """Run command guards; ``force`` never bypasses task execution contracts.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
+    from tools.approval_task_contract import check_current_task_execution_contract
+
+    contract_block = check_current_task_execution_contract(command)
+    if contract_block is not None:
+        raise _Rejected(_error_json(
+            contract_block["message"], status="blocked",
+        ))
     if force:
         return _ApprovalVerdict(approved_run=True)
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))

@@ -1581,6 +1581,9 @@ DEFAULT_CONFIG = {
         # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".
         "deny": [],
+        # Require Kanban workers to hold a persisted execution_contract before they can issue a
+        # mutating ArgoCD command. Disabled by default; a domain-scoped worker opts in explicitly.
+        "require_task_execution_contract": False,
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
         # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,

@@ -1130,6 +1130,14 @@ def check_all_command_guards(command: str, env_type: str,
     dangerous-command findings are presented as ONE combined approval request, so a gateway
     force=True replay cannot bypass one check when only the other was shown to the user.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
+    # A dispatcher-pinned task contract is an operator-declared authority
+    # boundary, not an interactive approval preference. It must run before
+    # Docker's intentional isolated-backend fast path and before yolo/off.
+    from tools.approval_task_contract import check_current_task_execution_contract
+    contract_block = check_current_task_execution_contract(command)
+    if contract_block is not None:
+        return contract_block
+
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return _user_deny_block(command) or _approved()
 
@@ -1212,6 +1220,11 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     arbitrary code headlessly without any approval surface is trusted-by-config (set a gateway/ask surface
     or ``approvals.cron_mode`` to require approval). See #30882.
     """
+    from tools.approval_task_contract import check_current_task_execution_contract_for_code
+    contract_block = check_current_task_execution_contract_for_code()
+    if contract_block is not None:
+        return contract_block
+
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
 

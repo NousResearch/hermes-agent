@@ -1831,7 +1831,7 @@ def _(rid, params: SessionBranchParams, session: dict) -> SessionBranchResult | 
             srv._persist_branch(db, new_key, old_key, title, history, source=source, cwd=srv._session_cwd(session),
                             profile_name=srv.profile_name_for_home(home) or srv._current_profile_name(),
                             copy_fields=srv._BRANCH_COPY_FIELDS,
-                            title_source="user" if params.get("name") else "derived")
+                            title_source="user" if params.name else "derived")
         except Exception as e:
             return srv._err(rid, 5008, f"branch failed: {e}")
     try:

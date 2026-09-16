@@ -464,14 +464,14 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<{ reply?: string }>(
+    const res = await host.requestProfile(
       target.route,
       'bot_relay.deliver',
       {
-        profile: String(envelope?.target_profile || ''),
-        message: String(envelope?.message || ''),
-        from_profile: String(envelope?.from_profile || ''),
-        from_handle: String(envelope?.from_handle || ''),
+        profile: envelope.target_profile,
+        message: envelope.message,
+        from_profile: envelope.from_profile,
+        from_handle: envelope.from_handle,
         from_connection: String(sender.id)
       },
       RELAY_DELIVER_TIMEOUT_MS

@@ -9405,7 +9405,7 @@ def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypa
     finally:
         secret_scope.set_multiplex_active(False)
 
-    assert response["result"] == {
+    assert {k: v for k, v in response["result"].items() if v is not None} == {
         "ok": True,
         "provider": "openai-codex",
         "model": "gpt-5.3-codex",

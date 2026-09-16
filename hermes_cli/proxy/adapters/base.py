@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from typing import FrozenSet, Optional
 
 
+class UpstreamCredentialsCoolingDown(RuntimeError):
+    """All configured upstream credentials are temporarily unavailable."""
+
+    def __init__(self, message: str, retry_after_seconds: int) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
 @dataclass(frozen=True)
 class UpstreamCredential:
     """A resolved bearer + base URL ready to forward to."""
@@ -38,13 +46,17 @@ class UpstreamAdapter(ABC):
 
     @abstractmethod
     def is_authenticated(self) -> bool:
-        """Cheap (no network) usable-credentials check; ``proxy start`` uses it for a clear
-        up-front error before binding a port."""
+        """Cheap (no network) usable-credentials check for health reporting."""
+
+    def is_configured(self) -> bool:
+        """Return True if credentials exist, even when temporarily unavailable."""
+        return self.is_authenticated()
 
     @abstractmethod
     def get_credential(self) -> UpstreamCredential:
         """Fresh credential (refreshing/rotating + persisting as needed). Raises RuntimeError when
-        unauthenticated or refresh fails; the proxy then returns 401 to the client."""
+        unauthenticated or refresh fails; the proxy then returns 401 to the client.
+        Temporary pool exhaustion raises UpstreamCredentialsCoolingDown (429)."""
 
     def get_retry_credential(
         self, *, failed_credential: UpstreamCredential, status_code: int
@@ -64,4 +76,8 @@ class UpstreamAdapter(ABC):
         return f"{self.display_name}: {cred.base_url}{ttl}"
 
 
-__all__ = ["UpstreamAdapter", "UpstreamCredential"]
+__all__ = [
+    "UpstreamAdapter",
+    "UpstreamCredential",
+    "UpstreamCredentialsCoolingDown",
+]

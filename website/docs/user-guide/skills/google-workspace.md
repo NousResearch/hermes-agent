@@ -96,6 +96,27 @@ $GAPI gmail reply MESSAGE_ID --body "Thanks, that works for me."
 
 Automatically threads the reply (sets `In-Reply-To` and `References` headers) and uses the original message's thread ID.
 
+### Drafts
+
+Stage a message in Gmail for human review before it sends — a safer pattern than sending directly when an agent composes mail on your behalf.
+
+```bash
+# Create a draft (accepts any subset of --to/--subject/--body — at least one required)
+$GAPI gmail draft create --to user@example.com --subject "Hello" --body "Message text"
+$GAPI gmail draft create --subject "WIP" --body "still drafting…"   # partial draft, no recipient yet
+
+# --cc, --from, and --html work just like gmail send
+$GAPI gmail draft create --to user@example.com --subject "Q4" --body "<h1>Q4</h1>" --html
+
+# List drafts (use this to find the DRAFT_ID to send)
+$GAPI gmail draft list --max 10
+
+# Send an existing draft
+$GAPI gmail draft send DRAFT_ID
+```
+
+`draft create` rejects a fully empty draft (no `--to`/`--subject`/`--body`). To thread a reply, use `gmail reply` rather than a draft — drafts do not set `In-Reply-To`/`References`.
+
 ### Labels
 
 ```bash
@@ -174,6 +195,9 @@ All commands return JSON. Key fields per service:
 | `gmail search` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `snippet`, `labels` |
 | `gmail get` | `id`, `threadId`, `from`, `to`, `subject`, `date`, `labels`, `body` |
 | `gmail send/reply` | `status`, `id`, `threadId` |
+| `gmail draft create` | `status`, `draftId`, `messageId`, `threadId` |
+| `gmail draft list` | `draftId`, `messageId`, `to`, `subject`, `date`, `snippet` |
+| `gmail draft send` | `status`, `id`, `threadId` |
 | `calendar list` | `id`, `summary`, `start`, `end`, `location`, `description`, `htmlLink` |
 | `calendar create` | `status`, `id`, `summary`, `htmlLink` |
 | `drive search` | `id`, `name`, `mimeType`, `modifiedTime`, `webViewLink` |

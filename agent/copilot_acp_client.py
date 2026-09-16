@@ -295,13 +295,12 @@ class CopilotACPClient:
         with self._active_process_lock:
             proc, self._active_process = self._active_process, None
         self.is_closed = True
-        try:
-            if proc is not None:
-                proc.terminate()
-                proc.wait(timeout=2)
-        except Exception:
+        if proc is not None:
+            from hermes_cli._subprocess_compat import kill_process_tree
+
+            kill_process_tree(proc)
             with contextlib.suppress(Exception):
-                proc.kill()
+                proc.wait(timeout=2)
 
     def _create_chat_completion(
         self, *, model: str | None = None, messages: list[dict[str, Any]] | None = None, timeout: float | None = None,

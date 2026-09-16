@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TITLEBAR_HEIGHT, TITLEBAR_TABS_GAP } from '@/app/shell/titlebar'
 import { registry } from '@/contrib/registry'
 
 import { group, type GroupNode, split } from '../model'
@@ -129,7 +129,7 @@ describe('Sessions/Bots strip — #91223', () => {
 
       for (width of [237, 500, 237]) {
         act(() => window.dispatchEvent(new Event('resize')))
-        expect(header.style.height).toBe(`${TITLEBAR_HEIGHT + 28}px`)
+        expect(header.style.height).toBe(`${TITLEBAR_HEIGHT + 28 + TITLEBAR_TABS_GAP}px`)
         expect(container.querySelector('[data-zone-tabstrip]')?.classList.contains('absolute')).toBe(true)
       }
     } finally {

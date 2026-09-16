@@ -1,6 +1,8 @@
 import type { HermesConnection } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
+/** Breathing room between native window controls and a sidebar tab row. */
+export const TITLEBAR_TABS_GAP = 8
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 /** Titlebar tool hit target (both axes). */
 export const TITLEBAR_CONTROL_SIZE = 24

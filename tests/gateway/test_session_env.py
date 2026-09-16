@@ -43,7 +43,12 @@ def test_set_session_env_sets_contextvars(monkeypatch):
         user_name="alice",
         thread_id="17585",
     )
-    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_id="durable-session-1",
+    )
 
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
@@ -53,6 +58,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
 
     tokens = runner._set_session_env(context)
 
@@ -65,6 +71,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_SESSION_ID") == "durable-session-1"
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -190,6 +197,61 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     assert results["session-B"] == "session-B", (
         f"Session B got '{results['session-B']}' instead of 'session-B' — race condition!"
     )
+
+
+@pytest.mark.asyncio
+async def test_set_session_env_rebinds_durable_id_across_concurrent_session_switches(monkeypatch):
+    """Each turn binds its current durable id, including reused and rotated sessions."""
+    runner = object.__new__(GatewayRunner)
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-process-id")
+
+    def context(session_id: str) -> SessionContext:
+        return SessionContext(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id=session_id),
+            connected_platforms=[],
+            home_channels={},
+            session_key=f"agent:main:telegram:dm:{session_id[0]}",
+            session_id=session_id,
+        )
+
+    b_bound = asyncio.Event()
+    a_rebound = asyncio.Event()
+    observed = []
+
+    async def session_a():
+        tokens = runner._set_session_env(context("A-original"))
+        try:
+            observed.append(("A", get_session_env("HERMES_SESSION_ID")))
+            await b_bound.wait()
+            observed.append(("A-during-B", get_session_env("HERMES_SESSION_ID")))
+        finally:
+            runner._clear_session_env(tokens)
+
+        tokens = runner._set_session_env(context("A-rotated"))
+        try:
+            observed.append(("A-reused", get_session_env("HERMES_SESSION_ID")))
+            a_rebound.set()
+        finally:
+            runner._clear_session_env(tokens)
+
+    async def session_b():
+        tokens = runner._set_session_env(context("B-current"))
+        try:
+            b_bound.set()
+            await a_rebound.wait()
+            observed.append(("B-during-A-reuse", get_session_env("HERMES_SESSION_ID")))
+        finally:
+            runner._clear_session_env(tokens)
+
+    await asyncio.gather(session_a(), session_b())
+
+    assert observed == [
+        ("A", "A-original"),
+        ("A-during-B", "A-original"),
+        ("A-reused", "A-rotated"),
+        ("B-during-A-reuse", "B-current"),
+    ]
+    assert os.environ["HERMES_SESSION_ID"] == "stale-process-id"
 
 
 @pytest.mark.asyncio

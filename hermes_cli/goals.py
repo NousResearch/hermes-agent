@@ -170,6 +170,27 @@ JUDGE_SYSTEM_PROMPT = (
     "accepted (true=done, false=continue)."
 )
 
+# Native lifecycle gates supply the action, never the worker's evidence text.
+JUDGE_LIFECYCLE_CONTEXT = {
+    "kanban_request_review": (
+        "Lifecycle action: kanban_request_review. Phase: review-readiness.\n"
+        "For this judgment, DONE means ready to enter review, not final task completion. "
+        "Require completed implementation, completed self-review, and named verification "
+        "evidence satisfying the task's implementation acceptance criteria. Missing implementation "
+        "or failed/unrun required checks must NOT pass. Keep all substantive criteria and "
+        "constraints in force. Do not require the downstream independent review verdict, an "
+        "already-recorded review transition (this action records it), subsequent release/deployment, "
+        "or work explicitly reserved for a later owner just to enter review. These remain pending "
+        "obligations, not completed work; this verdict grants no release or approval authority."
+    ),
+    "kanban_complete": (
+        "Lifecycle action: kanban_complete. Phase: final-completion.\n"
+        "Evaluate the full task acceptance criteria and constraints. Review-readiness alone is "
+        "not completion. Required independent review or other required completion evidence "
+        "that is still pending must NOT pass."
+    ),
+}
+
 # Judge prompt line for live delegated subagents (WAIT-for-seconds vs CONTINUE).
 JUDGE_DELEGATIONS_BLOCK_TEMPLATE = (
     "Active delegations: the agent has {count} delegated subagent batch(es) still running; "
@@ -876,12 +897,15 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    lifecycle_action: Optional[str] = None,
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
     Returns ``(verdict, reason, parse_failed, wait_directive, transport_failed)``; verdict is done /
     blocked / continue / wait / skipped. ``parse_failed`` means unusable output; transport errors
     set ``transport_failed`` instead and fail-open to ``continue``.
+    ``lifecycle_action`` scopes a Kanban gate to review readiness or final completion;
+    its full task text is retained so later acceptance clauses are not hidden.
     """
     if not goal.strip():
         return "skipped", "empty goal", False, None, False
@@ -900,8 +924,9 @@ def judge_goal(
     # Prompt priority: contract > subgoals > plain. With both, subgoals fold into the contract
     # block as extra criteria so the judge sees a single source of truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    lifecycle_context = JUDGE_LIFECYCLE_CONTEXT.get(lifecycle_action or "", "")
     common = dict(
-        goal=_truncate(goal, 2000),
+        goal=goal if lifecycle_context else _truncate(goal, 2000),
         response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes)
         + (JUDGE_DELEGATIONS_BLOCK_TEMPLATE.format(count=active_delegations) if active_delegations > 0 else ""),
@@ -918,8 +943,11 @@ def judge_goal(
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
+    system_prompt = JUDGE_SYSTEM_PROMPT
+    if lifecycle_context:
+        system_prompt += "\n\n" + lifecycle_context
     try:
-        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+        raw = _call_goal_judge_llm(call_llm, system_prompt, prompt, timeout)
     except AuxiliaryClientUnavailable as exc:
         # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.

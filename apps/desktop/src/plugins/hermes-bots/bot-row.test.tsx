@@ -248,4 +248,20 @@ describe('a group row', () => {
     expect(japanese.getByText('ボット3体')).toBeTruthy()
     expect(japanese.getByRole('button', { name: 'crew, ボット3体, 3体中3体が利用可能' })).toBeTruthy()
   })
+
+  it('names the reader in the active language when their line is the latest, without touching the log marker', () => {
+    // 'You' is the persisted author sentinel on the log entry; only its rendering localizes.
+    act(() =>
+      $groupChats.set({ crew: { log: [{ at: 1, from: { kind: 'user', name: 'You' }, text: 'ship it' }], running: false, watermarks: {} } })
+    )
+    locale.current = 'zh'
+
+    const chinese = render(row)
+
+    expect(chinese.getByText('你: ship it')).toBeTruthy()
+    expect(chinese.queryByText(/^You:/)).toBeNull()
+    expect($groupChats.get().crew.log[0].from.name).toBe('You')
+
+    act(() => $groupChats.set({}))
+  })
 })

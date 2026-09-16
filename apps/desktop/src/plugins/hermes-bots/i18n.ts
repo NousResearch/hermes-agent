@@ -19,9 +19,9 @@
  *  - **Syntax and identifiers**: cron expressions and their examples, React
  *    keys, workspace ids.
  *  - **`'You'`**, the author marker on room-log entries. It is persisted into
- *    the log and compared as a sentinel (`group-activity.ts`), so translating
- *    it in place would break both. Localizing it needs the marker and its
- *    rendering split apart — worth doing, not doable as a rename.
+ *    the log and compared as a sentinel (`group-activity.ts`), so it stays
+ *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
+ *    the places that RENDER the reader's own lines use `group.you` instead.
  *
  * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
  * the resolution chain (active locale → this plugin's `en` → the key) the
@@ -216,6 +216,8 @@ type BotsMessages = {
     pictureGenerationFailed: string
     nameTaken: (name: string) => string
     memberCount: (count: number) => string
+    /** The reader's own lines in a room: the transcript speaker and the roster preview. */
+    you: string
     /** How many of a room's members are reachable right now. */
     availableCount: (available: number, total: number) => string
     settingsHint: (group: string) => string
@@ -471,6 +473,7 @@ const en: BotsMessages = {
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
+    you: 'You',
     availableCount: (available, total) => `${available} of ${total} available`,
     settingsHint: group => `Group settings — rename ${group} or set a room picture`,
     settingsLabel: group => `Group settings for ${group}`,
@@ -718,6 +721,7 @@ const ja: BotsMessages = {
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,
+    you: 'あなた',
     availableCount: (available, total) => `${total}体中${available}体が利用可能`,
     settingsHint: group => `グループ設定 — ${group}の名前変更やルーム画像の設定`,
     settingsLabel: group => `${group}のグループ設定`,
@@ -960,6 +964,7 @@ const zh: BotsMessages = {
     pictureGenerationFailed: '群组图片生成失败',
     nameTaken: name => `已存在名为“${name}”的群聊。`,
     memberCount: count => `${count} 个机器人`,
+    you: '你',
     availableCount: (available, total) => `${total} 个中 ${available} 个可用`,
     settingsHint: group => `群聊设置 — 重命名 ${group} 或设置房间图片`,
     settingsLabel: group => `${group} 的群聊设置`,
@@ -1202,6 +1207,7 @@ const zhHant: BotsMessages = {
     pictureGenerationFailed: '群組圖片產生失敗',
     nameTaken: name => `已存在名為「${name}」的群組聊天。`,
     memberCount: count => `${count} 個機器人`,
+    you: '您',
     availableCount: (available, total) => `${total} 個中 ${available} 個可用`,
     settingsHint: group => `群組設定 — 重新命名 ${group} 或設定房間圖片`,
     settingsLabel: group => `${group} 的群組設定`,

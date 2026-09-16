@@ -53,7 +53,7 @@ def _wire_deferred_refresh(pool, *, refresh_succeeds: bool = True):
         if refresh_succeeds:
             state["needs_refresh"] = False
 
-    def fake_available(clear_expired=False, refresh=False):
+    def fake_available(clear_expired=False, refresh=False, advance_probe=False):
         if state["needs_refresh"]:
             # Pending a refresh -> not yet available.
             pending = [(e.id, "tok") for e in pool._entries] if refresh else []
@@ -91,9 +91,9 @@ def test_acquire_lease_without_pending_refresh_does_not_double_select():
     passes = {"n": 0}
     original = pool._acquire_lease_under_lock
 
-    def counting(credential_id):
+    def counting(credential_id, **kwargs):
         passes["n"] += 1
-        return original(credential_id)
+        return original(credential_id, **kwargs)
 
     pool._acquire_lease_under_lock = counting
 

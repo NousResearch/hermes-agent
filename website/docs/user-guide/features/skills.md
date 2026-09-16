@@ -729,6 +729,37 @@ hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
 
+### Export selected skill contents
+
+To back up or share local skill files without exporting a whole profile:
+
+```bash
+hermes skills export writing/notes coding/review -o /path/to/selected-skills.tar.gz
+```
+
+Arguments are directory paths relative to the active profile's `skills/` directory,
+not frontmatter names or registry identifiers. Each selected directory must contain
+`SKILL.md`. The archive preserves supporting files, empty directories and file
+permissions, with a `manifest.json` containing the selected paths and SHA-256 hashes
+of every archived file. It does not contain profile settings, session history or
+Hub installation/ownership records. Hashes verify content, not publisher identity.
+
+Unlike `hermes skills snapshot export`, which records registry references for
+reinstallation, this command includes the selected files themselves, including local
+edits. This is export only: neither snapshot import nor profile import accepts this
+format. Inspect or unpack it into a separate directory before manually copying any
+reviewed skills into another installation; do not extract directly over live skills.
+
+The output parent directory must already exist, support hard links, and be outside
+the profile's `skills/` tree. An existing output is never overwritten. Detected
+symlinks and special files in selected skills cause the entire export to fail.
+Use a quiescent, trusted local source tree; this is not a filesystem snapshot or a
+sandbox for directories being modified by another process during export.
+
+**Review before sharing.** Skill content is not secret- or PII-scrubbed. Files named
+`.env` or `auth.json` are refused, but secrets or personal information may appear in
+other files. Nothing is uploaded, and no skill code is executed by the exporter.
+
 ### Supported hub sources
 
 | Source | Example | Notes |

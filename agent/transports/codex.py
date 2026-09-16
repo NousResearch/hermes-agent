@@ -657,8 +657,14 @@ class ResponsesApiTransport(ProviderTransport):
             headers = {k: v for k, v in headers.items() if v}
             if headers:
                 _merge_extra_headers(kwargs, **headers)
-        elif params.get("max_tokens") is not None:
-            kwargs["max_output_tokens"] = params["max_tokens"]
+
+        max_tokens = params.get("max_tokens")
+        if max_tokens is not None:
+            # Responses API uses ``max_output_tokens`` for every route,
+            # including the ChatGPT Codex backend. Omitting the cap there
+            # leaves an unattended fallback request unbounded and prevents
+            # the maintainer request-boundary guard from admitting it.
+            kwargs["max_output_tokens"] = max_tokens
 
         if is_xai_responses and session_id:
             # Scoped like the body key so cron fires don't each pin a different xAI backend server.

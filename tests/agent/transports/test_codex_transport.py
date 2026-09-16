@@ -39,6 +39,18 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_codex_backend_includes_output_ceiling(self, transport):
+        """A ChatGPT Codex request must carry the governed output ceiling."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "Sweep the queue."}],
+            tools=[],
+            max_tokens=16000,
+            is_codex_backend=True,
+        )
+        assert kw["max_output_tokens"] == 16000
+        assert "max_tokens" not in kw
+
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
             model="gpt-6-astra",

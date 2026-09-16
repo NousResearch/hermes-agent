@@ -1393,22 +1393,37 @@ def _has_media_content(api_messages: list) -> bool:
     return False
 
 
-def _disable_cache_prompt_for_media(request_overrides: dict, api_messages: list) -> dict:
-    """Force ``extra_body.cache_prompt`` off for a call whose payload carries image/video.
+def _media_safe_extra_body(extra_body, api_messages: list):
+    """Force ``extra_body.cache_prompt`` off when the call's payload carries image/video.
 
     llama-server style backends reuse the prompt/KV cache slot keyed on the textual
     prefix, so back-to-back media turns in one session can be served the previous
     request's answer (#108659). Only touches providers that already set the key
     (no-op otherwise) and only the media-carrying call — plain-text turns keep the
-    cache-reuse benefit the user configured.
+    cache-reuse benefit the user configured. Returns a new dict when a change is
+    needed and the input object otherwise; the caller's dict is never mutated.
     """
-    extra_body = request_overrides.get("extra_body") if isinstance(request_overrides, dict) else None
     if not isinstance(extra_body, dict) or not extra_body.get("cache_prompt"):
-        return request_overrides  # key absent, or already off — nothing to do
+        return extra_body  # key absent, or already off — nothing to do
     if not _has_media_content(api_messages):
+        return extra_body
+    return {**extra_body, "cache_prompt": False}
+
+
+def _disable_cache_prompt_for_media(
+    request_overrides: dict, api_messages: list
+) -> dict:
+    """:func:`_media_safe_extra_body` applied to the ``request_overrides`` shape the main
+    chat-completions builder consumes (``extra_body`` nested one level down)."""
+    if not isinstance(request_overrides, dict):
+        return request_overrides
+    sanitized = _media_safe_extra_body(
+        request_overrides.get("extra_body"), api_messages
+    )
+    if sanitized is request_overrides.get("extra_body"):
         return request_overrides
     request_overrides = dict(request_overrides)
-    request_overrides["extra_body"] = {**extra_body, "cache_prompt": False}
+    request_overrides["extra_body"] = sanitized
     return request_overrides
 
 

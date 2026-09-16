@@ -321,8 +321,10 @@ def _poll_device_token_generic(
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
-    Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
-    via the supplied factories so each caller keeps its exact error contract.
+    A non-JSON 403/408/429/5xx (edge/WAF mitigation, never a real OAuth error) backs off — honoring
+    ``Retry-After`` — instead of aborting a login the user may still be approving. Every other error,
+    a non-JSON error body, and the deadline become provider-specific exceptions via the supplied
+    factories so each caller keeps its exact error contract.
     """
     deadline = time.monotonic() + max(1, expires_in)
     current_interval = poll_interval
@@ -335,6 +337,20 @@ def _poll_device_token_generic(
         try:
             error_payload = response.json()
         except Exception:
+            # Edge/WAF mitigation is not an OAuth error. Vercel fronts the
+            # Portal and answers rate-limited clients with a text/plain 403
+            # (x-vercel-mitigated: deny) or 429 — no JSON body, so it can
+            # never carry authorization_pending/slow_down. Aborting here
+            # kills a login the user is still approving in the browser.
+            # Back off and keep polling until the device code expires.
+            if response.status_code in {403, 408, 429} or response.status_code >= 500:
+                try:
+                    backoff = max(current_interval, int(response.headers["retry-after"]))
+                except (KeyError, TypeError, ValueError):
+                    backoff = min(max(current_interval * 2, 5), 60)
+                current_interval = backoff
+                time.sleep(backoff)
+                continue
             response.raise_for_status()
             raise on_non_json_error(response)
         error_code = str(error_payload.get("error") or "")

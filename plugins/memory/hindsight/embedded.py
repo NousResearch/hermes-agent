@@ -164,7 +164,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     """Build the profile-scoped env that standalone hindsight-embed consumes.
 
     Keys the builder does not manage are carried forward from the existing
-    file (RU embeddings / reranker / failover blocks): without this the
+    file (multilingual embeddings / reranker / failover blocks): without this the
     start-worker compare always differs and the rewrite silently drops
     operator-owned daemon config. Managed keys always win, so rotation
     semantics (including key-to-empty) are preserved.

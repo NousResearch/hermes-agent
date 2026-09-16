@@ -1146,6 +1146,41 @@ def test_copy_tree_non_destructive_skips_symlinks(tmp_path: Path):
     # Symlink should NOT be copied
     assert not (target / "link.txt").exists()
 
+    # The skipped symlink should be recorded so users know it did not migrate
+    link_records = [i for i in migrator.items if i.status == "skipped" and i.source == str(link)]
+    assert len(link_records) == 1
+    assert link_records[0].destination == str(target / "link.txt")
+    assert "symlink" in link_records[0].reason.lower()
+
+
+def test_copy_tree_non_destructive_records_symlinks_when_no_regular_files(tmp_path: Path):
+    """A tree with only symlinks should report why nothing was migrated."""
+    mod = load_module()
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+
+    external = tmp_path / "external.txt"
+    external.write_text("external content", encoding="utf-8")
+    (source / "link.txt").symlink_to(external)
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    migrator.copy_tree_non_destructive(source, target, kind="test")
+
+    summary = [i for i in migrator.items if i.source == str(source)]
+    assert len(summary) == 1
+    assert summary[0].status == "skipped"
+    assert "symlink" in summary[0].reason
+
 
 def test_copy_tree_non_destructive_handles_same_file_error(tmp_path: Path):
     """When source and destination resolve to the same file, skip gracefully."""

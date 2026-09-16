@@ -2013,13 +2013,25 @@ class Migrator:
             return
 
         ignore_dir_names = ignore_dir_names or set()
-        files = [
-            p
-            for p in source_root.rglob("*")
-            if p.is_file() and not p.is_symlink() and not any(part in ignore_dir_names for part in p.relative_to(source_root).parts[:-1])
-        ]
+        files = []
+        symlinks = []
+        for p in source_root.rglob("*"):
+            if not p.is_file():
+                continue
+            if p.is_symlink():
+                symlinks.append(p)
+                continue
+            if any(part in ignore_dir_names for part in p.relative_to(source_root).parts[:-1]):
+                continue
+            files.append(p)
+
+        # Record each skipped symlink so users can see what was not migrated.
+        for link in symlinks:
+            self.record(kind, link, destination_root / link.relative_to(source_root), "skipped", "Symlink skipped (target content not migrated)")
+
         if not files:
-            self.record(kind, source_root, destination_root, "skipped", "No files found")
+            reason = f"No regular files found ({len(symlinks)} symlink(s) skipped)" if symlinks else "No files found"
+            self.record(kind, source_root, destination_root, "skipped", reason)
             return
 
         copied = 0

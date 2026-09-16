@@ -39,7 +39,15 @@ and mixed-discovery refinements, hardening tests alone: 34 passed. Compileall,
 diff check, components lock, license policy and core integration anchors passed.
 GitHub baseline run `35143874982` at `17df394cfe` confirms collection errors:
 missing `requests` and `dotenv`. The new workflow runs the complete locked dev
-environment and retains core seam regressions; publication/run result follows.
+environment and retains core seam regressions.
+
+GitHub acceptance confirmed: [Workstation CI run 35148055997](https://github.com/kevynlucasprofissional-stack/hermes-agent/actions/runs/35148055997)
+completed successfully for `f76368d6ba8566146098305b2b4bebf64581324b`.
+On the clean Ubuntu runner, Workstation contracts: **363 passed**; core seam
+regressions: **255 passed**. Both `contracts` and `core-patch-dry-run` jobs
+succeeded, including locked dependency installation, lock/license validation
+and downstream integration anchors. This supersedes the local-only evidence
+and confirms that the Windows POSIX-permission case passes on CI.
 
 ## H-050 — Durable execution routing / reference boundary (2026-09-16)
 

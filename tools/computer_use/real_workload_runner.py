@@ -12,6 +12,10 @@ also records the remaining P0 checkboxes as span dimensions: model/backend cold
 starts, dispatch queue time, and a local CPU/GPU/VRAM snapshot per task. All
 measurement stays in-process; nothing leaves the machine.
 
+Input note: real input must reach apps through XTest fake_input; pynput-style
+XSendEvent is dropped by toolkits, so direct-input prototypes must drive the
+cua-driver path (as this runner does) instead.
+
 Usage:
     DISPLAY=:99 HERMES_YOLO_MODE=1 python -m tools.computer_use.real_workload_runner \\
         --tasks perceive,act,dialog --session-id p0bench

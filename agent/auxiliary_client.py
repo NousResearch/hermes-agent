@@ -3421,6 +3421,10 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "is not a valid model", "no such model", "model not found",
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found", "unknown model",
+        # Provider 400 naming the ids it will accept (retired/renamed id); must
+        # fail over / self-heal, not retry — same wording the shared classifier
+        # grew in #113272.
+        "supported api model names",
     ))
 
 

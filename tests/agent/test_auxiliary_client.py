@@ -1499,6 +1499,25 @@ class TestIsModelNotFoundError:
         exc.status_code = 404
         assert _is_model_not_found_error(exc) is True
 
+    def test_supported_api_model_names_wording(self):
+        """A deterministic 400 naming the ids the provider will accept.
+
+        Regression for #113272: a retired/renamed model id gets "The
+        supported API model names are ..., but you passed ...", which this
+        predicate's own wording copy missed — an auxiliary call (compression,
+        vision, summarizer) pinned to a retired id neither took the Nous
+        stale-model self-heal nor failed over to the fallback chain, because
+        _ladder_provider_fallback gates on this predicate.
+        """
+        msg = (
+            "The supported API model names are deepseek-v3.2 or "
+            "deepseek-reasoner, but you passed deepseek-v4-flash"
+        )
+        # status-less form (the reporter's repro) and a 400 both fire
+        assert _is_model_not_found_error(Exception(msg)) is True
+        exc_400 = Exception(msg)
+        exc_400.status_code = 400
+        assert _is_model_not_found_error(exc_400) is True
 
 
 

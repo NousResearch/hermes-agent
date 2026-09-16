@@ -48,7 +48,7 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
-def _launch_env() -> Dict[str, str]:
+def launch_env() -> Dict[str, str]:
     """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
     (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
     miss values the launch process still bridges at startup)."""
@@ -74,7 +74,7 @@ def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
     ``get_secret`` to fail closed (``_MULTIPLEX_ACTIVE`` is read on every ``get_secret``, the
     scope decision was made at entry)."""
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
+    scope = {k: v for k, v in launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope
 

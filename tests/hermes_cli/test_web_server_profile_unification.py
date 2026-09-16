@@ -920,6 +920,64 @@ class TestProfileScopedChatPty:
             "HERMES_TUI_GATEWAY_URL": None,
         }
 
+    def test_chat_argv_uses_frozen_launch_env_after_profile_activation(
+        self, isolated_profiles, monkeypatch
+    ):
+        from agent.secret_scope import set_multiplex_active
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_beta"]
+        next_worker_home = launch_home / "profiles" / "worker_gamma"
+        next_worker_home.mkdir(parents=True)
+        (next_worker_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (next_worker_home / ".env").write_text("", encoding="utf-8")
+        monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+        set_multiplex_active(False)
+        monkeypatch.setenv("TERMINAL_SSH_USER", "launch-operator")
+        monkeypatch.setenv("UNRELATED_SETTING", "launch-global")
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, first_env = _web_server_chat._resolve_chat_argv(
+            profile="worker_beta"
+        )
+        monkeypatch.setenv("TERMINAL_SSH_USER", "secondary-poison")
+        monkeypatch.setenv("UNRELATED_SETTING", "secondary-poison")
+        _argv, _cwd, next_env = _web_server_chat._resolve_chat_argv(
+            profile="worker_gamma"
+        )
+
+        probe = (
+            "import json,os; print(json.dumps({k: os.environ.get(k) for k in "
+            "('HERMES_HOME','TERMINAL_SSH_USER','UNRELATED_SETTING')}))"
+        )
+
+        def observe(env):
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                env=env,
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=60,
+            )
+            return json.loads(result.stdout)
+
+        assert observe(first_env) == {
+            "HERMES_HOME": str(worker_home),
+            "TERMINAL_SSH_USER": "launch-operator",
+            "UNRELATED_SETTING": "launch-global",
+        }
+        assert observe(next_env) == {
+            "HERMES_HOME": str(next_worker_home),
+            "TERMINAL_SSH_USER": "launch-operator",
+            "UNRELATED_SETTING": "launch-global",
+        }
+
     def test_chat_argv_keeps_profile_authority_over_dotenv_overrides(
         self, isolated_profiles, monkeypatch
     ):

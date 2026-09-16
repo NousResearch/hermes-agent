@@ -319,15 +319,28 @@ def _resolve_chat_argv(
         profile_dir = _resolve_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    # The current profile keeps its launch environment. A named profile must
-    # instead receive only its own credentials before the TUI spawns its gateway.
-    from tools.environments.local import build_subprocess_env, served_profile_child_env
-    launch_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    # One launch-authority snapshot feeds both the current-profile environment and
+    # the named-profile child base. Once multiplexing starts this is frozen, never
+    # a live os.environ that secondary profile work may have mutated.
+    from tools.environments.local import (
+        build_subprocess_env,
+        hermes_subprocess_env,
+        served_profile_child_env,
+    )
+    from tui_gateway.launch_profile_policy import launch_env as authoritative_launch_env
+
+    launch_base = authoritative_launch_env()
+    launch_env = build_subprocess_env(
+        base=launch_base, scrub_secrets=False, inherit_profile_home=True
+    )
     if profile_dir is None:
         env = launch_env
     else:
         with _config_profile_scope(requested):
             env = served_profile_child_env(
+                base=hermes_subprocess_env(
+                    base=launch_base, inherit_credentials=True
+                ),
                 target_home=profile_dir,
                 inherit_credentials=True,
             )

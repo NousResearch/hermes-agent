@@ -2065,6 +2065,8 @@ export const en: Translations = {
     noUsage: period => `No usage in the last ${period} days.`,
     retry: 'Retry',
     dailyTokens: 'Daily tokens',
+    cacheHitRate: 'Cache hit rate',
+    cacheHitRateVolume: 'weighted by prompt tokens',
     input: 'input',
     output: 'output',
     noDailyActivity: 'No daily activity.',

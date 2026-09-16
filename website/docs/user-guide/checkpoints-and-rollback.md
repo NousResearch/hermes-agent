@@ -236,7 +236,7 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 
 ### Container Backends
 
-With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation; local and SSH backends are unaffected.
+With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation: it still lists existing host checkpoints but refuses diff and restore. Over the gateway RPC, `rollback.list` and `rollback.diff` remain available for inspecting host checkpoints while `rollback.restore` is refused. Local and SSH backends are unaffected.
 
 - **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
 - **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).

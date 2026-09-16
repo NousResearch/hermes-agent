@@ -67,10 +67,9 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
     assert manager.list_checkpoints(str(process_cwd)) == []
 
 
-def _assert_container_skipped(manager):
+def _assert_container_skipped(manager, task_id):
     assert manager.list_all_checkpoints() == []
-    assert manager.unsupported_backend == "docker"
-    assert "docker" in manager.unsupported_backend_reason()
+    assert "docker" in manager.unsupported_backend_reason(task_id)
 
 
 def test_container_backend_file_checkpoint_is_not_taken_on_missing_host_path(
@@ -80,7 +79,7 @@ def test_container_backend_file_checkpoint_is_not_taken_on_missing_host_path(
     _ensure_file_checkpoint(
         agent, "write_file", {"path": "/workspace/project/a.txt"}, container_task_id
     )
-    _assert_container_skipped(manager)
+    _assert_container_skipped(manager, container_task_id)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX absolute container path")
@@ -98,7 +97,7 @@ def test_container_backend_file_checkpoint_does_not_snapshot_a_colliding_host_tr
         container_task_id,
     )
     assert manager.list_checkpoints(str(host_dir)) == []
-    _assert_container_skipped(manager)
+    _assert_container_skipped(manager, container_task_id)
 
 
 def test_container_backend_destructive_terminal_checkpoint_is_not_taken(
@@ -124,7 +123,7 @@ def test_container_backend_destructive_terminal_checkpoint_is_not_taken(
         [],
     )
     _begin_tool_execution(agent, ref, None)
-    _assert_container_skipped(manager)
+    _assert_container_skipped(manager, container_task_id)
 
 
 def test_container_backend_post_write_ledger_is_not_recorded(
@@ -150,7 +149,21 @@ def test_container_backend_post_write_ledger_is_not_recorded(
         task_id=container_task_id,
     )
     assert not (tmp_path / "checkpoints" / "store" / "ledgers").exists()
-    _assert_container_skipped(manager)
+    _assert_container_skipped(manager, container_task_id)
+
+
+def test_backend_reason_follows_the_session_backend(monkeypatch, manager):
+    """Nothing is remembered: the same manager answers for the backend configured right now,
+    even after a container-backed mutation went through the checkpoint hook."""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    _ensure_file_checkpoint(
+        SimpleNamespace(_checkpoint_mgr=manager), "write_file", {"path": "/workspace/project/a.txt"}, "default"
+    )
+    assert "docker" in manager.unsupported_backend_reason()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    assert manager.unsupported_backend_reason() is None
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    assert "docker" in manager.unsupported_backend_reason()
 
 
 def test_local_backend_behaviour_unchanged(tmp_path, monkeypatch, manager):

@@ -255,10 +255,7 @@ class TurnExplainersMixin:
                 with suppress(Exception):
                     from agent.tool_executor import _checkpoint_container_backend
                     backend = _checkpoint_container_backend(task_id or "default")
-                if backend is not None:
-                    with suppress(Exception):
-                        mgr.note_unsupported_backend(backend)
-                else:
+                if backend is None:  # container paths carry no host ledger entry
                     for _p in landed_paths:
                         with suppress(Exception):
                             mgr.record_agent_write(_p)

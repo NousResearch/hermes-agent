@@ -603,33 +603,21 @@ class CheckpointManager:
             max(1, int(max_snapshots)), max(0, int(max_total_size_mb)), max(0, int(max_file_size_mb)))
         self._checkpointed_dirs: Set[str] = set()
         self._git_available: Optional[bool] = None  # lazy probe
-        self.unsupported_backend: Optional[str] = None
 
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
 
-    def note_unsupported_backend(self, backend: str) -> None:
-        """Remember the first backend whose paths cannot be checkpointed. Never raises."""
-        try:
-            if self.unsupported_backend is None:
-                self.unsupported_backend = backend
-                logger.debug("Checkpoints skipped for container backend: %s", backend)
-        except Exception:
-            pass
-
     def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
         """Explain why host checkpoints are off limits for a container-backed session.
 
-        Classifies the task's backend directly so /rollback is refused before the first
-        mutation is observed; the recorded backend, when set, is the same answer."""
-        backend = self.unsupported_backend
-        if backend is None:
-            try:
-                from tools.file_tools_paths import container_backend_for_task
-                backend = container_backend_for_task(task_id)
-            except Exception:
-                backend = None
+        Classifies the task's backend at call time (nothing is remembered), so /rollback is
+        refused before the first mutation and follows a backend change within the session."""
+        try:
+            from tools.file_tools_paths import container_backend_for_task
+            backend = container_backend_for_task(task_id)
+        except Exception:
+            backend = None
         if backend is None:
             return None
         return (

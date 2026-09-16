@@ -19,6 +19,8 @@ Nomad meta keys reject dots, so the Docker label vocabulary maps
   hermes_outputs       comma/space-separated ``scheme:value`` writes
   hermes_side_effects  comma/space-separated ``scheme:value`` terminal actions
   hermes_relationships JSON array of ``{predicate, object}`` topology facts
+  hermes_source_files  comma/space-separated file paths — the code behind the
+                       service, browsable in the graph like a cron's scripts
 
 Example — an Honcho instance that reads Postgres and serves the memory API:
 
@@ -96,6 +98,7 @@ def _parse_meta_to_declaration(
             outputs=_split_refs(meta.get("hermes_outputs")),
             side_effects=_split_refs(meta.get("hermes_side_effects")),
             relationships=_parse_relationships(meta.get("hermes_relationships")),
+            source_files=_split_refs(meta.get("hermes_source_files")),
         )
     except ValueError as exc:
         logger.warning("nomad job %s has an invalid declaration: %s", job_id, exc)
@@ -110,6 +113,7 @@ def _parse_meta_to_declaration(
         "inputs": decl["inputs"],
         "outputs": decl["outputs"],
         "side_effects": decl["side_effects"],
+        "source_files": decl["source_files"],
     }
     if decl.get("relationships"):
         service["relationships"] = decl["relationships"]

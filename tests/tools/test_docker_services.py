@@ -57,10 +57,24 @@ class TestParseLabels:
             "inputs": ["postgres:analytics.events"],
             "outputs": [],
             "side_effects": [],
+            "source_files": [],
             "relationships": [
                 {"predicate": "runs_in", "object": "runtime:docker"},
             ],
         }
+
+    def test_source_files_label_becomes_browsable_paths(self):
+        # `hermes.source_files` is a flat comma/space list like the other refs;
+        # it rides onto the node so the container's code is browsable in the graph.
+        from tools.docker_services import _parse_labels_to_declaration
+
+        decl = _parse_labels_to_declaration("abcdef012345678", {
+            "hermes.service": "Dashboard",
+            "hermes.description": "serves the app",
+            "hermes.source_files": "app/server.py app/routes/",
+        })
+        # Normalization dedupes and sorts, exactly like a cron's source_files.
+        assert decl["source_files"] == ["app/routes/", "app/server.py"]
 
     def test_no_service_label_is_not_a_hermes_service(self):
         from tools.docker_services import _parse_labels_to_declaration

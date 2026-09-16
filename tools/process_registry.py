@@ -404,6 +404,7 @@ class ProcessSession:
     service_inputs: List[str] = field(default_factory=list)
     service_outputs: List[str] = field(default_factory=list)
     service_side_effects: List[str] = field(default_factory=list)
+    service_source_files: List[str] = field(default_factory=list)  # code behind the service — browsable in the graph
     service_relationships: List[Dict[str, str]] = field(default_factory=list)
     service_code_control: Optional[Dict[str, Any]] = None
     service_health: Optional[Dict[str, Any]] = None
@@ -991,6 +992,7 @@ class ProcessRegistry:
         session.service_inputs = list(declaration.get("inputs") or [])
         session.service_outputs = list(declaration.get("outputs") or [])
         session.service_side_effects = list(declaration.get("side_effects") or [])
+        session.service_source_files = list(declaration.get("source_files") or [])
         session.service_relationships = list(declaration.get("relationships") or [])
         if declaration.get("code_control_evidence"):
             session.service_code_control = dict(declaration["code_control_evidence"])
@@ -2467,6 +2469,7 @@ class ProcessRegistry:
                 "inputs": list(s.service_inputs),
                 "outputs": list(s.service_outputs),
                 "side_effects": list(s.service_side_effects),
+                "source_files": list(s.service_source_files),
                 "health": health,
             }
             if s.service_relationships:
@@ -2698,6 +2701,7 @@ class ProcessRegistry:
                             "service_inputs": s.service_inputs,
                             "service_outputs": s.service_outputs,
                             "service_side_effects": s.service_side_effects,
+                            "service_source_files": s.service_source_files,
                             "service_relationships": s.service_relationships,
                             "service_code_control": s.service_code_control,
                             "service_health": s.service_health,
@@ -2810,6 +2814,7 @@ class ProcessRegistry:
                 service_inputs=entry.get("service_inputs") or [],
                 service_outputs=entry.get("service_outputs") or [],
                 service_side_effects=entry.get("service_side_effects") or [],
+                service_source_files=entry.get("service_source_files") or [],
                 service_relationships=entry.get("service_relationships") or [],
                 service_code_control=entry.get("service_code_control"),
                 service_health=entry.get("service_health"),

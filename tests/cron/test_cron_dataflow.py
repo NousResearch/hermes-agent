@@ -514,6 +514,7 @@ class TestBuildCronGraph:
             "type": "service",
             "label": "Analytics Dashboard",
             "description": "# Dashboard\nRenders analytics from the events table.",
+            "source_files": [],
         }]
         stores = [n for n in graph["nodes"] if n["id"] == "postgres:analytics.events"]
         assert len(stores) == 1 and stores[0]["kind"] == "artifact"
@@ -576,7 +577,20 @@ class TestServiceDeclaration:
             "inputs": ["postgres:analytics.events"],
             "outputs": [],
             "side_effects": [],
+            "source_files": [],
         }
+
+    def test_declaration_normalizes_source_files(self):
+        # A service declares the code behind it exactly like a cron: the paths
+        # are deduped, sorted, and the `file:` scheme is stripped.
+        from cron.jobs import normalize_service_declaration
+
+        decl = normalize_service_declaration(
+            name="Dashboard",
+            description="Renders analytics.",
+            source_files=["app/server.py", " file:app/routes/ ", "app/server.py"],
+        )
+        assert decl["source_files"] == ["app/routes/", "app/server.py"]
 
     def test_relationships_emit_explicit_subject_predicate_object_edges(self):
         from cron.jobs import build_cron_graph, normalize_service_declaration
@@ -882,6 +896,42 @@ class TestSourceFiles:
         job = create_job(prompt="x", schedule="every 1h")
         node = next(n for n in build_cron_graph()["nodes"] if n["id"] == job["id"])
         assert node["source_files"] == []
+
+    def test_service_node_resolves_declared_source_files(self, cron_env, monkeypatch):
+        # A service node carries the same resolved source_files as a cron node,
+        # so its code is browsable in the graph: paths under a browse root map
+        # to root/rel/exists via the identical resolver (deepest root wins).
+        import cron.jobs as jobs_mod
+        from cron.jobs import build_cron_graph
+
+        repo = cron_env / "hermes-agent"
+        (repo / "app").mkdir(parents=True)
+        (repo / "app" / "server.py").write_text("pass\n")
+        monkeypatch.setattr(
+            jobs_mod, "_source_file_roots", lambda: {"hermes": cron_env, "repo": repo}
+        )
+
+        graph = build_cron_graph(services=[{
+            "id": "proc_dash1",
+            "label": "Dashboard",
+            "description": "serves the app",
+            "inputs": [],
+            "outputs": [],
+            "side_effects": [],
+            "source_files": [str(repo / "app" / "server.py"), "/tmp/gone.py"],
+        }])
+        node = next(n for n in graph["nodes"] if n["id"] == "proc_dash1")
+        files = node["source_files"]
+
+        served = next(e for e in files if e["declared"].endswith("app/server.py"))
+        assert served["role"] == "declared"
+        assert served["root"] == "repo"  # deepest containing root, not hermes
+        assert served["rel"] == "app/server.py"
+        assert served["exists"] is True
+
+        outside = next(e for e in files if e["declared"] == "/tmp/gone.py")
+        assert outside["root"] is None
+        assert outside["exists"] is False
 
     def test_default_roots_come_from_the_file_browser(self, cron_env):
         from cron.jobs import _source_file_roots

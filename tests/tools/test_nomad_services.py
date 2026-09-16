@@ -64,10 +64,24 @@ class TestParseMeta:
             "inputs": ["postgres:honcho.sessions"],
             "outputs": [],
             "side_effects": [],
+            "source_files": [],
             "relationships": [
                 {"predicate": "supervised_by", "object": "scheduler:nomad"},
             ],
         }
+
+    def test_source_files_meta_becomes_browsable_paths(self):
+        # Nomad meta rejects dots, so `hermes_source_files` carries the flat
+        # ref list; it rides onto the node so the alloc's code is browsable.
+        from tools.nomad_services import _parse_meta_to_declaration
+
+        decl = _parse_meta_to_declaration("honcho", {
+            "hermes_service": "Honcho Memory API",
+            "hermes_description": "serves memory context",
+            "hermes_source_files": "app/server.py app/routes/",
+        })
+        # Normalization dedupes and sorts, exactly like a cron's source_files.
+        assert decl["source_files"] == ["app/routes/", "app/server.py"]
 
     def test_no_service_meta_is_not_a_hermes_service(self):
         from tools.nomad_services import _parse_meta_to_declaration

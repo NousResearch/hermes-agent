@@ -154,7 +154,11 @@ dropped silently. The mechanics, in the order the due scan applies them
    An occurrence identity is only claimable once it is due: `claim_job_for_fire`
    drops a `scheduled_instant` that is still in the future, so an off-tick fire
    (dashboard trigger, webhook, lease reclaim, misfire backstop) runs
-   occurrence-free instead of consuming the next slot.
+   occurrence-free instead of consuming the next slot. Closing an `unknown` row
+   with `hermes cron reconcile` (`cron/executions.py::reconcile_execution`) is
+   what makes it count — the outcome an operator established from evidence
+   settles that occurrence too, so a slot whose attempt was abandoned mid-flight
+   is not restored and re-run merely because the ledger never heard how it ended.
 4. **Late within grace → fire late.** Grace = half the period clamped to
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
    `last_dispatch.kind = late`.

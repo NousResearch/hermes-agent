@@ -268,22 +268,18 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
-            if runtime.get("desired_state") == "stopped":
-                # A native profile-scoped stop records durable operator intent while
-                # retaining the last transient startup result for diagnostics. The
-                # dashboard must show the current intent, not that historical failure.
+            # ``desired_state`` is the operator's durable start/stop intent (``hermes gateway stop``
+            # keeps the last ``startup_failed`` + ``exit_reason`` on disk for diagnostics). A profile
+            # the operator stopped is "stopped", not a current failure the overview should alarm on.
+            if runtime.get("desired_state") == "stopped" or gateway_state not in {"stopped", "startup_failed"}:
                 gateway_state = "stopped"
-            else:
-                gateway_state = (gateway_state if gateway_state in {"stopped", "startup_failed"}
-                                 else "stopped")
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.
             gateway_state = "running"
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
-        gateway_exit_reason = (None if gateway_state == "stopped"
-                               else runtime.get("exit_reason"))
+        gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand
         # edits can inject anything) or a remote /health/detailed body — normalize both.

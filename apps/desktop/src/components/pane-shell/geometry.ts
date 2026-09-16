@@ -49,7 +49,7 @@ export function intersect(a: Rect, b: Rect): Rect | null {
 const CONTROLS_BAND_HEIGHT = 34
 /** Width of the macOS traffic-light cluster measured from the buttons' x. */
 const MACOS_LIGHTS_WIDTH = 58
-const MACOS_FALLBACK_BUTTON_X = 24
+const MACOS_FALLBACK_BUTTON_X = 14
 
 interface ConnectionLike {
   windowButtonPosition?: { x: number; y: number } | null

@@ -932,9 +932,10 @@ const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
+// Keep the native buttons near the left edge and level with the titlebar tools.
 const WINDOW_BUTTON_POSITION = {
-  x: 24,
-  y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
+  x: 14,
+  y: TITLEBAR_HEIGHT - MACOS_TRAFFIC_LIGHTS_HEIGHT - 2
 }
 
 // Right-edge window-control reservation lives in titlebar-overlay-width.ts

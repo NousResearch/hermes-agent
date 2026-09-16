@@ -61,6 +61,39 @@ def test_visible_session_titled_bot_chat_stays_renameable(db):
     assert db.get_session("ordinary")["title"] == "renamed away"
 
 
+def test_deliberately_archived_canonical_chat_releases_name_for_replacement(db):
+    """Retiring a Bot Chat must not leave its registry name permanently locked."""
+    retired = _make_canonical(db, "retired")
+    assert db.set_session_archived(retired, True)
+
+    db.create_session("replacement", source="desktop")
+    assert db.set_session_title("replacement", SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.set_session_hidden("replacement", True)
+
+    # The retired row stays archived, while exact-title resolution reaches the
+    # replacement that Bot Mode will subsequently open.
+    assert db.get_session(retired)["archived"]
+    assert db.get_session(retired)["title"] is None
+    row = db.get_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert row and row["id"] == "replacement"
+
+
+def test_auto_archive_sweep_skips_the_canonical_chat(db):
+    """Only a deliberate archive may retire a Bot Chat; the idle sweep must not
+    (it would strand an unrecoverable, soon-to-be-untitled row)."""
+    import time
+
+    forever = _make_canonical(db)
+    db.create_session("ordinary", source="desktop")
+    stale = time.time() - 10 * 86400
+    db._write_sql("UPDATE sessions SET started_at = ?, last_activity_at = ?", (stale, stale))
+
+    assert db.archive_stale_sessions(3) == 1
+    assert db.get_session("ordinary")["archived"]
+    assert not db.get_session(forever)["archived"]
+    assert db.get_session(forever)["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
+
+
 def test_auto_titler_still_cannot_touch_the_canonical_row(db):
     # Pre-existing provenance contract, re-pinned here: user-authority title
     # outranks derived/llm, so the turn-start auto-titler can never displace

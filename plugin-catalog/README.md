@@ -26,9 +26,15 @@ meaningful:
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.
-5. **Owner-or-major-contributor submissions only.** An entry may only be
-   submitted by the plugin repository's owner or a major contributor to it.
-   Drive-by submissions of third-party repos are declined.
+5. **Owner-or-major-contributor submissions, or a maintainer-curated sweep.**
+   An entry may be submitted by the plugin repository's owner or a major
+   contributor to it; drive-by submissions of third-party repos are declined.
+   Hermes maintainers may also add entries in batches from a reviewed sweep
+   of community plugins (every pin validated and scanned at the pinned
+   commit, self-updater and credential-store checks run, English-first UI).
+   Authors of swept-in entries keep control: a PR from the owner adjusting
+   or removing their entry is accepted on request, and SHA bumps stay
+   owner-or-maintainer PRs under rule 4.
 6. **Declared capabilities must match reality.** The `capabilities:` block
    (tools, hooks, middleware, env vars) must match what the plugin actually
    registers at the pinned commit. Validation fails the entry otherwise —

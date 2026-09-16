@@ -258,47 +258,40 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     return spawned, payloads, handoff, get
 
 
-def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, monkeypatch):
-    """A fire routed to another profile is multiplexed at the handoff boundary (#107695 review on
-    f5f88d5058). ``run_one_job`` only enables the context in ``_install_fire_secret_scope``, which runs
-    AFTER this handoff, so a routed desktop fire on the managed path serialized ``multiplex_active=False``
-    and the worker inherited the launch profile's residue. The payload must carry ``True`` and the
-    worker env must not carry a launch-only value — and the context must not outlive the handoff."""
+def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_probe(
+    tmp_path, monkeypatch
+):
+    """#110803: a stale True scope verdict wraps the worker in ``systemd-run --user --scope``
+    after the user bus vanished; the wrapper exits 1 with no child. The job error must name the
+    missing bus (not a bare exit code) and the cached verdict must flip so the next fire re-probes."""
     import cron.scheduler as scheduler
-    import hermes_constants
-    from agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    import tools.process_registry as pr
     from tools.process_registry import GatewayChildDispatch
 
-    launch = tmp_path / "launch"
-    routed = tmp_path / "routed"
-    launch.mkdir()
-    routed.mkdir()
-    (launch / ".env").write_text("LAUNCH_ONLY_SECRET=launch-secret\n", encoding="utf-8")
-    (routed / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setenv("LAUNCH_ONLY_SECRET", "launch-secret")
-    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: routed)
-    monkeypatch.setattr(hermes_constants, "get_process_hermes_home", lambda: launch)
-    monkeypatch.setattr("cron.scheduler_provider.routed_profile_fire", lambda: True)
+    job = {"id": "job-bus", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
         "tools.process_registry.restart_safe_gateway_child_argv",
-        lambda command, *, unit_suffix, require_restart_safe_scope=False: GatewayChildDispatch(
-            "scoped", ["scope", "--", *command]),
+        lambda command, **_: GatewayChildDispatch("scoped", ["systemd-run", "--", *command]),
     )
-    spawned, payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending",
+                        lambda _eid: {"id": "exec-1", "handoff_pending": 1})
 
-    assert not secret_scope.is_multiplex_active()  # the desktop tick itself is NOT a multiplexer
-    home_token = set_hermes_home_override(str(routed))
-    try:
-        assert scheduler._launch_external_cron_worker(
-            {"id": "job-r", "execution_id": "exec-1", "prompt": "work"}) is True
-    finally:
-        reset_hermes_home_override(home_token)
+    class DeadWrapper:
+        returncode = 1
 
-    assert payloads[0]["multiplex_active"] is True
-    assert "LAUNCH_ONLY_SECRET" not in spawned[0][1]["env"]
-    assert not secret_scope.is_multiplex_active()  # enabled for the handoff span only
-    assert os.environ["LAUNCH_ONLY_SECRET"] == "launch-secret"  # parent untouched
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", lambda *a, **k: DeadWrapper())
+    # Bus gone: systemd_user_bus_env derives nothing.
+    monkeypatch.setattr(pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {}))
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+
+    with pytest.raises(RuntimeError, match="user D-Bus session .* disappeared"):
+        scheduler._launch_external_cron_worker(job)
+    assert pr._SYSTEMD_SCOPE_AVAILABLE is False
 
 
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(

@@ -60,7 +60,7 @@ def server(hermes_home, monkeypatch):
     # originals on teardown so nothing leaks to later tests either.
     monkeypatch.setattr(mod, "_hermes_home", hermes_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
-    monkeypatch.setattr(mod, "_cfg_mtime", None)
+    monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     # Reset module-level session state without re-importing. importlib.reload

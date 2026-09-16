@@ -204,8 +204,8 @@ class TestGenerateSummaryTruncationGuard:
             )
 
         primary = MagicMock(base_url="https://primary.example/v1")
-        capacity_error = Exception("rate limit exceeded")
-        capacity_error.status_code = 429
+        capacity_error = Exception("payment required")
+        capacity_error.status_code = 402
         primary.chat.completions.create.side_effect = capacity_error
         fallback = MagicMock(base_url="https://aux.example/v1")
         fallback.chat.completions.create.return_value = _mock_response("partial summary", "length")

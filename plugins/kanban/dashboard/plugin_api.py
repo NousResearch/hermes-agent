@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
+from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
@@ -263,7 +264,6 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
 
 # --- GET /board -------------------------------------------------------------
 
-@router.get("/board")
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
@@ -315,6 +315,27 @@ def get_board(
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
 
 
+_read_board = coalesced_read(get_board)
+
+
+@router.get("/board")
+async def get_board_endpoint(
+    tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
+    include_archived: bool = Query(False),
+    board: Optional[str] = _BOARD_Q,
+    workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
+    current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key"),
+):
+    # Resolve selection before keying so a board switch cannot join an older read.
+    return await _read_board(
+        tenant=tenant,
+        include_archived=include_archived,
+        board=board or kanban_db.get_current_board(),
+        workflow_template_id=workflow_template_id,
+        current_step_key=current_step_key,
+    )
+
+
 # --- GET /tasks/:id ---------------------------------------------------------
 
 @router.get("/tasks/{task_id}")
@@ -355,7 +376,7 @@ class CreateTaskBody(BaseModel):
     assignee: Optional[str] = None
     tenant: Optional[str] = None
     priority: int = 0
-    workspace_kind: str = "scratch"
+    workspace_kind: Optional[str] = None  # None = scratch, or the board project's worktree when scoped
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
@@ -670,11 +691,12 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
     """Direct status write for drag-drop moves without a structured verb (todo<->ready,
     running<->ready) + a ``status`` event. Leaving ``running`` closes the run as 'reclaimed'
     so attempt history isn't orphaned; the worker is killed only AFTER the txn commits."""
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
     effective_status = new_status
     with kanban_db.write_txn(conn):
         prev = conn.execute(
-            "SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            "SELECT status, current_run_id, worker_pid, claim_lock, worker_started_at FROM tasks WHERE id = ?",
+            (task_id,)).fetchone()
         if prev is None:
             return False
         if prev["status"] == "running" and new_status == "ready":
@@ -701,7 +723,7 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             run_id = kanban_db._end_run(
                 conn, task_id, outcome="reclaimed", status="reclaimed",
                 summary=f"status changed to {effective_status} (dashboard/direct)")
-            terminations.append((prev["worker_pid"], prev["claim_lock"]))
+            terminations.append((prev["worker_pid"], prev["claim_lock"], prev["worker_started_at"]))
         conn.execute(
             "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": effective_status, "requested_status": new_status}), int(time.time())))
@@ -710,8 +732,8 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
             # back worker terminations to perform post-commit.
             result = kanban_db.invalidate_descendants_for_parent_reopen(conn, task_id, author="dashboard")
             terminations.extend(result["terminations"])
-    for pid, claim_lock in terminations:
-        kanban_db._terminate_reclaimed_worker(pid, claim_lock)
+    for pid, claim_lock, started_at in terminations:
+        kanban_db._terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     # Re-opening something may have made children stale.
     if effective_status in {"done", "ready", "review"}:
         kanban_db.recompute_ready(conn)
@@ -743,8 +765,8 @@ class LinkBody(BaseModel):
 @router.post("/links")
 def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
     with _board_conn(board) as (board, conn), _value_error_400():
-        kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
-        return {"ok": True}
+        gated = kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
+        return {"ok": True, "gated": gated}
 
 
 @router.delete("/links")

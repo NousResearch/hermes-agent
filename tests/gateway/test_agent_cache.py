@@ -225,6 +225,73 @@ class TestExtractCacheBustingConfig:
 
         assert out["tools.registry_generation"] == 12345
 
+    # -- Provider-declared identity (MemoryProvider.identity_signature) ------
+
+    @staticmethod
+    def _provider_declared_keys(out):
+        """``memory.*`` keys a provider added, excluding the config.yaml keys already documented."""
+        from gateway.run import GatewayRunner
+
+        documented = {f"{s}.{k}" for s, k in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS if s == "memory"}
+        return sorted(k for k in out if k.startswith("memory.") and k not in documented)
+
+    @staticmethod
+    def _install_fake_provider(monkeypatch, provider):
+        """Route ``load_memory_provider`` to ``provider`` and start from an empty memo."""
+        import plugins.memory as plugins_memory
+        from gateway.run_agent_cache import GatewayAgentCacheMixin
+
+        calls = []
+
+        def _load(name, *, register_skills=None):
+            calls.append((name, register_skills))
+            return provider
+
+        monkeypatch.setattr(plugins_memory, "load_memory_provider", _load)
+        monkeypatch.setattr(GatewayAgentCacheMixin, "_MEMORY_IDENTITY_PROVIDER_MEMO", {})
+        return calls
+
+    def test_provider_identity_signature_enters_under_memory_prefix_and_is_re_read_from_one_instance(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        from tests.agent.test_memory_provider import FakeMemoryProvider
+
+        class IdentityProvider(FakeMemoryProvider):
+            writer = "alice"
+
+            def identity_signature(self):
+                return {"fakeprov.writer": self.writer, "fakeprov.aliases": [("a", "b")]}
+
+        provider = IdentityProvider("fakeprov")
+        calls = self._install_fake_provider(monkeypatch, provider)
+        cfg = {"memory": {"provider": "fakeprov"}}
+
+        first = GatewayRunner._extract_cache_busting_config(cfg)
+        provider.writer = "bob"
+        second = GatewayRunner._extract_cache_busting_config(cfg)
+
+        assert self._provider_declared_keys(first) == ["memory.fakeprov.aliases", "memory.fakeprov.writer"]
+        assert first["memory.fakeprov.aliases"] == [("a", "b")]
+        assert (first["memory.fakeprov.writer"], second["memory.fakeprov.writer"]) == ("alice", "bob")
+        assert calls == [("fakeprov", False)]
+
+    @pytest.mark.parametrize("kind", ["no hook", "no provider", "raising hook"])
+    def test_provider_contributes_nothing_without_a_working_identity_hook(self, monkeypatch, kind):
+        from gateway.run import GatewayRunner
+        from tests.agent.test_memory_provider import FakeMemoryProvider
+
+        class BrokenProvider(FakeMemoryProvider):
+            def identity_signature(self):
+                raise RuntimeError("boom")
+
+        provider = {"no hook": FakeMemoryProvider("p"), "no provider": None, "raising hook": BrokenProvider("p")}[kind]
+        calls = self._install_fake_provider(monkeypatch, provider)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "p"}} if provider else {})
+
+        assert self._provider_declared_keys(out) == []
+        assert "tools.registry_generation" in out
+        assert calls == ([] if provider is None else [("p", False)])
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
@@ -303,15 +370,8 @@ class TestAgentCacheBoundedGrowth:
         return m
 
 
-    def test_cap_commits_memory_before_evicting_finalizable(self, monkeypatch):
-        """LRU-cap eviction of a finalizable, not-yet-expired agent commits
-        on_session_end extraction before releasing.
-
-        The agent would otherwise vanish from _agent_cache before the expiry
-        watcher runs, so the watcher would never fire on_session_end() and
-        memory providers would miss the transcript (#11205, LRU-cap variant).
-        We hold the live agent at eviction time, so commit its memory then.
-        """
+    def test_cap_commits_memory_before_soft_release(self, monkeypatch):
+        """LRU eviction commits the transcript before releasing clients."""
         from gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
@@ -321,11 +381,8 @@ class TestAgentCacheBoundedGrowth:
         release_calls: list = []
         runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
 
-        # Finalizable (finite policy), not yet expired.
         runner.session_store = MagicMock()
         runner.session_store._entries = {"old": MagicMock(), "new": MagicMock()}
-        runner.session_store.is_session_finalizable.return_value = True
-        runner.session_store._is_session_expired.return_value = False
 
         old_agent = self._fake_agent()
         old_agent._memory_manager = MagicMock()  # has an external provider
@@ -346,124 +403,6 @@ class TestAgentCacheBoundedGrowth:
         assert commit_calls == [[{"role": "user", "content": "hi"}]]
         assert old_agent in release_calls
 
-    def test_cap_skips_memory_commit_for_non_finalizable(self, monkeypatch):
-        """LRU-cap eviction of a mode='none' agent does NOT commit memory.
-
-        The expiry watcher never finalizes a mode='none' session, so there is
-        no missed on_session_end boundary to compensate for. Committing here
-        would fire premature/repeat extraction for a session that simply keeps
-        living. The agent is released without a commit.
-        """
-        from gateway import run as gw_run
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_MAX_SIZE", 1)
-        runner = self._bounded_runner()
-
-        commit_calls: list = []
-        release_calls: list = []
-        runner._release_evicted_agent_soft = lambda agent: release_calls.append(agent)
-
-        runner.session_store = MagicMock()
-        runner.session_store._entries = {"old": MagicMock(), "new": MagicMock()}
-        runner.session_store.is_session_finalizable.return_value = False  # mode='none'
-        runner.session_store._is_session_expired.return_value = False
-
-        old_agent = self._fake_agent()
-        old_agent._memory_manager = MagicMock()
-        old_agent._session_messages = [{"role": "user", "content": "hi"}]
-        old_agent.commit_memory_session = lambda msgs=None: commit_calls.append(msgs)
-        new_agent = self._fake_agent()
-
-        with runner._agent_cache_lock:
-            runner._agent_cache["old"] = (old_agent, "sig_old")
-            runner._agent_cache["new"] = (new_agent, "sig_new")
-            runner._enforce_agent_cache_cap()
-
-        import time as _t
-        deadline = _t.time() + 2.0
-        while _t.time() < deadline and not release_calls:
-            _t.sleep(0.02)
-        assert commit_calls == []       # no premature extraction
-        assert old_agent in release_calls  # still released
-
-
-    def test_idle_sweep_keeps_agent_when_session_not_expired(self, monkeypatch):
-        """Agents past idle TTL are kept if the session hasn't expired yet.
-
-        In daily-reset mode the reset can fire hours after the last
-        user message — evicting the agent early means the
-        session-expiry watcher has nothing to call on_session_end()
-        with, and memory providers miss the live transcript.
-        """
-        from gateway import run as gw_run
-
-        monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.01)
-        runner = self._bounded_runner()
-        runner._cleanup_agent_resources = MagicMock()
-
-        import time as _t
-        stale = self._fake_agent(last_activity=_t.time() - 10.0)
-
-        # Session store says the session is still alive AND is finalizable
-        # (finite reset policy) — so deferring eviction is correct: the expiry
-        # watcher will find this agent later and fire on_session_end().
-        session_entry = MagicMock()
-        runner.session_store = MagicMock()
-        runner.session_store._entries = {"stale-session": session_entry}
-        runner.session_store.is_session_finalizable.return_value = True
-        runner.session_store._is_session_expired.return_value = False
-
-        runner._agent_cache["stale-session"] = (stale, "sig")
-
-        evicted = runner._sweep_idle_cached_agents()
-        assert evicted == 0
-        assert "stale-session" in runner._agent_cache
-
-
-    def test_is_session_finalizable_real_predicate(self, tmp_path):
-        """is_session_finalizable() reflects the real reset policy.
-
-        Uses a real SessionStore + GatewayConfig (no mocks) so the predicate
-        is exercised against actual get_reset_policy() output: True for finite
-        policies (idle/daily/both), False only for mode='none'.
-        """
-        from datetime import datetime
-        from unittest.mock import patch as _patch
-
-        from gateway.config import GatewayConfig, Platform, SessionResetPolicy
-        from gateway.session import (
-            SessionEntry, SessionSource, SessionStore, build_session_key,
-        )
-
-        def _entry_for(platform: Platform) -> SessionEntry:
-            src = SessionSource(
-                platform=platform, user_id="u1", chat_id="c1",
-                user_name="t", chat_type="dm",
-            )
-            return SessionEntry(
-                session_key=build_session_key(src),
-                session_id="s1",
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                origin=src,
-                platform=src.platform,
-                chat_type=src.chat_type,
-            )
-
-        config = GatewayConfig()
-        # Give Telegram a 'none' policy via the per-platform override; leave the
-        # default policy finite ('both') for the Discord case.
-        config.default_reset_policy = SessionResetPolicy(mode="both")
-        config.reset_by_platform[Platform.TELEGRAM] = SessionResetPolicy(mode="none")
-
-        with _patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._db = None
-
-        # mode='none' → never finalized by the watcher.
-        assert store.is_session_finalizable(_entry_for(Platform.TELEGRAM)) is False
-        # default 'both' → finite, will eventually expire.
-        assert store.is_session_finalizable(_entry_for(Platform.DISCORD)) is True
 
     def test_plain_dict_cache_is_tolerated(self):
         """Test fixtures using plain {} don't crash _enforce_agent_cache_cap."""
@@ -1111,4 +1050,3 @@ class TestCrossProcessInvalidationDefersCleanup:
         # Stale entry was popped, hard-teardown path never used.
         assert "telegram:s1" not in runner._agent_cache
         runner._cleanup_agent_resources.assert_not_called()
-

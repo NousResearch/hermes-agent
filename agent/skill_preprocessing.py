@@ -54,6 +54,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int, session_id: s
         if blocked is not None:
             return "[inline-shell blocked: remote MCP skill execution consent was not granted]"
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    from agent.delegation_context import delegated_child_subprocess_env
     try:
         completed = subprocess.run(
             ["bash", "-c", command],
@@ -63,6 +64,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int, session_id: s
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,
+            env=delegated_child_subprocess_env(),
             **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:

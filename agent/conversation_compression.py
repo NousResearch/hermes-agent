@@ -32,6 +32,8 @@ from agent.context_engine import automatic_compaction_status_message, sanitize_m
 from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
+from agent.usage_anchor import set_usage_anchor
+from hermes_state_ids import new_session_id as mint_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -1705,13 +1707,16 @@ def _lower_threshold_to_aux_context(
 ) -> None:
     """Lower the live threshold to the aux model's window and tell the user how to fix config.
     The summariser sends one user prompt (no system/tools), so threshold == aux_context is safe.
-    tail_token_budget and threshold_percent are kept in lockstep (as update_model does) or the 1.5x tail
-    ceiling exceeds the trigger and re-fires."""
+    Retention is recalibrated through its selected policy: lean is window-relative;
+    only legacy follows the lowered threshold."""
     compressor = agent.context_compressor
     old_threshold = compressor.threshold_tokens
     new_threshold = compressor.threshold_tokens = aux_context
     summary_target_ratio = getattr(compressor, "summary_target_ratio", None)
-    if isinstance(summary_target_ratio, (int, float)):
+    if getattr(compressor, "tail_mode", None) == "lean":
+        # Keep the window-relative policy owned by the compressor property.
+        compressor._tail_token_budget = None
+    elif isinstance(summary_target_ratio, (int, float)):
         compressor.tail_token_budget = int(new_threshold * summary_target_ratio)
     main_ctx = compressor.context_length
     if main_ctx:
@@ -1773,6 +1778,15 @@ def _lower_threshold_to_aux_context(
     )
 
 
+def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
+    """True when the auxiliary compression client is the main model on the main endpoint."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
+        return False
+    main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
+    return not main_base or normalize_route_base_url(aux_base_url) == main_base
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the aux compression context is below the threshold.
     Called from ``AIAgent.__init__`` (CLI sees it via ``_vprint``); the gateway wires ``status_callback``
@@ -1803,15 +1817,14 @@ def check_compression_model_feasibility(agent: Any) -> None:
         if client is None or not aux_model:
             if _aux_cfg_provider and _aux_cfg_provider != "auto":
                 msg = (
-                    "⚠ Configured auxiliary compression provider "
-                    f"'{_aux_cfg_provider}' is unavailable — context "
-                    "compression will drop middle turns without a summary. "
-                    "Check auxiliary.compression in config.yaml and reauthenticate that provider."
+                    f"⚠ Configured auxiliary compression provider '{_aux_cfg_provider}' is unavailable, "
+                    "so older messages in long chats will be cut without a summary. Sign in to that "
+                    "provider again, or change auxiliary.compression in your config."
                 )
             else:
                 msg = (
-                    "⚠ No auxiliary LLM provider configured — context compression will drop middle turns without a summary. "
-                    "Run `hermes setup` or set OPENROUTER_API_KEY."
+                    "⚠ No auxiliary LLM provider configured: Hermes has no helper model for summarising "
+                    "long chats, so older messages will be cut without a summary. Run `hermes setup` to add one."
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
@@ -1827,11 +1840,17 @@ def check_compression_model_feasibility(agent: Any) -> None:
         _aux_provider = (
             _aux_cfg_provider if _aux_cfg_provider and _aux_cfg_provider != "auto" else getattr(agent, "provider", "")
         )
-        aux_context = get_model_context_length(
-            aux_model, base_url=aux_base_url, api_key=aux_api_key,
-            config_context_length=getattr(agent, "_aux_compression_context_length_config", None),
-            provider=_aux_provider, custom_providers=agent._custom_providers,
-        )
+        _aux_cfg_ctx = getattr(agent, "_aux_compression_context_length_config", None)
+        if _aux_cfg_ctx is None and _aux_inherits_main_route(agent, aux_model, aux_base_url):
+            # Same model on the same route: reuse the main model's already-resolved window (which honours
+            # model.context_length / provider pins). Re-resolving from scratch lost the pin and auto-lowered
+            # the session threshold to a catch-all catalog value (#89500, #45519).
+            aux_context = int(agent.context_compressor.context_length)
+        else:
+            aux_context = get_model_context_length(
+                aux_model, base_url=aux_base_url, api_key=aux_api_key, config_context_length=_aux_cfg_ctx,
+                provider=_aux_provider, custom_providers=agent._custom_providers,
+            )
         # Aux model must meet MINIMUM_CONTEXT_LENGTH like the main model, else it cannot summarise a full window.
         if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
             raise ValueError(
@@ -1939,8 +1958,8 @@ def _steer_markers() -> Tuple[str, str]:
 
 def _message_contains_busy_steer(message: Any) -> bool:
     """Return whether *message* carries a busy-steer marker.
-    Steer follow-ups live as markers inside ``role=tool`` results, so they carry user intent that
-    ``_is_real_user_message`` alone would miss."""
+    Steer follow-ups are now their own ``role=user`` rows (caught by ``_is_real_user_message``); in
+    transcripts persisted before that they ride inside ``role=tool`` results, so those still count."""
     text = _message_text(message)
     if not text:
         return False
@@ -2970,7 +2989,7 @@ def _publish_rotated_compaction(
     if _profile_for_child == "default":
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
-    new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
     # Seed the child security scope before publishing its durable lineage row.
     # Once publish_compression_child commits, another runtime can resolve and
@@ -3027,21 +3046,29 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
         _aux_key = (_aux_fail_model, _aux_fail_err)
         if _aux_fail_model and getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
             agent._last_aux_fallback_warning_key = _aux_key
+            logger.warning(
+                "Configured compression model %r failed (%s); recovered using the main model.",
+                _aux_fail_model, _aux_fail_err or "unknown error",
+            )
             agent._emit_warning(
-                f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                "check auxiliary.compression.model in config.yaml."
+                f"ℹ Configured compression model '{_aux_fail_model}' failed, so Hermes summarised "
+                "with your main model instead. Check auxiliary.compression.model in your config."
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, skills: bool = True) -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", skills: bool = True) -> None:
     """Advance the file-read (and skill_view) repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
+    The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
+    if session_id:
+        with contextlib.suppress(Exception):
+            from tools.computer_use.tool import reset_screenshot_dedup
+            reset_screenshot_dedup(session_id)
     if not skills:
         return
     with contextlib.suppress(Exception):
@@ -3128,8 +3155,7 @@ def _finish_compaction_boundary(
     compressor.awaiting_real_usage_after_compression = True
     # Transcript rewritten: invalidate the usage anchor's base snapshot explicitly
     # (its structural check would fail closed anyway); estimate until re-anchored.
-    agent._usage_anchor = None
-    agent._turn_base_usage_anchor = None
+    set_usage_anchor(agent, None)
     # Arm the effectiveness verdict only after a completed rewrite crosses the
     # boundary so later usage isn't charged to an attempt that changed nothing.
     if compression_made_progress:
@@ -3140,7 +3166,7 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
     return _compressed_est
 
 
@@ -3599,19 +3625,27 @@ def compress_context(
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
         return messages, _existing_system_prompt(agent, system_message)
 
-    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
-    # _compression_warning so status replay still surfaces the warning. Marked checked
-    # only after the probe completes (transient failures are swallowed inside).
-    if not getattr(agent, "_compression_feasibility_checked", False):
-        check_compression_model_feasibility(agent)
-        agent._compression_feasibility_checked = True
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
     in_place = bool(getattr(agent, "compression_in_place", True))
+    # Announce BEFORE the lazy feasibility probe: its live catalog / provider lookups are
+    # network-bound (connect timeouts stack up through proxies), and until this status lands
+    # the Desktop working row is a bare spinner with no "Summarizing thread" label (#111294).
     lifecycle = _announce_compression_start(
         agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
     )
+    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
+    # _compression_warning so status replay still surfaces the warning. Marked checked
+    # only after the probe completes (transient failures are swallowed inside). A hard
+    # rejection propagates; retire the announced phase first so the client is not left compacting.
+    if not getattr(agent, "_compression_feasibility_checked", False):
+        try:
+            check_compression_model_feasibility(agent)
+        except Exception:
+            lifecycle.complete(force_terminal=True)
+            raise
+        agent._compression_feasibility_checked = True
     lease, _abort_prompt = _acquire_compression_lease(
         agent, commit_fence=commit_fence, lifecycle=lifecycle, system_message=system_message,
         approx_tokens=approx_tokens, attempt_started_at=attempt.started_at,
@@ -3826,8 +3860,8 @@ def _compress_context_via_codex_app_server(
         # An empty usage report must consume the pending verdict, not leave deferral
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
-            _record_codex_app_server_usage(agent, result)
-    _reset_read_dedup_caches(task_id, skills=False)
+            _record_codex_app_server_usage(agent, result, messages=messages)
+    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "", skills=False)
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",

@@ -18,7 +18,10 @@
     "paths": {
       "@/*": ["./src/*"],
       "@hermes/plugin-sdk": ["./src/sdk/index.ts"],
+      "@hermes/shared/ansi": ["../shared/src/ansi.ts"],
       "@hermes/shared/billing": ["../shared/src/billing-types.ts"],
+      "@hermes/shared/color": ["../shared/src/color.ts"],
+      "@hermes/shared/i18n": ["../shared/src/i18n.ts"],
       "@hermes/shared/translucency": ["../shared/src/translucency.ts"],
       "@hermes/shared": ["../shared/src/index.ts"]
     }

@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
+from hermes_cli.web_routers._common import corrupt_store_as_status
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
@@ -22,6 +23,7 @@ router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 save_config = late("save_config", "hermes_cli.config")
 
@@ -147,7 +149,8 @@ async def get_usage_analytics(
     values would force expensive full-history SQL and InsightsEngine work, or
     produce empty/inverted time windows. The UI only offers 7/30/90-day
     presets."""
-    return await asyncio.to_thread(_get_usage_analytics, days, profile)
+    with corrupt_store_as_status(_session_db_path_for_profile(profile)):
+        return await asyncio.to_thread(_get_usage_analytics, days, profile)
 
 
 _USAGE_KEYS = (
@@ -305,4 +308,5 @@ async def get_models_analytics(
     profile: Optional[str] = None,
 ):
     """Return model analytics without blocking the serving event loop."""
-    return await asyncio.to_thread(_get_models_analytics, days, profile)
+    with corrupt_store_as_status(_session_db_path_for_profile(profile)):
+        return await asyncio.to_thread(_get_models_analytics, days, profile)

@@ -49,6 +49,12 @@ def authorization_context(server: str, home: Path | str | None = None, *,
             model = getattr(context, attr, None)
             payload = model.model_dump(mode="json", exclude_none=True) if model is not None else None
             adopted[suffix] = _without_expiry(payload) if suffix == ".json" and payload is not None else payload
+        # Hermes stores issuer binding beside the SDK token fields. Keep it in
+        # the authority digest and compare against the transport's adopted store,
+        # rather than demanding that OAuthToken serialize host-only bookkeeping.
+        issuer = getattr(getattr(context, "storage", None), "loaded_issuer", None)
+        if issuer is not None and adopted[".json"] is not None:
+            adopted[".json"]["hermes_issuer"] = issuer
         if (not state[".json"] or not adopted[".json"]
                 or any(state[key] != value for key, value in adopted.items())
                 or Path(getattr(oauth_provider, "_hermes_home", "") or ".").absolute() != root):

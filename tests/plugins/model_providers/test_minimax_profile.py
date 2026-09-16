@@ -181,3 +181,18 @@ class TestMinimaxM3OpenAIReasoningWireShape:
             "reasoning_split": True,
             "thinking": {"type": "adaptive"},
         }
+
+
+class TestMinimaxOauthAliases:
+    """Every ``--provider`` alias the user guide (website/docs/guides/minimax-oauth.md)
+    promises for ``minimax-oauth`` must resolve through the plugin registry, not only the
+    CLI alias tables — ``get_provider_profile(agent.provider)`` is what selects the
+    anthropic_messages wire, extra_body and headers (#107928)."""
+
+    def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
+            resolved = providers.get_provider_profile(alias)
+            assert resolved is not None and resolved.name == "minimax-oauth", alias

@@ -48,7 +48,8 @@ class BrowserbaseBrowserProvider(CloudBrowserProvider):
         return {
             "api_key": api_key,
             "project_id": project_id,
-            "base_url": os.environ.get("BROWSERBASE_BASE_URL", "https://api.browserbase.com").rstrip("/"),
+            # Per-profile like the key: the scoped key must not be sent to the default profile's endpoint.
+            "base_url": (get_secret("BROWSERBASE_BASE_URL", "") or "https://api.browserbase.com").rstrip("/"),
         }
 
     def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:

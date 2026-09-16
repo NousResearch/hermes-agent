@@ -87,11 +87,13 @@ describe('TerminalFontSetting', () => {
 
     await flushAutosave()
 
-    expect(mocks.save).toHaveBeenCalledWith({
+    // Only the font key goes over the wire (PUT deep-merges); the shared cache
+    // gets the merged record so sibling terminal keys survive.
+    expect(mocks.save).toHaveBeenCalledWith({ terminal: { font_family: 'MesloLGS NF' } })
+    expect(mocks.cache).toHaveBeenCalledWith({
       display: { skin: 'hermes' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: 'MesloLGS NF' }
     })
-    expect(mocks.cache).toHaveBeenCalledWith(mocks.save.mock.calls[0][0])
   })
 
   it('accepts an arbitrary CSS stack and resets to the bundled default', async () => {
@@ -105,8 +107,8 @@ describe('TerminalFontSetting', () => {
     fireEvent.change(input, { target: { value: "'Custom Powerline', monospace" } })
     await flushAutosave()
 
-    expect(mocks.save.mock.calls[0][0]).toMatchObject({
-      terminal: { backend: 'local', font_family: "'Custom Powerline', monospace" }
+    expect(mocks.save.mock.calls[0][0]).toEqual({
+      terminal: { font_family: "'Custom Powerline', monospace" }
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Use default' }))
@@ -114,9 +116,7 @@ describe('TerminalFontSetting', () => {
     expect((screen.getByLabelText('Glyph preview') as HTMLElement).style.fontFamily).toContain('JetBrains Mono')
     await flushAutosave()
 
-    expect(mocks.save.mock.calls[1][0]).toMatchObject({
-      terminal: { backend: 'local', font_family: '' }
-    })
+    expect(mocks.save.mock.calls[1][0]).toEqual({ terminal: { font_family: '' } })
   })
 
   it('rolls back the optimistic font when autosave fails', async () => {

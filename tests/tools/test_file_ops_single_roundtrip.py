@@ -75,9 +75,9 @@ class TestReadFileOneRoundTrip:
         r = ops.read_file(p)
         assert len(calls) == 1 and READ_PROBE_MARK in calls[0]
         assert r.error is None
-        # ``_add_line_numbers`` numbers the empty tail after the final
-        # newline: long-standing behaviour, preserved byte for byte.
-        assert r.content == "1|one\n2|two\n3|three\n4|"
+        # The final newline terminates line 3; it does not start a phantom
+        # ``4|`` line (`cat -n` semantics).
+        assert r.content == "1|one\n2|two\n3|three"
         assert (r.total_lines, r.file_size, r.truncated) == (3, 14, False)
 
     def test_no_trailing_newline_needs_no_extra_probe(self, shell, tmp_path):
@@ -88,14 +88,15 @@ class TestReadFileOneRoundTrip:
         # ``cut`` newline-terminates the last line; the artifact is stripped
         # from the same reply that used to need a fifth ``tail -c 1`` call.
         assert r.content == "1|a\n2|b"
-        assert r.total_lines == 1  # wc -l semantics, unchanged
+        # The unterminated final line counts: 2 lines, not wc -l's 1 (#3907).
+        assert r.total_lines == 2
 
     def test_pagination_window_and_hint(self, shell, tmp_path):
         ops, calls = shell
         p = _write(tmp_path, "c.txt", b"".join(b"l%d\n" % i for i in range(1, 11)))
         r = ops.read_file(p, offset=3, limit=2)
         assert len(calls) == 1
-        assert r.content == "3|l3\n4|l4\n5|"
+        assert r.content == "3|l3\n4|l4"
         assert r.truncated is True and r.total_lines == 10
         assert "offset=5" in r.hint
 
@@ -118,26 +119,26 @@ class TestReadFileOneRoundTrip:
         ops, calls = shell
         r = ops.read_file(_write(tmp_path, "f.txt", "﻿hello\n".encode("utf-8")))
         assert len(calls) == 1
-        assert r.content == "1|hello\n2|"
+        assert r.content == "1|hello"
 
     def test_crlf_bytes_survive(self, shell, tmp_path):
         ops, calls = shell
         r = ops.read_file(_write(tmp_path, "g.txt", b"x\r\ny\r\n"))
-        assert r.content == "1|x\r\n2|y\r\n3|"
+        assert r.content == "1|x\r\n2|y\r"
 
     def test_long_line_clamped_and_marked(self, shell, tmp_path):
         ops, calls = shell
         r = ops.read_file(_write(tmp_path, "L.txt", b"a" * 9000 + b"\nshort\n"))
         assert len(calls) == 1
-        first, second, tail = r.content.split("\n")
+        first, second = r.content.split("\n")
         assert first.endswith("... [truncated]") and len(first) < 9000
-        assert second == "2|short" and tail == "3|"
+        assert second == "2|short"
 
     def test_relative_path_resolves_against_env_cwd(self, shell, tmp_path):
         ops, calls = shell
         _write(tmp_path, "rel.txt", b"here\n")
         r = ops.read_file("rel.txt")
-        assert r.error is None and r.content == "1|here\n2|"
+        assert r.error is None and r.content == "1|here"
 
     def test_sentinel_lookalike_in_content_reads_intact(self, shell, tmp_path):
         ops, calls = shell
@@ -145,7 +146,7 @@ class TestReadFileOneRoundTrip:
         p = _write(tmp_path, "s.txt", f"x\n{lookalike}\ny\n".encode("utf-8"))
         r = ops.read_file(p)
         assert r.error is None and r.total_lines == 3
-        assert r.content == f"1|x\n2|{lookalike}\n3|y\n4|"
+        assert r.content == f"1|x\n2|{lookalike}\n3|y"
 
 
 class TestReadFileNonTextPaths:
@@ -168,7 +169,7 @@ class TestReadFileNonTextPaths:
         assert on_disk != typed
         _write(tmp_path, on_disk, b"accent\n")
         r = ops.read_file(str(tmp_path / typed))
-        assert r.error is None and r.content == "1|accent\n2|"
+        assert r.error is None and r.content == "1|accent"
         assert r.hint is not None and "unicode-equivalent" in r.hint
 
     def test_directory_is_not_regular(self, shell, tmp_path):
@@ -289,7 +290,7 @@ class TestNativeRead:
         ops, calls = native
         r = ops.read_file(_write(tmp_path, "a.txt", b"one\ntwo\n"))
         assert calls == []
-        assert r.error is None and r.content == "1|one\n2|two\n3|"
+        assert r.error is None and r.content == "1|one\n2|two"
         assert (r.total_lines, r.file_size) == (2, 8)
 
     def test_kill_switch_routes_to_the_shell(self, native, tmp_path, monkeypatch):
@@ -449,7 +450,7 @@ class TestCompoundFallback:
 
         with patch.object(ops, "_exec", side_effect=garbled):
             r = ops.read_file(p)
-        assert r.error is None and r.content == "1|one\n2|two\n3|"
+        assert r.error is None and r.content == "1|one\n2|two"
         assert r.total_lines == 2
 
     def test_fallback_is_logged_at_debug(self, shell, tmp_path, caplog):
@@ -466,7 +467,7 @@ class TestCompoundFallback:
         with caplog.at_level(logging.DEBUG, logger="tools.file_operations"), \
              patch.object(ops, "_exec", side_effect=garbled):
             r = ops.read_file(p)
-        assert r.error is None and r.content == "1|one\n2|"
+        assert r.error is None and r.content == "1|one"
         assert any(
             "falling back to sequential probes" in rec.getMessage()
             and str(p) in rec.getMessage()

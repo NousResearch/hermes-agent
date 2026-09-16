@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agent.credential_pool_admin import CredentialPoolAdminMixin
+
 import logging
 import os
 import random
@@ -17,6 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
 from agent.secret_scope import get_secret as _get_secret
+from agent.retry_utils import reset_delay_from_message
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
@@ -165,6 +168,8 @@ _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls", "secret_source", "secret_fingerprint",
+    # Nous guest identity (``auth_method: anonymous``): the anon_ credential is the refresh material.
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
     # Classified failure semantics for the last exhaustion (agent/error_classifier.py).
     # Providers return 403 for both an edge throttle and a spending limit, so the
     # raw status cannot size a cooldown; persisted so a restart doesn't downgrade
@@ -176,6 +181,7 @@ _EXTRA_KEYS = frozenset({
 _NOUS_EXTRA_STATE_KEYS = (
     "obtained_at", "expires_in", "agent_key_id",
     "agent_key_expires_in", "agent_key_reused", "agent_key_obtained_at",
+    "auth_method", "account_tier", "anon_token", "user_id", "org_id",
 )
 
 # ``replace(entry, **_CLEAR_STATUS)`` returns an entry with no error state.
@@ -362,36 +368,6 @@ def _parse_absolute_timestamp(value: Any) -> Optional[float]:
     return None
 
 
-# (regex, seconds-from-match) pairs tried in order against provider error text.
-_RETRY_DELAY_PATTERNS: Tuple[Tuple[re.Pattern, Callable[[re.Match], float]], ...] = (
-    (
-        re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE),
-        lambda m: float(m.group(1)) / 1000.0 if m.group(2).lower() == "ms" else float(m.group(1)),
-    ),
-    (
-        re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE),
-        lambda m: float(m.group(1)),
-    ),
-    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
-    (
-        re.compile(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", re.IGNORECASE),
-        lambda m: int(m.group(1)) * 3600 + int(m.group(2)) * 60,
-    ),
-    (re.compile(r"resets?\s+in\s+(\d+)\s*hr\b", re.IGNORECASE), lambda m: int(m.group(1)) * 3600),
-    (re.compile(r"resets?\s+in\s+(\d+)\s*min\b", re.IGNORECASE), lambda m: int(m.group(1)) * 60),
-)
-
-
-def _extract_retry_delay_seconds(message: str) -> Optional[float]:
-    if not message:
-        return None
-    for pattern, to_seconds in _RETRY_DELAY_PATTERNS:
-        match = pattern.search(message)
-        if match:
-            return to_seconds(match)
-    return None
-
-
 def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(error_context, dict):
         return {}
@@ -408,7 +384,7 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     parsed_reset_at = _parse_absolute_timestamp(reset_at)
     message = error_context.get("message")
     if parsed_reset_at is None and isinstance(message, str):
-        retry_delay_seconds = _extract_retry_delay_seconds(message)
+        retry_delay_seconds = reset_delay_from_message(message)
         if retry_delay_seconds is not None:
             parsed_reset_at = time.time() + retry_delay_seconds
     if parsed_reset_at is not None:
@@ -883,6 +859,10 @@ _TOKENS_SINGLETON_PROVIDERS: Dict[str, Tuple[str, str, str, str]] = {
     "xai-oauth": ("xAI OAuth", "xAI", "refresh_xai_oauth_pure", "_is_terminal_xai_oauth_refresh_error"),
 }
 
+# Providers whose pooled OAuth entries ``_refresh_entry_impl`` can actually refresh. Any other
+# provider is returned unchanged by that path, so callers must not report a refresh for them.
+REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
+
 # Providers whose refresh tokens are single-use: the sync -> POST -> write-back
 # sequence must be serialized across processes under the auth-store flock.
 _SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
@@ -910,7 +890,7 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool:
+class CredentialPool(CredentialPoolAdminMixin):
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -1590,7 +1570,10 @@ class CredentialPool:
 
         updated = replace(updated, **_MARK_OK)
         self._replace_entry(entry, updated)
-        self._persist()
+        # Declare the cleared id: a borrowed row carries no access_token on disk, so
+        # the merge's token-change bypass cannot apply and a plain persist would copy
+        # the still-binding cooldown back over this success.
+        self._persist(status_cleared_ids=[updated.id])
         # Sync back so _seed_from_singletons() on the next load_pool() sees
         # fresh state instead of re-seeding consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)
@@ -1901,8 +1884,14 @@ class CredentialPool:
         self._last_no_entries_log_at = now
         logger.info("credential pool: no available entries (all exhausted or empty)")
 
-    def _select_unlocked(self, *, refresh: bool = True) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
-        """Select the best available entry; returns ``(entry, pending_refresh)``."""
+    def _select_unlocked(
+        self, *, refresh: bool = True, count: bool = True,
+    ) -> Tuple[Optional[PooledCredential], List[PooledCredential]]:
+        """Select the best available entry; returns ``(entry, pending_refresh)``.
+
+        ``count=False`` skips the ``request_count`` bump for selections that are
+        not going to serve a request (a forced-refresh target lookup).
+        """
         available, pending_refresh = self._available_entries(clear_expired=True, refresh=refresh)
         if not available:
             self._current_id = None
@@ -1917,19 +1906,19 @@ class CredentialPool:
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
-            # Bump the usage counter so subsequent selections distribute load
-            self._current_id = entry.id
-            return self._adopt(entry, persist=False, request_count=entry.request_count + 1), pending_refresh
-        elif self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
+        else:
             entry = available[0]
+        # Count the selection under every strategy. The counter is ``least_used``'s
+        # baseline and reaches auth.json on the next persist (exhaustion, rotation,
+        # refresh); it used to move only while ``least_used`` was active.
+        if count:
+            entry = self._adopt(entry, persist=False, request_count=entry.request_count + 1)
+        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
             self._persist()
-            self._current_id = entry.id
-            return self._current_unlocked() or entry, pending_refresh
-        else:
-            entry = available[0]
+            entry = self._find(lambda candidate: candidate.id == entry.id) or entry
         self._current_id = entry.id
         return entry, pending_refresh
 
@@ -2142,7 +2131,7 @@ class CredentialPool:
                 if api_key_hint:
                     entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
                 else:
-                    entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                    entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
             if entry is None:
                 return None
             self._current_id = entry.id
@@ -2157,90 +2146,6 @@ class CredentialPool:
             self._current_id = refreshed.id
         return refreshed
 
-    def reset_statuses(self) -> int:
-        """Clear exhaustion state on every entry. Returns how many were cleared.
-
-        ``failure_reason`` lives in ``extra``, not a dataclass field, so it is
-        stripped explicitly. The persist declares the cleared ids because the
-        disk-recency merge reads a cleared ``last_status_at`` (None -> epoch 0)
-        as a stale snapshot and would copy a still-binding cooldown back.
-        """
-        with self._lock:
-            stale = [
-                e for e in self._entries
-                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason
-            ]
-            if stale:
-                stale_ids = {e.id for e in stale}
-                self._entries = [
-                    replace(
-                        e, **_CLEAR_STATUS,
-                        extra={k: v for k, v in e.extra.items() if k != "failure_reason"},
-                    )
-                    if e.id in stale_ids else e
-                    for e in self._entries
-                ]
-                self._persist(status_cleared_ids=list(stale_ids))
-            return len(stale)
-
-    def remove_index(self, index: int) -> Optional[PooledCredential]:
-        with self._lock:
-            if index < 1 or index > len(self._entries):
-                return None
-            removed = self._entries.pop(index - 1)
-            self._entries = [replace(e, priority=p) for p, e in enumerate(self._entries)]
-            persist_pool_entries(
-                self.provider,
-                [entry.to_dict() for entry in self._entries],
-                removed_ids=[removed.id],
-            )
-            if self._current_id == removed.id:
-                self._current_id = None
-            return removed
-
-    def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
-        raw = str(target or "").strip()
-        if not raw:
-            return None, None, "No credential target provided."
-
-        with self._lock:
-            for idx, entry in enumerate(self._entries, start=1):
-                if entry.id == raw:
-                    return idx, entry, None
-
-            label_matches = [
-                (idx, entry)
-                for idx, entry in enumerate(self._entries, start=1)
-                if entry.label.strip().lower() == raw.lower()
-            ]
-            if len(label_matches) == 1:
-                return label_matches[0][0], label_matches[0][1], None
-            if len(label_matches) > 1:
-                return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
-            if raw.isdigit():
-                index = int(raw)
-                if 1 <= index <= len(self._entries):
-                    return index, self._entries[index - 1], None
-                return None, None, f"No credential #{index}."
-            return None, None, f'No credential matching "{raw}".'
-
-    def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        with self._lock:
-            entry = replace(entry, priority=_next_priority(self._entries))
-            self._entries.append(entry)
-            borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
-                # ``hermes -p <profile> auth add <single-use provider>``: the
-                # profile claims its OWN credential. Persist only profile-owned
-                # rows — copying the borrowed root grant alongside would fork
-                # its single-use refresh token (#100339). Once the profile owns
-                # rows, the root fallback for this provider is shadowed.
-                self._entries = [e for e in self._entries if e.id not in borrowed_ids]
-                write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
-                self._borrowed_root_ids = set()
-            else:
-                self._persist()
-            return entry
 
 
 # --- Seeding --------------------------------------------------------------
@@ -2661,6 +2566,24 @@ _ENV_BASE_URL_RESOLVERS = {
 }
 
 
+def _with_on_disk_env_sources(env_vars: List[str], entries: List[PooledCredential]) -> List[str]:
+    """*env_vars* plus the ``env:VAR`` names already persisted in the pool.
+
+    Env-backed rows are written to auth.json without their secret and
+    re-hydrated on every load; a row whose VAR the registry does not
+    declare (a second key the user pointed at ``env:PROVIDER_API_KEY_2``)
+    would otherwise stay empty forever and be silently dropped from
+    rotation by ``_available_entries``.
+    """
+    names = list(env_vars)
+    for entry in entries:
+        if entry.source.startswith("env:"):
+            env_name = entry.source.split(":", 1)[1].strip()
+            if env_name and env_name not in names:
+                names.append(env_name)
+    return names
+
+
 def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     seed = _Seeder(provider, entries)
     # Copilot's singleton branch exchanges the raw ghu_ OAuth token for the
@@ -2671,12 +2594,13 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         return seed.result
 
     if provider == "openrouter":
-        token = get_env_prefer_dotenv("OPENROUTER_API_KEY")
-        if token and seed.upsert(
-            "env:OPENROUTER_API_KEY",
-            _env_payload(env_var="OPENROUTER_API_KEY", token=token, base_url=OPENROUTER_BASE_URL),
-        ):
-            _warn_env_ingestion_once(provider, "OPENROUTER_API_KEY")
+        for env_var in _with_on_disk_env_sources(["OPENROUTER_API_KEY"], entries):
+            token = get_env_prefer_dotenv(env_var)
+            if token and seed.upsert(
+                f"env:{env_var}",
+                _env_payload(env_var=env_var, token=token, base_url=OPENROUTER_BASE_URL),
+            ):
+                _warn_env_ingestion_once(provider, env_var)
         return seed.result
 
     pconfig = PROVIDER_REGISTRY.get(provider)
@@ -2690,6 +2614,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     env_vars = list(pconfig.api_key_env_vars)
     if provider == "anthropic":
         env_vars = ["ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
+    env_vars = _with_on_disk_env_sources(env_vars, entries)
 
     resolve_base_url = _ENV_BASE_URL_RESOLVERS.get(provider)
     for env_var in env_vars:

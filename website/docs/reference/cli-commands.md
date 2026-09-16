@@ -240,8 +240,11 @@ Same agent, same tools, same skills — just strips every interactive / cosmetic
 Exit codes: `0` the turn completed; `2` it failed or stopped partway (`partial`,
 iteration budget, `completed: false`) — even when an explanation was printed;
 `130` it was interrupted; `1` a completed turn produced no text at all; `2` also
-for usage errors (bad flags) before the run starts. Judge the run by the exit
-code (or the `--usage-file` flags), not by whether stdout is non-empty.
+for usage errors (bad flags) before the run starts. These codes intentionally
+differ from `chat -q`/`-Q` above (which exit `1` for failed/partial/budget and
+`0` for a completed turn with no text): `-z` reserves `1` for "answered nothing".
+Judge the run by the exit code (or the `--usage-file` flags), not by whether
+stdout is non-empty.
 
 #### `--usage-file` — JSON usage report for pipelines
 

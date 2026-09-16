@@ -422,18 +422,21 @@ def _run_post_turn_followups(
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
         from tools.process_registry import process_registry
-        drained = process_registry.drain_notifications(
-            session_key=session.get("session_key", ""),
-            owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-            skip_poll_observed=False)
-        from tools.process_registry_notifications import format_process_notification
-        deferred = []
-        _notif_handle_ready(
-            sid, session, [event for event, _text in drained],
-            session.setdefault("_notification_emitted", set()), process_registry,
-            format_process_notification, deferred, owned=True)
-        for event in deferred:
-            process_registry.completion_queue.put(event)
+        # _finish_turn has released the worker's runtime scope. Queue ownership,
+        # notification policy and nested dispatch still belong to this session.
+        with _session_profile_runtime_scope(session):
+            drained = process_registry.drain_notifications(
+                session_key=session.get("session_key", ""),
+                owns_event=lambda e: _session_owns_notification_event(sid, session, e),
+                skip_poll_observed=False)
+            from tools.process_registry_notifications import format_process_notification
+            deferred = []
+            _notif_handle_ready(
+                sid, session, [event for event, _text in drained],
+                session.setdefault("_notification_emitted", set()), process_registry,
+                format_process_notification, deferred, owned=True)
+            for event in deferred:
+                process_registry.completion_queue.put(event)
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 

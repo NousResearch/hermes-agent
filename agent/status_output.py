@@ -73,10 +73,9 @@ class StatusOutputMixin:
     def _emit_status_kind(self, kind: str, message: str, *, origin: str) -> None:
         """Print to the CLI (``_vprint(force=True)``) and forward to ``status_callback(kind, message)``. Never raises."""
         from gateway.warning_notifications import is_warning_status
-        if is_warning_status(kind, message) and not self._warning_presentation_enabled():
-            return
         try:
-            self._vprint(f"{self.log_prefix}{message}", force=True)
+            if not is_warning_status(kind, message) or self._warning_presentation_enabled():
+                self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
         self._call_callback("status_callback", kind, message, origin=origin)
@@ -145,8 +144,6 @@ class StatusOutputMixin:
 
     def _emit_notice(self, notice) -> None:
         """Fire a structured ``AgentNotice`` to the active driver (TUI / CLI)."""
-        if getattr(notice, "level", None) in {"warn", "error"} and not self._warning_presentation_enabled():
-            return
         self._call_callback("notice_callback", notice, origin="_emit_notice")
 
     def _emit_notice_clear(self, key: str) -> None:
@@ -157,9 +154,6 @@ class StatusOutputMixin:
         """Rewrite the live status line (CLI spinner, TUI ``thinking.delta``, gateway activity)
         so long provider waits are not an anonymous spinner."""
         self._touch_activity(text)
-        from gateway.warning_notifications import DiagnosticText
-        if isinstance(text, DiagnosticText) and not self._warning_presentation_enabled():
-            return
         self._call_callback("thinking_callback", text, origin="_emit_wait_notice")
 
     def _emit_diagnostic_wait(self, text: str) -> None:

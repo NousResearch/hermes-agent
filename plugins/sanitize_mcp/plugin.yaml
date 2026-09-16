@@ -1,0 +1,6 @@
+name: sanitize-mcp
+version: 1.0.0
+description: "MCP tool output validation — blocks prompt injections from MCP server responses before they reach the LLM context."
+author: "NousResearch"
+hooks:
+  - transform_tool_result

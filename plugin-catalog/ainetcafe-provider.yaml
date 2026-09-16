@@ -1,0 +1,15 @@
+name: ainetcafe-provider
+repo: https://github.com/mario03690/hermes-ainetcafe
+sha: 05dc216d575b2971c472e9d8aaba252a69bd8113
+subdir: ainetcafe
+description: ainetcafe, Kimi K3 served from a dedicated cluster behind an OpenAI-compatible API
+maintainer: mario03690
+tier: community
+category: models
+docs_url: https://github.com/mario03690/hermes-ainetcafe#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - AINETCAFE_API_KEY

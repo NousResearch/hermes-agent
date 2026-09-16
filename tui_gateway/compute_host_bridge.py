@@ -54,6 +54,7 @@ def _compute_host_turn_frame(
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
         attached_images = list(image_paths if image_paths is not None else session.get("attached_images", []))
+        prepersisted_user = session.get("_prepersisted_user_message")
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
@@ -67,6 +68,7 @@ def _compute_host_turn_frame(
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "auth_user_id": _session_auth_user_id(session),
+        **({"prepersisted_user_message": prepersisted_user} if isinstance(prepersisted_user, dict) else {}),
         "queued_prompt_generation": queued_prompt_generation}
 
 

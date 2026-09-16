@@ -221,6 +221,9 @@ class ComputeHost:
             session = self._ensure_server_session(server, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
+            prepersisted_user = frame.get("prepersisted_user_message")
+            if isinstance(prepersisted_user, dict):
+                session["_prepersisted_user_message"] = dict(prepersisted_user)
             with session["history_lock"]:
                 queued_gen = frame.get("queued_prompt_generation")
                 current_gen = int(session.get("_queued_prompt_generation", 0))

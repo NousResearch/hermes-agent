@@ -34,6 +34,24 @@ it('moves only the exact profile and connection-scoped navigation keys', async (
   expect(window.localStorage.getItem(foreignKey)).toBe('/session-b')
 })
 
+it('recovers a pending rename only for its owning connection and preserves null navigation scope', async () => {
+  const oldKey = 'hermes.desktop.lastRoute.profile.work'
+
+  window.localStorage.setItem(oldKey, '/session-local')
+
+  const migration = await import('./profile-rename-state')
+
+  migration.stageProfileRenameState('work', 'personal', {
+    connectionId: 'gateway-a',
+    oldNavigationSuffix: null,
+    newNavigationSuffix: null
+  })
+
+  expect(migration.recoverPendingProfileRenameState('personal', 'gateway-b')).toBe(false)
+  expect(migration.recoverPendingProfileRenameState('personal', 'gateway-a')).toBe(true)
+  expect(window.localStorage.getItem(oldKey)).toBe('/session-local')
+})
+
 it('re-homes every persisted session route after a profile rename', async () => {
   const oldName = 'work'
   const newName = 'hutnik-projectmanager'
@@ -85,7 +103,7 @@ it('re-homes every persisted session route after a profile rename', async () => 
   ]).then(([sessionStore, profileRename]) => [sessionStore, profileRename] as const)
 
   migration.stageProfileRenameState(oldName, newName)
-  expect(migration.recoverPendingProfileRenameState(newName)).toBe(true)
+  expect(migration.recoverPendingProfileRenameState(newName, 'local')).toBe(true)
 
   expect(window.localStorage.getItem(`hermes.desktop.lastSessionId.profile.${oldName}`)).toBeNull()
   expect(window.localStorage.getItem(`hermes.desktop.lastSessionId.profile.${newName}`)).toBe('session-1')

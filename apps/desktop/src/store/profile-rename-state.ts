@@ -36,8 +36,18 @@ function readPending(): PendingProfileRename | null {
       connectionId: typeof parsed.connectionId === 'string' ? parsed.connectionId.trim() || 'local' : 'local',
       oldName: normalizedName(parsed.oldName),
       newName: normalizedName(parsed.newName),
-      oldNavigationSuffix: typeof parsed.oldNavigationSuffix === 'string' ? parsed.oldNavigationSuffix : '',
-      newNavigationSuffix: typeof parsed.newNavigationSuffix === 'string' ? parsed.newNavigationSuffix : ''
+      oldNavigationSuffix:
+        parsed.oldNavigationSuffix === null
+          ? null
+          : typeof parsed.oldNavigationSuffix === 'string'
+            ? parsed.oldNavigationSuffix
+            : '',
+      newNavigationSuffix:
+        parsed.newNavigationSuffix === null
+          ? null
+          : typeof parsed.newNavigationSuffix === 'string'
+            ? parsed.newNavigationSuffix
+            : ''
     }
   } catch {
     return null
@@ -165,10 +175,14 @@ export function completeProfileRenameState(
 
 /** Complete a rename whose successful primary-backend response reloaded the
  * renderer before RenameProfileDialog resumed. */
-export function recoverPendingProfileRenameState(activeProfile: string): boolean {
+export function recoverPendingProfileRenameState(activeProfile: string, activeConnectionId: string): boolean {
   const pending = readPending()
 
-  if (!pending || pending.newName !== normalizedName(activeProfile)) {
+  if (
+    !pending ||
+    pending.newName !== normalizedName(activeProfile) ||
+    pending.connectionId !== activeConnectionId.trim()
+  ) {
     return false
   }
 

@@ -83,9 +83,13 @@ memory: {}
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
     monkeypatch.setattr(doctor_mod, "_DHH", str(hermes_home))
-    monkeypatch.setattr(doctor_mod, "_APIKEY_PROVIDERS_CACHE", None)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     (tmp_path / "project").mkdir(exist_ok=True)
+
+    # Connectivity probes live on doctor_connectivity after the doctor.py split.
+    from hermes_cli import doctor_connectivity as doctor_conn
+    monkeypatch.setattr(doctor_conn, "_APIKEY_PROVIDERS_CACHE", None)
+    monkeypatch.setattr(doctor_conn, "build_probes", lambda: [])
 
     # Re-scan after HERMES_HOME points at the temp plugin.
     _clear_provider_caches()
@@ -103,6 +107,7 @@ memory: {}
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
         pass

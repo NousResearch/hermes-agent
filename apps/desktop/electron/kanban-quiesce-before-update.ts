@@ -30,6 +30,7 @@ function parseQuiesceResult(raw: unknown): KanbanQuiesceResult | undefined {
   try {
     const parsed = JSON.parse(String(raw))
     if (!parsed || typeof parsed !== 'object' || typeof parsed.ok !== 'boolean') {
+
       return undefined
     }
 
@@ -72,12 +73,15 @@ export function quiesceKanbanWorkersForUpdate(
 
     const parsed = parseQuiesceResult(raw)
     if (!parsed) {
+
       throw new Error('invalid quiesce response')
     }
+
     return parsed
   } catch (error: any) {
     const parsed = parseQuiesceResult(error?.stdout)
     if (parsed) {
+
       return parsed
     }
 

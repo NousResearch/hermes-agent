@@ -50,11 +50,13 @@ test('update marker ownership brackets the bounded kanban quiesce subprocess', (
 test('nonzero quiesce exit preserves structured blocker diagnostics from stdout', () => {
   const root = path.join(os.tmpdir(), 'hermes-kanban-update-root')
   const python = path.join(root, 'venv', 'Scripts', 'python.exe')
+
   const failure = {
     ok: false,
     reclaimed: [{ board: 'first', task_id: 't_reclaimed' }],
     failed: [{ board: 'second', task_id: 't_blocked', error: 'dispatch lock busy' }]
   }
+
   const error = Object.assign(new Error('Command failed'), {
     stdout: Buffer.from(JSON.stringify(failure), 'utf8')
   })

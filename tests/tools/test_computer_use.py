@@ -467,9 +467,16 @@ class TestAnthropicAdapterMultimodal:
                 },
             }
 
-        # Build 5 screenshots interleaved with assistant messages.
+        # Build screenshots interleaved with assistant messages. The eviction frontier
+        # advances in whole batches, so use a count that lands exactly on one advance.
+        from agent.anthropic_message_convert import (
+            _OUTBOUND_IMAGE_LIMIT,
+            _SCREENSHOT_EVICTION_BATCH,
+        )
+
+        total = _OUTBOUND_IMAGE_LIMIT + 1
         messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
-        for i in range(5):
+        for i in range(total):
             messages.append({
                 "role": "assistant", "content": "",
                 "tool_calls": [{
@@ -483,8 +490,7 @@ class TestAnthropicAdapterMultimodal:
 
         _, anthropic_msgs = convert_messages_to_anthropic(messages)
 
-        # Walk tool_result blocks in order; the OLDEST (5 - 3) = 2 should be
-        # text-only placeholders, newest 3 should still carry image blocks.
+        # One batch retires; everything newer keeps its image payload.
         tool_results = []
         for m in anthropic_msgs:
             if m["role"] != "user" or not isinstance(m["content"], list):
@@ -493,7 +499,7 @@ class TestAnthropicAdapterMultimodal:
                 if b.get("type") == "tool_result":
                     tool_results.append(b)
 
-        assert len(tool_results) == 5
+        assert len(tool_results) == total
         with_images = [
             b for b in tool_results
             if isinstance(b.get("content"), list)
@@ -508,8 +514,74 @@ class TestAnthropicAdapterMultimodal:
                 for x in b["content"]
             )
         ]
-        assert len(with_images) == 3
-        assert len(placeholders) == 2
+        assert len(placeholders) == _SCREENSHOT_EVICTION_BATCH
+        assert len(with_images) == total - _SCREENSHOT_EVICTION_BATCH
+
+    def test_eviction_frontier_holds_between_batch_advances(self):
+        """Screenshot eviction must not rewrite a new block on every capture.
+
+        The Anthropic prompt cache keys on an exact byte prefix. A frontier that
+        advances one block per screenshot edits an already-cached block every turn,
+        forcing a full-prefix re-write that costs far more than the image tokens it
+        reclaims.
+        """
+        from agent.anthropic_message_convert import (
+            _OUTBOUND_IMAGE_LIMIT,
+            _SCREENSHOT_EVICTION_BATCH,
+            convert_messages_to_anthropic,
+        )
+
+        fake_png = "iVBORw0KGgo="
+
+        def placeholder_count(n: int) -> int:
+            messages: List[Dict[str, Any]] = [{"role": "user", "content": "start"}]
+            for i in range(n):
+                messages.append({
+                    "role": "assistant", "content": "",
+                    "tool_calls": [{
+                        "id": f"call_{i}",
+                        "type": "function",
+                        "function": {"name": "computer_use", "arguments": "{}"},
+                    }],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": {
+                        "_multimodal": True,
+                        "content": [
+                            {"type": "text", "text": f"cap {i}"},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/png;base64,{fake_png}"}},
+                        ],
+                        "text_summary": f"cap {i}",
+                    },
+                })
+            _, out = convert_messages_to_anthropic(messages)
+            return sum(
+                1
+                for m in out
+                if isinstance(m.get("content"), list)
+                for b in m["content"]
+                if b.get("type") == "tool_result"
+                and isinstance(b.get("content"), list)
+                and any(
+                    x.get("type") == "text" and "screenshot removed" in x.get("text", "")
+                    for x in b["content"]
+                )
+            )
+
+        # The frontier must hold across at least one new screenshot. Asserted as an
+        # absolute invariant rather than against the batch constant, so shrinking the
+        # batch back to a one-step frontier fails this test.
+        counts = [placeholder_count(n) for n in range(_OUTBOUND_IMAGE_LIMIT - 2,
+                                                      _OUTBOUND_IMAGE_LIMIT + _SCREENSHOT_EVICTION_BATCH)]
+        held = [a == b for a, b in zip(counts, counts[1:])]
+        assert any(held), (
+            f"eviction rewrote a new block on every screenshot (counts={counts}); "
+            "each step invalidates the cached prefix"
+        )
+        assert counts[-1] >= counts[0], "eviction must still make progress"
 
 # ---------------------------------------------------------------------------
 # Context compressor: screenshot-aware pruning

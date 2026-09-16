@@ -8,6 +8,30 @@ import pytest
 from hermes_cli import runtime_provider as rp
 
 
+def test_model_extra_body_is_merged_into_resolved_request_overrides(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_requested_provider", lambda _requested: "custom")
+    monkeypatch.setattr(rp, "_raise_if_provider_disabled", lambda _provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_ladder_rungs",
+        lambda *_args: iter([{"request_overrides": {"extra_body": {"options": {"provider_default": True}}}}]),
+    )
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"extra_body": {"options": {"num_ctx": 65536}, "guardrail": {"enabled": True}}},
+    )
+
+    runtime = rp.resolve_runtime_provider(requested="custom")
+
+    assert runtime["request_overrides"] == {
+        "extra_body": {
+            "options": {"provider_default": True, "num_ctx": 65536},
+            "guardrail": {"enabled": True},
+        }
+    }
+
+
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
     """A saved provider must not resolve as another authenticated provider."""
     monkeypatch.setattr(

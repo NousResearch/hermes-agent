@@ -134,6 +134,20 @@ afterEach(() => {
 })
 
 describe('refreshSessions identity + loading hygiene', () => {
+  it('requests interactive recents without finite one-shot runs', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('interactive')] }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(listSidebarSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ recentsExclude: expect.arrayContaining(['oneshot']) })
+    )
+    expect($sessions.get().map(session => session.id)).toEqual(['interactive'])
+  })
+
   it('keeps the previous $sessions array when the refresh is content-identical', async () => {
     const rows = [row('a'), row('b')]
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: rows }))

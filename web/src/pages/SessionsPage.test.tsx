@@ -152,3 +152,25 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-guanli", "guanli");
   });
 });
+
+describe("SessionsPage source categories", () => {
+  it("keeps one-shot runs out of Chats and available under Automation", async () => {
+    apiMocks.getSessionStats.mockResolvedValue({ by_source: { cli: 1, oneshot: 1 } });
+    await renderSessionsPage([
+      { id: "chat", profile: "default", source: "cli", model: null, title: "Chat", started_at: 1, ended_at: null,
+        last_active: 1, is_active: false, message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "hi" },
+    ]);
+
+    expect(apiMocks.getSessions.mock.calls.some(
+      ([, , options]) => options?.excludeSources?.includes("oneshot"),
+    )).toBe(true);
+
+    const automation = Array.from(document.querySelectorAll("button")).find(
+      (candidate) => candidate.textContent?.trim() === "Automation",
+    );
+    await act(async () => click(automation ?? null));
+    await waitFor(() => apiMocks.getSessions.mock.calls.some(
+      ([, , options]) => options?.excludeSources?.includes("cli") && !options.excludeSources.includes("oneshot"),
+    ));
+  });
+});

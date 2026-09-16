@@ -77,6 +77,25 @@ def test_fork_is_skipped_when_the_provider_cannot_emit_tool_calls(caplog):
     assert "auxiliary.background_review" in caplog.text
 
 
+def test_incapable_provider_finishes_prepared_review_ownership():
+    client = MagicMock()
+    client.SUPPORTS_HERMES_TOOL_CALLS = False
+    agent = _fake_parent(client)
+    run = bg.prepare_background_review_run(agent)
+    assert run is not None
+
+    with patch("tools.terminal_tool.set_approval_callback"):
+        bg._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "review please",
+            review_run=run,
+        )
+
+    assert run.request_done.is_set()
+    assert agent._background_review_run is None
+
+
 def test_fork_is_spawned_when_the_provider_can_emit_tool_calls():
     client = MagicMock()
     client.SUPPORTS_HERMES_TOOL_CALLS = True

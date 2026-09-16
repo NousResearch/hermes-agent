@@ -102,6 +102,25 @@ def test_enqueue_coalesces_per_session_newest_wins_oldest_age():
         assert q._pending["s1"].kwargs["messages_snapshot"] == ["new"]
 
 
+def test_deferred_log_uses_redacted_owner_tag_and_reason(caplog):
+    from agent.review_admission import owner_tag
+
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    profile = "/private/profiles/customer-alpha"
+    session_id = "account@example.com:secret-session-suffix"
+
+    with caplog.at_level("INFO"):
+        q.enqueue(agent, (profile, session_id), {"task_cfg": {}})
+
+    text = caplog.text
+    assert owner_tag(profile, session_id) in text
+    assert "managed_local_deferred" in text
+    assert profile not in text
+    assert session_id not in text
+    assert "session-suffix" not in text
+
+
 def test_dispatch_waits_for_sustained_quiet():
     q, clock = _make_queue()
     agent = _FakeAgent()
@@ -260,6 +279,27 @@ def test_deferred_dispatch_restores_the_enqueue_context():
     assert agent.spawned[0][0] == "origin-profile"
 
 
+def test_dispatch_enabled_gate_uses_the_enqueued_profile_context(monkeypatch):
+    enabled = contextvars.ContextVar("review_enabled", default=False)
+    q, _clock = _make_queue()
+    agent = _FakeAgent()
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (enabled.get(), {}),
+    )
+    token = enabled.set(True)
+    try:
+        q.enqueue(agent, ("profile-b", "sess-x"), {"task_cfg": {}})
+    finally:
+        enabled.reset(token)
+    with q._lock:
+        item = q._pending.pop(("profile-b", "sess-x"))
+
+    q._dispatch_item(item)
+
+    assert len(agent.spawned) == 1
+
+
 def test_wrapper_spawns_immediately_for_non_managed(monkeypatch):
     spawn, calls = _wrapper_agent(monkeypatch, defer="auto", managed=False)
     spawn([{"role": "user", "content": "hi"}], review_skills=True)
@@ -374,6 +414,78 @@ def test_aged_dispatch_rejected_after_prepare_finishes_and_requeues_fresh(monkey
     assert retry.kwargs["_idle_queue_origin"] is True
     assert retry.enqueued_at == 11.0
     assert q._pop_dispatchable() is None
+
+
+def test_popped_deferred_review_requeues_when_prepare_slot_is_busy(monkeypatch):
+    import run_agent
+    from agent import review_idle_queue as riq
+
+    q, _clock = _make_queue()
+    q._still_enabled = lambda _item: True
+    monkeypatch.setattr(riq, "QUEUE", q)
+    monkeypatch.setattr(
+        "agent.background_review.prepare_background_review_run",
+        lambda *_args, **_kwargs: None,
+    )
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "busy-session"
+    queue_key = ("/profiles/alpha", "busy-session")
+    q.enqueue(
+        agent,
+        queue_key,
+        {
+            "messages_snapshot": [{"role": "user", "content": "newest"}],
+            "task_cfg": {},
+            "_review_profile_key": "/profiles/alpha",
+        },
+    )
+    with q._lock:
+        item = q._pending.pop(queue_key)
+
+    q._dispatch_item(item)
+
+    assert q.pending_count() == 1
+    with q._lock:
+        retry = q._pending[queue_key]
+    assert retry.kwargs["_requeue_attempts"] == 1
+    assert retry.kwargs["messages_snapshot"][0]["content"] == "newest"
+
+
+def test_deferred_snapshot_is_dropped_if_parent_rotates_sessions(monkeypatch):
+    import run_agent
+    from agent import review_idle_queue as riq
+
+    q, _clock = _make_queue()
+    q._still_enabled = lambda _item: True
+    monkeypatch.setattr(riq, "QUEUE", q)
+    monkeypatch.setattr(run_agent, "_review_should_defer", lambda *_args: True)
+    monkeypatch.setattr(
+        "agent.background_review.load_background_review_settings",
+        lambda: (True, {}),
+    )
+    prepared = []
+    monkeypatch.setattr(
+        "agent.background_review.prepare_background_review_run",
+        lambda *_args, **_kwargs: prepared.append(True),
+    )
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "session-one"
+    agent._delegate_depth = 0
+    agent._active_turn_token = None
+    agent._active_turn_profile_key = "/profiles/alpha"
+    agent._spawn_background_review(
+        [{"role": "user", "content": "session one snapshot"}],
+        review_memory=True,
+    )
+    queue_key = ("/profiles/alpha", "session-one")
+    with q._lock:
+        item = q._pending.pop(queue_key)
+
+    agent.session_id = "session-two"
+    q._dispatch_item(item)
+
+    assert prepared == []
+    assert q.pending_count() == 0
 
 
 # ── requeue on preemption ────────────────────────────────────────

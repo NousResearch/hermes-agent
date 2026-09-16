@@ -1246,6 +1246,9 @@ class TurnRunner:
         runner = self._runner
         agent._notification_config = ctx.user_config
         agent._notification_platform = ctx.source.platform
+        gateway_review_admission = getattr(ctx, "gateway_review_admission", None)
+        if gateway_review_admission is not None:
+            gateway_review_admission.bind_agent(agent)
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -1280,18 +1283,17 @@ class TurnRunner:
                 followup_epoch = followup_state.epoch
 
         def _followup_pending() -> bool:
-            try:
-                probe = getattr(ctx._status_adapter, "has_pending_message", None)
-                if not (ctx.session_key and callable(probe)):
-                    return False
-                if followup_state is None:
-                    return bool(probe(ctx.session_key))
-                with followup_state.lock:
-                    return bool(
-                        followup_state.epoch != followup_epoch or probe(ctx.session_key)
-                    )
-            except Exception:
+            probe = getattr(ctx._status_adapter, "has_pending_message", None)
+            if not (ctx.session_key and callable(probe)):
                 return False
+            if followup_state is None:
+                return bool(probe(ctx.session_key) or runner._overflow_queue(ctx.session_key))
+            with followup_state.lock:
+                return bool(
+                    followup_state.epoch != followup_epoch
+                    or probe(ctx.session_key)
+                    or runner._overflow_queue(ctx.session_key)
+                )
 
         agent.followup_pending_callback = _followup_pending
         agent.followup_pending_lock = getattr(followup_state, "lock", None)

@@ -118,21 +118,23 @@ class GatewayBusySessionMixin:
         ``pending_event`` None → the overflow head becomes the pending event; otherwise the head is
         staged into the slot for the NEXT recursion. Returns the (possibly updated) pending_event.
         """
-        overflow = self._overflow_queue(session_key)
-        if not overflow:
-            return pending_event
-        if pending_event is None:
-            return overflow.pop(0)
-        if adapter is not None and hasattr(adapter, "_pending_messages"):
-            def _stage_next() -> bool:
-                if not overflow:
-                    return False
-                adapter._pending_messages[session_key] = overflow.pop(0)
-                return True
+        promoted = [pending_event]
 
-            self._apply_followup_queue_mutation(adapter, session_key, _stage_next)
-        # else: no adapter — leave the head in place so we don't silently drop it.
-        return pending_event
+        def _promote() -> bool:
+            overflow = self._overflow_queue(session_key)
+            if not overflow:
+                return False
+            if promoted[0] is None:
+                promoted[0] = overflow.pop(0)
+                return True
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if not isinstance(pending_slot, dict):
+                return False
+            pending_slot[session_key] = overflow.pop(0)
+            return True
+
+        self._apply_followup_queue_mutation(adapter, session_key, _promote)
+        return promoted[0]
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
@@ -141,14 +143,20 @@ class GatewayBusySessionMixin:
             depth += 1
         return depth
 
-    def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional["MessageEvent"]:
+    def _rescue_orphaned_overflow(
+        self,
+        session_key: str,
+        adapter: Any,
+        incoming_event: Optional["MessageEvent"] = None,
+    ) -> Optional["MessageEvent"]:
         """Pop the oldest orphaned FIFO overflow event for an idle session (None if nothing to rescue).
 
         ``queued_events`` drains only at the post-turn promotion site; a busy window ending without
         it (early exit, exception/interrupt/generation-bump) orphans the overflow. On a NEW event for
         a NON-busy session the oldest orphan runs as THIS turn, the next is staged into the slot so
-        arrival order holds, and the caller enqueues the incoming event behind it. The returned
-        event is REMOVED from both stores, else the post-turn dequeue would run it twice.
+        arrival order holds, and the incoming event is published behind it in the same admission
+        transaction. The returned event is REMOVED from both stores, else the post-turn dequeue
+        would run it twice.
 
         See #28503.
         """
@@ -168,10 +176,12 @@ class GatewayBusySessionMixin:
                 # routes to overflow instead of jumping the queue.
                 if overflow:
                     pending_slot[session_key] = overflow.pop(0)
-                    remaining.append(overflow)
-                    return True
+                    if incoming_event is not None:
+                        overflow.append(incoming_event)
+                elif incoming_event is not None:
+                    pending_slot[session_key] = incoming_event
                 remaining.append(overflow)
-                return False
+                return True
 
             self._apply_followup_queue_mutation(
                 adapter, session_key, _rescue_and_stage
@@ -203,20 +213,25 @@ class GatewayBusySessionMixin:
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
-        removed = 0
-        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
-        if isinstance(pending_slot, dict):
-            pending_event = pending_slot.get(session_key)
-            if self._is_goal_continuation_event(pending_event):
-                pending_slot.pop(session_key, None)
-                removed += 1
+        removed = [0]
 
-        overflow = self._overflow_queue(session_key)
-        if overflow:
-            kept = [e for e in overflow if not self._is_goal_continuation_event(e)]
-            removed += len(overflow) - len(kept)
-            self._peek_session_state(session_key).conversation.queued_events = kept
-        return removed
+        def _clear() -> bool:
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending_slot, dict):
+                pending_event = pending_slot.get(session_key)
+                if self._is_goal_continuation_event(pending_event):
+                    pending_slot.pop(session_key, None)
+                    removed[0] += 1
+
+            overflow = self._overflow_queue(session_key)
+            if overflow:
+                kept = [e for e in overflow if not self._is_goal_continuation_event(e)]
+                removed[0] += len(overflow) - len(kept)
+                overflow[:] = kept
+            return removed[0] > 0
+
+        self._apply_followup_queue_mutation(adapter, session_key, _clear)
+        return removed[0]
 
     def _goal_still_active_for_session(self, session_id: str) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""

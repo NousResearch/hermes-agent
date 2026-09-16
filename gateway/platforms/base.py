@@ -4542,6 +4542,7 @@ class BasePlatformAdapter(ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        processing_ok = pending_handoff = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4630,6 +4631,7 @@ class BasePlatformAdapter(ABC):
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
+                pending_handoff = True
                 self._clear_session_guard(session_key)
                 await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
                 self._spawn_drain_task(pending_event, session_key)
@@ -4654,6 +4656,23 @@ class BasePlatformAdapter(ABC):
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
+            _review_delivery_complete = getattr(
+                interrupt_event, "_gateway_review_delivery_complete", None
+            ) or getattr(event, "_gateway_review_delivery_complete", None)
+            if callable(_review_delivery_complete):
+                with contextlib.suppress(Exception):
+                    delattr(interrupt_event, "_gateway_review_delivery_complete")
+                with contextlib.suppress(Exception):
+                    delattr(event, "_gateway_review_delivery_complete")
+                with contextlib.suppress(asyncio.TimeoutError, Exception):
+                    _review_result = _review_delivery_complete(
+                        delivery_succeeded=bool(processing_ok and not pending_handoff)
+                    )
+                    if inspect.isawaitable(_review_result):
+                        await asyncio.wait_for(
+                            _review_result,
+                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                        )
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

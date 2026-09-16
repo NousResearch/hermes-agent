@@ -7,19 +7,21 @@ import threading
 import time
 import types
 from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 
 from agent import background_review
+from agent import review_admission
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, TextDebounceState
+from gateway.platforms.base import BasePlatformAdapter, SendResult, TextDebounceState
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
 from gateway.session import SessionSource
 
 
-def _wire_with_adapter(adapter, session_key: str = "session-key"):
+def _wire_with_adapter(adapter, session_key: str = "session-key", overflow_probe=None):
     agent = types.SimpleNamespace()
     ctx = types.SimpleNamespace(
         progress_callback=None,
@@ -48,6 +50,7 @@ def _wire_with_adapter(adapter, session_key: str = "session-key"):
         _runner=types.SimpleNamespace(
             _service_tier=None,
             _consume_pending_turn_sidecar_notes=lambda key: [],
+            _overflow_queue=overflow_probe or (lambda _key: []),
         ),
         _make_bg_review_callbacks=lambda: (lambda message: None, lambda: None),
         _merge_turn_request_overrides=TurnRunner._merge_turn_request_overrides,
@@ -85,6 +88,236 @@ def test_followup_probe_tracks_the_current_session_without_consuming_it(monkeypa
     assert adapter.has_pending_message("session-key") is True
     assert agent.followup_pending_callback() is True
     assert adapter._text_debounce["session-key"] is debounced
+
+
+def test_recursive_gateway_turn_drops_nonterminal_review_candidate():
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    session_id = "gateway-recursive-candidate"
+    profile_key = review_admission.current_profile_key()
+    token = review_admission.note_turn_started(session_id, profile_key)
+    admission = _GatewayReviewAdmission(session_id, profile_key, token)
+    agent = types.SimpleNamespace(
+        session_id=session_id,
+        _spawn_background_review=MagicMock(),
+    )
+
+    admission.bind_agent(agent)
+    admission.capture_candidate(
+        agent,
+        [{"role": "assistant", "content": "nonterminal response"}],
+        review_memory=True,
+        review_skills=False,
+    )
+    admission.bind_agent(agent)
+    admission.finish(delivery_succeeded=True)
+
+    agent._spawn_background_review.assert_not_called()
+    assert not review_admission.other_live_turn(session_id, None, profile_key)
+
+
+def test_gateway_admission_bind_agent_aliases_rotated_session():
+    """Session hygiene may rotate the session BEFORE the agent is bound (the gateway token is
+    registered ahead of ``_hmwa_prepare_turn``). Binding must alias the rotated child so the
+    delivery window keeps one live owner on it, and finish must release both keys."""
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    profile_key = "/profiles/p"
+    token = review_admission.note_turn_started("S1", profile_key)
+    admission = _GatewayReviewAdmission("S1", profile_key, token)
+    agent = types.SimpleNamespace(session_id="S2")
+
+    try:
+        admission.bind_agent(agent)
+
+        assert review_admission.other_live_turn("S2", None, profile_key) is True
+        assert admission.session_id == "S2"
+    finally:
+        admission.finish(delivery_succeeded=False)
+
+    assert review_admission.other_live_turn("S1", None, profile_key) is False
+    assert review_admission.other_live_turn("S2", None, profile_key) is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_owns_review_admission_from_prepare_through_delivery(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    session_id = "gateway-lifecycle-session"
+    session_key = "gateway-lifecycle-key"
+    source = _event().source
+    event = _event()
+    profile_key = review_admission.current_profile_key()
+    parent = types.SimpleNamespace(
+        session_id=session_id,
+        _background_review_agent=None,
+        _background_review_run=None,
+        _background_review_lock=threading.Lock(),
+    )
+    review_run = background_review.prepare_background_review_run(
+        parent, session_id=session_id, profile_key=profile_key
+    )
+    assert review_run is not None
+    assert review_run.begin_request(object()) is True
+
+    def _interrupt_and_ack(_review_agent):
+        background_review.finish_background_review_run(parent, review_run)
+
+    monkeypatch.setattr(
+        background_review, "_interrupt_background_review", _interrupt_and_ack
+    )
+
+    async def _resolve(_event, _source):
+        return source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(*_args):
+        assert review_run.request_done.is_set()
+        assert review_admission.other_live_turn(session_id, None, profile_key)
+        return "prepared reply", []
+
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+
+    result = await runner._handle_message_with_agent(
+        event, source, session_key, run_generation=1
+    )
+
+    assert result == "prepared reply"
+    assert review_admission.other_live_turn(session_id, None, profile_key)
+    event._gateway_review_delivery_complete(delivery_succeeded=True)
+    assert not review_admission.other_live_turn(session_id, None, profile_key)
+
+
+@pytest.mark.asyncio
+async def test_gateway_review_cancellation_wait_does_not_block_event_loop(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    session_id = "gateway-nonblocking-cancel-wait"
+    session_key = "gateway-nonblocking-key"
+    source = _event().source
+    event = _event()
+    profile_key = review_admission.current_profile_key()
+    parent = types.SimpleNamespace(
+        session_id=session_id,
+        _background_review_agent=None,
+        _background_review_run=None,
+        _background_review_lock=threading.Lock(),
+    )
+    review_run = background_review.prepare_background_review_run(
+        parent, session_id=session_id, profile_key=profile_key
+    )
+    assert review_run is not None
+    assert review_run.begin_request(object()) is True
+    cancel_seen = threading.Event()
+    loop_advanced = threading.Event()
+    observed = []
+
+    monkeypatch.setattr(
+        background_review,
+        "_interrupt_background_review",
+        lambda _review_agent: cancel_seen.set(),
+    )
+
+    def _ack_after_loop_progress():
+        assert cancel_seen.wait(timeout=1.0)
+        observed.append(loop_advanced.wait(timeout=0.5))
+        background_review.finish_background_review_run(parent, review_run)
+
+    finisher = threading.Thread(target=_ack_after_loop_progress)
+    finisher.start()
+
+    async def _resolve(_event, _source):
+        return source, types.SimpleNamespace(session_id=session_id), session_key
+
+    async def _prepare(*_args):
+        return "prepared reply", []
+
+    async def _mark_loop_progress():
+        await asyncio.sleep(0)
+        loop_advanced.set()
+
+    runner._hmwa_resolve_session = _resolve
+    runner._hmwa_prepare_turn = _prepare
+    marker = asyncio.create_task(_mark_loop_progress())
+
+    result = await runner._handle_message_with_agent(
+        event, source, session_key, run_generation=1
+    )
+    await marker
+    finisher.join(timeout=1.0)
+    event._gateway_review_delivery_complete(delivery_succeeded=False)
+
+    assert result == "prepared reply"
+    assert finisher.is_alive() is False
+    assert observed == [True]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_gateway_admission_wait_releases_live_turn_owner(monkeypatch):
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    session_id = "gateway-cancelled-admission"
+    profile_key = review_admission.current_profile_key()
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+
+    monkeypatch.setattr(
+        background_review,
+        "cancel_background_review_for_live_turn",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    def _blocked_wait(_review_run):
+        wait_entered.set()
+        assert release_wait.wait(timeout=1.0)
+
+    monkeypatch.setattr(
+        background_review,
+        "wait_for_background_review_cancellation",
+        _blocked_wait,
+    )
+
+    task = asyncio.create_task(
+        _GatewayReviewAdmission.begin(object(), session_id, profile_key)
+    )
+    assert await asyncio.to_thread(wait_entered.wait, 1.0)
+    assert review_admission.other_live_turn(session_id, None, profile_key)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release_wait.set()
+
+    assert not review_admission.other_live_turn(session_id, None, profile_key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_succeeded", [True, False])
+async def test_base_delivery_completes_gateway_review_with_actual_outcome(
+    monkeypatch, send_succeeded
+):
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    event = _event()
+    session_key = "gateway-delivery-outcome"
+    outcomes = []
+
+    async def _handler(_event):
+        _event._gateway_review_delivery_complete = (
+            lambda *, delivery_succeeded: outcomes.append(delivery_succeeded)
+        )
+        return "visible response"
+
+    async def _send(*_args, **_kwargs):
+        return SendResult(success=send_succeeded, message_id="sent")
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter._process_message_background(event, session_key)
+
+    assert outcomes == [send_succeeded]
 
 
 def test_read_only_pending_probes_do_not_recreate_cleaned_admission_state(monkeypatch):
@@ -279,6 +512,44 @@ def test_runner_dropped_at_queue_cap_does_not_publish_followup(monkeypatch):
     assert cancellations == []
     assert dropped._gateway_accepted is False
     assert not runner._overflow_queue(session_key)
+
+
+def test_goal_clear_and_empty_promotion_keep_overflow_fenced_and_visible(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    session_key = "goal-promotion-session"
+    admission = adapter.followup_admission_state(session_key)
+    admission.lock = tracked_lock = _TrackingRLock()
+    fenced_under_admission = []
+    adapter.register_followup_review_cancel(
+        session_key,
+        lambda: fenced_under_admission.append(tracked_lock.held_by_current_thread()),
+    )
+    runner = _busy_runner(adapter, types.SimpleNamespace(), session_key)
+    goal = _event(text="[Continuing toward your standing goal]\nGoal: ship")
+    first = _event(text="first real follow-up")
+    second = _event(text="second real follow-up")
+    adapter._pending_messages[session_key] = goal
+    runner._session_state(session_key).conversation.queued_events.extend(
+        [first, second]
+    )
+
+    assert runner._clear_goal_pending_continuations(session_key, adapter) == 1
+    assert admission.epoch == 1
+    assert runner._promote_queued_event(session_key, adapter, None) is first
+    assert admission.epoch == 2
+    assert fenced_under_admission == [True, True]
+
+    agent = _wire_with_adapter(
+        adapter, session_key, overflow_probe=runner._overflow_queue
+    )
+    assert adapter.has_pending_message(session_key) is False
+    assert [event.text for event in runner._overflow_queue(session_key)] == [
+        "second real follow-up"
+    ]
+    assert agent.followup_pending_callback() is True
 
 
 @pytest.mark.asyncio

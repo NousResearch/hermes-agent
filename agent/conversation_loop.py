@@ -114,8 +114,45 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
     budget = getattr(agent, "_review_input_token_budget", None)
     if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
         return False
-    used = getattr(agent, "session_input_tokens", 0)
-    return isinstance(used, int) and not isinstance(used, bool) and used >= budget
+    # ``session_prompt_tokens`` is the provider's complete input, including cache reads/writes.
+    # Uncached-only ``session_input_tokens`` would make the warm-cache replay path nearly free.
+    used = getattr(
+        agent,
+        "session_prompt_tokens",
+        getattr(agent, "session_input_tokens", 0),
+    )
+    reserved = getattr(agent, "_review_input_tokens_reserved", 0)
+    totals = [
+        value
+        for value in (used, reserved)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    ]
+    return bool(totals) and max(totals) >= budget
+
+
+def _reserve_review_input_request(agent: Any, projected_tokens: Any) -> bool:
+    """Reserve one provider attempt against a detached automatic review's hard budget."""
+    budget = getattr(agent, "_review_input_token_budget", None)
+    if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
+        return True
+    if (
+        not isinstance(projected_tokens, int)
+        or isinstance(projected_tokens, bool)
+        or projected_tokens < 0
+    ):
+        return False
+    used = getattr(agent, "session_prompt_tokens", 0)
+    reserved = getattr(agent, "_review_input_tokens_reserved", 0)
+    valid_totals = [
+        value
+        for value in (used, reserved)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    ]
+    consumed = max(valid_totals, default=0)
+    if projected_tokens > budget - consumed:
+        return False
+    agent._review_input_tokens_reserved = consumed + projected_tokens
+    return True
 
 
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
@@ -1468,6 +1505,9 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
     while s.retry_count < s.max_retries:
+        if not _reserve_review_input_request(agent, s.request_pressure_tokens):
+            s._turn_exit_reason = "review_input_budget_exhausted"
+            return None
         _ng = _run_phase(nous_rate_limit_guard, agent, s)
         if _ng.action == "return":
             return _ng.result
@@ -1613,6 +1653,8 @@ def _run_conversation_turn(
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
             return early_result
+        if s._turn_exit_reason == "review_input_budget_exhausted":
+            break
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":

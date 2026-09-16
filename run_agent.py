@@ -201,13 +201,22 @@ def _review_should_defer(agent: Any, task_cfg: Optional[Dict[str, Any]]) -> bool
     return defer_mode(task_cfg) == "auto" and review_targets_managed_local(agent, task_cfg)
 
 
-def _review_queue_key(agent: Any, profile_key: Optional[str] = None) -> tuple[str, str]:
+def _review_queue_key(
+    agent: Any,
+    profile_key: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> tuple[str, str]:
     """Profile-scoped idle-queue identity; multiplexed profiles may share a session ID."""
     if profile_key is None:
         from agent.review_admission import current_profile_key
 
         profile_key = current_profile_key()
-    return str(profile_key), str(getattr(agent, "session_id", None) or id(agent))
+    resolved_session = (
+        session_id
+        if session_id is not None
+        else getattr(agent, "session_id", None) or id(agent)
+    )
+    return str(profile_key), str(resolved_session)
 
 
 def _notify_context_engine_session_end(agent: Any, messages: Optional[list]) -> None:
@@ -786,7 +795,10 @@ class AIAgent(
     _summarize_background_review_actions = _forward_static("agent.background_review", "summarize_background_review_actions")
 
     def _spawn_background_review(self, messages_snapshot: List[Dict], review_memory: bool = False,
-                                 review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False) -> None:
+                                 review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False,
+                                 _spawning_turn_token: Optional[int] = None,
+                                 _review_profile_key: Optional[str] = None,
+                                 _review_session_id: Optional[str] = None) -> None:
         """Post-turn review entry point: decide WHEN, then spawn.
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
@@ -798,22 +810,36 @@ class AIAgent(
         receives the freshest bounded snapshot. /refine bypasses this like it bypasses ``enabled``.
         """
         # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
+        automatic = focus is None and not explicit
+        if automatic and getattr(self, "_delegate_depth", 0) > 0:
             return
         task_cfg = None
-        spawning_turn_token = getattr(self, "_active_turn_token", None)
-        review_profile_key = getattr(self, "_active_turn_profile_key", None)
-        if focus is None:
+        spawning_turn_token = (
+            _spawning_turn_token
+            if _spawning_turn_token is not None
+            else getattr(self, "_active_turn_token", None)
+        )
+        review_profile_key = (
+            _review_profile_key
+            if _review_profile_key is not None
+            else getattr(self, "_active_turn_profile_key", None)
+        )
+        review_session_id = str(
+            _review_session_id
+            if _review_session_id is not None
+            else getattr(self, "session_id", None) or ""
+        )
+        if automatic:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
                 return
-        if focus is None and not explicit:
+        if automatic:
             from agent import review_admission
             if review_profile_key is None:
                 review_profile_key = review_admission.current_profile_key()
             if blocked := review_admission.foreground_block_reason(
-                self, spawning_turn_token, review_profile_key
+                self, spawning_turn_token, review_profile_key, review_session_id
             ):
                 logger.info(
                     "Background review skipped (session=%s): %s",
@@ -844,10 +870,15 @@ class AIAgent(
         kwargs = dict(messages_snapshot=_clone_background_review_messages(messages_snapshot),
                       review_memory=review_memory, review_skills=review_skills, focus=focus, task_cfg=task_cfg,
                       explicit=explicit, _spawning_turn_token=spawning_turn_token,
-                      _review_profile_key=review_profile_key)
-        if focus is None and not explicit and _review_should_defer(self, task_cfg):
+                      _review_profile_key=review_profile_key,
+                      _review_session_id=review_session_id)
+        if automatic and _review_should_defer(self, task_cfg):
             from agent.review_idle_queue import QUEUE
-            QUEUE.enqueue(self, _review_queue_key(self, review_profile_key), kwargs)
+            QUEUE.enqueue(
+                self,
+                _review_queue_key(self, review_profile_key, review_session_id),
+                kwargs,
+            )
             return
         self._spawn_background_review_now(**kwargs)
 
@@ -856,6 +887,7 @@ class AIAgent(
                                      task_cfg: Optional[Dict[str, Any]] = None,
                                      _spawning_turn_token: Optional[int] = None,
                                      _review_profile_key: Optional[str] = None,
+                                     _review_session_id: Optional[str] = None,
                                      _requeue_attempts: int = 0, _idle_queue_origin: bool = False,
                                      explicit: bool = False) -> None:
         """Spawn the background memory/skill review thread.
@@ -872,6 +904,14 @@ class AIAgent(
         from tools.thread_context import propagate_context_to_thread
 
         automatic = focus is None and not explicit
+        if _review_session_id is None:
+            _review_session_id = str(getattr(self, "session_id", None) or "")
+        if (
+            _idle_queue_origin
+            and str(getattr(self, "session_id", None) or "") != _review_session_id
+        ):
+            logger.info("Deferred background review dropped: stale_review_owner")
+            return
         admission_gate = admission_lock = foreground_admission_lock = None
         if automatic:
             from agent import review_admission
@@ -879,7 +919,7 @@ class AIAgent(
             if _review_profile_key is None:
                 _review_profile_key = review_admission.current_profile_key()
             admission_gate = lambda: review_admission.foreground_block_reason(
-                self, _spawning_turn_token, _review_profile_key
+                self, _spawning_turn_token, _review_profile_key, _review_session_id
             )
             admission_lock = getattr(self, "followup_pending_lock", None)
             foreground_admission_lock = review_admission.admission_lock()
@@ -890,8 +930,23 @@ class AIAgent(
             admission_lock=admission_lock,
             foreground_admission_lock=foreground_admission_lock,
             followup_cancellable=automatic,
+            session_id=_review_session_id,
+            profile_key=_review_profile_key,
         )
         if review_run is None:
+            self._requeue_deferred_review(dict(
+                messages_snapshot=messages_snapshot,
+                review_memory=review_memory,
+                review_skills=review_skills,
+                focus=focus,
+                task_cfg=task_cfg,
+                _spawning_turn_token=_spawning_turn_token,
+                _review_profile_key=_review_profile_key,
+                _review_session_id=_review_session_id,
+                _requeue_attempts=_requeue_attempts + 1,
+                _idle_queue_origin=_idle_queue_origin,
+                explicit=explicit,
+            ))
             return
         try:
             # Close the check-before-prepare race. Once the run token is installed, a new
@@ -899,7 +954,10 @@ class AIAgent(
             # between the early admission gate and ``prepare_background_review_run``.
             if automatic:
                 if blocked := review_admission.foreground_block_reason(
-                    self, _spawning_turn_token, _review_profile_key
+                    self,
+                    _spawning_turn_token,
+                    _review_profile_key,
+                    _review_session_id,
                 ):
                     logger.info(
                         "Background review skipped after prepare (session=%s): %s",
@@ -911,6 +969,7 @@ class AIAgent(
                         review_skills=review_skills, focus=focus, task_cfg=task_cfg,
                         _spawning_turn_token=_spawning_turn_token,
                         _review_profile_key=_review_profile_key,
+                        _review_session_id=_review_session_id,
                         _requeue_attempts=_requeue_attempts + 1,
                         _idle_queue_origin=_idle_queue_origin, explicit=explicit,
                     ))
@@ -919,6 +978,7 @@ class AIAgent(
             target, _prompt = spawn_background_review_thread(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                 focus=focus, task_cfg=task_cfg, review_run=review_run, explicit=explicit,
+                review_session_id=_review_session_id,
             )
 
             def _target_with_requeue() -> None:
@@ -927,6 +987,7 @@ class AIAgent(
                     messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                     focus=focus, task_cfg=task_cfg, _spawning_turn_token=_spawning_turn_token,
                     _review_profile_key=_review_profile_key,
+                    _review_session_id=_review_session_id,
                     _requeue_attempts=_requeue_attempts + 1,
                     _idle_queue_origin=_idle_queue_origin, explicit=explicit))
 
@@ -958,7 +1019,11 @@ class AIAgent(
 
             QUEUE.enqueue(
                 self,
-                _review_queue_key(self, kwargs.get("_review_profile_key")),
+                _review_queue_key(
+                    self,
+                    kwargs.get("_review_profile_key"),
+                    kwargs.get("_review_session_id"),
+                ),
                 dict(kwargs),
                 replace_existing=False,
             )

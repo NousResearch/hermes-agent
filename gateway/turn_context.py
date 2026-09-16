@@ -48,6 +48,7 @@ class TurnContext:
     session_id: Optional[str] = None
     session_key: Optional[str] = None
     run_generation: Optional[int] = None
+    gateway_review_admission: Any = None
     process_task_id: str = ""
     process_baseline: frozenset[str] = field(default_factory=frozenset)
     _interrupt_depth: int = 0

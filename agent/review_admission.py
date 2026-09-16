@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 REASON_LIVE_TURN = "live_turn_active"
 REASON_QUEUED_FOLLOWUP = "queued_followup_pending"
 REASON_OVERSIZED = "oversized_snapshot"
+REASON_ADMISSION_FAILURE = "admission_probe_failed"
+REASON_DURABLE_BUSY = "durable_foreground_active"
+REASON_DURABLE_FAILURE = "durable_admission_failed"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.
@@ -42,9 +45,10 @@ MAX_REPLAY_TOKENS_DEFAULT = 120_000
 
 _lock = threading.RLock()
 _live_turns: Dict[Tuple[str, str], Set[int]] = {}
+_review_runs: Dict[Tuple[str, str], Any] = {}
 # token -> the key it was registered under, so a release is exact whatever profile the releasing
 # thread is acting for by then.
-_turn_keys: Dict[int, Tuple[str, str]] = {}
+_turn_keys: Dict[int, Set[Tuple[str, str]]] = {}
 _tokens = itertools.count(1)
 
 
@@ -78,14 +82,61 @@ def _admission_key(session_id: Any, profile_key: Optional[str]) -> Tuple[str, st
     return profile, str(session_id or "")
 
 
+def publish_review_run(
+    run: Any, session_id: str, profile_key: Optional[str] = None
+) -> bool:
+    """Publish one prepared review under its canonical owner, without replacing a live run."""
+    key = _admission_key(session_id, profile_key)
+    with _lock:
+        current = _review_runs.get(key)
+        if current is not None and not current.request_done.is_set():
+            return False
+        _review_runs[key] = run
+        run._review_owner_key = key
+    return True
+
+
+def remove_review_run(run: Any) -> None:
+    """Remove ``run`` only if it still owns its key (ABA-safe)."""
+    key = getattr(run, "_review_owner_key", None)
+    if key is None:
+        return
+    with _lock:
+        if _review_runs.get(key) is run:
+            _review_runs.pop(key, None)
+
+
+def current_review_run(
+    session_id: str, profile_key: Optional[str] = None
+) -> Any:
+    """Return the current canonical review owner without creating registry state."""
+    key = _admission_key(session_id, profile_key)
+    with _lock:
+        return _review_runs.get(key)
+
+
 def note_turn_started(session_id: str, profile_key: Optional[str] = None) -> int:
     """Register a live turn on ``session_id``; the token identifies it to the review gate."""
     key = _admission_key(session_id, profile_key)
     with _lock:
         token = next(_tokens)
         _live_turns.setdefault(key, set()).add(token)
-        _turn_keys[token] = key
+        _turn_keys[token] = {key}
     return token
+
+
+def alias_turn_session(
+    token: int, session_id: str, profile_key: Optional[str] = None
+) -> bool:
+    """Add a session alias to one live token without opening a stale-owner gap."""
+    key = _admission_key(session_id, profile_key)
+    with _lock:
+        keys = _turn_keys.get(token)
+        if keys is None:
+            return False
+        keys.add(key)
+        _live_turns.setdefault(key, set()).add(token)
+        return True
 
 
 def note_turn_finished(
@@ -98,13 +149,14 @@ def note_turn_finished(
     """
     fallback = _admission_key(session_id, profile_key)
     with _lock:
-        key = _turn_keys.pop(token, None) or fallback
-        live = _live_turns.get(key)
-        if live is None:
-            return
-        live.discard(token)
-        if not live:
-            _live_turns.pop(key, None)
+        keys = _turn_keys.pop(token, None) or {fallback}
+        for key in keys:
+            live = _live_turns.get(key)
+            if live is None:
+                continue
+            live.discard(token)
+            if not live:
+                _live_turns.pop(key, None)
 
 
 def other_live_turn(
@@ -123,28 +175,33 @@ def other_live_turn(
         return bool(live - {token}) if token is not None else True
 
 
+def _followup_block_reason(agent: Any) -> Optional[str]:
+    """Return a body-free follow-up reason, failing safe when the host probe is unhealthy."""
+    probe = getattr(agent, "followup_pending_callback", None)
+    if not callable(probe):
+        return None
+    try:
+        return REASON_QUEUED_FOLLOWUP if probe() else None
+    except Exception:  # noqa: BLE001 — unknown foreground state must block lower-priority work
+        logger.warning("Automatic review blocked: %s", REASON_ADMISSION_FAILURE)
+        return REASON_ADMISSION_FAILURE
+
+
 def followup_pending(agent: Any) -> bool:
     """Has the host queued a follow-up that will become the next live turn for this session?
 
     ``followup_pending_callback`` is installed per turn by the gateway (the only host with a busy
-    queue). A probe that raises reads False: an unknown foreground state must not starve learning
-    forever, and the turn-token gate still covers the follow-up once it actually starts.
+    queue). A probe that raises reads pending: unknown foreground state cannot authorize
+    lower-priority provider work.
     """
-    probe = getattr(agent, "followup_pending_callback", None)
-    if not callable(probe):
-        return False
-    try:
-        return bool(probe())
-    except Exception:  # noqa: BLE001 — a broken host probe must not break the review path
-        logger.debug(
-            "followup_pending_callback raised; treating the session as free",
-            exc_info=True,
-        )
-        return False
+    return _followup_block_reason(agent) is not None
 
 
 def foreground_block_reason(
-    agent: Any, turn_token: Optional[int] = None, profile_key: Optional[str] = None
+    agent: Any,
+    turn_token: Optional[int] = None,
+    profile_key: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Optional[str]:
     """Reason the foreground owns this session right now, or None when a review may run.
 
@@ -153,16 +210,16 @@ def foreground_block_reason(
     outside the gateway's per-turn profile scope, so "current" is not their answer.
     """
     if other_live_turn(
-        getattr(agent, "session_id", None) or "", turn_token, profile_key
+        session_id if session_id is not None else getattr(agent, "session_id", None) or "",
+        turn_token,
+        profile_key,
     ):
         return REASON_LIVE_TURN
-    if followup_pending(agent):
-        return REASON_QUEUED_FOLLOWUP
-    return None
+    return _followup_block_reason(agent)
 
 
-def replay_token_budget(task_cfg: Optional[Dict[str, Any]]) -> Optional[int]:
-    """``auxiliary.background_review.max_replay_tokens`` (``None`` means unlimited)."""
+def replay_token_budget(task_cfg: Optional[Dict[str, Any]]) -> int:
+    """Resolve the operator setting without permitting automatic replay to become unbounded."""
     config = task_cfg or {}
     if "max_replay_tokens" not in config:
         return MAX_REPLAY_TOKENS_DEFAULT
@@ -184,7 +241,9 @@ def replay_token_budget(task_cfg: Optional[Dict[str, Any]]) -> Optional[int]:
             MAX_REPLAY_TOKENS_DEFAULT,
         )
         return MAX_REPLAY_TOKENS_DEFAULT
-    return budget if budget > 0 else None
+    if budget <= 0:
+        return MAX_REPLAY_TOKENS_DEFAULT
+    return min(budget, MAX_REPLAY_TOKENS_DEFAULT)
 
 
 def _is_complete_user_anchor(message: Any) -> bool:
@@ -244,3 +303,9 @@ def bounded_replay_history(
 def session_tag(session_id: Any) -> str:
     """Return a deterministic, non-disclosing session label for logs."""
     return hashlib.sha256(str(session_id).encode()).hexdigest()[:8]
+
+
+def owner_tag(profile_key: Any, session_id: Any) -> str:
+    """Hash the complete canonical review owner without disclosing either component."""
+    identity = f"{profile_key}\0{session_id}"
+    return hashlib.sha256(identity.encode()).hexdigest()[:12]

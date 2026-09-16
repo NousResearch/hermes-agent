@@ -293,6 +293,9 @@ def admit_durable_turn_lease(
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
+                from agent.background_review import rebind_foreground_review_ownership
+
+                rebind_foreground_review_ownership(agent, latest_session_id)
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id
             reloaded = db.get_messages_as_conversation(

@@ -145,27 +145,37 @@ def _run_with_responses(agent, responses):
 
 
 def test_review_input_budget_stops_tool_loop_before_next_provider_call():
-    """Once a fork's cumulative input crosses its budget, no further provider
-    call is made — the crossing request completes, then the loop stops."""
+    """The projected next request stops the loop before aggregate input can cross."""
     agent = _make_loop_agent()
     agent._review_input_token_budget = 100_000
 
     responses = [
         _tool_response(50_000),
-        _tool_response(50_000),  # cumulative 100_000 -> budget crossed
-        _tool_response(50_000),  # must never be consumed
+        _tool_response(50_000),
+        _tool_response(50_000),  # projected aggregate would cross the ceiling
+        _tool_response(50_000),
         _final_response(),
     ]
     result = _run_with_responses(agent, responses)
 
     create = agent.client.chat.completions.create
-    assert create.call_count == 2, (
-        f"expected the loop to stop after crossing the input budget, "
+    assert create.call_count == 1, (
+        f"expected the loop to stop before crossing the input budget, "
         f"but {create.call_count} provider calls were made (budget "
         f"{agent._review_input_token_budget}, "
         f"used {agent.session_input_tokens})"
     )
-    assert agent.session_input_tokens == 100_000
+    assert agent.session_input_tokens == 50_000
+    assert result["completed"] is False
+
+
+def test_review_input_budget_preflight_blocks_request_that_would_cross_ceiling():
+    agent = _make_loop_agent()
+    agent._review_input_token_budget = 1
+
+    result = _run_with_responses(agent, [_final_response()])
+
+    assert agent.client.chat.completions.create.call_count == 0
     assert result["completed"] is False
 
 
@@ -221,17 +231,46 @@ def test_review_input_budget_exhausted_predicate_edge_cases():
     assert _review_input_budget_exhausted(agent) is True
 
 
+def test_review_input_budget_counts_cached_provider_input():
+    from agent.conversation_loop import _review_input_budget_exhausted
+
+    agent = SimpleNamespace(
+        _review_input_token_budget=100,
+        session_input_tokens=0,
+        session_prompt_tokens=100,
+    )
+
+    assert _review_input_budget_exhausted(agent) is True
+
+
+@pytest.mark.parametrize("raw", [0, -5, 600_001])
+def test_operator_cannot_disable_or_raise_automatic_review_input_bound(raw):
+    """A disable (<= 0) or an over-ceiling value never makes an automatic review unbounded: with a
+    window large enough for the derived default to reach the ceiling, every such value is 600k."""
+    from agent.background_review import _review_input_token_budget
+
+    fork = SimpleNamespace(context_compressor=SimpleNamespace(context_length=2_000_000))
+    budget = _review_input_token_budget({"max_input_tokens": raw}, fork)
+    assert budget is not None
+    assert budget == 600_000
+
+
 @pytest.mark.parametrize(
     ("config_value", "expected"),
     [
-        ({"max_input_tokens": 1_000_000}, 1_000_000),
-        ({"max_input_tokens": 0}, None),
-        ({"max_input_tokens": -5}, None),
+        ({"max_input_tokens": 1_000_000}, 600_000),
+        ({"max_input_tokens": 600_001}, 600_000),
+        ({"max_input_tokens": 0}, 120_000),
+        ({"max_input_tokens": -5}, 120_000),
+        ({"max_input_tokens": "not-a-number"}, 120_000),
+        ({"max_input_tokens": True}, 120_000),
+        ({}, 120_000),
         ({"max_input_tokens": "300000"}, 300_000),
     ],
 )
 def test_review_input_token_budget_resolution(config_value, expected):
-    """Explicit settings retain their established override and unlimited semantics."""
+    """Explicit values keep their override up to the 600k ceiling; unset, disable, boolean and
+    garbage fall back to the derived default (120k with no resolvable window) — never unlimited."""
     from agent.background_review import _review_input_token_budget
 
     assert _review_input_token_budget(config_value) == expected

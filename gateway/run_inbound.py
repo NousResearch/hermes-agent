@@ -1268,12 +1268,11 @@ class GatewayInboundMixin:
             _orphan_adapter = self._delivery_adapter_for(source)
             if _orphan_adapter is None or getattr(event, "internal", False) or event.get_command():
                 return event, source, is_internal
-            _rescued = self._rescue_orphaned_overflow(_quick_key, _orphan_adapter)
+            _rescued = self._rescue_orphaned_overflow(
+                _quick_key, _orphan_adapter, incoming_event=event
+            )
             if _rescued is None:
                 return event, source, is_internal
-            # Into the slot when the chain was a single orphan (post-turn drain picks it up),
-            # otherwise into overflow behind the already-staged next orphan.
-            self._enqueue_fifo(_quick_key, event, _orphan_adapter)
             # Same session key by construction; carry the orphan's own source so reply anchors /
             # thread metadata point at the message actually being answered.
             _rescued_source = getattr(_rescued, "source", None)

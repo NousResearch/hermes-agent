@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import faulthandler
+import inspect
 import logging
 import os
 import signal
@@ -1790,19 +1791,42 @@ class GatewayStartupMixin:
             "(home=%s, thread=%s, session_key=%s)",
             cli_session_id, dest.platform_name, dest.home.chat_id, dest.effective_thread_id, session_key,
         )
-        # Inline _handle_message keeps success/failure observable (handle_message would detach it).
-        response_text = await self._handle_message(synthetic_event)
-        if not response_text:
-            # Streaming may have delivered inline; the agent ran without raising — success.
-            return
-        # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
-        # logical platform is stamped on the outbound frame.
-        send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
+        delivery_succeeded = False
         try:
-            result = await dest.transport.send(
-                dest.platform, str(dest.home.chat_id), response_text, send_metadata,
+            # Inline _handle_message keeps success/failure observable (handle_message would detach it).
+            response_text = await self._handle_message(synthetic_event)
+            if not response_text:
+                # Streaming may have delivered inline; the agent ran without raising — success.
+                delivery_succeeded = True
+                return
+            # Reply into the new thread (else the home channel) via the resolved transport, so a
+            # relay-fronted logical platform is stamped on the outbound frame.
+            send_metadata = (
+                {"thread_id": dest.effective_thread_id}
+                if dest.effective_thread_id
+                else None
             )
-        except Exception as exc:
-            raise RuntimeError(f"adapter.send failed: {exc}") from exc
-        if not getattr(result, "success", True):
-            raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+            try:
+                result = await dest.transport.send(
+                    dest.platform, str(dest.home.chat_id), response_text, send_metadata,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"adapter.send failed: {exc}") from exc
+            if not getattr(result, "success", True):
+                raise RuntimeError(f"adapter.send failed: {_send_error(result)}")
+            delivery_succeeded = True
+        finally:
+            review_delivery_complete = getattr(
+                synthetic_event, "_gateway_review_delivery_complete", None
+            )
+            if callable(review_delivery_complete):
+                with suppress(Exception):
+                    delattr(synthetic_event, "_gateway_review_delivery_complete")
+                try:
+                    callback_result = review_delivery_complete(
+                        delivery_succeeded=delivery_succeeded
+                    )
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+                except Exception:
+                    logger.exception("Handoff review-delivery completion failed")

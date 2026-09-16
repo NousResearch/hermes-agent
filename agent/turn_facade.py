@@ -90,7 +90,12 @@ class TurnFacadeMixin:
                 turn_token = review_admission.note_turn_started(
                     session_id, review_profile_key
                 )
-                review_run = cancel_background_review_for_live_turn(self, wait=False)
+                review_run = cancel_background_review_for_live_turn(
+                    self,
+                    wait=False,
+                    session_id=session_id,
+                    profile_key=review_profile_key,
+                )
             self._active_turn_token = turn_token
             self._active_turn_profile_key = review_profile_key
             _review_queue.note_turn_started()
@@ -242,6 +247,16 @@ class TurnFacadeMixin:
                         # Balance note_turn_started so the idle queue's live-turn count cannot leak.
                         with suppress(Exception):
                             _review_queue.note_turn_finished()
+                    post_turn_review = getattr(
+                        self, "_post_turn_background_review_candidate", None
+                    )
+                    if isinstance(post_turn_review, dict):
+                        with suppress(AttributeError):
+                            del self._post_turn_background_review_candidate
+                        # The finalizer staged this while the foreground still owned the durable
+                        # session row. Start it only after every foreground owner above is released.
+                        with suppress(Exception):
+                            self._spawn_background_review(**post_turn_review)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

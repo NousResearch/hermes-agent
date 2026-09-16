@@ -123,6 +123,166 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
     assert any(kind == "lifecycle" and text for kind, text in status_events)
 
 
+def test_post_turn_review_starts_only_after_durable_lease_release(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    launches = []
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        assert _agent._active_session_turn_lease_holder is not None
+        _agent._post_turn_background_review_candidate = {
+            "messages_snapshot": [{"role": "assistant", "content": "done"}],
+            "review_memory": True,
+            "review_skills": False,
+            "_review_session_id": _agent.session_id,
+        }
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    def launch_review(**kwargs):
+        launches.append(
+            (
+                kwargs,
+                [event[0] for event in db.events],
+                agent._active_session_turn_lease_holder,
+            )
+        )
+
+    agent._spawn_background_review = launch_review
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+
+    AIAgent.run_conversation(agent, "new message", conversation_history=[])
+
+    assert launches == [
+        (
+            {
+                "messages_snapshot": [
+                    {"role": "assistant", "content": "done"}
+                ],
+                "review_memory": True,
+                "review_skills": False,
+                "_review_session_id": "stale-parent",
+            },
+            ["acquire", "release"],
+            None,
+        )
+    ]
+    assert not hasattr(agent, "_post_turn_background_review_candidate")
+
+
+def test_durable_resume_rebinds_foreground_review_admission(monkeypatch):
+    from agent import review_admission
+
+    db = _DB()
+    agent = _agent_with_db(db)
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        return True
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        assert review_admission.other_live_turn(
+            "compressed-tip", None, _agent._active_turn_profile_key
+        )
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+
+    AIAgent.run_conversation(agent, "new message", conversation_history=[])
+
+    assert review_admission.other_live_turn("compressed-tip", None) is False
+
+
+def test_durable_resume_waits_for_the_rotated_sessions_review_before_the_loop(monkeypatch):
+    """Resuming onto a rotated tip fences THAT session's admitted review and does not enter the
+    conversation loop until the fork publishes its exit."""
+    from agent import background_review, review_admission
+
+    db = _DB()
+    agent = _agent_with_db(db)
+    other = SimpleNamespace(
+        session_id="compressed-tip",
+        _background_review_agent=None,
+        _background_review_run=None,
+        _background_review_lock=threading.Lock(),
+    )
+    run = background_review.prepare_background_review_run(
+        other,
+        session_id="compressed-tip",
+        profile_key=review_admission.current_profile_key(),
+    )
+    assert run is not None
+    assert run.begin_request(object()) is True
+
+    entered_wait = threading.Event()
+    release = threading.Event()
+    loop_entered = threading.Event()
+    observed_timeouts = []
+
+    class ControlledCompletion:
+        def __init__(self):
+            self.set_calls = 0
+
+        def wait(self, timeout=None):
+            observed_timeouts.append(timeout)
+            entered_wait.set()
+            assert release.wait(timeout=10.0)
+            return True
+
+        def set(self):
+            self.set_calls += 1
+
+        def is_set(self):
+            return self.set_calls > 0
+
+    run.request_done = ControlledCompletion()
+    monkeypatch.setattr(
+        background_review, "_interrupt_background_review", lambda _fork: None
+    )
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        loop_entered.set()
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+
+    outcome = {}
+
+    def foreground():
+        try:
+            outcome["result"] = AIAgent.run_conversation(
+                agent, "new message", conversation_history=[]
+            )
+        except BaseException as exc:  # noqa: BLE001 — surfaced by the assertions below
+            outcome["error"] = exc
+
+    turn = threading.Thread(target=foreground, daemon=True)
+    turn.start()
+    try:
+        assert entered_wait.wait(2.0)
+        assert run.cancel_requested.is_set()
+        assert loop_entered.is_set() is False
+    finally:
+        release.set()
+        turn.join(timeout=10.0)
+        background_review.finish_background_review_run(other, run)
+
+    assert not turn.is_alive()
+    assert "error" not in outcome, outcome.get("error")
+    assert observed_timeouts == [None]
+    assert loop_entered.is_set()
+    assert agent.session_id == "compressed-tip"
+    assert review_admission.other_live_turn("compressed-tip", None) is False
+
+
 def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     """A locked / non-WAL get_session must not skip the durable lease."""
     db = _DB()

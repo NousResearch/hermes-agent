@@ -68,10 +68,13 @@ class _PendingReview:
     context: contextvars.Context
 
 
-def _session_log_tag(session_key: Hashable) -> str:
-    """Body-free trailing session label for either legacy or profile-scoped queue keys."""
-    raw = session_key[-1] if isinstance(session_key, tuple) and session_key else session_key
-    return str(raw)[-12:]
+def _owner_log_tag(session_key: Hashable) -> str:
+    """Deterministic redacted label for a profile/session queue owner."""
+    from agent.review_admission import owner_tag
+
+    if isinstance(session_key, tuple) and len(session_key) >= 2:
+        return owner_tag(session_key[0], session_key[1])
+    return owner_tag("", session_key)
 
 
 class ReviewIdleQueue:
@@ -123,8 +126,8 @@ class ReviewIdleQueue:
         self._ensure_thread()
         self._wake.set()
         logger.info(
-            "Background review deferred (session=%s, queued=%d)",
-            _session_log_tag(session_key), len(self._pending),
+            "Background review deferred (owner=%s, reason=managed_local_deferred, queued=%d)",
+            _owner_log_tag(session_key), len(self._pending),
         )
 
     def pending_count(self) -> int:
@@ -181,19 +184,23 @@ class ReviewIdleQueue:
 
     def _dispatch_item(self, item: _PendingReview) -> None:
         """Dispatch one popped item; separated so aged/preempted interleavings are deterministic."""
+        item.context.run(self._dispatch_item_in_context, item)
+
+    def _dispatch_item_in_context(self, item: _PendingReview) -> None:
+        """Re-check policy and spawn inside the profile Context captured at enqueue time."""
         if not self._still_enabled(item):
             logger.info(
                 "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
-                _session_log_tag(item.session_key),
+                _owner_log_tag(item.session_key),
             )
             return
         logger.info(
             "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
-            _session_log_tag(item.session_key), self._now() - item.enqueued_at, self.pending_count(),
+            _owner_log_tag(item.session_key), self._now() - item.enqueued_at, self.pending_count(),
         )
         dispatch_kwargs = dict(item.kwargs)
         dispatch_kwargs["_idle_queue_origin"] = True
-        item.context.run(item.agent._spawn_background_review_now, **dispatch_kwargs)
+        item.agent._spawn_background_review_now(**dispatch_kwargs)
 
     @staticmethod
     def _still_enabled(item: _PendingReview) -> bool:

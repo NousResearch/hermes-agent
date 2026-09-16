@@ -14,8 +14,10 @@ orphan for the caller to run as the current turn and stages the next
 orphan in the slot, so FIFO order (#28503) holds and nothing runs twice.
 """
 
+import threading
 from unittest.mock import MagicMock
 
+from agent.background_review import _BackgroundReviewRun
 from gateway.platforms.base import (
     BasePlatformAdapter,
     Platform,
@@ -59,7 +61,73 @@ def _runner() -> GatewayRunner:
     return runner
 
 
+class _PausingRLock:
+    """Expose the first outer unlock as a deterministic admission boundary."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._armed = True
+        self.gap_open = threading.Event()
+        self.resume_owner = threading.Event()
+
+    def __enter__(self):
+        self._lock.acquire()
+        self._depth += 1
+        return self
+
+    def __exit__(self, *_args):
+        self._depth -= 1
+        pause = self._depth == 0 and self._armed
+        if pause:
+            self._armed = False
+        self._lock.release()
+        if pause:
+            self.gap_open.set()
+            assert self.resume_owner.wait(timeout=1.0)
+
+
 class TestRescueOrphanedOverflow:
+    def test_lone_orphan_and_incoming_are_one_admission_transaction(self):
+        runner = _runner()
+        adapter = _StubAdapter()
+        session_key = "telegram:user:atomic"
+        orphan = _text_event("orphan-1", "o1")
+        incoming = _text_event("new-msg", "new1")
+        runner._adapter_for_source = lambda _source: adapter
+        runner._session_state(session_key).conversation.queued_events.append(orphan)
+        admission = adapter.followup_admission_state(session_key)
+        admission.lock = lock = _PausingRLock()
+        review_run = _BackgroundReviewRun(
+            admission_lock=lock,
+            admission_gate=lambda: (
+                "followup_pending"
+                if adapter.has_pending_message(session_key)
+                or runner._overflow_queue(session_key)
+                else None
+            ),
+        )
+        result = []
+
+        worker = threading.Thread(
+            target=lambda: result.append(
+                runner._hm_rescue_orphaned_fifo(
+                    incoming, incoming.source, False, session_key
+                )
+            )
+        )
+        worker.start()
+        assert lock.gap_open.wait(timeout=1.0)
+        admitted = review_run.begin_request(object())
+        lock.resume_owner.set()
+        worker.join(timeout=1.0)
+
+        assert worker.is_alive() is False
+        assert admitted is False
+        assert result[0][0] is orphan
+        assert adapter._pending_messages[session_key] is incoming
+        assert runner._overflow_queue(session_key) == []
+
     def test_single_orphan_is_returned_and_removed_from_both_stores(self):
         runner = _runner()
         adapter = _StubAdapter()

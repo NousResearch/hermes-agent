@@ -407,6 +407,13 @@ def _run_reference(
         runtime, managed_resolution = _slot_runtime_managed(slot, execution_id=execution_id, slot_id=slot_id)
     except Exception as exc:
         logger.warning("MoA reference model %s routing failed: %s", label, exc)
+        from agent.moa_model_routing import MoARequiredSlotDenied, is_moa_slot_required
+
+        if is_moa_slot_required(slot):
+            # Design §6 "MoA": a required reference's failure means "gate incomplete, not
+            # silent success via aggregator-only fallback" -- the caller must propagate this,
+            # never swallow it into the ordinary [failed: ...] degraded-advisor note.
+            raise MoARequiredSlotDenied(slot_id, slot.get("routing_role", ""), "route_denied", str(exc)) from exc
         note = f"[failed: {exc}]"
         return label, note, _RefAccounting(CanonicalUsage(), messages=[], output=note, model=slot.get("model"), provider=slot.get("provider"), temperature=temperature)
     # A managed slot's receipted reasoning is a real ``reasoning_effort`` string, not a
@@ -455,6 +462,14 @@ def _run_reference(
         return label, output_text, acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
+        from agent.moa_model_routing import MoARequiredSlotDenied, is_moa_slot_required
+
+        if is_moa_slot_required(slot):
+            # Same fail-closed contract as the routing-resolution except above: a required
+            # managed slot's call-boundary denial (enforce_moa_slot_route) or transport failure
+            # must hard-fail the attempt, not degrade into a [failed: ...] advisor note that lets
+            # aggregation quietly proceed as if the gate were satisfied.
+            raise MoARequiredSlotDenied(slot_id, slot.get("routing_role", ""), "call_failed", str(exc)) from exc
         note = f"[failed: {exc}]"
         return label, note, _RefAccounting(CanonicalUsage(), messages=messages, output=note, **trace_fields)
 
@@ -889,10 +904,18 @@ def aggregate_moa_context(
     )
 
     agg_label = _slot_label(aggregator)
+    from agent.moa_model_routing import MoARequiredSlotDenied, is_moa_slot_required
+
+    agg_required = is_moa_slot_required(aggregator)
     try:
         agg_runtime, agg_managed_resolution = _slot_runtime_managed(aggregator, execution_id="moa-oneshot", slot_id="aggregator")
     except Exception as exc:
         logger.warning("MoA aggregator model %s routing failed: %s", agg_label, exc)
+        if agg_required:
+            # A required aggregator is the whole point of the review gate; an aggregator
+            # routing failure here must NOT silently degrade to "proceeding without aggregated
+            # guidance" (that is empty/unmanaged synthesis wearing a friendly banner).
+            raise MoARequiredSlotDenied("aggregator", aggregator.get("routing_role", ""), "route_denied", str(exc)) from exc
         return (
             "[Mixture of Agents context — aggregator routing failed. "
             "Proceeding without aggregated guidance.]\n"
@@ -924,6 +947,11 @@ def aggregate_moa_context(
         ))
     except Exception as exc:
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
+        if agg_required:
+            # The enforce_moa_slot_route call-boundary denial (or any transport failure) for a
+            # required aggregator lands here too; must hard-fail rather than fall through to
+            # "synthesis = ''" which the return below would present as a normal (empty) result.
+            raise MoARequiredSlotDenied("aggregator", aggregator.get("routing_role", ""), "call_failed", str(exc)) from exc
         synthesis = ""
 
     return (

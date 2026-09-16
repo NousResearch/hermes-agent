@@ -144,6 +144,33 @@ def _slot_problem(slot: Any) -> str | None:
     return None
 
 
+def _clean_routing_role(slot: Any) -> dict[str, Any]:
+    """Guided-model-routing intake fields (plans/2026-09-15_141016-guided-model-routing.md §6
+    "MoA"), preserved through the public config round trip so ``agent.moa_model_routing`` sees
+    the same slot the operator configured -- NOT hand-built dicts. ``routing_role`` genuinely
+    opts a slot into managed routing; absent/blank means unmanaged (byte-for-byte untouched).
+    ``routing_requirements``/``routing_policy_id`` are validated by the SAME validator the MoA
+    adapter uses (``hermes_cli.kanban_model_routing.validate_routing_requirements``), so a
+    malformed intake is rejected here -- at the config write boundary -- rather than silently
+    dropped and reaching the runtime as an unmanaged slot with corrupted requirements.
+    """
+    role = slot.get("routing_role")
+    role = role.strip() if isinstance(role, str) and role.strip() else None
+    if role is None:
+        return {}
+    out: dict[str, Any] = {"routing_role": role}
+    raw_requirements = slot.get("routing_requirements")
+    if raw_requirements is not None:
+        from hermes_cli.kanban_model_routing import validate_routing_requirements
+
+        out["routing_requirements"] = validate_routing_requirements(raw_requirements)
+    policy_id = slot.get("routing_policy_id")
+    policy_id = policy_id.strip() if isinstance(policy_id, str) and policy_id.strip() else None
+    if policy_id:
+        out["routing_policy_id"] = policy_id
+    return out
+
+
 def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] | None:
     # Any slot ``_slot_problem`` rejects is dropped, falling back to the preset's defaults.
     if _slot_problem(slot) is not None:
@@ -152,6 +179,7 @@ def _clean_slot(slot: Any, *, include_enabled: bool = False) -> dict[str, Any] |
     effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
     if effort:
         clean["reasoning_effort"] = effort
+    clean.update(_clean_routing_role(slot))
 
     if include_enabled:
         clean["enabled"] = _coerce_bool(slot.get("enabled"), True)

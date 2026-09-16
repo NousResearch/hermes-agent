@@ -35,13 +35,53 @@ from typing import Any, Optional
 from agent.managed_route_runtime import enforce_worker_route, resolve_route
 from agent.model_selection_types import RoutingBlocked
 
-__all__ = ["resolve_moa_slot_route", "moa_runtime_overrides", "enforce_moa_slot_route", "MoARoutingBlocked"]
+__all__ = [
+    "resolve_moa_slot_route", "moa_runtime_overrides", "enforce_moa_slot_route",
+    "MoARoutingBlocked", "MoARequiredSlotDenied", "is_moa_slot_required",
+]
 
 DEFAULT_MOA_POLICY_ID = "kanban-default"
 
 
 class MoARoutingBlocked(RoutingBlocked):
     """Re-raised with the MoA call site's context; same reason codes as RoutingBlocked."""
+
+
+class MoARequiredSlotDenied(MoARoutingBlocked):
+    """A managed slot that is REQUIRED (the default whenever ``routing_role`` is set, per design
+    §6 "MoA": "Missing/partial required output fails that review attempt... No silent
+    optional-reference or aggregator-only mode") could not resolve a route or was denied at the
+    call-boundary guard. The caller (``agent.moa_loop``) MUST propagate this as a hard failure of
+    the whole MoA attempt -- never swallow it into a labelled ``[failed: ...]`` note that quietly
+    degrades into aggregator-only/empty synthesis, and never let it fall through to an unmanaged
+    continuation. A slot may opt out of this by setting
+    ``routing_requirements: {"required": false}`` explicitly (preserves allowed partial/quorum
+    behavior for genuinely optional managed slots)."""
+
+    def __init__(self, slot_id: str, role: str, reason: str, detail: str = ""):
+        self.slot_id = slot_id
+        self.role = role
+        super().__init__(reason, detail)
+
+
+def is_moa_slot_required(slot: dict) -> bool:
+    """A managed slot (``routing_role`` set) is required ONLY when it opts in explicitly via
+    ``routing_requirements: {"required": true}``. This is intentionally NOT the default for
+    every ``routing_role`` slot: the pre-existing contract (test_moa_guided_routing_live_http.py
+    ``test_managed_reference_slot_denied_route_reaches_zero_endpoints`` /
+    ``test_managed_aggregator_denied_route_never_reaches_endpoint``) is that a denied managed
+    slot degrades to the ordinary labelled ``[failed: ...]`` note / "proceeding without
+    aggregated guidance" text -- zero content reaches the endpoint, but the turn still
+    completes. Only a slot that explicitly asks to gate the whole attempt on its success uses
+    the hard fail-closed path implemented here.
+    """
+    if not isinstance(slot, dict):
+        return False
+    role = slot.get("routing_role")
+    if not (isinstance(role, str) and role.strip()):
+        return False
+    requirements = slot.get("routing_requirements")
+    return isinstance(requirements, dict) and requirements.get("required") is True
 
 
 def _slot_intake(slot: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:

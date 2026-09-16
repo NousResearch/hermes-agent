@@ -236,3 +236,70 @@ def test_unmanaged_slot_is_untouched_by_routing(routed_home, monkeypatch):
     assert len(handler.requests) == 1
     sent = json.dumps(handler.requests[0])
     assert "Plain unmanaged advisory call" in sent
+
+
+def test_required_reference_slot_denial_hard_fails_not_degraded_note(routed_home, monkeypatch):
+    """``routing_requirements: {"required": true}`` opts a slot INTO fail-closed propagation:
+    a denied route must raise ``MoARequiredSlotDenied`` (never degrade to a labelled
+    ``[failed: ...]`` note that the aggregator would silently synthesize over as if the gate
+    passed), and zero endpoints are reached."""
+    from agent.moa_loop import _run_reference
+    from agent.moa_model_routing import MoARequiredSlotDenied
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    # Deliberately do NOT publish/activate a policy -> denial.
+    _patch_custom_provider(monkeypatch, url)
+
+    slot = {
+        "provider": "custom", "model": "test-model", "routing_role": "moareference",
+        "routing_requirements": {"required": True},
+    }
+    with pytest.raises(MoARequiredSlotDenied):
+        _run_reference(
+            slot, [{"role": "user", "content": "This must never run."}],
+            execution_id="test-turn", slot_id="reference-0",
+        )
+    assert len(handler.requests) == 0, "a denied REQUIRED reference must never reach any endpoint"
+
+
+def test_required_aggregator_denial_hard_fails_no_synthesis(routed_home, monkeypatch):
+    """A required aggregator's denial must propagate as a hard failure of the whole MoA
+    attempt -- never a successful empty/degraded synthesis string."""
+    from agent.moa_loop import aggregate_moa_context
+    from agent.moa_model_routing import MoARequiredSlotDenied
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    # No active policy published.
+    _patch_custom_provider(monkeypatch, url)
+
+    with pytest.raises(MoARequiredSlotDenied):
+        aggregate_moa_context(
+            user_prompt="This must never run.",
+            api_messages=[{"role": "user", "content": "This must never run."}],
+            reference_models=[],
+            aggregator={
+                "provider": "custom", "model": "test-model", "routing_role": "moaaggregator",
+                "routing_requirements": {"required": True},
+            },
+        )
+    assert len(handler.requests) == 0, "a denied REQUIRED aggregator must never reach any endpoint"
+
+
+def test_optional_managed_slot_still_degrades_gracefully(routed_home, monkeypatch):
+    """Without an explicit ``required: true`` opt-in, a managed slot's denial keeps the
+    pre-existing partial/quorum degrade behavior (labelled note, turn completes)."""
+    from agent.moa_loop import _run_reference
+
+    hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _patch_custom_provider(monkeypatch, url)
+
+    slot = {
+        "provider": "custom", "model": "test-model", "routing_role": "moareference",
+        "routing_requirements": {"required": False},
+    }
+    label, text, acct = _run_reference(
+        slot, [{"role": "user", "content": "This must never run."}],
+        execution_id="test-turn", slot_id="reference-0",
+    )
+    assert text.startswith("[failed:"), text
+    assert len(handler.requests) == 0

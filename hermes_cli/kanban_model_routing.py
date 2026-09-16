@@ -127,6 +127,11 @@ def validate_routing_requirements(value: Optional[dict]) -> Optional[dict]:
         _fail("routing_requirements must be a JSON object")
     known_fields = {
         "task_class", "required_capabilities", "input_tokens", "reserve_tokens", "provenance",
+        # "required" (bool): whether a managed slot's failure/denial must hard-fail the whole
+        # attempt (the MoA adapter's default for any slot carrying routing_role) or may degrade
+        # to the existing partial/quorum behavior. Optional across every adapter; Kanban/
+        # delegation callers simply never set it.
+        "required",
     }
     unknown = set(value) - known_fields
     if unknown:
@@ -135,6 +140,10 @@ def validate_routing_requirements(value: Optional[dict]) -> Optional[dict]:
     task_class = value.get("task_class")
     if task_class is not None and task_class not in TASK_CLASSES:
         _fail(f"task_class must be one of {TASK_CLASSES} or omitted, got {task_class!r}")
+
+    required = value.get("required")
+    if required is not None and not isinstance(required, bool):
+        _fail("required must be a boolean")
 
     out: dict = {}
     if task_class is not None:
@@ -151,6 +160,8 @@ def validate_routing_requirements(value: Optional[dict]) -> Optional[dict]:
     provenance = _validate_provenance(value.get("provenance"))
     if provenance is not None:
         out["provenance"] = provenance
+    if required is not None:
+        out["required"] = required
     return out or None
 
 

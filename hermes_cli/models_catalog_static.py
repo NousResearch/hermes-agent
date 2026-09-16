@@ -394,6 +394,9 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "opencode": ("OpenCode",        "Zen pay-as-you-go, Go subscription, or free tier", ["opencode-zen", "opencode-go", "opencode-free"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
+    # Same split-vendor shape as MiniMax / Kimi / Qwen: one global API, one China
+    # API. Display-only -- both slugs stay individually addressable.
+    "siliconflow": ("SiliconFlow",  "Global API & mainland-China endpoints (硅基流动)", ["siliconflow", "siliconflow-cn"]),
 }
 
 # Reverse index: member slug -> group_id.

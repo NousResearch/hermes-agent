@@ -2428,6 +2428,13 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
+    if task.context_isolation == "task":
+        # The built-in memory toolset explicitly overrides --ignore-rules' normal
+        # skip_memory behavior. Filter it at the dispatcher boundary; keep a
+        # non-empty pin so memory-only/empty profiles cannot fall back to defaults.
+        worker_toolsets = [
+            toolset for toolset in (worker_toolsets or ()) if toolset != "memory"
+        ] or ["kanban"]
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])

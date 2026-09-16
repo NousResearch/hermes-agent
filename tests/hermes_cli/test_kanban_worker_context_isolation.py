@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +39,89 @@ def _worker_cli_args(monkeypatch, task, home):
     assert command[1:3] == ["-p", "kai"]
     parser, _subparsers, _chat_parser = build_top_level_parser()
     return command, parser.parse_args(command[3:])
+
+
+@pytest.mark.parametrize(
+    ("context_isolation", "profile_toolsets", "memory_loaded"),
+    [
+        ("none", ["file", "memory"], True),
+        ("task", ["file", "memory"], False),
+        ("task", ["memory"], False),
+        ("task", [], False),
+    ],
+)
+def test_worker_agent_init_excludes_private_memory_but_keeps_explicit_skill(
+    kanban_home,
+    monkeypatch,
+    context_isolation,
+    profile_toolsets,
+    memory_loaded,
+):
+    memory_sentinel = "PRIVATE_MEMORY_SENTINEL"
+    user_sentinel = "PRIVATE_USER_SENTINEL"
+    skill_sentinel = "EXPLICIT_TASK_SKILL_SENTINEL"
+    memories = kanban_home / "memories"
+    memories.mkdir(exist_ok=True)
+    (memories / "MEMORY.md").write_text(memory_sentinel, encoding="utf-8")
+    (memories / "USER.md").write_text(user_sentinel, encoding="utf-8")
+    skill = kanban_home / "skills" / "explicit-task-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: explicit-task-skill\ndescription: test skill\n---\n" + skill_sentinel,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(kanban_home.parent))
+    monkeypatch.setattr(
+        kbd, "_resolve_worker_cli_toolsets", lambda _home: list(profile_toolsets)
+    )
+    task = SimpleNamespace(
+        id="t_agent_init",
+        context_isolation=context_isolation,
+        skills=["explicit-task-skill"],
+        model_override=None,
+        provider_override=None,
+        reasoning_effort=None,
+        goal_mode=False,
+    )
+    _command, args = _worker_cli_args(monkeypatch, task, kanban_home)
+
+    import cli as cli_mod
+
+    worker_cli = cli_mod._build_cli_from_args(
+        args.model,
+        args.toolsets,
+        "custom",
+        getattr(args, "reasoning", None),
+        "offline-dummy",
+        "http://127.0.0.1:9/v1",
+        getattr(args, "max_turns", None),
+        getattr(args, "run_budget", None),
+        False,
+        True,
+        None,
+        getattr(args, "checkpoints", False),
+        getattr(args, "pass_session_id", False),
+        args.ignore_rules,
+        args.skills,
+    )
+    assert worker_cli._init_agent() is True
+    assert worker_cli.agent is not None
+    store = worker_cli.agent._memory_store
+    snapshot = store._system_prompt_snapshot if store else {"memory": "", "user": ""}
+    loaded_context = (worker_cli.system_prompt or "") + json.dumps(snapshot)
+
+    assert (memory_sentinel in loaded_context) is memory_loaded
+    assert (user_sentinel in loaded_context) is memory_loaded
+    assert (store is not None) is memory_loaded
+    assert skill_sentinel in (worker_cli.system_prompt or "")
+    if context_isolation == "task":
+        assert "memory" not in worker_cli.agent.enabled_toolsets
+        for toolset in set(profile_toolsets) - {"memory"}:
+            assert toolset in worker_cli.agent.enabled_toolsets
+        if not (set(profile_toolsets) - {"memory"}):
+            assert "kanban" in worker_cli.agent.enabled_toolsets
+    else:
+        assert worker_cli.agent.enabled_toolsets == profile_toolsets
 
 
 def test_task_isolation_preserves_explicit_context_and_gates_worker_argv(

@@ -1,6 +1,6 @@
 name: hermes-filebox
 repo: https://github.com/imzacksong/hermes-filebox
-sha: e9cd578ded0d0443463c7a28d08495d28e8a6838
+sha: bf9b599405eea91ec61ab30578b95d59bfdce627
 description: 'Explorer-style file browser for Hermes Desktop: tabbed panes, resizable quick-access
   sidebar, icon grid, search, and a preview pane with image/audio/video/PDF/text preview.
   Send to… shares files over the home LAN; optional one-click heads-up to a paired agent.

@@ -137,6 +137,21 @@ Policy changes to `allowed_users`, `allow_all_users`, `require_mention` and `thr
 
 The allow-list also gates **inbound attachments**: relay media is fetched with the agent's own Buzz credentials, so a download only happens for a sender the gateway explicitly authorizes. A denied, missing, or failed authorization leaves the message text untouched and makes no credentialed request.
 
+### Manage live policy in the Dashboard
+
+Open **Dashboard → Config**, select the Hermes profile you want to manage, and use the **Buzz-specific policy** section. It controls `allowed_users`, `allow_all_users`, `require_mention`, and `thread_require_mention` for that exact profile. Valid saves are canonicalized under `gateway.platforms.buzz.extra`; supported legacy policy aliases are removed without changing unrelated Buzz or Hermes settings. The panel warns when it can safely detect an additive global Gateway or pairing grant, but never reveals global allowlist values or pairing identities.
+
+Policy saves and removals take effect on the next inbound event. **No Gateway restart is required for these four policy fields.** Transport, relay, credential, channel-subscription, and binary-path changes are separate startup configuration and may still require restarting the Gateway.
+
+Policy precedence is:
+
+1. explicit environment policy (`BUZZ_*`, with managed environment values taking precedence over profile values);
+2. managed `config.yaml` overlay;
+3. the selected profile's `config.yaml`;
+4. restrictive defaults: no allowed users, allow-all off, and mentions required in channels and threads.
+
+The Dashboard shows environment-overridden field names but never their values, identities, or file paths. Overridden controls are intentionally blank or indeterminate, including under a managed lock; the active environment value and configured value underneath are not serialized. Managed policy makes the panel read-only; if the managed layer cannot be inspected safely, writes are refused rather than falling through to user configuration. Global Gateway and pairing grants remain additive to this Buzz-specific policy, and pairing identities are never exposed.
+
 Cron jobs and notifications (`deliver=buzz`) are delivered to the **home channel** — `BUZZ_HOME_CHANNEL` if set, otherwise the first watched channel — and work even when cron runs outside the gateway process.
 
 ## Inbound attachments

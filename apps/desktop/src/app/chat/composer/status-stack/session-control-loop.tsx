@@ -19,7 +19,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import {
   runSessionControlAction,
@@ -157,36 +156,34 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
             <StatusSection
               accessory={
                 <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.loopActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.loopActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
+                  <span className="inline-flex">
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        aria-haspopup="menu"
+                        aria-label={ctrl.loopActions}
+                        className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                        disabled={isBusy}
+                        onClick={event => {
+                          // Radix opens pointer interactions from pointerdown. Keyboard,
+                          // assistive-tech, and programmatic clicks have no pointer sequence.
+                          if (event.detail === 0) {
+                            setMenuOpen(true)
+                          }
+                        }}
+                        onKeyDown={e => {
+                          if (e.key === 'F10' && e.shiftKey) {
+                            e.preventDefault()
+                            setMenuOpen(true)
+                          }
+                        }}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="ellipsis" size="0.8rem" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </span>
                   <DropdownMenuContent align="end" className="w-40">
                     {renderMenuItems(false)}
                   </DropdownMenuContent>

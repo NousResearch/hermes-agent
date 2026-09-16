@@ -626,6 +626,44 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
         return True
 
 
+def release_profile_log_home(home: str | Path) -> int:
+    """Release this process's routed log handlers for *home* so it can be removed.
+
+    Used by ``delete_profile``; returns the number of per-home handlers closed.
+    Static, non-router handlers are out of scope because deleting the process's own
+    home is a separate lifecycle.
+    """
+    global _queue_listener
+    with _queue_state_lock:
+        try:
+            resolved = Path(home).expanduser().resolve()
+        except (TypeError, ValueError, OSError):
+            return 0
+
+        listener = _queue_listener
+        if listener is not None:
+            listener.stop()
+            _queue_listener = None
+
+        popped_handlers: list[_ManagedRotatingFileHandler] = []
+        try:
+            for handler in _queued_file_handlers:
+                if not isinstance(handler, _ProfileRoutingFileHandler):
+                    continue
+                with handler._profile_handlers_lock:
+                    handler._profile_homes.discard(resolved)
+                    popped = handler._profile_handlers.pop(resolved, None)
+                if popped is not None:
+                    popped_handlers.append(popped)
+            for handler in popped_handlers:
+                _quietly(handler.close)
+        finally:
+            if listener is not None:
+                _start_queue_listener_locked()
+
+        return len(popped_handlers)
+
+
 def _reset_queued_handlers() -> None:
     """Tear down the async logging queue + listener (test-isolation helper)."""
     global _log_queue

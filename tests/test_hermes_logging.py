@@ -2,6 +2,7 @@
 import io
 import logging
 import os
+import shutil
 import stat
 import sys
 import threading
@@ -141,6 +142,208 @@ class TestSetupLogging:
         assert "profile-routed cron record" not in (
             hermes_home / "logs" / "agent.log"
         ).read_text()
+
+    def test_release_profile_log_home_closes_routed_handler(
+        self, hermes_home, tmp_path
+    ):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_home = tmp_path / "profile-release"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        routers = [
+            handler
+            for handler in hermes_logging._queued_file_handlers
+            if isinstance(
+                handler, hermes_logging._ProfileRoutingFileHandler
+            )
+            and handler._filename == "agent.log"
+        ]
+        assert len(routers) == 1
+        router = routers[0]
+        logger = logging.getLogger("cron.scheduler.profile-release-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("record before profile release")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        resolved_home = profile_home.resolve()
+        routed_handler = router._profile_handlers[resolved_home]
+        # On win32 the concurrent handler drops ``stream`` after every write; what it
+        # keeps open (and what blocks rmtree there) is the ``stream_lock`` file.
+        if sys.platform == "win32":
+            assert routed_handler.stream_lock is not None
+        else:
+            assert routed_handler.stream is not None
+
+        assert hermes_logging.release_profile_log_home(profile_home) == 1
+        assert routed_handler.stream is None
+        if sys.platform == "win32":
+            assert routed_handler.stream_lock is None
+        assert routed_handler._closed is True
+        assert resolved_home not in router._profile_handlers
+        assert resolved_home not in router._profile_homes
+
+        shutil.rmtree(profile_home)
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("record after profile release")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert not (profile_home / "logs").exists()
+        default_log = (hermes_home / "logs" / "agent.log").read_text(
+            encoding="utf-8"
+        )
+        assert "record after profile release" in default_log
+
+    def test_release_profile_log_home_waits_for_in_flight_record(
+        self, hermes_home, tmp_path, monkeypatch
+    ):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_home = tmp_path / "profile-in-flight"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.profile-in-flight-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("warm routed handler")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        router = next(
+            handler
+            for handler in hermes_logging._queued_file_handlers
+            if isinstance(
+                handler, hermes_logging._ProfileRoutingFileHandler
+            )
+            and handler._filename == "agent.log"
+        )
+        routed_handler = router._profile_handlers[profile_home.resolve()]
+        original_handle = routed_handler.handle
+        delivery_started = threading.Event()
+        release_delivery = threading.Event()
+
+        def blocking_handle(record):
+            delivery_started.set()
+            release_delivery.wait(timeout=2)
+            return original_handle(record)
+
+        monkeypatch.setattr(routed_handler, "handle", blocking_handle)
+        results = []
+        errors = []
+
+        def release_home():
+            try:
+                results.append(
+                    hermes_logging.release_profile_log_home(profile_home)
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        helper = threading.Thread(
+            target=release_home,
+            name="release-profile-log-home-test",
+        )
+        helper_started = False
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("in-flight record before close")
+        finally:
+            reset_hermes_home_override(token)
+
+        try:
+            assert delivery_started.wait(timeout=2)
+            helper.start()
+            helper_started = True
+            helper.join(timeout=0.1)
+            assert helper.is_alive()
+        finally:
+            delivery_started.set()
+            release_delivery.set()
+            if helper_started:
+                helper.join(timeout=2)
+
+        assert not helper.is_alive()
+        assert errors == []
+        assert results == [1]
+        content = (profile_home / "logs" / "agent.log").read_text(
+            encoding="utf-8"
+        )
+        assert "in-flight record before close" in content
+
+    def test_release_profile_log_home_unknown_home_is_noop(
+        self, hermes_home, tmp_path
+    ):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        profile_home = tmp_path / "profile-known"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.profile-unknown-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("record before unknown release")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        routers = [
+            handler
+            for handler in hermes_logging._queued_file_handlers
+            if isinstance(
+                handler, hermes_logging._ProfileRoutingFileHandler
+            )
+        ]
+        state_before = [
+            (set(router._profile_homes), dict(router._profile_handlers))
+            for router in routers
+        ]
+
+        unknown_home = tmp_path / "profile-unknown"
+        assert hermes_logging.release_profile_log_home(unknown_home) == 0
+        for router, (homes, handlers) in zip(routers, state_before):
+            assert router._profile_homes == homes
+            assert router._profile_handlers == handlers
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("record after unknown release")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        content = (profile_home / "logs" / "agent.log").read_text(
+            encoding="utf-8"
+        )
+        assert "record after unknown release" in content
+        assert not unknown_home.exists()
 
     def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
         """A dashboard or serve backend builds agents for several profiles in ONE process, and each

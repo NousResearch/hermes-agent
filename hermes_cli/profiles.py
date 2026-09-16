@@ -1343,6 +1343,14 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _closed = _close_session_dbs_under(profile_dir)
         if _closed:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
+    # Same class of holder as the two above: the serve process routes this profile's log
+    # records through per-home rotating handlers (hermes_logging), and on Windows the
+    # concurrent handler keeps logs/.__agent.lock open, which fails rmtree with WinError 32.
+    with contextlib.suppress(Exception):
+        from hermes_logging import release_profile_log_home as _release_log_home
+        _released_logs = _release_log_home(profile_dir)
+        if _released_logs:
+            print(f"✓ Released {_released_logs} log handler(s) held by this process")
 
     # 3. Remove wrapper script
     if has_wrapper and remove_wrapper_script(canon):

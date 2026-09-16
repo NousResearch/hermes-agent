@@ -9,6 +9,7 @@ stripped PATH — gateway and service sessions don't inherit the interactive env
 from __future__ import annotations
 
 from contextlib import suppress
+from functools import lru_cache
 import logging
 import os
 import re
@@ -142,6 +143,7 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
+@lru_cache(maxsize=1)
 def _nvidia_driver_version() -> str | None:
     """First NVIDIA driver version, or None when the service cannot query it."""
     exe = _nvidia_smi_path()

@@ -33,8 +33,9 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Translations } from "@/i18n/types";
+import { asArray, asCount, asCountMap } from "@/lib/api-guards";
 import { formatSessionPruneResult } from "@/lib/session-prune";
+import { sourceLabel as sessionSourceLabel } from "@/lib/session-source-label";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
   importSummary,
@@ -127,51 +128,7 @@ function sourceBelongsToCategory(
   return !isAutomationSource(source);
 }
 
-function sourceLabel(t: Translations | null, source: string): string {
-  // Localized source names live in t.sessions.sources; fall back to the
-  // English title-case default for unknown sources.
-  const map = t?.sessions.sources as Record<string, string | undefined> | undefined;
-  const localized = map?.[source];
-  if (localized !== undefined) return localized;
-  switch (source) {
-    case "api_server":
-      return "API server";
-    case "acp":
-      return "ACP";
-    case "cli":
-      return "CLI";
-    case "tui":
-      return "TUI";
-    case "telegram":
-      return "Telegram";
-    case "discord":
-      return "Discord";
-    case "slack":
-      return "Slack";
-    case "whatsapp":
-      return "WhatsApp";
-    case "whatsapp_cloud":
-      return "WhatsApp Cloud";
-    case "sms":
-      return "SMS";
-    case "cron":
-      return "Cron";
-    case "tool":
-      return "Tool";
-    case "hermes_flow":
-      return "Hermes Flow";
-    case "vulcan_delegate":
-      return "Vulcan delegate";
-    case "webhook":
-      return "Webhook";
-    default:
-      return source
-        .split("_")
-        .filter(Boolean)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(" ");
-  }
-}
+const sourceLabel = sessionSourceLabel;
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -496,7 +453,7 @@ function SessionRow({
     api
       .getSessionMessages(session.id, session.profile)
       .then((resp) => {
-        if (!cancelled) setMessages(resp.messages);
+        if (!cancelled) setMessages(asArray<SessionMessage>(resp.messages));
       })
       .catch((err) => {
         if (!cancelled) setError(errorMessage(err));
@@ -1066,8 +1023,8 @@ export default function SessionsPage() {
       .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
       .then((resp) => {
         if (requestId !== sessionsRequestRef.current) return;
-        setSessions(resp.sessions);
-        setTotal(resp.total);
+        setSessions(asArray<SessionInfo>(resp.sessions));
+        setTotal(asCount(resp.total));
       })
       .catch(() => {})
       .finally(() => {
@@ -1079,7 +1036,17 @@ export default function SessionsPage() {
   const loadStats = useCallback(() => {
     api
       .getSessionStats()
-      .then(setStats)
+      .then((resp) =>
+        // Coerce at the boundary: render code reads every field directly,
+        // and a mis-shaped payload must degrade to zeroed counts, not throw.
+        setStats({
+          total: asCount(resp.total),
+          active_store: asCount(resp.active_store),
+          archived: asCount(resp.archived),
+          messages: asCount(resp.messages),
+          by_source: asCountMap(resp.by_source),
+        }),
+      )
       .catch(() => {});
   }, []);
 
@@ -1168,7 +1135,8 @@ export default function SessionsPage() {
         .getSessions(50, 0, sessionQueryOptions)
         .then((r) => {
           if (cancelled) return;
-          setOverviewSessions(r.sessions);
+          const overview = asArray<SessionInfo>(r.sessions);
+          setOverviewSessions(overview);
           // The dashboard server and a terminal CLI are separate
           // processes sharing one session DB — there is no push channel,
           // so we detect sessions created in another process here. The
@@ -1176,7 +1144,7 @@ export default function SessionsPage() {
           // reuse its head id as a cheap change signal: when it changes,
           // silently refresh the paginated list so the new session shows
           // up in real time without a visible loading flicker.
-          const newest = r.sessions[0]?.id ?? null;
+          const newest = overview[0]?.id ?? null;
           if (shouldRefreshSessions(newestSeenRef.current, newest)) {
             loadSessions(pageRef.current, true);
           }
@@ -1291,7 +1259,7 @@ export default function SessionsPage() {
       setSearchResults(null);
       api
         .searchSessions(search.trim(), sessionQueryOptions)
-        .then((resp) => setSearchResults(resp.results))
+        .then((resp) => setSearchResults(asArray<SessionSearchResult>(resp.results)))
         .catch(() => setSearchResults(null))
         .finally(() => setSearching(false));
     }, 300);

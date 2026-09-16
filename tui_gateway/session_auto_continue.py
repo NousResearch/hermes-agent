@@ -450,22 +450,29 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     return _ok(rid, {"status": "queued"})
 
 
-def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
+def _drain_queued_prompt(rid, sid: str, session: dict, *, require_live_session: bool = False) -> bool:
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
-    with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
-            return False
-        queue_generation = int(session.get("_queued_prompt_generation", 0))
-        _ac_set_queue(session, session.get("queued_prompts") or [])
-        session["running"] = True
-        queued_transport = queued.get("transport")
-        # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
-        # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
-        # whole drained turn. A peer that disconnected while its prompt sat in the queue is skipped: the
-        # prompt still runs, only the dead pin is dropped.
-        if queued_transport is not None and not _transport_is_dead(queued_transport):
-            _attach_session_transport(session, queued_transport)
+    with _session_resume_lock if require_live_session else contextlib.nullcontext():
+        with _session_turn_admission(session) as admitted:
+            if not admitted or session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
+                return False
+            if require_live_session and (
+                _sessions.get(sid) is not session
+                or session.get("_client_gone_interrupt_requested")
+                or _transport_is_dead(session.get("transport"))
+            ):
+                return False
+            queue_generation = int(session.get("_queued_prompt_generation", 0))
+            _ac_set_queue(session, session.get("queued_prompts") or [])
+            session["running"] = True
+            queued_transport = queued.get("transport")
+            # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
+            # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
+            # whole drained turn. A peer that disconnected while its prompt sat in the queue is skipped: the
+            # prompt still runs, only the dead pin is dropped.
+            if queued_transport is not None and not _transport_is_dead(queued_transport):
+                _attach_session_transport(session, queued_transport)
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:

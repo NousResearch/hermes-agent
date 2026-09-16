@@ -44,10 +44,13 @@ import {
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import type { useSessionActions } from '../../session/hooks/use-session-actions'
 import {
+  appendLiveSessionProjection,
   chatMessageArraysEquivalent,
+  overlayConcurrentMessageChanges,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
-  resolveSessionOwner
+  resolveSessionOwner,
+  runningProjectionStreamId
 } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
 import type { GatewayRequester } from '../types'
@@ -520,34 +523,42 @@ export function useSessionTileDelegate({
 
           const runtimeId = resumed?.session_id
 
-          if (!runtimeId) {
+          if (!resumed || !runtimeId) {
             throw new Error('resume returned no session id')
           }
 
-          const info = resumed?.info
+          const info = resumed.info
+
+          const running = Boolean(resumed.running ?? info?.running)
+          const persistedMessages = toChatMessages(prefetch?.messages ?? resumed.messages ?? [])
+          const projectedMessages = appendLiveSessionProjection(persistedMessages, resumed)
 
           updateSessionState(
             runtimeId,
-            state => ({
-              // The deferred build reports the session's own effort later (#79807).
-              ...markReasoningEffortPending(state),
-              busy: Boolean(info?.running),
-              // Persist the session's own model/provider from resume so the tile
-              // pill does not wait on a chrome-scoped catalog read (#93892).
-              ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-              ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-              ...(typeof info?.reasoning_effort === 'string'
-                ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
-                : {}),
-              ...(typeof info?.reasoning_effort_wire === 'string'
-                ? { reasoningEffortWire: info.reasoning_effort_wire }
-                : {}),
-              ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-              messages:
-                state.messages.length > 0
-                  ? state.messages
-                  : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
-            }),
+            state => {
+              const messages = overlayConcurrentMessageChanges(projectedMessages, persistedMessages, state.messages)
+              const streamId = running ? (runningProjectionStreamId(messages, true) ?? state.streamId) : null
+
+              return {
+                // The deferred build reports the session's own effort later (#79807).
+                ...markReasoningEffortPending(state),
+                busy: running,
+                adoptedRunningTurn: state.adoptedRunningTurn || running,
+                streamId,
+                // Persist the session's own model/provider from resume so the tile
+                // pill does not wait on a chrome-scoped catalog read (#93892).
+                ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+                ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+                ...(typeof info?.reasoning_effort === 'string'
+                  ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+                  : {}),
+                ...(typeof info?.reasoning_effort_wire === 'string'
+                  ? { reasoningEffortWire: info.reasoning_effort_wire }
+                  : {}),
+                ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+                messages
+              }
+            },
             storedSessionId
           )
 

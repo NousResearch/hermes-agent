@@ -1164,6 +1164,7 @@ def _(rid, params: dict, session: dict) -> dict:
             return refusal
         with session["history_lock"]:
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
+    _drain_queued_prompt(rid, sid, session, require_live_session=True)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
 

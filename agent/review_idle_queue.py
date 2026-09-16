@@ -21,6 +21,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Hashable, Optional
 
+from agent.review_admission import REASON_DEFERRED, REASON_DISABLED_WHILE_QUEUED, owner_tag
+
 logger = logging.getLogger(__name__)
 
 _IDLE_SETTLE_S = 15.0  # quiet window: two back-to-back prompts must not look idle, a coffee break must
@@ -70,8 +72,6 @@ class _PendingReview:
 
 def _owner_log_tag(session_key: Hashable) -> str:
     """Deterministic redacted label for a profile/session queue owner."""
-    from agent.review_admission import owner_tag
-
     if isinstance(session_key, tuple) and len(session_key) >= 2:
         return owner_tag(session_key[0], session_key[1])
     return owner_tag("", session_key)
@@ -110,10 +110,12 @@ class ReviewIdleQueue:
         kwargs: Dict[str, Any],
         *,
         replace_existing: bool = True,
+        reason: str = REASON_DEFERRED,
     ) -> None:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
         enqueue time on coalesce so a busy session cannot push its age-out forever. A retry uses
-        ``replace_existing=False`` so it cannot overwrite a newer snapshot queued while dispatching."""
+        ``replace_existing=False`` so it cannot overwrite a newer snapshot queued while dispatching,
+        and names its own ``reason`` so the line does not read as a fresh deferral."""
         dispatch_context = contextvars.copy_context()
         with self._lock:
             existing = self._pending.get(session_key)
@@ -126,8 +128,8 @@ class ReviewIdleQueue:
         self._ensure_thread()
         self._wake.set()
         logger.info(
-            "Background review deferred (owner=%s, reason=managed_local_deferred, queued=%d)",
-            _owner_log_tag(session_key), len(self._pending),
+            "Background review deferred (owner=%s, reason=%s, queued=%d)",
+            _owner_log_tag(session_key), reason, len(self._pending),
         )
 
     def pending_count(self) -> int:
@@ -190,12 +192,12 @@ class ReviewIdleQueue:
         """Re-check policy and spawn inside the profile Context captured at enqueue time."""
         if not self._still_enabled(item):
             logger.info(
-                "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
-                _owner_log_tag(item.session_key),
+                "Deferred background review dropped (owner=%s, reason=%s)",
+                _owner_log_tag(item.session_key), REASON_DISABLED_WHILE_QUEUED,
             )
             return
         logger.info(
-            "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
+            "Dispatching deferred background review (owner=%s, waited=%.0fs, queued=%d)",
             _owner_log_tag(item.session_key), self._now() - item.enqueued_at, self.pending_count(),
         )
         dispatch_kwargs = dict(item.kwargs)

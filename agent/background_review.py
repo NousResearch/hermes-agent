@@ -237,6 +237,18 @@ def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]
     _publish_run_exit(agent, run)
 
 
+def _review_owner_tag(
+    run: Optional[_BackgroundReviewRun], profile_key: Optional[str], session_id: Any
+) -> str:
+    """Redacted owner label: the key the run was published under, else the caller's owner."""
+    from agent.review_admission import owner_tag
+
+    key = getattr(run, "_review_owner_key", None)
+    if key:
+        return owner_tag(*key)
+    return owner_tag(profile_key or "", session_id or "")
+
+
 def _interrupt_background_review(review_agent: Any) -> None:
     """Request abort off-thread so a wedged abort hook cannot stall the live turn (the bounded
     ``request_done`` wait in the canceller relies on this returning fast)."""
@@ -275,7 +287,18 @@ def _cancel_background_review(
         return None, None
     if run is None:
         return run, legacy_agent
+    already_fenced = run.cancel_requested.is_set()
     review_agent = run.cancel_for_pending_followup() if pending_followup else run.cancel()
+    if not already_fenced and run.cancel_requested.is_set():
+        # The fence that actually landed logs once, whichever caller it was (live turn, queue-side
+        # follow-up fence, gateway prework, session rebind); a repeated fence adds nothing.
+        logger.info(
+            "Background review cancelled (owner=%s, reason=%s)",
+            _review_owner_tag(run, profile_key, review_session_id),
+            review_admission.REASON_FOLLOWUP_CANCELLED
+            if pending_followup
+            else review_admission.REASON_LIVE_TURN_CANCELLED,
+        )
     if review_agent is None and run.revoke_if_unadmitted():
         # No fork was admitted and none can be now: publish the exit here so a foreground waiter
         # is never left waiting on a worker thread that may never start.
@@ -1488,13 +1511,14 @@ def _run_review_fork(
             review_run.refused_reason if review_run is not None else None
         ):
             # Only a GATE refusal sets a reason; a cancelled run leaves it None and is already
-            # logged by whoever cancelled, so this never doubles up. Body-free slug + hashed tag,
-            # like every other skip/defer decision (agent/review_admission.py).
-            from agent.review_admission import session_tag
-
+            # logged by whoever cancelled, so this never doubles up. Body-free slug + hashed owner
+            # tag, like every other skip/defer decision (agent/review_admission.py).
             logger.info(
-                "Background review refused at admission (session=%s): %s",
-                session_tag(review_session_id or getattr(agent, "session_id", None) or ""), reason,
+                "Background review refused at admission (owner=%s): %s",
+                _review_owner_tag(
+                    review_run, None, review_session_id or getattr(agent, "session_id", None)
+                ),
+                reason,
             )
     finally:
         if durable_lease is not None:

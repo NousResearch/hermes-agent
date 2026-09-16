@@ -14,6 +14,7 @@ with the WHOLE ~205K-token snapshot, and a queued gateway follow-up starts ~100m
 from __future__ import annotations
 
 import datetime as _dt
+import functools
 import hashlib
 import itertools
 import threading
@@ -175,6 +176,9 @@ def test_live_turn_on_the_same_session_blocks_the_automatic_review(
 
     assert review_forks == [], "review forked while a live turn held the session"
     assert review_admission.REASON_LIVE_TURN in caplog.text
+    assert review_admission.owner_tag(
+        review_admission.current_profile_key(), agent.session_id
+    ) in caplog.text
 
 
 def test_second_agent_cancels_canonical_review_for_the_same_owner(monkeypatch):
@@ -448,6 +452,9 @@ def test_queued_gateway_followup_blocks_the_automatic_review(
         "review forked while a follow-up was queued for the session"
     )
     assert review_admission.REASON_QUEUED_FOLLOWUP in caplog.text
+    assert review_admission.owner_tag(
+        review_admission.current_profile_key(), agent.session_id
+    ) in caplog.text
 
 
 def test_raising_followup_probe_fails_safe_and_blocks_automatic_review(
@@ -470,6 +477,9 @@ def test_raising_followup_probe_fails_safe_and_blocks_automatic_review(
 
     assert review_forks == []
     assert "admission_probe_failed" in caplog.text
+    assert review_admission.owner_tag(
+        review_admission.current_profile_key(), agent.session_id
+    ) in caplog.text
 
 
 def test_raising_request_admission_gate_fails_safe():
@@ -697,9 +707,10 @@ def test_admission_gate_refusal_logs_one_body_free_line(
 ):
     """The last-word gate is the one that actually closes the race, so it must leave a trace.
 
-    Every other skip/defer decision logs ``reason slug + hashed session tag``; a refusal at
+    Every other skip/defer decision logs ``reason slug + hashed owner tag``; a refusal at
     ``begin_request`` used to log nothing at all, so the cheapest signal that self-improvement is
-    being starved was invisible. One INFO record, no message bodies, no raw session id.
+    being starved was invisible. One INFO record, no message bodies, no raw session id, and the
+    same profile+session hash every other review line carries.
     """
     _patch_config(monkeypatch, _config())
     session_id = "raw-session-id-must-not-be-logged"
@@ -735,7 +746,9 @@ def test_admission_gate_refusal_logs_one_body_free_line(
     assert len(refusals) == 1, "gate refusal must log exactly once"
     assert refusals[0].levelname == "INFO"
     refusal_text = refusals[0].getMessage()
-    assert review_admission.session_tag(session_id) in refusal_text
+    assert review_admission.owner_tag(
+        review_admission.current_profile_key(), session_id
+    ) in refusal_text
     assert session_id not in refusal_text
     assert "private message body" not in refusal_text
 
@@ -760,6 +773,7 @@ def test_late_gate_skip_line_tags_the_session_captured_at_spawn(
     """
     _patch_config(monkeypatch, _config())
     agent = _bare_agent("session-one")
+    profile_key = review_admission.current_profile_key()
     queued = {"value": False}
     agent.followup_pending_callback = lambda: queued["value"]
     original = getattr(background_review_module, hook_name)
@@ -791,8 +805,8 @@ def test_late_gate_skip_line_tags_the_session_captured_at_spawn(
     assert len(refusals) == 1, "gate refusal must log exactly once"
     refusal_text = refusals[0].getMessage()
     assert expected_line in refusal_text
-    assert review_admission.session_tag("session-one") in refusal_text
-    assert review_admission.session_tag("session-two") not in refusal_text
+    assert review_admission.owner_tag(profile_key, "session-one") in refusal_text
+    assert review_admission.owner_tag(profile_key, "session-two") not in refusal_text
 
 
 def test_early_gate_skip_line_tags_the_frozen_review_session(
@@ -824,8 +838,8 @@ def test_early_gate_skip_line_tags_the_frozen_review_session(
     ]
     assert len(skips) == 1, "early gate skip must log exactly once"
     skip_text = skips[0].getMessage()
-    assert review_admission.session_tag("session-one") in skip_text
-    assert review_admission.session_tag("session-two") not in skip_text
+    assert review_admission.owner_tag(profile_key, "session-one") in skip_text
+    assert review_admission.owner_tag(profile_key, "session-two") not in skip_text
 
 
 def test_cancelled_review_does_not_log_a_gate_refusal(
@@ -854,6 +868,62 @@ def test_cancelled_review_does_not_log_a_gate_refusal(
 
     assert review_forks[0]["history"] is None, "cancelled run reached the provider"
     assert "refused at admission" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "canceller,expected_reason",
+    [
+        (
+            background_review_module.cancel_background_review_for_pending_followup,
+            "queued_followup_cancelled",
+        ),
+        (
+            functools.partial(
+                background_review_module.cancel_background_review_for_live_turn, wait=False
+            ),
+            "live_turn_cancelled",
+        ),
+    ],
+    ids=["queue_side_fence", "live_turn"],
+)
+def test_cancellation_logs_owner_and_reason_once(
+    monkeypatch, caplog, canceller, expected_reason
+):
+    """A fence is a skip decision like any other: whoever cancels the review leaves one INFO
+    line with the hashed owner and a stable slug, and a repeated fence on the same run adds
+    nothing. Without it a review that vanished mid-flight was invisible in the logs."""
+    agent = _bare_agent("raw-session-id-must-not-be-logged")
+    profile_key = review_admission.current_profile_key()
+    monkeypatch.setattr(
+        background_review_module, "_interrupt_background_review", lambda _fork: None
+    )
+    run = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert run is not None and run.begin_request(object())
+
+    def cancellations():
+        return [
+            record
+            for record in caplog.records
+            if expected_reason in record.getMessage()
+        ]
+
+    try:
+        with caplog.at_level("INFO"):
+            canceller(agent, session_id=agent.session_id, profile_key=profile_key)
+            assert len(cancellations()) == 1, "cancellation must log exactly once"
+            canceller(agent, session_id=agent.session_id, profile_key=profile_key)
+            assert len(cancellations()) == 1, "a repeated fence must not log again"
+    finally:
+        background_review_module.finish_background_review_run(agent, run)
+
+    assert run.cancel_requested.is_set()
+    line = cancellations()[0]
+    assert line.levelname == "INFO"
+    text = line.getMessage()
+    assert review_admission.owner_tag(profile_key, agent.session_id) in text
+    assert agent.session_id not in text
 
 
 def test_explicit_refine_remains_exempt_from_late_followup_gate(

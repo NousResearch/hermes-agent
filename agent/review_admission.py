@@ -38,6 +38,15 @@ REASON_OVERSIZED = "oversized_snapshot"
 REASON_ADMISSION_FAILURE = "admission_probe_failed"
 REASON_DURABLE_BUSY = "durable_foreground_active"
 REASON_DURABLE_FAILURE = "durable_admission_failed"
+# Cancellation and idle-queue outcomes, so a review that vanished mid-flight is as greppable as
+# one that was never admitted.
+REASON_LIVE_TURN_CANCELLED = "live_turn_cancelled"
+REASON_FOLLOWUP_CANCELLED = "queued_followup_cancelled"
+REASON_DEFERRED = "managed_local_deferred"
+REASON_PREEMPTED_REQUEUED = "preempted_requeued"
+REASON_REQUEUE_CAP = "requeue_cap_exceeded"
+REASON_STALE_OWNER = "stale_review_owner"
+REASON_DISABLED_WHILE_QUEUED = "disabled_while_queued"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.
@@ -301,7 +310,8 @@ def bounded_replay_history(
 
 
 def session_tag(session_id: Any) -> str:
-    """Return a deterministic, non-disclosing session label for logs."""
+    """Deterministic, non-disclosing session-only label. Review log lines carry
+    :func:`owner_tag` instead, so one hash covers the profile as well as the session."""
     return hashlib.sha256(str(session_id).encode()).hexdigest()[:8]
 
 

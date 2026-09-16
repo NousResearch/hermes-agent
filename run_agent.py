@@ -842,8 +842,8 @@ class AIAgent(
                 self, spawning_turn_token, review_profile_key, review_session_id
             ):
                 logger.info(
-                    "Background review skipped (session=%s): %s",
-                    review_admission.session_tag(review_session_id), blocked,
+                    "Background review skipped (owner=%s): %s",
+                    review_admission.owner_tag(review_profile_key, review_session_id), blocked,
                 )
                 return
 
@@ -853,13 +853,15 @@ class AIAgent(
             if replay_reason:
                 if not messages_snapshot:
                     logger.info(
-                        "Background review skipped (session=%s): %s",
-                        review_admission.session_tag(review_session_id), replay_reason,
+                        "Background review skipped (owner=%s): %s",
+                        review_admission.owner_tag(review_profile_key, review_session_id),
+                        replay_reason,
                     )
                     return
                 logger.info(
-                    "Background review replay bounded (session=%s): %s",
-                    review_admission.session_tag(review_session_id), replay_reason,
+                    "Background review replay bounded (owner=%s): %s",
+                    review_admission.owner_tag(review_profile_key, review_session_id),
+                    replay_reason,
                 )
 
         # Structural clone at the single chokepoint: the fork sanitizes in place, and a shallow copy would
@@ -898,6 +900,7 @@ class AIAgent(
         memory operation set. A deferred review preempted by a live turn is requeued (bounded)
         rather than lost.
         """
+        from agent import review_admission
         from agent.background_review import (
             finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
         )
@@ -910,12 +913,16 @@ class AIAgent(
             _idle_queue_origin
             and str(getattr(self, "session_id", None) or "") != _review_session_id
         ):
-            logger.info("Deferred background review dropped: stale_review_owner")
+            logger.info(
+                "Deferred background review dropped (owner=%s, reason=%s)",
+                review_admission.owner_tag(
+                    *_review_queue_key(self, _review_profile_key, _review_session_id)
+                ),
+                review_admission.REASON_STALE_OWNER,
+            )
             return
         admission_gate = admission_lock = foreground_admission_lock = None
         if automatic:
-            from agent import review_admission
-
             if _review_profile_key is None:
                 _review_profile_key = review_admission.current_profile_key()
             admission_gate = lambda: review_admission.foreground_block_reason(
@@ -960,8 +967,9 @@ class AIAgent(
                     _review_session_id,
                 ):
                     logger.info(
-                        "Background review skipped after prepare (session=%s): %s",
-                        review_admission.session_tag(_review_session_id), blocked,
+                        "Background review skipped after prepare (owner=%s): %s",
+                        review_admission.owner_tag(_review_profile_key, _review_session_id),
+                        blocked,
                     )
                     finish_background_review_run(self, review_run)
                     self._requeue_deferred_review(dict(
@@ -1008,9 +1016,16 @@ class AIAgent(
             or kwargs.get("focus") is not None
         ):
             return
+        from agent import review_admission
+
+        queue_key = _review_queue_key(
+            self, kwargs.get("_review_profile_key"), kwargs.get("_review_session_id")
+        )
         if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
             logger.info(
-                "Preempted background review dropped after %d requeues",
+                "Preempted background review dropped (owner=%s, reason=%s, requeues=%d)",
+                review_admission.owner_tag(*queue_key),
+                review_admission.REASON_REQUEUE_CAP,
                 self._REVIEW_REQUEUE_MAX_ATTEMPTS,
             )
             return
@@ -1019,13 +1034,10 @@ class AIAgent(
 
             QUEUE.enqueue(
                 self,
-                _review_queue_key(
-                    self,
-                    kwargs.get("_review_profile_key"),
-                    kwargs.get("_review_session_id"),
-                ),
+                queue_key,
                 dict(kwargs),
                 replace_existing=False,
+                reason=review_admission.REASON_PREEMPTED_REQUEUED,
             )
         except Exception:  # noqa: BLE001 — deferred review persistence is best-effort
             logger.debug("Preempted-review requeue failed", exc_info=True)

@@ -5,7 +5,7 @@ version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [tensorrt-llm, torch]
-platforms: [linux, macos]
+platforms: [linux]
 metadata:
   hermes:
     tags: [Inference Serving, TensorRT-LLM, NVIDIA, Inference Optimization, High Throughput, Low Latency, Production, FP8, INT4, In-Flight Batching, Multi-GPU]
@@ -79,7 +79,8 @@ for output in outputs:
 ```bash
 # Start server (automatic model download and compilation)
 trtllm-serve meta-llama/Meta-Llama-3-8B \
-    --tp_size 4 \              # Tensor parallelism (4 GPUs)
+    # Tensor parallelism (4 GPUs)
+    --tp_size 4 \
     --max_batch_size 256 \
     --max_num_tokens 4096
 

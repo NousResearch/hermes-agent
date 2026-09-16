@@ -109,7 +109,8 @@ lm_eval --model hf \
 lm_eval --model hf \
   --model_args pretrained=meta-llama/Llama-2-7b-hf \
   --tasks mmlu \
-  --num_fewshot 5 \  # 5-shot evaluation (standard)
+  # 5-shot evaluation (standard)
+  --num_fewshot 5 \
   --batch_size 8 \
   --output_path results/ \
   --log_samples  # Save individual predictions
@@ -177,7 +178,8 @@ STEP=$2
 lm_eval --model hf \
   --model_args pretrained=$CHECKPOINT_DIR/checkpoint-$STEP \
   --tasks gsm8k,hellaswag \
-  --num_fewshot 0 \  # 0-shot for speed
+  # 0-shot for speed
+  --num_fewshot 0 \
   --batch_size 16 \
   --output_path results/step-$STEP.json
 ```

@@ -89,32 +89,32 @@ Claude Code presents up to two confirmation dialogs on first launch. You MUST ha
 ```
 **Handling:** `tmux send-keys -t <session> Enter` — default selection is correct.
 
-### Dialog 2: Bypass Permissions Warning (only with --dangerously-skip-permissions)
-```
-❯ 1. No, exit                    ← DEFAULT (WRONG choice!)
-  2. Yes, I accept
-```
-**Handling:** Must navigate DOWN first, then Enter:
-```
-tmux send-keys -t <session> Down && sleep 0.3 && tmux send-keys -t <session> Enter
-```
+### Dialog 2: Individual Permission Prompts (normal flow)
+
+Answer each prompt on its own — this is different from disabling prompts for the whole run.
 
 ### Robust Dialog Handling Pattern
 ```
-# Launch with permissions bypass
-terminal(command="tmux send-keys -t claude-work 'claude --dangerously-skip-permissions \"your task\"' Enter")
+# Default launch — keep permission prompts enabled
+terminal(command="tmux send-keys -t claude-work 'claude \"your task\"' Enter")
 
 # Handle trust dialog (Enter for default "Yes")
 terminal(command="sleep 4 && tmux send-keys -t claude-work Enter")
-
-# Handle permissions dialog (Down then Enter for "Yes, I accept")
-terminal(command="sleep 3 && tmux send-keys -t claude-work Down && sleep 0.3 && tmux send-keys -t claude-work Enter")
 
 # Now wait for Claude to work
 terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 ```
 
-**Note:** After the first trust acceptance for a directory, the trust dialog won't appear again. Only the permissions dialog recurs each time you use `--dangerously-skip-permissions`.
+**Note:** After the first trust acceptance for a directory, the trust dialog won't appear again.
+
+### Opt-in: --dangerously-skip-permissions (isolated environments only)
+
+This disables permission prompts for the whole run — grants filesystem, shell, and network access with no prompts. Acceptable only in a throwaway worktree or isolated container.
+```
+❯ 1. No, exit                    ← DEFAULT (safe choice)
+  2. Yes, I accept
+```
+To accept: `tmux send-keys -t <session> Down && sleep 0.3 && tmux send-keys -t <session> Enter`
 
 ## CLI Subcommands
 

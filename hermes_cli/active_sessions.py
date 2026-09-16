@@ -544,6 +544,29 @@ def release_active_session(lease: ActiveSessionLease) -> None:
         lease.released = True
 
 
+def _foreign_holder(
+    entries: list[dict[str, Any]], session_id: str, own_lease_id: str | None
+) -> Optional[dict[str, Any]]:
+    """The live entry holding ``session_id`` under a lease other than ``own_lease_id``, else None."""
+    for existing in entries:
+        if (str(existing.get("session_id") or "") == session_id
+                and str(existing.get("lease_id") or "") != str(own_lease_id or "")):
+            return existing
+    return None
+
+
+def live_session_owner(
+    session_id: str, *, own_lease_id: str | None = None, registry_home: str | Path | None = None,
+) -> Optional[dict[str, Any]]:
+    """Another surface's live lease on ``session_id`` (for a read-only view / refusal message), else None.
+    Raises when the registry cannot prove liveness: callers must not treat "can't tell" as "unowned"."""
+    key = str(session_id or "")
+    if not key:
+        return None
+    entries = active_session_registry_snapshot(registry_home, strict=True)
+    return _foreign_holder(entries, key, own_lease_id)
+
+
 def transfer_active_session(
     lease: ActiveSessionLease, *, session_id: str, metadata: Optional[dict[str, Any]] = None
 ) -> bool:
@@ -569,6 +592,13 @@ def transfer_active_session(
         if loaded is None:
             return False
         entries = loaded[1]
+        # Exclusivity holds across a transfer too: rotating our lease onto a session id that
+        # another live writer holds is the same double-writer hole try_acquire closes.
+        holder = _foreign_holder(entries, new_session_id, lease.lease_id)
+        if holder is not None:
+            logger.info("Refused lease transfer to %s: already held by pid=%s surface=%s",
+                        new_session_id, holder.get("pid"), holder.get("surface"))
+            return False
         own = next((e for e in entries if str(e.get("lease_id") or "") == lease.lease_id), None)
         if own is not None:
             own["session_id"] = new_session_id

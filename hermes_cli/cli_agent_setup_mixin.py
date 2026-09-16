@@ -5,6 +5,7 @@ imported lazily inside each method (import cycle)."""
 from __future__ import annotations
 
 import sys
+from contextlib import suppress
 
 from rich.markup import escape as _escape
 
@@ -689,12 +690,29 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _display_resumed_history(self):
+    def _show_read_only_transcript(self, session_id: str, owner: dict) -> None:
+        """A session another surface holds is shown, not taken: render its transcript read-only with
+        a retry hint, leaving the owner's lease intact. Inspired by Codex CLI 0.154 (openai/codex#43253),
+        which falls back to a read-only snapshot when resume hits an active writer."""
+        from hermes_cli.active_sessions import session_already_owned_message
+        self._console_print(f"[bold red]{_escape(session_already_owned_message(session_id, owner))}[/]")
+        history = None
+        with suppress(Exception):
+            _model, history = self._session_db.get_resume_conversations(session_id)
+        history = [m for m in history or [] if m.get("role") != "session_meta"]
+        if history:
+            self._display_resumed_history(history=history, title="Read-only transcript (owned elsewhere)")
+        self._console_print(
+            "[dim]Read-only view. Nothing was switched; close the session in "
+            f"{_escape(str(owner.get('surface') or 'its owning surface'))} and retry /resume {_escape(session_id)}.[/]")
+
+    def _display_resumed_history(self, history=None, title: str = "Previous Conversation"):
         """Render a dim Rich-panel recap of the previous conversation, capped at the last
         ``resume_exchanges`` user/assistant exchanges with a hidden-count indicator."""
         from cli import CLI_CONFIG, _record_output_history_entry, _strip_reasoning_tags, _suspend_output_history
         from tools.ansi_strip import sanitize_display_text as _sanitize_display_text
-        display_history = getattr(self, "_resume_display_history", self.conversation_history)
+        display_history = history if history is not None else getattr(
+            self, "_resume_display_history", self.conversation_history)
         if not display_history or self.resume_display == "minimal":
             return
         _disp = CLI_CONFIG.get("display", {})
@@ -736,7 +754,7 @@ class CLIAgentSetupMixin:
             if i < len(entries) - 1:
                 lines.append("")  # small gap
         panel = Panel(
-            lines, title=f"[dim {_session_label_c}]Previous Conversation[/]",
+            lines, title=f"[dim {_session_label_c}]{_escape(title)}[/]",
             border_style=f"dim {_session_border_c}", padding=(0, 1), style=_history_text_c)
         _record_output_history_entry(lambda: self._render_resume_history_panel_lines(panel))
         with _suspend_output_history():

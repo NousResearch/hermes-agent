@@ -158,6 +158,7 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  description?: string
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>

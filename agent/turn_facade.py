@@ -40,6 +40,7 @@ class TurnFacadeMixin:
 
         from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
+        from agent.aux_notices import reset_notice_sink, set_notice_sink
         from agent.auxiliary_client import scoped_runtime_main
         from agent.conversation_loop import run_conversation
         from agent.portal_tags import (
@@ -126,7 +127,15 @@ class TurnFacadeMixin:
             # analytics (issue #23270).
             acct_token = set_accounting_context(
                 getattr(self, "_session_db", None), getattr(self, "session_id", None)
-            )
+            )            # Publish the user-visible channel for auxiliary *route switches* too: the main
+            # loop prints its own fallback notice, but an auxiliary task landing on a
+            # different provider was otherwise invisible (agent/aux_notices.py).
+            notice_token = None
+            try:
+                notice_token = set_notice_sink(self._emit_warning)
+            except Exception:
+                notice_token = None
+
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
@@ -196,6 +205,8 @@ class TurnFacadeMixin:
                         self._relay_pending_turn_id = None
                     if acct_token is not None:
                         reset_accounting_context(acct_token)
+                    if notice_token is not None:
+                        reset_notice_sink(notice_token)
                     if token is not None:
                         reset_conversation_context(token)
                     if affinity_token is not None:

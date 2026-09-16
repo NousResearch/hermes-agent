@@ -3708,6 +3708,49 @@ def _replan_synchronous_cache_sections(
     )
 
 
+def _notify_aux_route_switch(
+    task: Optional[str],
+    destination: _FallbackDestination,
+    fb_label: str,
+) -> None:
+    """Surface an auxiliary call that was served by a fallback route.
+
+    Auxiliary work — compression, titles, vision, web extraction, session
+    search — resolves its own client and walks its own fallback chain. Before
+    this helper a switch there reached only the debug log, so every side task
+    could be answered by a different provider with nothing on screen. The main
+    conversation loop has its own notice
+    (``AIAgent._emit_pending_fallback_notice``); this is the auxiliary
+    counterpart. Best-effort — see ``agent/aux_notices.py``.
+    """
+    try:
+        from agent.aux_notices import emit_aux_notice
+
+        actual_provider = str(destination.provider or "").strip() or "unknown"
+        actual = (
+            f"{actual_provider}/{destination.model}"
+            if destination.model
+            else actual_provider
+        )
+        try:
+            requested = str(_read_main_provider() or "").strip()
+        except Exception:
+            requested = ""
+        if requested and requested.lower() == actual_provider.lower():
+            message = (
+                f"⚠ Auxiliary '{task or 'call'}': re-routed to {actual} "
+                f"(fallback candidate {fb_label})."
+            )
+        else:
+            message = (
+                f"⚠ Auxiliary '{task or 'call'}': {requested or 'primary'} "
+                f"unavailable — using {actual}."
+            )
+        emit_aux_notice(message)
+    except Exception:
+        pass
+
+
 def _fallback_request_kwargs(
     destination: _FallbackDestination, *, task: Optional[str], messages: list,
     tools: Optional[list], temperature: Optional[float], max_tokens: Optional[int],
@@ -3830,7 +3873,7 @@ def _call_fallback_candidate_sync(
             task,
         )
     try:
-        return _send(fb_client, fb_kwargs, destination)
+        _fb_response = _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3840,10 +3883,17 @@ def _call_fallback_candidate_sync(
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return _send(*retry)
+                _fb_response = _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
+            else:
+                _notify_aux_route_switch(task, destination, fb_label)
+                return _fb_response
+    else:
+        _notify_aux_route_switch(task, destination, fb_label)
+        return _fb_response
+
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
         )
@@ -3869,7 +3919,7 @@ async def _call_fallback_candidate_async(
             task,
         )
     try:
-        return await _send(fb_client, fb_kwargs, destination)
+        _fb_response = await _send(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
@@ -3879,15 +3929,21 @@ async def _call_fallback_candidate_async(
         if retry is not None:
             failed_destination = retry[2]
             try:
-                return await _send(*retry)
+                _fb_response = await _send(*retry)
             except Exception as retry_err:
                 if not _is_auth_error(retry_err):
                     raise
+            else:
+                _notify_aux_route_switch(task, destination, fb_label)
+                return _fb_response
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err,
             base_url=failed_destination.base_url, tag=" (async)",
         )
         return None
+    else:
+        _notify_aux_route_switch(task, destination, fb_label)
+        return _fb_response
 
 
 def _try_payment_fallback(

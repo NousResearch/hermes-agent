@@ -5,6 +5,7 @@ import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/proje
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import type { ProjectInfo } from '@/types/hermes'
 
 import {
   $activeProjectId,
@@ -503,13 +504,18 @@ describe('createProject', () => {
 })
 
 describe('project writes while viewing all profiles', () => {
-  const project = {
+  const project: ProjectInfo = {
+    archived: false,
+    board_slug: null,
+    color: null,
+    created_at: 0,
+    description: null,
     folders: [],
+    icon: null,
     id: 'p_1',
     name: 'Warsongs',
     primary_path: '/srv/ws',
-    color: null as null | string,
-    icon: null as null | string
+    slug: 'warsongs'
   }
 
   beforeEach(() => {

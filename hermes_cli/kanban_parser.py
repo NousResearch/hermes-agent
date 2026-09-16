@@ -225,6 +225,15 @@ _SPECS = [
                   "policy at claim/start time, not now; a receipted decision "
                   "pins the worker's actual provider/model/reasoning. See "
                   "`hermes kanban routing`."),
+        _arg("--routing-requirements", dest="routing_requirements", metavar="JSON",
+             help="Genuine per-task routing requirements as a JSON object "
+                  "(design §3.B): task_class (established-pattern|investigative|"
+                  "cross-component|high-consequence), required_capabilities "
+                  "(list), input_tokens/reserve_tokens (ints), provenance "
+                  "({frozen_sha, verified_by, complete, contributors:[{maker,...}]}) "
+                  "for review roles. Validated at creation; omitted fields default "
+                  "conservatively at claim time (unclassified scope -> deep), "
+                  "never fabricated. Only meaningful with --routing-role."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "

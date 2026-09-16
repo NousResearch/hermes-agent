@@ -824,6 +824,13 @@ _LATER_TASK_COLUMNS = (
     # "reviewquality"); NULL means unmanaged. Distinct from the eventual
     # receipt so a re-attempt can reselect against the same role.
     ("routing_role", "routing_role TEXT"),
+    # Genuine per-task routing requirements (plans/2026-09-15_141016-guided-
+    # model-routing.md §3.B): validated JSON object with optional
+    # task_class/required_capabilities/input_tokens/reserve_tokens/provenance.
+    # NULL = no explicit intake; resolve_task_route() applies conservative
+    # documented defaults (unclassified -> deep quality floor), never a
+    # fabricated fixed shape. See kanban_model_routing.validate_routing_requirements.
+    ("routing_requirements", "routing_requirements TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

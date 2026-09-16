@@ -343,6 +343,7 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
+    from hermes_cli.kanban_model_routing import parse_routing_requirements_json
 
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
@@ -359,6 +360,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    try:
+        routing_requirements = parse_routing_requirements_json(
+            getattr(args, "routing_requirements", None)
+        )
+    except ValueError as exc:
+        return _err(f"kanban: --routing-requirements: {exc}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=args.body, assignee=args.assignee,
@@ -375,6 +382,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
             routing_role=getattr(args, "routing_role", None) or None,
+            routing_requirements=routing_requirements,
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
         )

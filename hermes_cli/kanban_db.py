@@ -715,6 +715,7 @@ class Task:
     completion_contract: Optional[str] = None
     routing_role: Optional[str] = None       # guided-routing role requested for this task; NULL = unmanaged
     routing_receipt_id: Optional[str] = None  # id of the resolved decision receipt in model_routing.db
+    routing_requirements: Optional[dict] = None  # validated per-task intake (see kanban_model_routing)
     # In-memory-only fields set on the ``claimed`` object between resolve_task_route()
     # and _default_spawn() within a single dispatch tick — never persisted as task
     # columns (routing_origin_home already follows this same non-persisted pattern).
@@ -727,6 +728,8 @@ class Task:
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        requirements_parsed = _json_or(g("routing_requirements"))
+        requirements_value = requirements_parsed if isinstance(requirements_parsed, dict) else None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -738,6 +741,7 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            routing_requirements=requirements_value,
         )
 
 
@@ -1244,6 +1248,7 @@ def create_task(
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
     routing_role: Optional[str] = None,
+    routing_requirements: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1263,14 +1268,25 @@ def create_task(
     plans/2026-09-15_141016-guided-model-routing.md). Resolved to a receipted
     decision at claim/start time, not here — a queued task must see current
     policy/availability, not a stale snapshot from creation time.
+    ``routing_requirements``: genuine per-task requirements intake (design §3.B):
+    an optional dict with any of ``task_class``, ``required_capabilities``,
+    ``input_tokens``, ``reserve_tokens``, ``provenance`` (contributor makers +
+    frozen_sha for independent-review tasks). Validated up front (schema/type/
+    enum) via ``hermes_cli.kanban_model_routing.validate_routing_requirements``
+    so a malformed intake fails at creation, not silently at claim time.
+    Omitted fields are NOT fabricated here: ``resolve_task_route`` applies the
+    documented conservative defaults (unclassified scope -> deep quality floor)
+    at claim time, never a fixed placeholder shape.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_model_routing import validate_routing_requirements
 
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    routing_requirements = validate_routing_requirements(routing_requirements)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -1348,8 +1364,8 @@ def create_task(
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id, completion_contract,
-                        routing_role
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        routing_role, routing_requirements
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1360,6 +1376,7 @@ def create_task(
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
                         (routing_role or None),
+                        json.dumps(routing_requirements) if routing_requirements is not None else None,
                     ),
                 )
                 for pid in parents:

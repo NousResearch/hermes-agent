@@ -195,8 +195,12 @@ export function botBackendProfileScope(route: null | ProfileRoute | undefined, f
   }
 }
 
-/** Gateway RPC on the bot's OWN source. Source-scoped rows always use the
- * explicit descriptor, including a registered local source. */
+const PASSIVE_PROFILE_ASSET_METHODS = new Set(['profiles.get_asset', 'profiles.set_asset'])
+
+/** Gateway RPC on the bot's OWN source. Source-scoped rows normally use the
+ * explicit profile descriptor. Passive avatar reads/writes are the exception:
+ * any already-open gateway on the owning source can access the target profile's
+ * asset path, so never materialize a dormant Bot backend just to paint UI. */
 export async function requestForBot<T = unknown>(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
@@ -205,12 +209,34 @@ export async function requestForBot<T = unknown>(
   const route = botConnectionRoute(bot)
 
   if (route) {
+    const scopedParams = scopedBotParams(route, method, params)
+
+    if (PASSIVE_PROFILE_ASSET_METHODS.has(method)) {
+      const activeConnectionId = String(
+        host.state.connectionId?.get?.() || host.activeConnectionId?.() || 'local'
+      ).trim()
+
+      // Avatar sync is best-effort presentation work. If its owning source is
+      // not the source already connected to this renderer, defer the asset
+      // refresh rather than opening the Bot's profile backend. The next roster
+      // refresh after that source becomes active will retry automatically.
+      if (activeConnectionId !== route.connectionId) {
+        throw new Error(`Passive ${method} deferred until source ${route.connectionId} is active`)
+      }
+
+      try {
+        return await host.request(method, scopedParams)
+      } catch (error) {
+        throw asRpcError(error, `Gateway request ${method} failed`)
+      }
+    }
+
     if (typeof host.requestProfile !== 'function') {
       throw new Error(`Cannot route ${method} for ${route.connectionId}::${route.profile}`)
     }
 
     try {
-      return await host.requestProfile(route, method, scopedBotParams(route, method, params))
+      return await host.requestProfile(route, method, scopedParams)
     } catch (error) {
       // React 19 formats query errors with `(error.name || '').trim()`. IPC /
       // JSON-RPC rejections are often plain objects whose `name` is a number,

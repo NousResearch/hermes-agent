@@ -362,12 +362,35 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         command=pinned_command, args=list(runtime.get("args") or []),
     )
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
-    """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
+def _role_credential_cfg(cfg: dict, role_model: Optional[Dict[str, Any]]) -> dict:
+    """The ``delegation`` config section with a named role's ``model`` pin merged OVER it (#112369).
+
+    The role pin beats config but loses to an explicit caller route (``credentials_cfg``, e.g. /review's
+    ``auxiliary.review``) — the caller decided the route for THIS call, and only the config is the role's to
+    override. A pinned provider OWNS the route, so the config's direct endpoint (``base_url``/``api_key``/
+    ``api_mode``, resolved for a different provider) is dropped rather than mixed with it; a pinned model on the
+    inherited route keeps that route's endpoint.
+    """
+    if not role_model:
+        return cfg
+    merged = dict(cfg)
+    provider = str(role_model.get("provider") or "").strip()
+    model = str(role_model.get("model") or "").strip()
+    if provider:
+        merged.update({"provider": provider, "base_url": None, "api_key": None, "api_mode": None})
+    if model:
+        merged["model"] = model
+    return merged
+
+
+def _resolve_delegation_credentials(cfg: dict, parent_agent, role_model: Optional[Dict[str, Any]] = None) -> dict:
+    """Child credential bundle from the ``delegation`` config section (optionally with a role's model pin merged
+    over it — see ``_role_credential_cfg``). Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
+    cfg = _role_credential_cfg(cfg, role_model)
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None

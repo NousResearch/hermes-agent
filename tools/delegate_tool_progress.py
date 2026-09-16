@@ -175,13 +175,24 @@ _NESTED_CHILDREN_NOTE = (
     "Default is 'leaf'; pass role='orchestrator' explicitly when a child needs to further decompose its work."
 )
 
+_ROLE_CONTRACT_HEADER = (
+    "\n## Role Contract\n"
+    "These standing role instructions govern this whole task and take precedence over your general defaults "
+    "wherever they are more specific.\n\n"
+)
+
+
 def _build_child_system_prompt(
     goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
-    max_spawn_depth: int = 2, child_depth: int = 1,
+    max_spawn_depth: int = 2, child_depth: int = 1, role_charter: Optional[str] = None,
+    include_context_files: bool = True,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
-    can't confabulate nesting."""
+    can't confabulate nesting. ``role_charter`` (a named role's prompt, #112369) is injected as a marked Role
+    Contract section — a child is a fresh conversation, so this can never touch the parent's cached prefix.
+    ``include_context_files=False`` (``context.context_files: false``) skips the AGENTS.md-class injection for roles
+    that must not inherit the workspace's framing (a reviewer re-deriving results from evidence)."""
     parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
@@ -191,18 +202,21 @@ def _build_child_system_prompt(
             f"{workspace_path}\n"
             "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
         )
-        # Project context files (AGENTS.md / CLAUDE.md / .cursorrules ...) via the SAME discovery/priority/cap logic
-        # as the main agent's prompt: children are built with skip_context_files=True, so without this a subagent
-        # works in a repo blind to its conventions. SOUL.md is skipped (identity belongs to the parent).
-        # workspace_path comes only from explicit sources (_resolve_workspace_hint, never bare getcwd), so the
-        # install-tree-fallback leak doesn't apply. Best-effort.
-        _ctx_files = ""
+    # Project context files (AGENTS.md / CLAUDE.md / .cursorrules ...) via the SAME discovery/priority/cap logic
+    # as the main agent's prompt: children are built with skip_context_files=True, so without this a subagent
+    # works in a repo blind to its conventions. SOUL.md is skipped (identity belongs to the parent).
+    # workspace_path comes only from explicit sources (_resolve_workspace_hint, never bare getcwd), so the
+    # install-tree-fallback leak doesn't apply. Best-effort.
+    _ctx_files = ""
+    if include_context_files and workspace_path and str(workspace_path).strip():
         with _quiet("subagent: workspace context-files load failed", exc_info=True):
             # See #64590.
             from agent.prompt_builder import build_context_files_prompt
             _ctx_files = build_context_files_prompt(cwd=str(workspace_path), skip_soul=True)
-        if _ctx_files.strip():
-            parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
+    if _ctx_files.strip():
+        parts.append(_CONTEXT_FILES_INTRO + _ctx_files.strip())
+    if role_charter and role_charter.strip():
+        parts.append(_ROLE_CONTRACT_HEADER + role_charter.strip())
     parts.append(_COMPLETION_INSTRUCTIONS)
     if role == "orchestrator":
         child_note = _LEAF_CHILDREN_NOTE if child_depth + 1 >= max_spawn_depth else _NESTED_CHILDREN_NOTE

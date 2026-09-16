@@ -75,14 +75,20 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
     )
 
 def _resolve_child_toolsets(
-    parent_agent, toolsets: Optional[List[str]], effective_role: str
+    parent_agent, toolsets: Optional[List[str]], effective_role: str, role=None
 ) -> tuple[List[str], List[str]]:
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
     inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
     ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
     expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
-    (role-granted, not inherited)."""
+    (role-granted, not inherited).
+
+    ``role`` (a named role definition, #112369) can only NARROW: ``allowlist`` replaces the requested toolsets with
+    its own (still intersected with the parent's, and strict — no MCP toolsets re-appended behind its back, and an
+    intersection that comes out empty is refused instead of inheriting everything); ``denylist`` adds its entries to
+    ``disabled_toolsets``, the mechanism the blocked-tool names already use; ``inherit`` changes nothing.
+    """
     # enabled_toolsets=None means "all tools", so derive from loaded tool names.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
@@ -95,10 +101,21 @@ def _resolve_child_toolsets(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
+    role_allowlist = role is not None and role.tools_mode == "allowlist"
+    role_denylist = list(role.toolsets) if role is not None and role.tools_mode == "denylist" else []
+    if role_allowlist:
+        toolsets = list(role.toolsets)
+
     if toolsets:
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if role_allowlist:
+            unavailable = [t for t in toolsets if t not in expanded_parent]
+            if unavailable:
+                logger.warning(
+                    "Role '%s' allows toolsets this parent does not have; dropped: %s", role.name, unavailable
+                )
+        elif _get_inherit_mcp_toolsets():
             # Append any parent MCP toolsets missing from the narrowed child.
             child_toolsets += [
                 name for name in sorted(parent_toolsets) if _is_mcp_toolset_name(name) and name not in child_toolsets
@@ -108,6 +125,13 @@ def _resolve_child_toolsets(
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
     child_toolsets = _strip_blocked_tools(child_toolsets)
+    if role_allowlist and not child_toolsets:
+        # Never fall back to the inherited (wider) set: an allowlist that resolves to nothing is a config
+        # error, and silently widening it is exactly the escalation the role exists to prevent.
+        raise ValueError(
+            f"Role '{role.name}' allows toolsets {list(role.toolsets)}, but none of them are available to this "
+            f"parent (parent has: {sorted(parent_toolsets)}). A role can only NARROW the parent's tools."
+        )
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
     inherited_disabled = (
@@ -118,6 +142,6 @@ def _resolve_child_toolsets(
         if "delegation" not in child_toolsets:
             child_toolsets.append("delegation")
     child_disabled_toolsets = list(
-        dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
+        dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"] + role_denylist)
     )
     return child_toolsets, child_disabled_toolsets

@@ -7,10 +7,12 @@
  * tab without any of those paths importing a view.
  */
 
-import { atom } from '@hermes/plugin-sdk'
+import { atom, host } from '@hermes/plugin-sdk'
 
 import { $groupChatWorkspace, groupChatRoomKey } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { slugify } from './labels'
+import { ID } from './shared'
 import type { Attachment } from './types'
 
 // Group composer drafts are window-local UI state. They must survive pane
@@ -135,6 +137,63 @@ export function dropGroupMainTab(group: string) {
   if (groupChatMainTabs.delete(group)) {
     $groupMainTabsRev.set($groupMainTabsRev.get() + 1)
   }
+}
+
+/** The key `openWorkspace` wants for a room's main tab. */
+export function groupChatWorkspaceKey(group: string): string {
+  return `${ID}:group:${slugify(group)}`
+}
+
+/** The pane id `paneVisibility` wants for that same tab.
+ *
+ *  **These are NOT the same string.** `host.openWorkspace(key)` takes the bare
+ *  key and builds the pane id itself — `plugin-workspace:${key}` in the SDK —
+ *  while `host.paneVisibility(paneId)` passes its argument straight through.
+ *  Ask it for the bare key and it matches nothing, forever, with no error: the
+ *  call succeeds and reports "not visible". Both call sites derive from these
+ *  two helpers so they cannot drift. */
+export function groupChatPaneId(group: string): string {
+  return `plugin-workspace:${groupChatWorkspaceKey(group)}`
+}
+
+/** The room whose main tab is actually on screen, or null.
+ *
+ *  `$groupChatWorkspace` is the SELECTED room, and several paths clear it while
+ *  a room's tab is still open and fronted — opening a bot clears it before it
+ *  knows whether the dismiss succeeded, and it is in-memory so any remount
+ *  starts at null. `groupChatMainTabs` is the authoritative record of which
+ *  rooms own a main tab, so ask the panes. */
+export function frontedGroupChat(): null | string {
+  if (typeof host.paneVisibility !== 'function') {
+    return null
+  }
+
+  for (const group of groupChatMainTabs.keys()) {
+    try {
+      if (host.paneVisibility(groupChatPaneId(group)).get() === true) {
+        return group
+      }
+    } catch {
+      /* a pane that no longer exists cannot be fronted */
+    }
+  }
+
+  return null
+}
+
+/** The room that owns the center for PASSIVE guard purposes: the selection when
+ *  it is set, else whichever room's tab is actually fronted.
+ *
+ *  Only passive guards use this. An explicit bot open still flips the scope on
+ *  purpose, and it dismisses the room's tab first, so this returns null by then
+ *  and never fights a real gesture.
+ *
+ *  The selection WINS whenever it is set, backgrounded pane or not, because
+ *  selecting a room is itself a real gesture. It is only once the selection is
+ *  null that a merely OPEN tab stops counting, which is what keeps a bot
+ *  openable after ever having visited a room. */
+export function activeGroupChat(): null | string {
+  return $groupChatWorkspace.get() || frontedGroupChat()
 }
 
 /** The in-panel room is the FALLBACK surface, not a second copy: it renders

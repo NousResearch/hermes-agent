@@ -43,16 +43,17 @@ class GatewayBusySessionMixin:
         state = self._peek_session_state(session_key)
         return state.conversation.queued_events if state else None
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> bool:
+        """Append a /queue event to the FIFO chain for a session; True when it was stored."""
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
-        if pending_slot is None:
-            return
+        if not isinstance(pending_slot, dict):
+            return False
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
+        return True
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional["MessageEvent"]
@@ -75,7 +76,8 @@ class GatewayBusySessionMixin:
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())
-        if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
+        pending = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if isinstance(pending, dict) and session_key in pending:
             depth += 1
         return depth
 
@@ -278,11 +280,11 @@ class GatewayBusySessionMixin:
         "gateway_session_id", "gateway_session_strict",
     )
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._adapter_for_source(event.source)
         if not adapter:
-            return
+            return False
         # FIFO so each follow-up gets its own turn in arrival order (the single pending slot used to
         # be silently OVERWRITTEN). Photo bursts still merge into the head slot (album semantics).
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -312,16 +314,16 @@ class GatewayBusySessionMixin:
                 merge_text=event.message_type == MessageType.TEXT,
             )
             event._gateway_accepted = True
-            return
+            return True
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key, self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
-        self._enqueue_fifo(session_key, event, adapter)
+        return self._enqueue_fifo(session_key, event, adapter)
 
     async def _prepare_busy_steer_text(self, event: MessageEvent) -> str:
         """Steerable text for a busy follow-up, transcribing voice-message media first.
@@ -406,8 +408,12 @@ class GatewayBusySessionMixin:
         if not adapter:
             return
         if self._queue_during_drain_enabled(effective_mode):
-            self._queue_or_replace_pending_event(session_key, event)
-            message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+            queued = self._queue_or_replace_pending_event(session_key, event)
+            message = (
+                f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                if queued
+                else f"⏳ Gateway is {self._status_action_gerund()} — that message could not be queued, send it again once it is back."
+            )
         else:
             message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
         await self._send_busy_reply(event, adapter, message)
@@ -577,11 +583,15 @@ class GatewayBusySessionMixin:
     _BUSY_DEMOTED_TAIL = (
         " — your message is queued for when it finishes (use /stop to cancel everything)."
     )
+    _BUSY_DROPPED_TAIL = (
+        " — I could not hold your message; send it again once it finishes"
+        " (use /stop to cancel everything)."
+    )
 
     def _compose_busy_ack_message(
         self, event: MessageEvent, now: float, _busy_state, running_agent: Any, *,
         is_steer_mode: bool, is_queue_mode: bool, is_redirect_mode: bool,
-        demoted_for_subagents: bool, demoted_for_compression: bool,
+        demoted_for_subagents: bool, demoted_for_compression: bool, queued: bool,
     ) -> str:
         from gateway.run import (
             _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
@@ -621,13 +631,25 @@ class GatewayBusySessionMixin:
             head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
         elif is_queue_mode and demoted_for_subagents:
             # Explain the demotion: the follow-up didn't kill the subagent; /stop is the escape hatch.
-            head, tail = "⏳ Subagent working", self._BUSY_DEMOTED_TAIL
+            head = "⏳ Subagent working"
+            tail = self._BUSY_DEMOTED_TAIL if queued else self._BUSY_DROPPED_TAIL
         elif is_queue_mode and demoted_for_compression:
-            head, tail = "⏳ Compressing context", self._BUSY_DEMOTED_TAIL
-        elif is_queue_mode:
+            head = "⏳ Compressing context"
+            tail = self._BUSY_DEMOTED_TAIL if queued else self._BUSY_DROPPED_TAIL
+        elif is_queue_mode and queued:
             head, tail = "⏳ Queued for the next turn", ". I'll respond once the current task finishes."
-        else:
+        elif is_queue_mode:
+            head, tail = (
+                "⏳ Still working",
+                " — I could not queue that message; send it again once I finish.",
+            )
+        elif queued:
             head, tail = "⚡ Interrupting current task", ". I'll respond to your message shortly."
+        else:
+            head, tail = (
+                "⚡ Interrupting current task",
+                " — I could not hold your message; send it again once I finish.",
+            )
         message = f"{head}{status_detail}{tail}"
 
         # One-time onboarding hint about the queue/interrupt knob (flag persisted to config.yaml).
@@ -707,8 +729,9 @@ class GatewayBusySessionMixin:
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
+        queued = True
         if not _steer.steered and not redirected:
-            self._queue_or_replace_pending_event(session_key, event)
+            queued = self._queue_or_replace_pending_event(session_key, event)
         # Store the message so it's processed as the next turn after the current run finishes (or is
         # interrupted). Skip this for a successful steer — the text already landed inside the run and must
         # NOT also be replayed as a next-turn user message. Route through _queue_or_replace_pending_event
@@ -747,7 +770,7 @@ class GatewayBusySessionMixin:
             event, now, _busy_state, running_agent, is_steer_mode=is_steer_mode,
             is_queue_mode=is_queue_mode, is_redirect_mode=is_redirect_mode,
             demoted_for_subagents=_steer.demoted_for_subagents,
-            demoted_for_compression=_steer.demoted_for_compression,
+            demoted_for_compression=_steer.demoted_for_compression, queued=queued,
         )
         await self._send_busy_ack_reply(event, adapter, message)
         return True
@@ -896,20 +919,21 @@ class GatewayBusySessionMixin:
         if not queued_text and not has_media:
             return "Usage: /queue <prompt>"
         adapter = self._adapter_for_source(source)
-        if adapter:
-            self._enqueue_fifo(quick_key, MessageEvent(
-                text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
-                source=event.source, raw_message=event.raw_message, message_id=event.message_id,
-                media_urls=list(getattr(event, "media_urls", []) or []),
-                media_types=list(getattr(event, "media_types", []) or []),
-                media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
-                reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
-                reply_to_author_id=event.reply_to_author_id,
-                reply_to_author_name=event.reply_to_author_name,
-                reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
-                channel_prompt=event.channel_prompt, channel_context=event.channel_context,
-                internal=event.internal, timestamp=event.timestamp,
-            ), adapter)
+        queued = bool(adapter) and self._enqueue_fifo(quick_key, MessageEvent(
+            text=queued_text, message_type=event.message_type if has_media else MessageType.TEXT,
+            source=event.source, raw_message=event.raw_message, message_id=event.message_id,
+            media_urls=list(getattr(event, "media_urls", []) or []),
+            media_types=list(getattr(event, "media_types", []) or []),
+            media_text_inlined=list(getattr(event, "media_text_inlined", []) or []),
+            reply_to_message_id=event.reply_to_message_id, reply_to_text=event.reply_to_text,
+            reply_to_author_id=event.reply_to_author_id,
+            reply_to_author_name=event.reply_to_author_name,
+            reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
+            channel_prompt=event.channel_prompt, channel_context=event.channel_context,
+            internal=event.internal, timestamp=event.timestamp,
+        ), adapter)
+        if not queued:
+            return "⚠️ Could not queue that — nothing was able to store it. Try again."
         depth = self._queue_depth(quick_key, adapter=adapter)
         return "Queued for the next turn." + (f" ({depth} queued)" if depth > 1 else "")
 
@@ -926,13 +950,13 @@ class GatewayBusySessionMixin:
         def _queue_fallback(reply: str) -> str:
             # Turn-boundary fallback: queue the steer text as its own follow-up turn.
             adapter = self._adapter_for_source(source)
-            if adapter:
-                self._enqueue_fifo(quick_key, MessageEvent(
-                    text=steer_text, message_type=MessageType.TEXT, source=event.source,
-                    message_id=event.message_id, channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
-                ), adapter)
-            return reply
+            if adapter and self._enqueue_fifo(quick_key, MessageEvent(
+                text=steer_text, message_type=MessageType.TEXT, source=event.source,
+                message_id=event.message_id, channel_prompt=event.channel_prompt,
+                channel_context=event.channel_context,
+            ), adapter):
+                return reply
+            return "⚠️ /steer could not be queued — try again once the agent is running."
 
         if running_agent is _AGENT_PENDING_SENTINEL:
             return _queue_fallback("Agent still starting — /steer queued for the next turn.")

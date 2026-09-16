@@ -5,7 +5,7 @@
  */
 import { host } from '@hermes/plugin-sdk'
 
-import { botFriendlyNames, botHandle, mentionNameForms } from './data'
+import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -80,6 +80,14 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
       }
     }
 
+    // A same-named Connections twin gets `@<name>-<device>` from the registry,
+    // but the room's own-source member keeps its bare name and so loses every
+    // shared form to the twin (Map last-wins). `@<name>-local` is its
+    // always-available unambiguous address.
+    if (!member.remoteSource) {
+      forms.add(`${member.name.toLowerCase()}-local`)
+    }
+
     for (const form of forms) {
       if (form) {
         handles.set(form, groupMemberKey(member))
@@ -111,6 +119,29 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     everyone,
     mentioned
   }
+}
+
+/** The `@tag` "Reply to" seeds for one member: its friendly tag when that
+ *  routes to this member alone, else the first owner-qualified form that does
+ *  (`@<name>-<device>` for a Connections twin, `@<name>-local` for the room's
+ *  own-source twin — see #89883). A bare `{ name }` of a member who left the
+ *  room resolves to nothing and keeps its friendly tag. */
+export function groupReplyMentionTag(member: GroupMember, members: GroupMember[]): string {
+  const key = groupMemberKey(member)
+
+  const candidates = [botMentionTag(member), botHandle(member.name, member), `${member.name}-local`]
+    .map(tag => String(tag || '').trim())
+    .filter(Boolean)
+
+  return (
+    candidates.find(tag => {
+      const { mentioned } = parseGroupChatMentions(`@${tag}`, members)
+
+      return mentioned.size === 1 && mentioned.has(key)
+    }) ||
+    candidates[0] ||
+    ''
+  )
 }
 
 /** Members that should take a turn this round: everyone when no member is

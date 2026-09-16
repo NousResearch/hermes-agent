@@ -42,7 +42,6 @@ import {
   $botMeta,
   $lastRoster,
   botHandle,
-  botMentionTag,
   botMetaV2Active,
   botSourceStatus,
   noteBotMetaWrite,
@@ -95,7 +94,7 @@ import {
   updateGroupComposerDraft
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
-import { sendToGroupChat, stopGroupThread } from './group-rounds'
+import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
@@ -983,9 +982,13 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // #89883: answer ONE bot from its message. Seeds `@tag ` into the composer
   // that owns this entry's thread — the open reply box when it is this
   // thread's, else the main composer — so parseGroupChatMentions routes the
-  // next turn to that member only. Insert-only: the user still sends.
+  // next turn to that member only. Insert-only: the user still sends. The tag
+  // is owner-qualified when a same-named twin shares the friendly form.
+  const replyMentionTag = (entry: GroupMessage, member: GroupMember | null) =>
+    groupReplyMentionTag(member || { name: entry.from.name }, members)
+
   const replyToMember = (entry: GroupMessage, member: GroupMember | null) => {
-    const tag = String(botMentionTag(member || { name: entry.from.name }) || botHandle(entry.from.name, member || undefined)).trim()
+    const tag = replyMentionTag(entry, member)
 
     if (!tag) {
       return
@@ -1088,7 +1091,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             {entry.text.trim() || !isUser ? (
               <div className="ml-auto flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
                 {isUser ? null : (
-                  <Tip label={`Reply to @${botMentionTag(member || { name: entry.from.name }) || botHandle(entry.from.name, member || undefined)}`}>
+                  <Tip label={`Reply to @${replyMentionTag(entry, member)}`}>
                     <Button
                       aria-label={`Reply to ${display}`}
                       className="text-(--ui-text-tertiary) hover:text-foreground"

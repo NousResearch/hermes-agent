@@ -116,6 +116,24 @@ describe('routing', () => {
     expect(parsed.mentioned.size).toBe(1)
   })
 
+  it('Reply-to tags route a same-named local + Connections twin each to itself', async () => {
+    const { rounds } = await loadRoom()
+
+    const local: GroupMember = { name: 'reviewer' }
+    const remote: GroupMember = { connectionId: 'mini', handle: 'reviewer-mini', name: 'reviewer', remoteSource: true, sourceScoped: true }
+    const members = [local, remote]
+
+    for (const member of members) {
+      const tag = rounds.groupReplyMentionTag(member, members)
+      const parsed = rounds.parseGroupChatMentions(`@${tag} `, members)
+
+      expect([tag, [...parsed.mentioned]]).toEqual([member.remoteSource ? 'reviewer-mini' : 'reviewer-local', [member.remoteSource ? 'mini::reviewer' : 'reviewer']])
+    }
+
+    // Unambiguous members keep the friendly tag the autocomplete inserts.
+    expect(rounds.groupReplyMentionTag({ name: 'ops', title: 'The Ops' }, MEMBERS)).toBe('the-ops')
+  })
+
   it('rotates the lead speaker each round', async () => {
     const { rounds } = await loadRoom()
 

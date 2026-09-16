@@ -737,6 +737,33 @@ class _PickerBuild:
         return discovered, native_catalog_empty, probe_live
 
 
+def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
+    """Section 0: LM Studio, before ``providers:`` entries claim the slug.
+
+    LM Studio has no models.dev mapping, so it never goes through section 1's builtin path — and
+    with nothing claiming the slug first, a bare ``providers.lmstudio: {request_timeout_seconds: ...}``
+    block (recommended local-model timeout config, no ``base_url``/``models``) fell straight to
+    section 3's generic custom-endpoint handling. That path could not discover anything (no
+    ``api_url`` -> ``discovery_allowed`` is false) and rendered a single-model row off whatever
+    ``model:`` happened to be configured — collapsing the picker to just the active model even
+    though ``_build_curated_lists`` had already live-probed the full LM Studio catalog into
+    ``b.curated["lmstudio"]``. Claim the slug here first (skipped only when the user has pointed
+    ``providers.lmstudio`` at an explicit endpoint of their own, in which case section 3's generic
+    custom-provider handling is the correct, unsurprising behaviour) so section 3 leaves it alone."""
+    if "lmstudio" in b.excluded or "lmstudio" in b.seen_slugs:
+        return
+    configured = user_providers.get("lmstudio") if isinstance(user_providers, dict) else None
+    if isinstance(configured, dict) and _entry_base_url(configured, ("base_url", "api", "url")):
+        return  # user pointed the slug at their own endpoint; let section 3 handle it as configured
+    is_current = b.current_provider.strip().lower() == "lmstudio"
+    if not (is_current or os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or isinstance(configured, dict)):
+        return
+    from hermes_cli.model_switch import _declared_model_ids
+    configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+    model_ids = list(dict.fromkeys([*configured_models, *b.curated.get("lmstudio", [])]))
+    b.add_builtin_row("lmstudio", "LM Studio", is_current, model_ids, "built-in")
+
+
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
     from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
@@ -1058,22 +1085,41 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
         from hermes_cli.models import fetch_ollama_cloud_models
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
     # LM Studio has no static catalog: probe its native endpoint live. Base URL precedence:
-    # LM_BASE_URL > active config base_url (when current) > default. On auth rejection /
-    # unreachable, fall back to the current model so the picker still shows something offline.
+    # LM_BASE_URL > active config base_url (when current) > default. A busy local server (large
+    # model actively loaded/generating) can be slow to answer /api/v1/models, so the probe gets a
+    # generous timeout (matches models_local.fetch_lmstudio_models's own default) rather than the
+    # 1.5s that used to make any slowdown look identical to "unreachable". On a failed/timed-out
+    # probe, fall back to the last successful catalog for this base URL (persisted below) so the
+    # picker keeps showing every known model instead of collapsing to just the active one — a
+    # stale catalog entry self-corrects the next time the probe succeeds. Only when there is no
+    # prior catalog at all (first run, LM Studio never reachable) does it fall back to the current
+    # model so the picker still shows *something*.
     is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
     if "lmstudio" not in curated and (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or is_current_lmstudio):
         from hermes_cli.models_local import fetch_lmstudio_models
         from hermes_cli.auth import AuthError
+        from hermes_cli.models import _load_provider_models_cache, _store_cache_entry
         lm_base = (
             os.environ.get("LM_BASE_URL")
             or (current_base_url if is_current_lmstudio and current_base_url else None)
             or "http://127.0.0.1:1234/v1")
+        cache_key = f"lmstudio::{lm_base.strip().rstrip('/')}"
         try:
-            live = fetch_lmstudio_models(api_key=os.environ.get("LM_API_KEY", ""), base_url=lm_base, timeout=1.5)
+            live = fetch_lmstudio_models(api_key=os.environ.get("LM_API_KEY", ""), base_url=lm_base, timeout=5.0)
         except AuthError:
             live = []
-        if not live and is_current_lmstudio and current_model:
-            live = [current_model]
+        if live:
+            try:
+                _store_cache_entry(cache_key, {"fp": cache_key, "at": time.time(), "models": live})
+            except Exception:
+                pass
+        else:
+            cached_entry = (_load_provider_models_cache() or {}).get(cache_key)
+            stale = cached_entry.get("models") if isinstance(cached_entry, dict) else None
+            if stale:
+                live = list(stale)
+            elif is_current_lmstudio and current_model:
+                live = [current_model]
         curated["lmstudio"] = live
     return curated
 
@@ -1133,6 +1179,7 @@ def list_authenticated_providers(
         except Exception:
             pass  # best-effort; serial path still works
 
+    _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
     _lap_canonical_rows(b)

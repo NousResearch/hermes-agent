@@ -329,6 +329,30 @@ class TestNormalizeOpencodeBaseUrl:
             "opencode-zen", "anthropic_messages", "https://opencode.ai/zen/v1/"
         ) == "https://opencode.ai/zen"
 
+    def test_rewrites_stale_zen_family_path_for_go(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://opencode.ai/zen/v1"
+        ) == "https://opencode.ai/zen/go/v1"
+
+    def test_rewrites_stale_go_family_path_for_zen(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1"
+        ) == "https://opencode.ai/zen/v1"
+
+    def test_rewrites_family_before_stripping_anthropic_v1(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1"
+        ) == "https://opencode.ai/zen/go"
+
+    def test_custom_host_family_path_is_left_unchanged(self):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(
+            "opencode-go", "chat_completions", "https://proxy.example/zen/v1"
+        ) == "https://proxy.example/zen/v1"
+
 
     def test_non_opencode_provider_untouched(self):
         from hermes_cli.models import normalize_opencode_base_url

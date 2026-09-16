@@ -2282,19 +2282,27 @@ def normalize_opencode_base_url(
     provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
     """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
     stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
-    and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone."""
+    and chat/codex modes heal it by re-adding ``/v1``. Official OpenCode URLs also follow the
+    selected Zen/Go family; custom ``OPENCODE_*_BASE_URL`` proxies are left alone."""
     url = str(base_url or "").strip().rstrip("/")
-    if not url or opencode_provider_family(provider_id) is None:
+    family = opencode_provider_family(provider_id)
+    if not url or family is None:
         return url
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc.lower()
+    except Exception:
+        parsed = None
+        host = ""
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        family_path = "/zen/go" if family == "opencode-go" else "/zen"
+        if parsed and parsed.path in {"/zen", "/zen/v1", "/zen/go", "/zen/go/v1"}:
+            suffix = "" if api_mode == "anthropic_messages" else "/v1"
+            return urllib.parse.urlunparse(parsed._replace(path=family_path + suffix))
     if api_mode == "anthropic_messages":
         return re.sub(r"/v1$", "", url)
     if url.endswith("/v1"):
         return url
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower()
-    except Exception:
-        host = ""
     return url + "/v1" if host == "opencode.ai" or host.endswith(".opencode.ai") else url
 
 

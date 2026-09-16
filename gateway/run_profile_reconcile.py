@@ -262,3 +262,45 @@ def _mcp_config_reconciler(runner=None):
                 _reconcile_current(str(profile_name))
 
     return _tick
+
+
+def migrate_profile_identity_verb(runner):
+    """Build the ``migrate-profile-identity`` control-verb handler for ``hermes profile rename``
+    (#111926). The live multiplexer owns the routing index in memory and writes it back
+    periodically, so a CLI-side rewrite of ``agent:<old>:*`` would be clobbered on the next save;
+    the CLI therefore asks this process to rekey both durable stores AND ``SessionStore._entries``.
+    Runs on the control-socket executor thread; ``rekey_profile_routing`` takes the store lock."""
+
+    def _handler(params: dict) -> dict:
+        old, new = str(params.get("old") or "").strip(), str(params.get("new") or "").strip()
+        if not old or not new or old == new:
+            return {"ok": False, "error": "old/new required and must differ"}
+        store = getattr(runner, "session_store", None)
+        if store is None:
+            return {"ok": False, "error": "live gateway has no session store"}
+        acquired = []
+        try:
+            from hermes_state_registry import acquire, release_or_close
+            db_counts: Dict[str, Dict[str, int]] = {}
+            routing_db = getattr(store, "_routing_db", None)
+            if routing_db is not None and hasattr(routing_db, "rekey_profile_state"):
+                db_counts["routing"] = routing_db.rekey_profile_state(old, new)
+            routing_home = getattr(store, "_routing_home", None)
+            profile_path = Path(routing_home) / "profiles" / new / "state.db" if routing_home else None
+            if profile_path is not None and profile_path.exists():
+                profile_db = acquire(profile_path)
+                acquired.append(profile_db)
+                db_counts["profile"] = profile_db.rekey_profile_state(old, new)
+            rekeyed = store.rekey_profile_routing(old, new)
+            return {"ok": True, "rekeyed": rekeyed, "db": db_counts}
+        except Exception as exc:
+            logger.warning("Profile identity migration failed for %r->%r: %s", old, new, exc)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        finally:
+            for db in acquired:
+                try:
+                    release_or_close(db)
+                except Exception:
+                    logger.debug("Failed to release renamed profile state DB", exc_info=True)
+
+    return _handler

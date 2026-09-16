@@ -1052,7 +1052,7 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
 
 def _aplay_supports_file(file_path: str) -> bool:
     """Return whether bare ``aplay <file>`` can decode this container."""
-    return Path(file_path).suffix.lower() in {".wav", ".wave"}
+    return Path(file_path).suffix.lower() in {".au", ".voc", ".wav", ".wave"}
 
 
 def _system_player_candidates(file_path: str) -> List[List[str]]:

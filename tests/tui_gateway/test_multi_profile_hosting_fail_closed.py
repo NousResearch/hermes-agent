@@ -175,3 +175,48 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
     finally:
         server._release_build_profile_scopes(scopes)
     assert current_secret_scope() is None
+
+
+class _MemoryManager:
+    """Stands in for an external memory provider: ``system_prompt_block()`` reads its credential via get_secret."""
+    def build_system_prompt(self):
+        from agent.secret_scope import get_secret
+        from hermes_constants import get_hermes_home
+        return f"{get_hermes_home()}|{get_secret('MEM_PROVIDER_KEY')}"
+
+
+def _prompt_building_session(profile_home, key):
+    import threading
+    from types import SimpleNamespace
+    agent = SimpleNamespace(
+        _memory_manager=_MemoryManager(), _cached_system_prompt="", session_id=key, model="m", tools=[],
+        _session_db=SimpleNamespace(update_system_prompt=lambda sid, prompt: None))
+    agent._build_system_prompt = lambda system_message=None: agent._memory_manager.build_system_prompt()
+    return {"agent": agent, "history": [], "history_lock": threading.Lock(), "history_version": 0,
+            "running": False, "session_key": key, "profile_home": profile_home, "cwd": os.getcwd()}
+
+
+def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes, monkeypatch):
+    """Regression for #112927: ``session.context_breakdown`` (Desktop refetches it after every turn) and the
+    model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
+    provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
+    hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
+    import agent.system_prompt as system_prompt
+
+    root, b = two_homes
+    (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")
+    (b / ".env").write_text((b / ".env").read_text() + "MEM_PROVIDER_KEY=b-mem-key\n")
+    monkeypatch.setattr(system_prompt, "build_system_prompt_parts",
+                        lambda agent, system_message=None: {"stable": "", "context": "",
+                                                            "volatile": agent._memory_manager.build_system_prompt()})
+    monkeypatch.setattr("agent.context_file_sources.context_file_sources_for_agent", lambda agent: [])
+    sessions = {"sa": _prompt_building_session(None, "sess-a"), "sb": _prompt_building_session(str(b), "sess-b")}
+    monkeypatch.setattr(server, "_sessions", sessions)
+    assert _probe("b")["b_ref"] == B_VAL  # flips the process to fail-closed multi-profile hosting
+
+    for sid, home, key in (("sa", root, "launch-mem-key"), ("sb", b, "b-mem-key"), ("sa", root, "launch-mem-key")):
+        resp = server._methods["session.context_breakdown"]("rid", {"session_id": sid})
+        assert "error" not in resp, resp
+        server._persist_live_session_system_prompt(sessions[sid])
+        assert sessions[sid]["agent"]._cached_system_prompt == f"{home}|{key}"
+    assert os.environ.get("MEM_PROVIDER_KEY") is None

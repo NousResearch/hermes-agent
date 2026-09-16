@@ -393,7 +393,7 @@ def test_liveness_guard_serializes_cross_process_acquire(tmp_path: Path) -> None
             _stop_child(child, release_file)
 
 
-def test_automatic_desktop_cleanup_preserves_sibling_and_ends_sole_owner(
+def test_automatic_desktop_cleanup_preserves_sibling_and_releases_sole_owner_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every automatic cleanup reason must preserve another Desktop backend."""

@@ -72,6 +72,7 @@ def _make_real_session(tmp_path, monkeypatch, *, source, session_id):
     agent._session_messages = []
     agent._active_children_lock = threading.Lock()
     agent._active_children = []
+    agent._memory_manager = None  # close() reads it directly; a stub must not rely on _quietly swallowing
 
     session = _make_session(session_id)
     session["agent"] = agent
@@ -128,6 +129,7 @@ class TestGatewayOwnedSessionTeardown:
         assert row["ended_at"] is None
         assert row["end_reason"] is None
         assert agent._end_session_on_close is False
+        assert agent._owns_session_db is False  # close() reached _finalize_owned_session_row
 
 
 class TestDesktopAutomaticReclaimTeardown:
@@ -146,10 +148,11 @@ class TestDesktopAutomaticReclaimTeardown:
         row = _read_real_row(db_path, f"desktop-{reason}")
         assert (row["ended_at"], row["end_reason"]) == (None, None)
         assert agent._end_session_on_close is False
+        assert agent._owns_session_db is False  # close() reached _finalize_owned_session_row
 
     @pytest.mark.parametrize("source,reason", [("desktop", "tui_close"), ("tui", "ws_orphan_reap")])
     def test_explicit_close_and_non_desktop_reap_still_end_row(self, tmp_path, monkeypatch, source, reason):
-        db_path, session, _agent = _make_real_session(
+        db_path, session, agent = _make_real_session(
             tmp_path, monkeypatch, source=source, session_id=f"{source}-{reason}"
         )
 
@@ -158,3 +161,4 @@ class TestDesktopAutomaticReclaimTeardown:
         row = _read_real_row(db_path, f"{source}-{reason}")
         assert row["ended_at"] is not None
         assert row["end_reason"] == reason
+        assert agent._end_session_on_close is True  # flag untouched when the row was ended here

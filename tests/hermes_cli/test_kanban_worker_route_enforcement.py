@@ -58,8 +58,15 @@ def routing_home(tmp_path, monkeypatch):
 
 def _persist_receipt(routing_home):
     from agent.model_selection import select
-    from agent.model_selection_store import persist_receipt
+    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
 
+    # A real dispatcher only ever resolves a decision against a policy that
+    # is (still) the active revision — publish/activate it here too so this
+    # helper mirrors resolve_task_route's real path, including the worker-side
+    # revocation check (design §12) that later validates the SAME revision is
+    # still active before first inference.
+    record = publish_policy(routing_home, _policy(), approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", record["revision"])
     decision = select(_requirements(), _policy(), {}, now=1000)
     receipt_id = persist_receipt(routing_home, decision)
     return receipt_id
@@ -144,4 +151,27 @@ def test_resolve_task_route_carries_receipt_id_for_worker_enforcement(routing_ho
             routing_home, kwargs["receipt_id"],
             actual_provider="anthropic", actual_model="claude-x",
             actual_endpoint=kwargs["endpoint"], actual_reasoning=kwargs["reasoning_effort"],
+        )
+
+
+def test_revoked_policy_blocks_worker_even_with_matching_route(routing_home):
+    """A policy suspended/edited to a new revision AFTER the receipt was
+    persisted but BEFORE this worker's first inference must still block —
+    the worker matching its own receipted route is not sufficient once that
+    route's authorizing policy revision is no longer active (design §12
+    "Availability, budget, reasoning and revocation")."""
+    from agent.model_selection_store import activate_policy, publish_policy
+    from hermes_cli.kanban_model_routing import enforce_worker_route
+
+    receipt_id = _persist_receipt(routing_home)
+    superseding = _policy()
+    superseding["revision"] = 2
+    record = publish_policy(routing_home, superseding, approval_ref="operator:revoke")
+    activate_policy(routing_home, "kanban-default", record["revision"])
+
+    with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
+        enforce_worker_route(
+            routing_home, receipt_id,
+            actual_provider="openai", actual_model="gpt-5",
+            actual_endpoint="https://api.openai.com/v1", actual_reasoning="high",
         )

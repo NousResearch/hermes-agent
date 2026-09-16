@@ -4254,6 +4254,16 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
     from hermes_cli.kanban_model_routing import enforce_worker_route
     from hermes_constants import get_hermes_home
 
+    # Authoritative origin: the profile whose model_routing.db actually holds
+    # this receipt (design §12: "workers receive a scoped immutable snapshot
+    # and decision bound to origin"). A dispatcher assigning a task to a
+    # DIFFERENT profile's worker sets HERMES_KANBAN_ROUTING_ORIGIN_HOME
+    # explicitly; this worker's own current-profile HERMES_HOME must never be
+    # substituted for it — an unrelated receipt id that happens to exist in
+    # this worker's own default store must not authorize this launch.
+    origin_home = os.environ.get("HERMES_KANBAN_ROUTING_ORIGIN_HOME", "").strip()
+    routing_home = origin_home or get_hermes_home()
+
     agent = cli.agent
     # NOTE: agent.provider is canonicalized transport family (e.g. "custom" for
     # every named custom_providers entry); agent.requested_provider preserves the
@@ -4264,7 +4274,7 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
     actual_provider = (getattr(agent, "requested_provider", "") or agent.provider or "").strip()
     try:
         enforce_worker_route(
-            get_hermes_home(), receipt_id,
+            routing_home, receipt_id,
             actual_provider=actual_provider,
             actual_model=(agent.model or "").strip(),
             actual_endpoint=(getattr(agent, "base_url", None) or None),

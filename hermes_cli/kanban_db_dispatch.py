@@ -1652,9 +1652,17 @@ def _dispatch_lane_task(
             from hermes_constants import get_hermes_home as _get_hermes_home
         except Exception:
             raise
+        # This IS the origin authority: the profile whose policy/model_routing.db
+        # actually governs this dispatch tick, independent of which profile the
+        # claimed task is assigned to run under. A dispatcher dispatching to a
+        # different assignee's profile (origin A -> worker B) must have B's
+        # worker validate against A's receipt store, never B's own default —
+        # threaded through explicitly below rather than re-derived by the
+        # worker from its own (possibly different) HERMES_HOME.
+        origin_hermes_home = str(_get_hermes_home())
         try:
             kwargs = _resolve_task_route(
-                _get_hermes_home(), conn, claimed,
+                origin_hermes_home, conn, claimed,
                 now=int(time.time()),
                 frozen_sha=os.environ.get("HERMES_KANBAN_ROUTING_FROZEN_SHA", "unknown"),
                 verified_by=os.environ.get("HERMES_KANBAN_ROUTING_VERIFIED_BY", "kanban-dispatcher"),
@@ -1676,6 +1684,10 @@ def _dispatch_lane_task(
             # receipt id must be visible here even though the row read that
             # populated `claimed` predates the receipt write.
             claimed.routing_receipt_id = kwargs["receipt_id"]
+            # Carried to the worker's env verbatim (never re-derived from the
+            # worker's own profile scope) so enforce_worker_route validates
+            # against the SAME store the decision was actually persisted in.
+            claimed.routing_origin_home = origin_hermes_home
     try:
         resolved_branch_name = None
         if claimed.workspace_kind == "worktree":
@@ -2371,6 +2383,15 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # and validates its own actually-constructed route against it before
         # sending any task content — never re-derives/re-selects a route.
         env["HERMES_KANBAN_ROUTING_RECEIPT"] = task.routing_receipt_id
+        # Origin authority (design §12 "Workers receive a scoped immutable
+        # snapshot ... bound to origin"): the profile whose model_routing.db
+        # actually holds this receipt, which may differ from this worker's
+        # OWN HERMES_HOME (task.assignee's profile) when a multiplexed
+        # dispatcher dispatches to another profile's worker. Set explicitly
+        # so the worker never substitutes its own default store.
+        _origin_home = getattr(task, "routing_origin_home", None)
+        if _origin_home:
+            env["HERMES_KANBAN_ROUTING_ORIGIN_HOME"] = _origin_home
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

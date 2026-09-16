@@ -1570,18 +1570,49 @@ def set_model_override(
     )
 
 
-def set_routing_receipt(conn: sqlite3.Connection, task_id: str, receipt_id: Optional[str]) -> bool:
+def set_routing_receipt(
+    conn: sqlite3.Connection, task_id: str, receipt_id: Optional[str], *,
+    expected_run_id: Optional[int] = None,
+) -> bool:
     """Record the guided-routing decision receipt id resolved for this task's
     current attempt (design plans/2026-09-15_141016-guided-model-routing.md
     §12 claim/start sequence). Called by the dispatcher immediately after a
     successful ``select()`` for a ``routing_role`` task, before spawning the
-    worker — never at card-creation time."""
-    return _set_task_override(
-        conn, task_id,
-        "UPDATE tasks SET routing_receipt_id = ? WHERE id = ?", (receipt_id,),
-        "routing_receipt_set", {"receipt_id": receipt_id},
-        ("routing_receipt_id",), archived_msg="cannot set routing receipt",
-    )
+    worker — never at card-creation time.
+
+    ``expected_run_id`` is a compare-and-set guard against the run the caller
+    claimed: a decision resolved under a run that a concurrent reclaim/replace
+    has since superseded (``current_run_id`` moved on) must NOT be linked to
+    the new run — the "claim/run CAS" half of the claim/start/crash contract
+    (design §12). Returns False (never raises) when the CAS misses, so the
+    caller treats it as a lost claim, not a schema/persistence error."""
+    if expected_run_id is None:
+        return _set_task_override(
+            conn, task_id,
+            "UPDATE tasks SET routing_receipt_id = ? WHERE id = ?", (receipt_id,),
+            "routing_receipt_set", {"receipt_id": receipt_id},
+            ("routing_receipt_id",), archived_msg="cannot set routing receipt",
+        )
+    with write_txn(conn):
+        status = _task_status(conn, task_id)
+        if status is None:
+            return False
+        if status == "archived":
+            raise RuntimeError("cannot set routing receipt on archived task")
+        cur = conn.execute(
+            "UPDATE tasks SET routing_receipt_id = ? WHERE id = ? AND current_run_id = ?",
+            (receipt_id, task_id, expected_run_id),
+        )
+        if cur.rowcount == 0:
+            # The claim this decision was resolved under is no longer the
+            # current run (reclaimed/replaced concurrently) — link nothing.
+            return False
+        _append_event(
+            conn, task_id, "routing_receipt_set", {"receipt_id": receipt_id},
+            run_id=expected_run_id,
+        )
+    notify_task_updated(conn, task_id, ("routing_receipt_id",))
+    return True
 
 
 def _set_task_override(

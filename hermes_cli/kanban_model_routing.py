@@ -13,7 +13,7 @@ from typing import Optional
 
 from agent.model_selection import select
 from agent.model_selection_guard import managed_child_kwargs, validate_actual_route
-from agent.model_selection_store import get_active_policy, get_receipt, persist_receipt
+from agent.model_selection_store import append_outcome, get_active_policy, get_receipt, persist_receipt
 from agent.model_selection_types import RoutingBlocked
 
 _POLICY_ID = "kanban-default"
@@ -70,7 +70,30 @@ def resolve_task_route(
 
     from hermes_cli.kanban_db import set_routing_receipt
 
-    set_routing_receipt(conn, task.id, receipt_id)
+    # Claim/run CAS (design §12 "Claim/start/crash sequence" step 3): link
+    # this receipt to the task ONLY if the run this decision was resolved
+    # under (task.current_run_id, captured by the caller's claim a moment
+    # earlier) is STILL the task's current run. If a concurrent
+    # reclaim/replace has already moved current_run_id on, this decision is
+    # stale — persisting it left an inert receipt (harmless audit residue,
+    # design §12), but it must never be linked/authorized against the new
+    # run. Never silently proceed as if this attempt still owns the task.
+    linked = set_routing_receipt(
+        conn, task.id, receipt_id, expected_run_id=task.current_run_id,
+    )
+    if not linked:
+        raise RoutingBlocked(
+            "stale_or_revoked_decision",
+            f"task {task.id}: claim/run changed before the routing receipt "
+            f"could be linked (resolved under run_id={task.current_run_id!r}); "
+            "refusing to authorize a launch under a superseded claim",
+        )
+    from agent.model_selection_store import append_outcome
+
+    append_outcome(hermes_home, receipt_id, "routing_selected", {
+        "task_id": task.id, "run_id": task.current_run_id,
+        "route_id": decision["selected"]["route_id"],
+    })
     kwargs = managed_child_kwargs(decision)
     # The worker process cannot re-run select(); it validates its own
     # actually-constructed route against this SAME receipted decision right
@@ -105,6 +128,21 @@ def enforce_worker_route(
             f"no routing receipt found for id={receipt_id!r}; the decision this worker "
             "was claimed under is missing or was never persisted",
         )
+    # Emergency revocation (design §12 "Availability, budget, reasoning and
+    # revocation": "best-effort revocation generation check before each
+    # subsequent managed request; it never substitutes another model").
+    # Already-in-flight requests cannot be recalled -- this is the one
+    # checkpoint before the FIRST request, so a policy edited/suspended after
+    # the claim but before this worker's first inference must still stop it,
+    # never silently launch under a routing that is no longer current.
+    active_policy = get_active_policy(hermes_home, decision["policy_id"])
+    if active_policy is None or active_policy.get("revision") != decision["policy_revision"]:
+        raise RoutingBlocked(
+            "stale_or_revoked_decision",
+            f"policy {decision['policy_id']!r} revision {decision['policy_revision']} "
+            "is no longer the active revision (revoked/superseded since this decision "
+            "was receipted); refusing to launch under a stale route",
+        )
     validate_actual_route(
         decision,
         actual_provider=actual_provider,
@@ -112,3 +150,6 @@ def enforce_worker_route(
         actual_endpoint=actual_endpoint,
         actual_reasoning=actual_reasoning,
     )
+    append_outcome(hermes_home, receipt_id, "routing_started", {
+        "actual_provider": actual_provider, "actual_model": actual_model,
+    })

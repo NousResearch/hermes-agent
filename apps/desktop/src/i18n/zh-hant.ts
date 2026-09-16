@@ -3,6 +3,43 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
+  catalog: {
+    installTitle: (name: string) => `安裝「${name}」？`,
+    installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
+    installTo: '安裝至',
+    thisComputer: '這部電腦',
+    installing: '正在安裝…',
+    installComplete: (name: string) => `已安裝「${name}」`,
+    destinationChanged: '安裝目標已變更。請關閉此對話框並重新開啟安裝連結。',
+    browse: '瀏覽',
+    installed: '已安裝',
+    searchSkills: '搜尋技能',
+    searchPlugins: '搜尋外掛',
+    allSources: '所有來源',
+    allCategories: '所有分類',
+    about: '簡介',
+    author: '作者',
+    source: '來源',
+    category: '分類',
+    version: '版本',
+    platforms: '支援的平台',
+    requires: '相依項目',
+    tools: '工具',
+    hooks: '掛鉤',
+    repository: '程式碼儲存庫',
+    documentation: '文件',
+    noResults: '沒有符合的項目',
+    tryAnother: '請嘗試其他搜尋或清除篩選條件。',
+    clearFilters: '清除篩選條件',
+    loadFailed: '無法載入目錄',
+    retry: '再試一次',
+    more: '顯示更多',
+    pinned: '已審核的提交',
+    snapshotHint: '內容來自 Hermes 目錄。瀏覽時不會連線至來源程式碼儲存庫。',
+    installHint: '安裝前請檢查原始碼。變更將於新的工作階段生效。',
+    results: (count: number) => `${count.toLocaleString('zh-Hant')} 個結果`,
+    back: '返回結果'
+  },
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -191,7 +228,6 @@ export const zhHant = defineLocale({
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒絕了該 API 金鑰 (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
       codeSkewRestartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。'
     },
@@ -483,7 +519,7 @@ export const zhHant = defineLocale({
       sessionDensityComfortable: '舒適',
       sessionDensityDetailed: '詳細',
       tabStripTitle: '分頁列',
-      tabStripDesc: '在分區上方顯示分頁。自動模式會在分區只有一個面板時隱藏分頁。',
+      tabStripDesc: '在分區上方顯示分頁。自動模式會在分區只有一個面板時隱藏分頁，除非還開著其他聊天或磚塊分區。',
       tabStripAuto: '自動',
       tabStripAlways: '一律',
       tabStripNever: '永不',
@@ -762,6 +798,7 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '自動壓縮',
         threshold: '壓縮閾值',
+        codexGpt55Autoraise: 'Codex 壓縮自動提高',
         targetRatio: '壓縮目標',
         protectLastN: '保護最近訊息'
       },
@@ -826,7 +863,8 @@ export const zhHant = defineLocale({
         engine: '長對話接近上下文上限時的管理策略。'
       },
       compression: {
-        enabled: '對話變大時摘要較早的上下文。'
+        enabled: '對話變大時摘要較早的上下文。',
+        codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
       },
       browser: {
         useRealProfile:
@@ -2382,6 +2420,7 @@ export const zhHant = defineLocale({
     speakReplies: '朗讀回覆',
     stopSpeakingReplies: '停止朗讀回覆',
     wakeWordListening: phrase => `喚醒詞:「${phrase}」— 正在聆聽`,
+    wakeWord: phrase => `喚醒詞「${phrase}」`,
     wakeWordOff: phrase => `喚醒詞:「${phrase}」— 已關閉`,
     wakeWordPausedVoice: phrase => `喚醒詞:「${phrase}」— 語音對話期間暫停`,
     lookupLoading: '查詢中…',
@@ -3405,7 +3444,8 @@ export const zhHant = defineLocale({
     sudoSendFailed: '無法傳送 sudo 密碼',
     secretSendFailed: '無法傳送密鑰',
     sudoTitle: '管理員密碼',
-    sudoDesc: 'Hermes 需要您的 sudo 密碼來執行特權指令。它只會傳送給您的本機代理。',
+    sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
+    sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',

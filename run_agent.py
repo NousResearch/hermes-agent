@@ -269,7 +269,7 @@ class AIAgent(
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
-        capabilities: Dict[str, bool] | None = None,
+        capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -1222,11 +1222,12 @@ class AIAgent(
             self._tool_guardrail_halt_decision = decision
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
+        # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
         return (
-            f"I stopped retrying {decision.tool_name or 'a tool'} because it hit the tool-call guardrail "
-            f"({decision.code}) after {decision.count} repeated non-progressing "
-            "attempts. The last tool result explains the blocker; the next step is "
-            "to change strategy instead of repeating the same call."
+            f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
+            f"{decision.count} times without making progress. The last result above shows what "
+            "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+            "different approach."
         )
 
     def _append_guardrail_observation(self, tool_name: str, function_args: dict, function_result: str, *,

@@ -397,6 +397,7 @@ class SessionManager:
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
             "model": model or default_model,
+            "cwd": cwd,
         }
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
@@ -424,9 +425,6 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
-        # Codex app-server sessions spawn lazily on the first turn; stamp the ACP
-        # workspace so the Codex runtime starts from the editor cwd, not ours.
-        agent.session_cwd = cwd
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent

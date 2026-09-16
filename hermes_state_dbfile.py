@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_state_holders import canonical_sqlite_path
+from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -690,8 +690,9 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
         if not acquired:
             logger.error("quarantine lock for %s not acquired within 5s — refusing to "
                          "quarantine without the cross-process lock. The invalid file "
-                         "is left in place. If sessions fail to load, restore from "
-                         "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
+                         "is left in place. If sessions fail to load, run `hermes sessions recover "
+                         "--source <state.db> --inspect-only`, or restore a snapshot with "
+                         "`/snapshot list` / `/snapshot restore <id>` (terminal `hermes` chat only).",
                          path)
             return None
         return _do_quarantine()
@@ -716,7 +717,7 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
     try:
         # A short timeout keeps doctor snappy when a writer holds the lock.  The tracked connect
         # lets byte-probe helpers see this connection and refuse raw opens that would cancel locks.
-        conn = _connect_tracked_db(f"file:{Path(db_path)}?mode=ro", tracking_path=Path(db_path),
+        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=Path(db_path),
                                    uri=True, timeout=2.0)
     except Exception as exc:
         logger.debug("collect_state_db_stats: cannot open %s read-only: %s", db_path, exc)

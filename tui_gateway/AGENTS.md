@@ -46,6 +46,30 @@ New question for the user = `_ask("<method>", sid, params, timeout)` in the emit
 and a `server_request(...)` in `contracts/server_requests.py`.
 New event = `event("<type>", Payload)` in `contracts/events.py`; the emitter is checked against it.
 
+## Profile scope in RPC methods
+
+One `serve` process may host sessions from several profile homes (Desktop pooled backends launch
+under a profile; the dashboard serves several). The launch profile is a profile: "default" means
+the launch home, never `~/.hermes`. The first non-launch home hosted flips
+`launch_profile_policy.py` → `set_multiplex_active(True)`; without it every fail-closed guard is
+silently off. Every method that reads or writes home-, config- or `.env`-derived state runs under
+`server.py::@_profile_scoped` (resolved from the live session's `profile_home`, or the explicit
+`profile` argument for sessionless calls) and, for tool/agent construction,
+`methods_tools.py::_profile_scoped_rpc`; the tokens come from `model_switch.py::
+_profile_runtime_scope_tokens(profile_home)` — home + secret scope + terminal scope together.
+**A method that sets only `get_hermes_home_override()` is half-bound**: config paths resolve to the
+right profile while credentials and `TERMINAL_*` policy still come from the launch profile.
+Off-turn paths bind the same way: `session_lifecycle.py::_finalize_session` / `_teardown_session`
+enter `_session_profile_runtime_scope(session)` around `on_session_end`, the memory commit and
+`agent.close()` (their callers are unscoped reapers, Timers, atexit and pool threads); background
+threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
+children act for the served profile through `tools/environments/local.py::served_profile_child_env`
+(`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
+unscoped handlers before adding one: `rg -n "^(async )?def " tui_gateway/methods_*.py | rg -v
+_profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
+call the method for that session and assert the secondary's value resolves and the launch
+profile's does not, and that `os.environ` is unchanged afterwards.
+
 ## Key surfaces
 
 | Surface | Ink component | Gateway method / event |

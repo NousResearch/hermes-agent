@@ -39,7 +39,7 @@ def server(hermes_home, monkeypatch):
         mod = importlib.import_module("tui_gateway.server")
     monkeypatch.setattr(mod, "_hermes_home", hermes_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
-    monkeypatch.setattr(mod, "_cfg_mtime", None)
+    monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     mod._sessions.clear()
@@ -187,7 +187,6 @@ class TestStructuredRead:
                 attempts=1,
                 last_exit_code=1,
                 last_output_tail="private output must stay private",
-                last_failed_fingerprint="secret-fingerprint",
             )],
         )
 
@@ -204,7 +203,7 @@ class TestStructuredRead:
         }]
         serialized = json.dumps(goal)
         for forbidden in (
-            "last_output_tail", "last_failed_fingerprint", "private output", "secret-fingerprint",
+            "last_output_tail", "private output",
             "route", "session_id", "credential", "api_key",
         ):
             assert forbidden not in serialized

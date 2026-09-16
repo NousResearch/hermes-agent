@@ -61,6 +61,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -225,6 +226,26 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
         return True
     status = getattr(exc, "http_status", None)
     return isinstance(status, int) and status in (401, 403)
+
+
+def _split_reply_fallback(body: str) -> tuple[str, str]:
+    """Split ``> quote\\n\\nreply`` into ``(quote_block, reply_text)``; ``("", body)`` when absent.
+
+    The two halves always concatenate back to *body* verbatim (``quote + reply == body``), so
+    callers can transform one half and rebuild the body without disturbing the other. The blank
+    separator line belongs to the quote block. Used to keep the ``> <@user:srv>`` reply pill —
+    the only mention text in a reply-to-the-bot — out of whole-body rewrites.
+    """
+    if not body or not body.startswith("> "):
+        return "", body
+    lines = body.split("\n")
+    idx = 0
+    while idx < len(lines) and (lines[idx].startswith("> ") or lines[idx] == ">"):
+        idx += 1
+    if idx < len(lines) and lines[idx] == "":
+        idx += 1  # the blank line separating the quote from the reply belongs to the quote
+    head = "\n".join(lines[:idx])
+    return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -1582,7 +1603,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(
@@ -2001,7 +2022,16 @@ class MatrixAdapter(BasePlatformAdapter):
                     event_id, thread_id)
                 return None
         if is_mentioned and self._require_mention:
-            body = self._strip_mention(body)
+            # Strip the mention from the reply text only: the quote block carries the
+            # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
+            # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
+            # and silently dropped the replied-to author (#111233). Only a real reply carries a
+            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
+            if relates_to.get("m.in_reply_to"):
+                quote_block, reply_text = _split_reply_fallback(body)
+                body = quote_block + self._strip_mention(reply_text)
+            else:
+                body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:

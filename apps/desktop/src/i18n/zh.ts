@@ -3,6 +3,43 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zh = defineLocale({
+  catalog: {
+    installTitle: (name: string) => `安装“${name}”？`,
+    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
+    installTo: '安装到',
+    thisComputer: '此电脑',
+    installing: '正在安装…',
+    installComplete: (name: string) => `已安装“${name}”`,
+    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
+    browse: '浏览',
+    installed: '已安装',
+    searchSkills: '搜索技能',
+    searchPlugins: '搜索插件',
+    allSources: '所有来源',
+    allCategories: '所有分类',
+    about: '简介',
+    author: '作者',
+    source: '来源',
+    category: '分类',
+    version: '版本',
+    platforms: '支持的平台',
+    requires: '依赖项',
+    tools: '工具',
+    hooks: '钩子',
+    repository: '代码仓库',
+    documentation: '文档',
+    noResults: '没有匹配项',
+    tryAnother: '请尝试其他搜索或清除筛选条件。',
+    clearFilters: '清除筛选条件',
+    loadFailed: '无法加载目录',
+    retry: '重试',
+    more: '显示更多',
+    pinned: '已审核的提交',
+    snapshotHint: '内容来自 Hermes 目录。浏览时不会连接来源代码仓库。',
+    installHint: '安装前请检查源代码。更改将在新会话中生效。',
+    results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
+    back: '返回结果'
+  },
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -219,7 +256,6 @@ export const zh = defineLocale({
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
       codeSkewRestartRequired: '更新后此后端仍在运行旧代码。请重启以加载新代码。'
     },
@@ -243,6 +279,8 @@ export const zh = defineLocale({
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用',
       liveEnded: '实时语音会话已结束',
+      liveEndedConnectionLost: '实时语音会话连接已断开。',
+      liveEndedClosed: '实时语音会话已被服务端关闭。',
       liveError: '实时语音',
       liveDelegationFailed: '无法将请求交给 Hermes',
       liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
@@ -373,6 +411,7 @@ export const zh = defineLocale({
       'view.toggleReview': '切换审查面板',
       'view.toggleStatusbar': '切换状态栏',
       'view.toggleTabStrip': '切换标签',
+      'view.toggleProfileRail': '切换配置档案栏',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -598,7 +637,7 @@ export const zh = defineLocale({
         desktopSuccess: name => `桌面插件 ${name} 已安装`,
         agentFailed: '智能体插件安装失败',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: vars => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
       }
     },
     notifications: {
@@ -687,7 +726,7 @@ export const zh = defineLocale({
       sessionDensityComfortable: '舒适',
       sessionDensityDetailed: '详细',
       tabStripTitle: '标签栏',
-      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签。',
+      tabStripDesc: '在分区上方显示标签。自动模式会在分区只有一个面板时隐藏标签，除非还开着其他聊天或磁贴分区。',
       tabStripAuto: '自动',
       tabStripAlways: '始终',
       tabStripNever: '从不',
@@ -966,6 +1005,7 @@ export const zh = defineLocale({
       compression: {
         enabled: '自动压缩',
         threshold: '压缩阈值',
+        codexGpt55Autoraise: 'Codex 压缩自动提高',
         targetRatio: '压缩目标',
         protectLastN: '保护最近消息'
       },
@@ -1030,7 +1070,8 @@ export const zh = defineLocale({
         engine: '在接近上下文上限时管理长对话的策略。'
       },
       compression: {
-        enabled: '当对话变大时对较早的上下文进行摘要。'
+        enabled: '当对话变大时对较早的上下文进行摘要。',
+        codexGpt55Autoraise: '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。'
       },
       browser: {
         useRealProfile:
@@ -2813,6 +2854,7 @@ export const zh = defineLocale({
   },
 
   sidebar: {
+    profileRail: '配置档案栏',
     gatewayGroups: {
       grouping: '网关与配置',
       rename: '重命名分组',
@@ -3046,6 +3088,7 @@ export const zh = defineLocale({
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
     wakeWordListening: phrase => `唤醒词:"${phrase}" — 正在监听`,
+    wakeWord: phrase => `唤醒词"${phrase}"`,
     wakeWordOff: phrase => `唤醒词:"${phrase}" — 已关闭`,
     wakeWordPausedVoice: phrase => `唤醒词:"${phrase}" — 语音对话期间暂停`,
     lookupLoading: '查找中…',
@@ -4202,7 +4245,8 @@ export const zh = defineLocale({
     sudoSendFailed: '无法发送 sudo 密码',
     secretSendFailed: '无法发送密钥',
     sudoTitle: '管理员密码',
-    sudoDesc: 'Hermes 需要你的 sudo 密码来运行特权命令。它只会发送给你的本地 agent。',
+    sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
+    sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',

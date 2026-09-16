@@ -258,12 +258,13 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
+    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
-    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, unauthorized_action_notice,
     cache_image_from_url, cache_image_from_bytes_async, cache_audio_from_url, cache_audio_from_bytes_async,
     cache_document_from_bytes_async, SUPPORTED_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
@@ -274,6 +275,9 @@ from gateway.platforms._shared import (
     env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
     platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
 )
+
+# Every refusal (slash command, approval button, picker, prompt) says the same thing.
+_UNAUTHORIZED = unauthorized_action_notice(Platform.DISCORD)
 
 
 async def _read_url_image_with_redirect_guard(
@@ -1342,7 +1346,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         guild_id,
                     )
             if self._slash_commands:
-                self._register_slash_commands()
+                # Registration walks the skill catalog on disk (#110707); keep the loop free.
+                await asyncio.to_thread(self._register_slash_commands)
             self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
             self._bot_task.add_done_callback(self._handle_bot_task_done)
@@ -1352,7 +1357,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 self._ready_event, self._bot_task,
                 timeout=None if ready_timeout <= 0 else ready_timeout,
             )
-            self._running = True
+            # _mark_connected() clears a prior fatal stamp; a bare ``_running = True`` left a transient
+            # startup failure reported as ``fatal`` for the life of the process (#102554).
+            self._mark_connected()
             self._start_liveness_probe()
             # Plugin-registered native handlers (discord.py Bot — add_listener()/event hooks).
             self._wire_plugin_handlers(self._client)
@@ -2294,6 +2301,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                         logger.debug("[%s] Cannot fetch backfill channel %s: %s", self.name, channel_id, exc)
                         continue
                 candidate_channels.append(channel)
+        # Obfuscated placeholders (bot lost VIEW_CHANNEL) fail every history read — drop them
+        # from both the wildcard and the explicit-id branch (#90154).
+        candidate_channels = [ch for ch in candidate_channels if not is_discord_channel_obfuscated(ch)]
+
         iterators = [
             self._iter_channel_and_thread_messages(
                 channel, limit=limit, after=after, seen_channels=seen,
@@ -3965,7 +3976,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         try:
             await interaction.response.send_message(
-                "You're not authorized to use this command.", ephemeral=True,
+                _UNAUTHORIZED, ephemeral=True,
             )
         except Exception as e:
             # Interaction may already be responded to (caller deferred, Discord retry).
@@ -4476,11 +4487,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._skill_lookup = {n: (d, k) for n, d, k in entries}
         self._skill_group_hidden_count = hidden
 
-    def refresh_skill_group(self) -> tuple[int, int]:
+    async def refresh_skill_group(self) -> tuple[int, int]:
         """Rescan skills and refresh live ``/skill`` autocomplete; returns ``(new_count, hidden_count)``.
         Called after ``reload_skills``; no ``tree.sync()`` since autocomplete options are dynamic."""
         try:
-            self._refresh_skill_catalog_state()
+            await asyncio.to_thread(self._refresh_skill_catalog_state)
         except Exception as exc:
             logger.warning(
                 "[%s] Failed to refresh /skill autocomplete after reload: %s", self.name, exc,
@@ -5296,19 +5307,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return text if len(text) <= limit else text[: limit - 3] + "..."
 
     # Payload lives in plain content: embeds can be invisible/detached on web/mobile.
-    _EA_HEADER = ("⚠️ **Command Approval Required**\n\n"
+    _EA_HEADER = (f"⚠️ **{EA_HEADER_TEXT}**\n\n"
                   "Do you want Hermes to run this command?\n\n"
                   "**Requested command:**\n")
     _EA_CODE_OPEN = "```bash\n"
     _EA_CODE_CLOSE = "\n```\n"
-    _EA_REASON_LABEL = "**Reason:** "
+    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_REASON_BUDGET = 300
 
     def _exec_approval_cmd_budget(self, description: str, smart_denied: bool) -> int:
         # Mentions ride in front of the content and count against the 2000-char message cap too.
         fixed = (len(self._EA_HEADER) + len(self._EA_CODE_OPEN) + len(self._EA_CODE_CLOSE)
-                 + len(self._EA_REASON_LABEL) + len(description) + len("...")
+                 + len(self._EA_REASON_LABEL) + len(description) + len("...") + len(self._ea_deadline_line())
                  + (len(self._EA_SMART_DENY_LINE) if smart_denied else 0)
                  + len(self._approval_mention_content() or "") + 1)
         return max(0, self.MAX_MESSAGE_LENGTH - fixed)
@@ -5321,11 +5332,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if mention_content:
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
+                title=f"⚠️ {EA_HEADER_TEXT}",
                 description=f"```\n{self._embed_body(prompt.command)}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
+            embed.add_field(name=EA_REASON_LABEL_TEXT, value=self._truncate_preview(prompt.description, self._EA_REASON_BUDGET), inline=False)
             require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
             choices = set(prompt.choices)
             view = ExecApprovalView(
@@ -6117,7 +6128,7 @@ def _define_discord_view_classes() -> None:
             """Resolve the approval via the gateway approval queue and update the embed."""
             if not await self._gate(
                 interaction, resolved_msg="This approval has already been resolved~",
-                unauth_msg="You're not authorized to approve commands~",
+                unauth_msg=_UNAUTHORIZED,
             ):
                 return
             self.resolved = True
@@ -6167,7 +6178,7 @@ def _define_discord_view_classes() -> None:
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label: str):
             if not await self._gate(
                 interaction, resolved_msg="This prompt has already been resolved~",
-                unauth_msg="You're not authorized to answer this prompt~",
+                unauth_msg=_UNAUTHORIZED,
             ):
                 return
             await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
@@ -6206,7 +6217,7 @@ def _define_discord_view_classes() -> None:
             self.session_key = session_key
 
         async def _respond(self, interaction: discord.Interaction, answer: str, color: discord.Color, label: str):
-            if not await self._gate(interaction, resolved_msg="Already answered~", unauth_msg="You're not authorized~"):
+            if not await self._gate(interaction, resolved_msg="Already answered~", unauth_msg=_UNAUTHORIZED):
                 return
             await self._finalize_embed(interaction, color, f"{label} by {interaction.user.display_name}")
             try:
@@ -6328,7 +6339,7 @@ def _define_discord_view_classes() -> None:
             return discord.Embed(title=title, description=description, color=discord.Color.blue() if color is None else color)
 
         async def _on_provider_selected(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg="You're not authorized~"):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
                 return
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
@@ -6342,7 +6353,7 @@ def _define_discord_view_classes() -> None:
             await self._edit(interaction, f"Provider: **{pname}**\nSelect a model:{extra}")
 
         async def _switch_selected_model(self, interaction: discord.Interaction, model_id: str):
-            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg="You're not authorized~"):
+            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg=_UNAUTHORIZED):
                 return
             self.resolved = True
             self.clear_items()
@@ -6357,7 +6368,7 @@ def _define_discord_view_classes() -> None:
             )
 
         async def _on_model_selected(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg="You're not authorized~"):
+            if not await self._gate(interaction, resolved_msg="Already resolved~", unauth_msg=_UNAUTHORIZED):
                 return
             model_id = interaction.data["values"][0]
             warning = await self._expensive_warning_for(model_id)
@@ -6368,7 +6379,7 @@ def _define_discord_view_classes() -> None:
             await self._switch_selected_model(interaction, model_id)
 
         async def _on_expensive_confirm(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg="You're not authorized~"):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
                 return
             if not self._pending_expensive_model:
                 await interaction.response.send_message("Model selection expired.", ephemeral=True)
@@ -6376,7 +6387,7 @@ def _define_discord_view_classes() -> None:
             await self._switch_selected_model(interaction, self._pending_expensive_model)
 
         async def _on_back(self, interaction: discord.Interaction):
-            if not await self._gate(interaction, resolved_msg=None, unauth_msg="You're not authorized~"):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
                 return
             self._build_provider_select()
             try:
@@ -6428,7 +6439,7 @@ def _define_discord_view_classes() -> None:
 
         async def _on_select(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
-                await interaction.response.send_message("⛔ You are not authorized to change this setting.", ephemeral=True)
+                await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
                 return
             if self.resolved:
                 await interaction.response.defer()
@@ -6529,7 +6540,7 @@ def _define_discord_view_classes() -> None:
             """Resolve the clarify with a chosen option."""
             if not await self._gate(
                 interaction, resolved_msg="This prompt has already been answered~",
-                unauth_msg="You're not authorized to answer this prompt~",
+                unauth_msg=_UNAUTHORIZED,
             ):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
@@ -6560,7 +6571,7 @@ def _define_discord_view_classes() -> None:
             """Flip the clarify entry into text-capture mode."""
             if not await self._gate(
                 interaction, resolved_msg="This prompt has already been answered~",
-                unauth_msg="You're not authorized to answer this prompt~",
+                unauth_msg=_UNAUTHORIZED,
             ):
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.

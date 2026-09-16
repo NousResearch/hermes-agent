@@ -134,6 +134,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  // A running job arms the store's 700ms re-poll; drain it so the timer cannot
+  // fire into a torn-down test environment.
+  $localRuntimeJobs.set([])
 })
 
 describe('LocalModelsSettings', () => {

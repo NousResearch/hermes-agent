@@ -593,6 +593,22 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     assert "NOT delivered" in payload["error"]
 
 
+def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
+    """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
+    silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("thanks, bye", encoding="utf-8")
+    child = tmp_path / "quiet.py"
+    child.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
+
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child), "NO_REPLY"], str(dm_file)) == 0
+    assert capsys.readouterr().out == ""
+
+    prose = "The NO_REPLY marker means do not answer."
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child), prose], str(dm_file)) == 0
+    assert capsys.readouterr().out.strip() == prose
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):
@@ -923,3 +939,85 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkeypatch):
+    """``<dm file>.live.json`` holds the DM plaintext and outlives its runner for retries; the
+    housekeeping sweep must reap the orphans like it reaps the dm files themselves."""
+    import os
+
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    stale = tmp_path / "dm-old.txt.live.json"
+    stale.write_text("{}", encoding="utf-8")
+    os.utime(stale, (1, 1))
+    fresh = tmp_path / "dm-new.txt.live.json"
+    fresh.write_text("{}", encoding="utf-8")
+
+    assert bot_mode_dm.cleanup_bot_dm_cache() >= 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    dm_file = tmp_path / "dm-x.txt"
+    dm_file.write_text("secret plaintext", encoding="utf-8")
+    intent = tmp_path / "dm-x.txt.live.json"
+    intent.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert intent.exists(), "a pending delivery may still be retried from the same intent"
+    assert dm_file.exists()
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
+    assert not intent.exists()
+    assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"
+
+
+def test_pending_approval_spawn_names_the_approval_and_reclaims_the_dm_file(tmp_path, monkeypatch):
+    """terminal_tool's approval gate answers pending_approval with an EMPTY error and no session_id;
+    a local delivery must say the runner needs approval (nothing was sent), not blame the spawn."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 runner", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._spawn_delivery("unused", "@researcher", dm_file=str(dm_file),
+                                                    task_id=None, agent=None))
+
+    assert "approval" in result["error"] and "nothing was sent" in result["error"]
+    assert "no process id" not in result["error"]
+    assert not dm_file.exists()
+
+
+def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monkeypatch):
+    """The relay envelope is queued before the reply waiter spawns and the Desktop drains it on its
+    own: a waiter that cannot start is a lost wake-up, not a failed delivery (a hard error makes the
+    sender resend and deliver twice)."""
+    from tools import bot_relay
+
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "default").mkdir(parents=True)
+    bot_relay.write_remote_roster(root, [{"profile": "researcher", "handle": "researcher",
+                                          "connection_id": "laptop-1", "connection_label": "laptop"}])
+    import tools.terminal_tool as terminal_tool_module
+
+    pending = terminal_tool_module._error_json("", status="pending_approval", approval_pending=True,
+                                               command="python3 waiter", description="command flagged")
+    monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
+
+    result = json.loads(bot_mode_dm._try_relay_delivery(root, "researcher", "hello", "default",
+                                                        task_id=None, agent=None))
+
+    assert result["status"] == "queued"
+    assert "error" not in result
+    assert "Do NOT resend" in result["detail"]
+    assert "approval" in result["notification_error"]
+    assert list((bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR).glob("*.json")), "envelope still queued"

@@ -75,7 +75,8 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
     message = getattr(parent_agent, "_interrupt_message", None)
     hard = getattr(parent_agent, "_hard_interrupt_requested", None)
     if hard is None or hard.is_set():
-        _signal_child_stop(child, message or "parent agent interrupted")
+        _signal_child_stop(child, message or "parent agent interrupted",
+                           tool_reason=getattr(parent_agent, "_tool_interrupt_reason", None) or "parent agent interrupted")
     else:
         with _quiet("Failed to propagate interrupt to late child: %s"):
             child.interrupt(message)
@@ -89,10 +90,12 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
     except (ValueError, UnboundLocalError) as e:
         logger.debug("Could not remove child from active_children: %s", e)
 
-def _signal_child_stop(child: Any, *reason: str) -> None:
-    """Cooperative interrupt so the child's worker thread can exit cleanly."""
+def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
+    """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
+    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
     with _quiet(None):
-        if child is not None and not request_hard_interrupt(child, *reason) and hasattr(child, "_interrupt_requested"):
+        if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
+                and hasattr(child, "_interrupt_requested")):
             child._interrupt_requested = True
 
 # ── 0-API-call timeout diagnostic ────────────────────────────────────────────
@@ -424,9 +427,14 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        _retry_result = child.run_conversation(
-            user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
-        )
+        # Same identity as the main child turn: this runs on the parent worker's thread, and an
+        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
+        from agent.delegation_context import delegated_child_context
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            _retry_result = child.run_conversation(
+                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
+                stream_callback=relay_child_text,
+            )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):
@@ -493,11 +501,13 @@ def _build_result_entry(
         status, exit_reason = "failed", "error"
     else:
         # exit_reason ("completed" vs "max_iterations") tells the parent HOW the task ended; completed=False with no
-        # failure = budget exhaustion. A declared schema still violated after the bounded retry makes the summary
-        # unusable under the contract, so status must not say completed (orchestrators reading only status/icon would
-        # accept an empty verdict).
+        # failure = budget exhaustion. A declared schema still violated after the bounded retry does NOT fail the
+        # run: the child's raw final text is the deliverable (audits of up to 68 min were written off as "failed"
+        # over a stray code fence or one missing field); ``schema_valid: false`` + ``schema_errors`` carry the
+        # contract verdict, and the summary is prefixed with a notice so a status-only reader cannot mistake it
+        # for validated output.
         exit_reason = "completed" if result.get("completed", False) else "max_iterations"
-        status = "completed" if schema.valid is not False and usable_summary else "failed"
+        status = "completed" if usable_summary else "failed"
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
@@ -528,13 +538,7 @@ def _build_result_entry(
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
-        if schema.valid is False and usable_summary:
-            # The child DID respond; name the contract violation instead of the generic "no response" error.
-            entry["error"] = (
-                "Final answer does not satisfy the declared output_schema" + (" (after 1 retry)." if schema.retries else ".")
-            )
-        else:
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+        entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")
@@ -549,6 +553,13 @@ def _build_result_entry(
             entry["schema_retries"] = schema.retries
         if not schema.valid and schema.errors:
             entry["schema_errors"] = schema.errors
+        if schema.valid is False and usable_summary:
+            entry["schema_note"] = (
+                "Final answer does not satisfy the declared output_schema"
+                + (" (after 1 retry)" if schema.retries else "")
+                + "; `summary` is the child's raw, UNVALIDATED final text — extract what you need from it "
+                "yourself (see schema_errors) rather than re-running the task."
+            )
 
     # A steer queued after the final assistant turn had no tool batch to land
     # in; name it so the parent sees it was MISSED rather than silently absorbed.
@@ -857,6 +868,9 @@ class _ChildRun:
             "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
         }
+        if entry.get("failure_reason"):
+            # Classified verdict rides the event so every surface glosses the failure the same way.
+            complete_kwargs["failure_reason"] = entry["failure_reason"]
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         if _cost_usd is not None:
             with _quiet(None):
@@ -892,6 +906,11 @@ class _ChildRun:
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
         if not close_deferred:
             _close_child(child, "Failed to close child agent after delegation")
+        # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
+        # cap while it runs); dispose them here so they never squat the cap after the child is gone.
+        with _quiet("Failed to dispose child execute_code kernels: %s"):
+            from tools.code_kernel import shutdown_kernels_for_delegated_child
+            shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
 
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
         # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.

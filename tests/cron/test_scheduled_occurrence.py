@@ -157,3 +157,55 @@ def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
         jobs.save_jobs(rows)
         due = next(item for item in jobs.get_due_jobs() if item['id'] == naive['id'])
         assert due['_scheduled_instant'] is None
+
+
+def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from cron import executions
+    from cron.occurrences import completed_occurrence
+
+    monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
+    slot = '2026-01-05T00:00:00+00:00'
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    poisoned = executions.create_execution('job', source='control', scheduled_instant=slot)
+    executions.finish_execution(poisoned['id'], success=True)
+
+    assert not completed_occurrence({'id': 'job'}, slot)
+
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=timezone.utc))
+    legitimate = executions.create_execution('job', source='builtin', scheduled_instant=slot)
+    executions.finish_execution(legitimate['id'], success=True)
+
+    assert completed_occurrence({'id': 'job'}, slot)
+
+
+def test_completed_occurrence_skip_names_job_slot_and_row(tmp_path, monkeypatch, caplog):
+    """A due slot the dedup gate consumes (already completed, e.g. after a jobs.json rollback)
+    leaves no run and no ledger row, so the skip itself must be logged with the job, the
+    instant and the completed execution (#111414: a consumed slot left zero trace)."""
+    import logging
+    from datetime import timedelta
+
+    from cron import executions, jobs
+    from hermes_time import now
+
+    monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
+    slot = (now() - timedelta(minutes=2)).isoformat()
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        stored = jobs.create_job(prompt='test', schedule='every 4h')
+        rows = jobs.load_jobs()
+        rows[0]['next_run_at'] = slot
+        jobs.save_jobs(rows)
+        completed = executions.create_execution(stored['id'], source='builtin', scheduled_instant=slot)
+        executions.finish_execution(completed['id'], success=True)
+
+        with caplog.at_level(logging.WARNING, logger='cron.occurrences'):
+            assert jobs.get_due_jobs() == []
+
+        assert jobs.load_jobs()[0]['next_run_at'] != slot
+    skip = [r.getMessage() for r in caplog.records if completed['id'] in r.getMessage()]
+    assert len(skip) == 1, caplog.text
+    assert stored['id'] in skip[0]
+    from cron.occurrences import scheduled_instant
+    assert scheduled_instant(slot) in skip[0]

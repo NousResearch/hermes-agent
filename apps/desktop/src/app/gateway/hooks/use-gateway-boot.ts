@@ -47,7 +47,7 @@ import {
   setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
-import { registerGatewayReconnect } from '@/store/gateway-reconnect'
+import { reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -56,7 +56,7 @@ import {
   registerGatewaySwitchLifecycle
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import { notify, notifyError } from '@/store/notifications'
+import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { loadPoolLimits } from '@/store/pool-limits'
 import {
   $activeGatewayProfile,
@@ -64,6 +64,7 @@ import {
   refreshActiveProfile,
   touchActiveGatewayBackend
 } from '@/store/profile'
+import { requestBackendRestart } from '@/store/recovery-requests'
 import {
   $activeSessionId,
   $connection,
@@ -91,6 +92,7 @@ import {
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
+import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 import { windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -436,7 +438,19 @@ export function useGatewayBoot({
 
           if (isActivePrimary()) {
             reauthNotified = true
-            notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+            // Plain "signed out" copy; the raw ticket/HTTP text stays under
+            // Details. The boot overlay carries the sign-in flow itself, so
+            // the button hands off to it (desktop-14).
+            notify({
+              kind: 'error',
+              title: translateNow('boot.errors.gatewaySignInRequired'),
+              message: translateNow('boot.errors.gatewaySignInRequiredDetail'),
+              detail: primaryReauthError,
+              action: {
+                label: translateNow('boot.errors.signInAgain'),
+                onClick: () => failDesktopBoot(primaryReauthError ?? '')
+              }
+            })
           }
         }
       } finally {
@@ -455,7 +469,12 @@ export function useGatewayBoot({
               kind: 'warning',
               title: translateNow('boot.errors.gatewayConnectionLost'),
               message: translateNow('boot.errors.gatewayConnectionLostDetail'),
-              durationMs: 0
+              durationMs: 0,
+              action: {
+                label: translateNow('boot.errors.reconnectNow'),
+                onClick: () => void reconnectGateway().catch(() => undefined)
+              },
+              secondaryAction: RECOVERY_ACTIONS.openGateways()
             })
           }
 
@@ -710,6 +729,9 @@ export function useGatewayBoot({
         // that were running before a reload — the backend registry is the
         // authority; this just resumes following it.
         watchLocalRuntimeJobs()
+        // A Docker/SSH terminal backend that fails its probe means shell
+        // commands silently cannot run — say so once, with a way out.
+        void warnIfTerminalBackendUnavailable()
       } catch (err) {
         const mayPublishFailure =
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
@@ -1068,15 +1090,32 @@ export function useGatewayBoot({
         return
       }
 
+      // While the boot overlay is up it already shows the failure with its own
+      // Retry, and the reconnect handler below is a no-op before boot completes
+      // — a toast whose button does nothing would only mislead. Fail the
+      // overlay and stop there.
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
         failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
+
+        return
       }
 
+      // Post-boot: the shell's restart intent recycles a local service via main
+      // (or re-dials a remote one) and does not depend on this hook's
+      // reconnect gate, unlike reconnectGateway().
       notify({
         kind: 'error',
         title: translateNow('boot.errors.backendStopped'),
         message: translateNow('boot.errors.backgroundExited'),
-        durationMs: 0
+        durationMs: 0,
+        action: {
+          label: translateNow('boot.errors.restartHermes'),
+          onClick: requestBackendRestart
+        },
+        secondaryAction: {
+          label: translateNow('boot.errors.openLogs'),
+          onClick: () => void desktop.revealLogs?.().catch(() => undefined)
+        }
       })
     })
 
@@ -1190,6 +1229,10 @@ export function useGatewayBoot({
         completeDesktopBoot()
         bootCompleted = true
         bootRetryAttempt = 0
+        // A Docker/SSH terminal backend that fails its probe means shell
+        // commands silently cannot run — say so once, with a way out. Cold
+        // launch is the common path, so it must warn too, not only softSwitch.
+        void warnIfTerminalBackendUnavailable()
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : String(err)
@@ -1253,6 +1296,12 @@ export function useGatewayBoot({
       }
 
       await callbacksRef.current.refreshSessions().catch(() => undefined)
+
+      if (cancelled) {
+        return
+      }
+
+      void warnIfTerminalBackendUnavailable()
     }
 
     if (adoptedFromHmr) {

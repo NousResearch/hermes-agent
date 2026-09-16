@@ -367,29 +367,61 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_block_loop_detected(ev, n) -> tuple:
+    """Re-blocked for the same cause past the limit and routed to `triage`.
+
+    It emits no blocked/status event, so ping loudly here. A repeated-block
+    circuit breaker establishes that orchestration attention is needed; it
+    does NOT establish that a human decision or owner input exists. Use
+    neutral orchestration wording unless the block was typed as a genuine
+    owner-input request (`needs_input`, the only kind that carries a concrete
+    question for the owner).
+    """
+    kind = _payload(ev, "kind")
+    decision = kind == "needs_input"
+    msg = (
+        f"🛑 {n.head} routed to TRIAGE — "
+        f"{'needs a human decision' if decision else 'for orchestration attention'}"
+        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    )
+    return msg, None, None
+
+
+def _fmt_gave_up(ev, n) -> tuple:
+    # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
+    # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
+    failures = _payload(ev, "failures")
+    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
+    last = _clip(ev, "error", " (last: {})", 160)
+    return (
+        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
+        f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
+        None, None,
+    )
+
+
+def _fmt_timed_out(ev, n) -> tuple:
+    limit = int(_payload(ev, "limit_seconds") or 0)
+    minutes = max(1, round(limit / 60)) if limit else 0
+    span = f"its {minutes}-minute limit" if minutes else "its time limit"
+    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
     "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
-    "gave_up": lambda ev, n: (
-        f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
+    "gave_up": _fmt_gave_up,
+    "crashed": lambda ev, n: (
+        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
     ),
-    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); dispatcher will retry", None, None),
-    "timed_out": lambda ev, n: (
-        f"⏱ {n.head} timed out (max_runtime={int(_payload(ev, 'limit_seconds') or 0)}s); will retry", None, None,
-    ),
+    "timed_out": _fmt_timed_out,
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
-    # Re-blocked for the same cause past the limit and routed to `triage` for a
-    # human. It emits no blocked/status event, so ping loudly here.
-    "block_loop_detected": lambda ev, n: (
-        f"🛑 {n.head} routed to TRIAGE — needs a human decision"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}",
-        None, None,
-    ),
+    "block_loop_detected": _fmt_block_loop_detected,
 }
 
 

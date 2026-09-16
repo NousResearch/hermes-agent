@@ -89,6 +89,8 @@ When the parked branch has **uncommitted changes** (dirty tree), Hermes does **n
 
 When you run `hermes update` in a terminal, Hermes stashes any uncommitted source-tree changes, pulls, then **asks** whether to restore them — exactly as it always has. Nothing changes for interactive updates.
 
+The autostash only ever covers *source-tree* changes. On a **flat install** — where the git checkout root is also `$HERMES_HOME` (for example an install made with `HERMES_INSTALL_DIR=$HERMES_HOME`, or one created by an older installer) — the profile's runtime state (`state.db` and its WAL/SHM sidecars, `state-snapshots/`, `backups/`, `sessions/`, `cron/jobs.json`, the `cron/*.db` stores, `config.yaml`, `auth.json`, `memories/`, lock/pid files, …) lives inside the checkout as untracked files. Those paths are git-ignored, so the autostash never touches them and the running gateway keeps its database through the update. If you keep other untracked files in a flat install's root, move them out of the checkout or add them to `.git/info/exclude`; anything untracked and not ignored is swept into the autostash like a source edit.
+
 When the update runs **without a terminal** — from the desktop/chat app's "Update" button or a gateway-triggered update — there's no prompt to answer. The `updates.non_interactive_local_changes` setting decides what happens to your stashed changes:
 
 ```yaml
@@ -125,7 +127,19 @@ The same inventory is embedded in every real update's receipt (`~/.hermes/logs/u
 
 ### Update receipts and the fleet version check
 
-Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
+Every `hermes update` run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (last 20 kept, `latest.json` always points at the most recent): the pre-update fleet plan, each step taken, anything skipped and why, the gateway restart outcome, and the final fleet version matrix. The SQLite runtime repair is one of those steps (`sqlite_runtime_repair`): a failed repair records the actual reason (for example the `uv sync` error) and the SQLite version pair, a deferred or not-applicable repair lands in the skips with its reason. After the restart phase the updater compares each live gateway's running code against the freshly updated checkout and prints a per-profile matrix — a gateway still serving pre-update code is reported loudly with the exact restart command, and the update exits non-zero so automation never treats a mixed-version fleet as healthy. Both `--plan` and the fleet check ask each running gateway directly over its local control socket (`gateway.sock` in the profile's data directory, a named pipe on Windows) when available, so version and supervisor information comes from the gateway itself; gateways from older versions are still discovered through their state files as before.
+
+### Automated updates from inside the gateway: `--no-gateway-restart`
+
+An update launched *by* the gateway (a cron job, the Desktop updater, any automation that is a
+child of the gateway process) cannot survive its own fleet restart: the gateway drains on
+`SIGUSR1` and systemd's `KillMode=mixed` then kills everything left in the cgroup, updater
+included. `hermes update --no-gateway-restart` runs the full pipeline (pull, dependencies,
+Node workspaces, web UI, maintenance) and skips only the restart and fleet verification. The
+pending-restart marker is kept, so the next CLI start warns and the next normal `hermes update`
+(or `hermes gateway restart`) catches the fleet up. Pair it with a separate restart step, for
+example a timer 10–15 minutes after the update job. The receipt records the deferral; a stale
+fleet caused only by the deferral does not make the update `partial`.
 
 ### Interrupted gateway restarts
 

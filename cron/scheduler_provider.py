@@ -6,7 +6,6 @@ execution + delivery stay in cron.scheduler.run_job / _deliver_result; never rei
 from __future__ import annotations
 
 import contextlib
-from contextvars import ContextVar
 import inspect
 import logging
 import threading
@@ -92,38 +91,12 @@ def _existing_profile_homes(profile_homes: list) -> list:
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
 
 
-# Set by _profile_cron_scope: this task fires a profile OTHER than the process's own. A marker only.
-# Multiplex semantics are switched on where the profile's secret scope is installed
-# (cron.scheduler._install_fire_secret_scope) and off with it — never at the tick — so no read can
-# be fail-closed without a scope to read: run_one_job's restart-safe handoff runs before that
-# scope and keeps today's semantics (its own scope is #107413 / #106050's seam).
-_ROUTED_PROFILE_FIRE: ContextVar[bool] = ContextVar("_ROUTED_PROFILE_FIRE", default=False)
-
-
-def routed_profile_fire() -> bool:
-    """True inside a tick for a profile other than the process's own (marker, see above)."""
-    return _ROUTED_PROFILE_FIRE.get()
-
-
 @contextlib.contextmanager
 def _profile_cron_scope(home):
-    """Scope the calling thread to one profile's home + cron store for the block.
-
-    A profile OTHER than the process's own is MARKED as a routed fire (``routed_profile_fire``).
-    The desktop backend ticks every local profile from one process "like a multiplex gateway"
-    without setting the process-global multiplex flag, so every isolation keyed on
-    ``is_multiplex_active()`` was inert for those fires: a sibling profile's ``.env`` landed in
-    the shared ``os.environ`` with ``override=True`` and a scope miss read the launch profile's
-    credentials (#107692). ``cron.scheduler._install_fire_secret_scope`` turns the marker into
-    multiplex semantics for exactly the span the profile's secret scope covers. The process's own
-    profile keeps single-profile semantics. The override and the marker both reach the pool
-    worker via ``copy_context()``. Under a real multiplexer the process flag is already on."""
+    """Scope the calling thread to one profile's home + cron store for the block."""
     from cron.jobs import use_cron_store
-    from hermes_constants import (
-        get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-    routed = Path(home).resolve() != get_process_hermes_home().resolve()
-    routed_token = _ROUTED_PROFILE_FIRE.set(routed)
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
     # healthy siblings — from an aborted one (exception), where no profile completed and all beats are
@@ -134,7 +107,6 @@ def _profile_cron_scope(home):
             yield
     finally:
         reset_hermes_home_override(home_token)
-        _ROUTED_PROFILE_FIRE.reset(routed_token)
 
 
 class CronScheduler(ABC):
@@ -193,7 +165,9 @@ class CronScheduler(ABC):
         attempt (even if the job failed); False if the claim was lost or the job is gone.
         ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
         ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
-        misfire fires run the slot that is due and keep the stamp."""
+        misfire fires arriving at/after the due instant run that slot and keep the stamp; a fire
+        arriving BEFORE the stored instant is off-tick like ``manual`` and stays occurrence-free
+        (it cannot be the tick that owns a future slot)."""
         claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False
@@ -301,6 +275,15 @@ def fire_overdue_jobs(
     concurrent late external retry is de-duplicated by the store CAS; waits out
     ``cron.misfire_grace_minutes`` so the external retry gets first right. Returns jobs dispatched.
     """
+    # `hermes pause` ESTOP: skip the sweep entirely. No state to unwind — the
+    # next housekeeping pass after `hermes resume` catches overdue work up
+    # through the existing claim_fire path. Distinct component name from the
+    # ticker's "cron" so the log-once mechanism fires independently.
+    with contextlib.suppress(ImportError):
+        from agent.estop import check_paused as _estop_check_paused
+        if _estop_check_paused("cron-misfire", logger):
+            return 0
+
     from datetime import datetime
 
     if isinstance(provider, InProcessCronScheduler):

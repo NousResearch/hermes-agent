@@ -233,6 +233,14 @@ def _warn_stale_serve_runtimes(rows) -> None:
         " or by relaunching `hermes serve` / the Desktop app.")
 
 
+def _owed_stale_serve_rows(rows) -> list[dict]:
+    """Survivors the updater itself owes a restart for. A Desktop-supervised serve is excluded: the
+    recovery pass is forbidden to restart it (it hosts the live Desktop chats), so counting it keeps
+    ``fleet_restart_pending`` armed forever with nothing that could ever discharge it. It is still
+    named by :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494."""
+    return [row for row in (rows or []) if row.get("supervisor") != "desktop"]
+
+
 def _abort_recovery_is_complete(
     *, planned_gateway_profiles, covered_gateway_profiles, recovery_result, stale_runtime_rows
 ) -> bool:
@@ -246,4 +254,4 @@ def _abort_recovery_is_complete(
         and set(planned_gateway_profiles) <= set(covered_gateway_profiles)
         and not (result.get("failed") or result.get("relaunch_attempted"))
         and not (result.get("serve_units") or {}).get("failed")
-        and not stale_runtime_rows)
+        and not _owed_stale_serve_rows(stale_runtime_rows))

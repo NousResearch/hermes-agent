@@ -2233,14 +2233,16 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
+            # `op` CLI: Login items with a website URL become fillable handles (unlocked per session).
+            # Auto-enabled when installed on PATH; set enabled: false to opt out.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
         },
         "bitwarden": {
-            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
+            # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first (unlocked per session).
+            # Auto-enabled when installed on PATH; set enabled: false to opt out.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
     },

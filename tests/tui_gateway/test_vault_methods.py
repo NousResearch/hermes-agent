@@ -112,3 +112,35 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_vault_sources_auto_detect_and_toggle(home):
+    from unittest.mock import patch
+
+    def fake_is_installed(name):
+        return name == "bitwarden"
+
+    with patch("agent.vault_backends.base.is_installed", side_effect=fake_is_installed):
+        # By default, installed managers are auto-enabled (zero-config)
+        res = _result(srv._methods["vault.sources"](1, {}))
+        bw = next(s for s in res["sources"] if s["name"] == "bitwarden")
+        assert bw["installed"] is True
+        assert bw["enabled"] is True
+        assert bw["unlocked"] is False
+
+        # Toggle off (opt out)
+        res_set = _result(srv._methods["vault.source.set"](2, {"name": "bitwarden", "enabled": False}))
+        assert res_set == {"name": "bitwarden", "enabled": False}
+
+        res = _result(srv._methods["vault.sources"](3, {}))
+        bw = next(s for s in res["sources"] if s["name"] == "bitwarden")
+        assert bw["enabled"] is False
+
+        # Toggle back on (remove opt-out)
+        res_set = _result(srv._methods["vault.source.set"](4, {"name": "bitwarden", "enabled": True}))
+        assert res_set == {"name": "bitwarden", "enabled": True}
+
+        res = _result(srv._methods["vault.sources"](5, {}))
+        bw = next(s for s in res["sources"] if s["name"] == "bitwarden")
+        assert bw["enabled"] is True
+

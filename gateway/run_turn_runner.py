@@ -881,7 +881,7 @@ class TurnRunner:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
         from gateway.warning_notifications import is_warning_status, warning_notifications_enabled
         ctx = self._ctx
-        if not self._status_live():
+        if ctx.mute_notification_reply or not self._status_live():
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -1159,7 +1159,7 @@ class TurnRunner:
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
         from gateway.warning_notifications import warning_notifications_enabled
-        if not self._status_live():
+        if self._ctx.mute_notification_reply or not self._status_live():
             return
         if (getattr(notice, "level", None) in {"warn", "error"}
                 or str(getattr(notice, "key", "") or "").startswith("credits.")):
@@ -1280,8 +1280,7 @@ class TurnRunner:
             agent.tool_progress_callback = None
             agent.tool_start_callback = None
             agent.tool_complete_callback = None
-            agent.status_callback = None
-            agent.notice_callback = None
+            # Keep diagnostic observers installed; concrete sinks veto display.
             agent.stream_delta_callback = None
             agent.interim_assistant_callback = None
             agent.thinking_progress = False

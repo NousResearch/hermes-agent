@@ -1,13 +1,11 @@
 name: stripe
 repo: https://github.com/stripe/ai
-sha: 38d8933bffbdba219ba530803316bb3a4fbaee0d    # mandatory exact pin
+sha: 38d8933bffbdba219ba530803316bb3a4fbaee0d
 subdir: "providers/agent-plugins/plugin" 
-description: Stripe agent plugin with skills for building and maintaining Stripe integrations, plus access to Stripe's remote MCP server.
+description: Stripe agent plugin with skills for Stripe integrations including best practices, API and SDK upgrade guidance, and a remote MCP server configuration.
 maintainer: stripe
-tier: community              # official | community (default community)
-category: tools            # desktop | memory | platform | web | tools | voice | automation | models | general
-                            # (default desktop) — the shelf the entry sits on at /docs/plugins
-requires_hermes: ">=0.19"   # optional
+tier: community
+category: tools
 docs_url: "https://docs.stripe.com/agents/plugin"
 platforms: []
 capabilities:

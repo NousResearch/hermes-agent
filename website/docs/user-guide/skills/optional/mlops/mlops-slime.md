@@ -15,7 +15,7 @@ RL post-training for LLMs with Megatron and SGLang.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/slime` |
-| Path | `optional-skills/mlops/slime` |
+| Path | `optional-skills/mlops\slime` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

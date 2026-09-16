@@ -12,6 +12,8 @@ import asyncio
 import queue
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -171,7 +173,6 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer = StreamingTTSConsumer.__new__(StreamingTTSConsumer)
     consumer._adapter = adapter
     consumer._chat_id = chat_id
-    consumer._tts_config = {}
     consumer._loop = loop
     consumer._metadata = None
     consumer._audio_format = AudioFormat(
@@ -183,7 +184,6 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     consumer._chunker = SentenceChunker()
     consumer._queue = queue.Queue(maxsize=256)
     consumer._handle = None
-    consumer._started = False
     consumer._completed = False
     consumer._partial = False
     consumer._aborted = False
@@ -205,6 +205,118 @@ def _run_test(coro_factory, timeout=10.0):
         )
     finally:
         loop.close()
+
+
+@pytest.fixture
+def gateway_tts_turn(monkeypatch, tmp_path):
+    """Real agent delivery + real TurnRunner callback wiring; only the speech provider and PCM sink are fake."""
+    from agent.agent_runtime_helpers import strip_think_blocks
+    from agent.stream_delivery import StreamDeliveryMixin
+    from gateway.config import StreamingConfig
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.stream_consumer import StreamConsumerConfig
+    from gateway.turn_context import TurnContext
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    class Agent(StreamDeliveryMixin):
+        _strip_think_blocks = strip_think_blocks
+
+    class Streamer(FakeStreamer):
+        def __init__(self):
+            super().__init__()
+            self.clauses = []
+
+        def stream(self, text):
+            self.clauses.append(text)
+            yield b"\x01\x00" * 480
+
+    class Adapter(FakeVoiceAdapter):
+        def __init__(self):
+            super().__init__()
+            self.heard = asyncio.Queue()
+
+        async def write_streaming_tts(self, handle, chunk):
+            await super().write_streaming_tts(handle, chunk)
+            self.heard.put_nowait(chunk)
+
+    def make(loop):
+        streamer, adapter = Streamer(), Adapter()
+        monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
+        tts = StreamingTTSConsumer(adapter, "voice", {}, loop)
+        ctx = TurnContext(
+            streaming_tts_consumer_holder=[tts], user_config={},
+            resolve_display_setting=lambda *args: True, interim_assistant_messages_enabled=True,
+            source=SimpleNamespace(platform=SimpleNamespace(value="realtime"), chat_id="voice"),
+            _run_still_current=lambda: True,
+        )
+        runner = SimpleNamespace(
+            config=SimpleNamespace(streaming=StreamingConfig()),
+            _adapter_for_source=lambda source: adapter,
+            _build_stream_consumer_config=lambda *args, **kwargs: (StreamConsumerConfig(), None),
+        )
+        _, delta, interim, _ = TurnRunner(runner, ctx)._setup_stream_consumer("realtime")
+        agent = Agent()
+        agent.stream_delta_callback, agent._stream_callback, agent.interim_assistant_callback = delta, None, interim
+        return agent, tts, adapter, streamer
+
+    return make
+
+
+async def _speak_then_tool_result(agent, tts, adapter, streamer, before_tool, acknowledgment, result):
+    """Invariant: the acknowledgment reaches PCM before the tool result exists, then the result follows once."""
+    tts.start()
+    try:
+        await asyncio.to_thread(before_tool)
+        await asyncio.wait_for(adapter.heard.get(), timeout=3)  # spoken during the tool pause, not after
+        assert streamer.clauses == [acknowledgment]
+        assert adapter.finish_count == 0 and not tts.done
+        await asyncio.to_thread(agent.stream_delta_callback, None)
+        await asyncio.to_thread(agent.stream_delta_callback, result)
+        tts.finish()
+        assert await tts.wait_complete(timeout=3)
+        assert streamer.clauses == [acknowledgment, result]
+        assert adapter.begin_count == adapter.finish_count == 1
+    finally:
+        tts.finish()
+        await tts.wait_complete(timeout=3)
+
+
+def test_tool_boundary_none_flushes_streamed_acknowledgment(gateway_tts_turn):
+    """The ``None`` tool-boundary delta releases already-streamed speech without ending the audio stream."""
+    async def run():
+        agent, tts, adapter, streamer = gateway_tts_turn(asyncio.get_running_loop())
+        acknowledgment, result = "I will check that.", "The result is available."
+
+        def before_tool():
+            assert agent._deliver_to_stream_callbacks(acknowledgment)
+            agent._record_streamed_assistant_text(acknowledgment)
+            agent._emit_interim_assistant_message({"role": "assistant", "content": acknowledgment})
+            agent.stream_delta_callback(None)
+
+        await _speak_then_tool_result(agent, tts, adapter, streamer, before_tool, acknowledgment, result)
+
+    asyncio.run(run())
+
+
+def test_completed_commentary_is_spoken_exactly_once(gateway_tts_turn):
+    """Completed commentary (no text delta exists for it) reaches TTS once; the later interim dedupes."""
+    async def run():
+        agent, tts, adapter, streamer = gateway_tts_turn(asyncio.get_running_loop())
+        acknowledgment, result = "I will check that.", "The result is available."
+
+        def before_tool():
+            agent._fire_streamed_codex_commentary(acknowledgment)
+            agent._emit_interim_assistant_message({"role": "assistant", "content": "", "codex_message_items": [{
+                "type": "message", "phase": "commentary",
+                "content": [{"type": "output_text", "text": acknowledgment}],
+            }]})
+            agent.stream_delta_callback(None)
+
+        await _speak_then_tool_result(agent, tts, adapter, streamer, before_tool, acknowledgment, result)
+
+    asyncio.run(run())
 
 
 # ---------------------------------------------------------------------------

@@ -251,6 +251,34 @@ class TestCallbackSubprocess:
 
 
 
+    def test_modify_canonical_parsing(self, tmp_path):
+        """Shell hook returning canonical modify is parsed correctly."""
+        script = _write_script(
+            tmp_path, "mod_canon.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "modify", "args": {"path": "/safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"path": "/unsafe"})
+        assert result == {"action": "modify", "args": {"path": "/safe"}}
+
+    def test_modify_claude_code_parsing(self, tmp_path):
+        """Shell hook returning Claude-Code modify is normalised."""
+        script = _write_script(
+            tmp_path, "mod_cc.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"decision": "modify", "tool_input": {"content": "safe"}}\\n\'',
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_tool_call", command=str(script),
+        )
+        cb = shell_hooks._make_callback(spec)
+        result = cb(tool_name="write_file", args={"content": "danger"})
+        assert result == {"action": "modify", "args": {"content": "safe"}}
+
 
 # ── config parsing ────────────────────────────────────────────────────────
 
@@ -270,6 +298,25 @@ class TestParseHooksBlock:
 
 
 
+    def test_python_only_event_refused(self, caplog):
+        # transform_api_error_classification returns a classification directive that
+        # _parse_response has no channel for — a shell registration would
+        # be silently ignored, so it must be refused with a warning.
+        specs = shell_hooks._parse_hooks_block({
+            "transform_api_error_classification": [
+                {"command": "/tmp/hook.sh"},
+            ],
+        })
+        assert specs == []
+        assert any("Python-plugin-only" in r.message for r in caplog.records)
+
+    def test_timeout_clamped_to_max(self):
+        specs = shell_hooks._parse_hooks_block({
+            "post_tool_call": [
+                {"command": "/tmp/slow.sh", "timeout": 9999},
+            ],
+        })
+        assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
 
 
@@ -405,14 +452,15 @@ class TestAllowlistConcurrency:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         tmp_paths_seen: list = []
-        real_mkstemp = shell_hooks.tempfile.mkstemp
+        import utils
+        real_mkstemp = utils.tempfile.mkstemp
 
         def spying_mkstemp(*args, **kwargs):
             fd, path = real_mkstemp(*args, **kwargs)
             tmp_paths_seen.append(path)
             return fd, path
 
-        monkeypatch.setattr(shell_hooks.tempfile, "mkstemp", spying_mkstemp)
+        monkeypatch.setattr(utils.tempfile, "mkstemp", spying_mkstemp)
 
         shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})
         shell_hooks.save_allowlist({"approvals": [{"event": "b", "command": "y"}]})
@@ -690,3 +738,36 @@ class TestFailSemanticsEndToEnd:
         assert result["timed_out"] is True
         assert result["parsed"]["action"] == "block"
         assert "failed closed" in result["parsed"]["message"]
+
+
+# ── multiplexed profiles ──────────────────────────────────────────────────
+
+
+class TestRoutedProfileEnv:
+    @pytest.mark.linux_only
+    def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
+        """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
+        stay out of its env, and the payload names the firing profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch, routed = tmp_path / "launch", tmp_path / "routed"
+        launch.mkdir(); routed.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-default-profile")
+        monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+        script = _write_script(
+            tmp_path, "env_dump.sh",
+            "#!/usr/bin/env bash\ncat > /dev/null\n"
+            'printf \'{"home": "%s", "key": "%s"}\\n\' "$HERMES_HOME" "${OPENAI_API_KEY:-}"\n',
+        )
+        spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+        token = set_hermes_home_override(str(routed))
+        try:
+            result = shell_hooks._spawn(spec, shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+            payload = json.loads(shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+        finally:
+            reset_hermes_home_override(token)
+        seen = json.loads(result["stdout"])
+        assert seen["home"] == str(routed)
+        assert seen["key"] == ""
+        assert "profile" in payload

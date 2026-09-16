@@ -477,6 +477,8 @@ export const ga: Translations = {
     copyCliCommand: "Cóipeáil ordú CLI (le haghaidh úsáide seachtraí / cúltaca)",
     connect: "Ceangail",
     sessionExpires: "Téann an seisiún as feidhm i {time}",
+    sessionExpiredNoError:
+      "Chuaigh an síniú isteach in éag gan an soláthraí a bhaint amach. De ghnáth ciallaíonn sé seo gur stop leathanach an tsínithe isteach sa chluaisín oscailte (fadhb ar thaobh an fhreastalaí) — críochnaigh an síniú isteach ansin, ansin cliceáil Atriail. Má theipeann air i gcónaí, úsáid eochair API nó an CLI ina ionad.",
     initiatingLogin: "Ag tosú an tsreabha logála isteach…",
     exchangingCode: "Ag malartú an chóid ar tokens…",
     connectedClosing: "Ceangailte! Á dhúnadh…",
@@ -626,6 +628,12 @@ export const ga: Translations = {
       "Ligeann boards duit sruthanna oibre neamhghaolmhara a scaradh — ceann amháin in aghaidh an tionscadail, an repo nó an fhearainn. Ní fheiceann workers ar bhord amháin tascanna board eile riamh.",
     slug: "Slug",
     slugHint: "— litreacha beaga, fleiscíní, m.sh. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Ainm taispeána",
     displayNameHint: "(roghnach)",
     description: "Cur síos",

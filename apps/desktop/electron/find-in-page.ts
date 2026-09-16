@@ -72,6 +72,46 @@ export function performFind(
 }
 
 /**
+ * Start a find request and resolve after Chromium emits its first matching
+ * result. This acknowledgment lets the renderer remove a temporary `inert`
+ * boundary only after the query field has been excluded from the index.
+ */
+export function performFindAfterIndexingStarted(
+  webContents: Electron.WebContents | null | undefined,
+  query: string,
+  options: FindInPageOptions | null | undefined
+): Promise<void> {
+  if (!webContents || webContents.isDestroyed()) {
+    return Promise.resolve()
+  }
+
+  return new Promise(resolve => {
+    let requestId: number | undefined
+
+    const finish = () => {
+      webContents.off('found-in-page', onFound)
+      webContents.off('destroyed', finish)
+      resolve()
+    }
+
+    const onFound = (_event: Electron.Event, result: { requestId?: number }) => {
+      if (requestId !== undefined && result?.requestId === requestId) {
+        finish()
+      }
+    }
+
+    webContents.on('found-in-page', onFound)
+    webContents.once('destroyed', finish)
+
+    const opts = options && typeof options === 'object' ? options : {}
+    requestId = webContents.findInPage(String(query ?? ''), {
+      forward: opts.forward !== false,
+      findNext: Boolean(opts.findNext)
+    })
+  })
+}
+
+/**
  * Stop the current find and clear highlights. The default `action` matches
  * what the renderer sends on Escape / close.
  */
@@ -116,5 +156,76 @@ export function installFoundInPageForwarder(webContents: Electron.WebContents | 
 
   return () => {
     webContents.off('found-in-page', handler)
+  }
+}
+
+/**
+ * Install a main-process before-input-event hook that claims Ctrl/Cmd+F and
+ * forwards an "open the find bar" intent to the renderer.
+ *
+ * Linux only (#81727): on Pop!_OS / GNOME-based distros the Ctrl+F keydown
+ * does not reach the renderer's `view.findInPage` binding, so the find bar
+ * stays closed. Routing the chord through `before-input-event` (which Chromium
+ * dispatches before the DOM keydown) lets us forward the intent directly.
+ * The exact interception layer varies by distro/desktop (COSMIC shortcut,
+ * webview focus split, etc.); this sidesteps it regardless of cause by acting
+ * at the earliest point the keystroke is observable.
+ *
+ * On macOS / Windows the renderer's own rebindable `view.findInPage` keybind
+ * (`mod+f`, clearable/rebindable via the keybind registry) owns Ctrl/Cmd+F, so
+ * the main-process hook is NOT installed there — installing it would make the
+ * chord un-rebindable and double-open on a rebound binding.
+ *
+ * The renderer's existing find-in-page pipeline still does the actual work
+ * (it owns the FindBar UI, the store, the `hermes:find-in-page` IPC to drive
+ * `webContents.findInPage`). This helper just guarantees that a Ctrl/Cmd+F
+ * press reaches that pipeline on Linux.
+ *
+ * `isMac` is injectable so the macOS-modifier branch can be exercised by
+ * unit tests without rebooting the process under a different platform.
+ *
+ * Returns an uninstall fn that detaches the listener.
+ */
+const IS_MAC = () => process.platform === 'darwin'
+
+export function installFindShortcut(window: Electron.BrowserWindow, isMac: () => boolean = IS_MAC): () => void {
+  const { webContents } = window
+
+  if (!webContents || webContents.isDestroyed()) {
+    return () => {}
+  }
+
+  const handler = (event: Electron.Event, input: Electron.Input) => {
+    if (!webContents || webContents.isDestroyed()) {
+      return
+    }
+
+    const key = String(input.key || '').toLowerCase()
+    // Accept the platform's primary accelerator (Cmd on macOS, Ctrl elsewhere)
+    // AND literal Ctrl on macOS so the chord still reaches us when the user
+    // is on a non-macOS layout. On Pop!_OS / GNOME the GTK compositor owns
+    // Ctrl+F before the renderer's keydown fires — this main-process handler
+    // runs strictly before that (#81727).
+    const hasMod = isMac() ? input.meta || input.control : input.control
+
+    const isFindChord = key === 'f' && hasMod && !input.alt && !input.shift
+
+    if (!isFindChord) {
+      return
+    }
+
+    if (typeof event.preventDefault === 'function') {
+      event.preventDefault()
+    }
+
+    webContents.send('hermes:open-find-bar')
+  }
+
+  webContents.on('before-input-event', handler)
+
+  return () => {
+    if (!webContents.isDestroyed()) {
+      webContents.off('before-input-event', handler)
+    }
   }
 }

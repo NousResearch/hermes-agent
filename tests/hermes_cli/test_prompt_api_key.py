@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from hermes_cli import main_provider_setup
 
 
 @pytest.fixture
@@ -34,7 +35,7 @@ def _run_prompt(existing_key, choice, new_key="", provider_id="", pconfig_name="
     pconfig = _pconfig(pconfig_name)
     with patch("builtins.input", return_value=choice), \
          patch("hermes_cli.secret_prompt.masked_secret_prompt", return_value=new_key):
-        return m._prompt_api_key(pconfig, existing_key, provider_id=provider_id)
+        return main_provider_setup._prompt_api_key(pconfig, existing_key, provider_id=provider_id)
 
 
 def test_pool_only_key_does_not_offer_or_execute_clear(profile_env, monkeypatch, capsys):
@@ -49,7 +50,7 @@ def test_pool_only_key_does_not_offer_or_execute_clear(profile_env, monkeypatch,
 
     monkeypatch.setattr("builtins.input", choose_clear)
     with patch("hermes_cli.config.save_env_value") as save_env:
-        key, abort = m._prompt_api_key(
+        key, abort = main_provider_setup._prompt_api_key(
             pconfig,
             "pool-secret",
             provider_id="deepseek",

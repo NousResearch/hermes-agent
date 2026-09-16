@@ -2,6 +2,8 @@
 
 import shutil
 import json
+import os
+import stat
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,9 +17,9 @@ from tools.skills_sync import (
     _compute_relative_dest,
     _dir_hash,
     sync_skills,
-    reset_bundled_skill,
-    restore_official_optional_skill,
 )
+from tools.skills_sync_bundled_ops import reset_bundled_skill
+from tools.skills_sync_optional import restore_official_optional_skill
 
 
 class TestReadWriteManifest:
@@ -48,6 +50,18 @@ class TestReadWriteManifest:
             result = _read_manifest()
 
         assert result == {"old-skill": "", "new-skill": "abc123"}
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_write_manifest_preserves_existing_file_mode(self, tmp_path):
+        manifest_file = tmp_path / ".bundled_manifest"
+        manifest_file.write_text("old-skill:oldhash\n", encoding="utf-8")
+        os.chmod(manifest_file, 0o660)
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            _write_manifest({"new-skill": "newhash"})
+
+        assert manifest_file.read_text(encoding="utf-8") == "new-skill:newhash\n"
+        assert stat.S_IMODE(manifest_file.stat().st_mode) == 0o660
 
 
 class TestDirHash:
@@ -751,28 +765,26 @@ class TestOptOutToggleAndRemove:
         return bundled
 
     def test_marker_toggle(self, tmp_path):
-        from tools.skills_sync import (
-            set_bundled_skills_opt_out, is_bundled_skills_opt_out,
-        )
+        from tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
         home = tmp_path / "home"
         home.mkdir()
+        marker = home / ".no-bundled-skills"
         with patch("tools.skills_sync.HERMES_HOME", home):
-            assert is_bundled_skills_opt_out() is False
+            assert not marker.exists()
             r = set_bundled_skills_opt_out(True)
             assert r["ok"] and r["changed"]
-            assert is_bundled_skills_opt_out() is True
+            assert marker.exists()
             # idempotent
             r2 = set_bundled_skills_opt_out(True)
             assert r2["ok"] and r2["changed"] is False
             # opt back in
             r3 = set_bundled_skills_opt_out(False)
             assert r3["ok"] and r3["changed"]
-            assert is_bundled_skills_opt_out() is False
+            assert not marker.exists()
 
     def test_remove_keeps_user_modified(self, tmp_path):
-        from tools.skills_sync import (
-            sync_skills, remove_pristine_bundled_skills,
-        )
+        from tools.skills_sync import sync_skills
+        from tools.skills_sync_bundled_ops import remove_pristine_bundled_skills
         bundled = self._setup_bundled(tmp_path)
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
@@ -922,3 +934,69 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestCallTimeDirResolution:
+    """Regression for #65828: skills_sync bound SKILLS_DIR/MANIFEST_FILE/
+    HERMES_HOME at import, so a long-lived dashboard/TUI process serving a
+    console skills command for another profile resolved (and for
+    reset_bundled_skill DELETED) against whichever home was live at import.
+    The accessors must follow set_hermes_home_override() at call time, while
+    an explicitly patched module global (tests, _profile_scope retargeting)
+    still wins.
+    """
+
+    def test_accessors_follow_hermes_home_override(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        profile_home = tmp_path / "profiles" / "research"
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            assert ss._hermes_home() == profile_home
+            assert ss._skills_dir() == profile_home / "skills"
+            assert ss._manifest_file() == profile_home / "skills" / ".bundled_manifest"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_explicit_module_patch_wins_over_override(self, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        patched = tmp_path / "patched-skills"
+        token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        try:
+            with patch("tools.skills_sync.SKILLS_DIR", patched):
+                assert ss._skills_dir() == patched
+                # MANIFEST_FILE unpatched -> derives from the patched skills dir.
+                assert ss._manifest_file() == patched / ".bundled_manifest"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_rmtree_guard_anchors_on_overridden_profile(self, tmp_path):
+        """The #48200 strict-child rmtree guard must anchor on the OVERRIDDEN
+        profile's skills root. Under the stale import-time binding the guard
+        was computed against the wrong home (#65828's sharpest edge): a
+        legitimate delete in the scoped profile would be refused, and a stale
+        path under the import-time home would pass the guard."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import tools.skills_sync as ss
+
+        profile_home = tmp_path / "profiles" / "worker"
+        victim = profile_home / "skills" / "doomed-skill"
+        victim.mkdir(parents=True)
+        (victim / "SKILL.md").write_text("---\nname: doomed-skill\n---\n", encoding="utf-8")
+
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            # Allowed: strict child of the overridden profile's skills root.
+            ss._rmtree_writable(victim)
+            assert not victim.exists()
+
+            # Refused: a path under the import-time home is OUTSIDE the
+            # overridden profile's skills root now.
+            foreign = ss._SKILLS_DIR_AT_IMPORT / "some-skill"
+            with pytest.raises(ValueError):
+                ss._rmtree_writable(foreign)
+        finally:
+            reset_hermes_home_override(token)

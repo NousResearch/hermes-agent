@@ -156,6 +156,20 @@ def test_required_pruned_to_existing_properties():
     assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
+def test_empty_required_key_survives_sanitization():
+    """A ``required`` list that is empty (or emptied by pruning) is kept as ``[]`` — strict
+    OpenAI-compatible proxies read a missing key as ``null`` and 400 the whole request."""
+    declared_empty = _tool("t", {"type": "object", "properties": {}, "required": []})
+    all_pruned = _tool("u", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["missing_field"],
+    })
+    out = sanitize_tool_schemas([declared_empty, all_pruned])
+    assert out[0]["function"]["parameters"]["required"] == []
+    assert out[1]["function"]["parameters"]["required"] == []
+
+
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",
@@ -463,7 +477,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
     the remaining null branch by collapsing consts and keeping nullability as
     a hint.
     """
-    from tools.mcp_tool import _normalize_mcp_input_schema
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",
@@ -486,7 +500,7 @@ def test_null_plus_const_union_ordering_with_nullable_strip():
 
 
 def test_normalize_mcp_input_schema_collapses_const_unions():
-    from tools.mcp_tool import _normalize_mcp_input_schema
+    from tools.mcp_tool_schema import _normalize_mcp_input_schema
 
     schema = {
         "type": "object",

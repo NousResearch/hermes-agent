@@ -332,6 +332,10 @@ export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
  *  and paint durable history. Bot Mode opts into one retry, so its effective
  *  ceiling is two bounded attempts rather than an unbounded wait. */
 export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
+/** Ceiling on the paint-first "Syncing…" badge. The profile gate it waits on is
+ *  not guaranteed to ever fire (see beginHydrationBackgroundSync), so the badge
+ *  needs a bound of its own or it outlives the wake it describes. */
+export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
@@ -371,18 +375,43 @@ export interface PluginNewChatOptions {
 // down as soon as the active-profile gate catches up. The listener clears ONLY
 // its own profile's badge: a newer wake may have replaced the badge with a
 // different profile, and the stale listener must not wipe the winner's.
+//
+// The gate is not guaranteed to fire. `.listen()` is change-only, and the very
+// condition that routes a wake here — a shared-remote connection serving every
+// profile through the primary socket — is also the condition under which
+// $activeGatewayProfile NEVER becomes this profile (the reason the paint-first
+// bypass exists at all). On that path the listener is dead on arrival, so the
+// badge outlives the wake it describes and strands a permanent
+// "Syncing <profile>…" spinner with no timeout and no user-reachable
+// dismissal; only a full app restart clears it. Cap the wait so the badge can
+// never outlive the work.
 function beginHydrationBackgroundSync(profile: string): void {
   $hydrationSyncProfile.set(profile)
 
+  let timer: number | undefined
+
+  const clearOwnBadge = (): void => {
+    if ($hydrationSyncProfile.get() === profile) {
+      $hydrationSyncProfile.set(null)
+    }
+  }
+
   const unlisten = $activeGatewayProfile.listen(next => {
     if (normalizeProfileKey(next) === profile) {
-      if ($hydrationSyncProfile.get() === profile) {
-        $hydrationSyncProfile.set(null)
+      clearOwnBadge()
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
       }
 
       unlisten()
     }
   })
+
+  timer = window.setTimeout(() => {
+    clearOwnBadge()
+    unlisten()
+  }, HYDRATION_SYNC_BADGE_TIMEOUT_MS)
 }
 
 function waitForFocusedSessionHydration({

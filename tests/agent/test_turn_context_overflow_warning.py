@@ -224,15 +224,15 @@ class TestPluginEngineDefault:
 
 
 # ---------------------------------------------------------------------------
-# Gateway noise filter: the warning is FAILURE-CLASS and must survive
+# Gateway noise filter: the warning survives DMs and raw surfaces
 # ---------------------------------------------------------------------------
 
 class TestWarningSurvivesNoiseFilter:
     """The blocked-overflow warning is a deliberate carve-out from
-    routine-compression silence (#16775 class). The gateway noise regex
-    (#69550 just widened it) must NOT swallow it, or the fix is dead on
-    every chat platform. Executes the REAL compiled regex — never eyeball
-    a regex (noise-regex salvage rule).
+    routine-compression silence (#16775 class). The general gateway noise
+    regex must not swallow it: destination-aware suppression for multi-user
+    chats is handled separately by ``_prepare_gateway_status_message``.
+    Executes the REAL compiled regex — never eyeball a regex.
     """
 
     def _emitted_warning(self, reason: str) -> str:

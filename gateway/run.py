@@ -31,6 +31,7 @@ from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_compression import (
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -661,16 +662,52 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _blocked_overflow_status_regex(template: str) -> re.Pattern[str]:
+    """Match only complete instances of the blocked-overflow template."""
+    marker_tokens = "__HERMES_TOKENS__"
+    marker_threshold = "__HERMES_THRESHOLD__"
+    marker_reason = "__HERMES_REASON__"
+    source = template.replace("{tokens:,}", marker_tokens)
+    source = source.replace("{threshold:,}", marker_threshold)
+    source = source.replace("{reason}", marker_reason)
+    source = re.escape(source)
+    canonical_count = r"(?:0|[1-9][0-9]{0,2}(?:,[0-9]{3})*)"
+    source = source.replace(re.escape(marker_tokens), canonical_count)
+    source = source.replace(re.escape(marker_threshold), canonical_count)
+    source = source.replace(re.escape(marker_reason), r"[\s\S]+?")
+    return re.compile(rf"^{source}$")
+
+
+_CONTEXT_OVERFLOW_BLOCKED_STATUS_RE = _blocked_overflow_status_regex(
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+)
+_MULTI_USER_CHAT_TYPES = {"group", "forum", "channel", "supergroup", "thread"}
+
+
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    *,
+    chat_type: Any = None,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
     Local/CLI keep the raw diagnostic stream; messaging surfaces drop transient aux/compression noise."""
-    text = str(message or "").strip()
+    original_text = str(message or "")
+    text = original_text.strip()
     if not text:
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
 
+    normalized_chat_type = str(getattr(chat_type, "value", chat_type) or "").strip().lower()
+    if (
+        normalized_chat_type in _MULTI_USER_CHAT_TYPES
+        and original_text == text
+        and _CONTEXT_OVERFLOW_BLOCKED_STATUS_RE.fullmatch(text)
+    ):
+        return None
     text = _redact_gateway_user_facing_secrets(text)
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (

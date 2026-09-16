@@ -77,6 +77,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "medium, high, xhigh, max, or ultra. Overrides agent.reasoning_effort "
             "and agent.reasoning_overrides for this job; unsupported levels are "
             "clamped by the provider at request time. Omit to follow config.")
+    # Declared as a bare string (no type=int) so an empty value can CLEAR the override on edit,
+    # mirroring --reasoning-effort; the numeric grammar is validated before storing.
+    cron_create.add_argument("--script-timeout-seconds", dest="script_timeout_seconds",
+        help="Per-job budget in seconds for this job's --script, overriding "
+            "cron.script_timeout_seconds for THIS job only (every other script "
+            "job in the profile keeps the global cap). Must be a positive "
+            "integer; the script is killed and reported as timed out past it. "
+            "Omit to follow the global/env chain.")
     cron_create.add_argument(
         "--continuity", dest="continuity", action="store_const", const=True, default=None,
         help="Each run wakes up with the job's own previous output injected "
@@ -144,6 +152,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Pin this job's reasoning (thinking) effort: none, minimal, low, "
             "medium, high, xhigh, max, or ultra. Pass empty string to clear "
             "the pin and follow config resolution.")
+    cron_edit.add_argument("--script-timeout-seconds", dest="script_timeout_seconds",
+        help="Per-job budget in seconds for this job's script, overriding "
+            "cron.script_timeout_seconds for THIS job only. Must be a positive "
+            "integer. Pass empty string to clear the override and follow the "
+            "global/env chain again.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

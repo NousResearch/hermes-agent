@@ -94,8 +94,22 @@ test('computeWindowOptions falls back to defaults with no saved state', () => {
 })
 
 test('computeWindowOptions restores an on-screen position', () => {
-  const saved = sanitizeWindowState({ x: 200, y: 150, width: 1400, height: 900 })
-  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1400, height: 900, x: 200, y: 150 })
+  const saved = sanitizeWindowState({ x: 200, y: 100, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 1400, height: 900, x: 200, y: 100 })
+})
+
+test('computeWindowOptions clamps a trusted saved position fully inside its display work area', () => {
+  const saved = sanitizeWindowState({ x: -102, y: 175, width: 960, height: 1032 })
+  assert.deepEqual(computeWindowOptions(saved, PRIMARY), { width: 960, height: 1032, x: 0, y: 8 })
+})
+
+test('computeWindowOptions caps a positioned window to the display it overlaps', () => {
+  const dual = [
+    { workArea: { x: 0, y: 0, width: 2560, height: 1400 } },
+    { workArea: { x: 2560, y: 0, width: 1366, height: 728 } }
+  ]
+  const saved = sanitizeWindowState({ x: 2700, y: 100, width: 1400, height: 900 })
+  assert.deepEqual(computeWindowOptions(saved, dual), { width: 1366, height: 728, x: 2560, y: 0 })
 })
 
 test('computeWindowOptions keeps the size but drops an off-screen position', () => {

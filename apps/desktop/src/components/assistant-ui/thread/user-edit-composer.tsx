@@ -775,7 +775,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
     if (event.key === 'Escape') {
       event.preventDefault()
-      aui.composer().cancel()
+
+      // Same unbound-core race as handleEditBlur: a blur-driven cancel (or a
+      // send) can tear the composer core down a moment before this keydown is
+      // handled, and cancel() on a torn-down core throws "Composer is not
+      // available" as an uncaught renderer error. Nothing to cancel then.
+      try {
+        aui.composer().cancel()
+      } catch {
+        // Composer core already gone — the edit is closing anyway.
+      }
 
       return
     }

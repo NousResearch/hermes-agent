@@ -855,7 +855,14 @@ class GatewayInboundMixin:
         alternation; works on any backend). A failing builder replies with a retry hint."""
         await self._send_command_ack(source, ack, name)
         try:
+            raw_args = event.get_command_args().strip()
             event.text = build()
+            from agent.prompt_builtin_runtime import make_prompt_builtin_origin
+            metadata = getattr(event, "metadata", None)
+            if not isinstance(metadata, dict):
+                metadata = {}
+                event.metadata = metadata
+            metadata["prompt_builtin"] = make_prompt_builtin_origin(name, raw_args)
         except Exception:
             return True, f"Could not start /{name} — please try again."
         return False, None

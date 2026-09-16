@@ -548,7 +548,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None) -> None:
+    turn_author: dict | None = None, prompt_builtin: dict | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
@@ -597,6 +597,8 @@ def _invoke_agent(
         run_kwargs["persist_user_display_metadata"] = display_metadata
     if turn_author and "turn_author" in run_params:
         run_kwargs["turn_author"] = turn_author
+    if prompt_builtin and "prompt_builtin" in run_params:
+        run_kwargs["prompt_builtin"] = prompt_builtin
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
@@ -856,6 +858,9 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
+    from agent.prompt_builtin_runtime import take_prompt_builtin
+    with session["history_lock"]:
+        prompt_builtin = take_prompt_builtin(session, text)
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -894,7 +899,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author)
+                display_metadata, turn_author, prompt_builtin)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)

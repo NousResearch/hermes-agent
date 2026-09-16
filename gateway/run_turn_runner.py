@@ -1619,6 +1619,8 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            if ctx.prompt_builtin is not None:
+                kwargs["prompt_builtin"] = ctx.prompt_builtin
             return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
@@ -1864,6 +1866,7 @@ class TurnRunner:
             "error": result.get("error"),
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
+            "prompt_builtin_completion": result.get("prompt_builtin_completion"),
             "tools": ctx.tools_holder[0] or [],
             "history_offset": history_offset, "compacted_in_place": compacted_in_place, "session_id": effective_session_id,
             **usage,

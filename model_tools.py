@@ -683,6 +683,11 @@ def _emit_post_tool_call_hook(
     if _post_tool_call_hook_suppressed.get():
         return
     try:
+        from agent.prompt_builtin_runtime import observe_tool_result
+        observe_tool_result(function_name, function_args, result)
+    except Exception:
+        logger.debug("prompt builtin artifact collection failed", exc_info=True)
+    try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
             return

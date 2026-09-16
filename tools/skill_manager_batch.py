@@ -179,7 +179,8 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                             fail.setdefault(k, v)
                     return json.dumps(fail, ensure_ascii=False)
                 results.append({"name": names[i], "action": op["action"],
-                                "file_path": op.get("file_path"), "success": True})
+                                "file_path": op.get("file_path"), "path": parsed.get("path"),
+                                "success": True})
         finally:
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:

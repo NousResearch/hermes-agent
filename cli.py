@@ -4317,7 +4317,38 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
     except RoutingBlocked as exc:
         logger.error("guided-routing enforcement blocked this Kanban worker: %s", exc)
         return False
+    _disable_inherited_fallback_for_managed_run(agent, receipt_id)
     return True
+
+
+def _disable_inherited_fallback_for_managed_run(agent, receipt_id: str) -> None:
+    """Design §5: \"Disable inherited model fallback chains for these runs.\"
+
+    ``_init_agent`` always wires ``fallback_model=self._fallback_model`` from the
+    CLI's OWN process-level config (``get_fallback_chain(CLI_CONFIG)``) regardless
+    of whether this turn is a managed Kanban attempt — that inherited chain is a
+    profile-wide default, never something the routing policy approved for THIS
+    receipted route. A managed worker whose real provider call fails must end the
+    attempt (existing claim/retry/re-route lifecycle picks a new receipted route),
+    never silently fail over to an unapproved inherited provider/model — the exact
+    escape this guard exists to close. Cleared here, immediately after enforcement
+    passes and strictly before the first real inference call, so this receipted
+    turn can never reach ``agent._try_activate_fallback`` with a live chain.
+    Managed same-route transient retries are unaffected (design §5's existing
+    bounded retry-on-transport-error policy is separate from the fallback CHAIN
+    this clears; retries stay 'same exact route').
+    """
+    if not getattr(agent, "_fallback_chain", None):
+        return
+    logger.info(
+        "guided-routing: managed task (receipt=%s) — clearing inherited fallback "
+        "chain (%d entries) so a provider failure ends this attempt instead of "
+        "silently escaping to an unapproved route",
+        receipt_id, len(agent._fallback_chain),
+    )
+    agent._fallback_chain = []
+    agent._fallback_index = 0
+    agent._fallback_model = None
 
 
 def requested_effort_for_kanban_guard(cli) -> Optional[str]:

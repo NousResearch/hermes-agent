@@ -1,13 +1,12 @@
 /**
- * The build beat's three cards: choosing what to make, handing it to a session
- * of its own, and watching it happen. Unlike the setup picks these read the
- * directive's attrs — the payload is model-written, so each one validates
- * before it renders.
+ * The three build cards: choosing what to make, handing it to a session of its own, and reporting progress. Unlike the
+ * setup cards these read the directive attrs, which the model writes, so each card validates the payload before it
+ * renders.
  */
 
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
@@ -27,31 +26,44 @@ import {
   SETUP_PROFILE
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
+import { answeredAfter } from '@/lib/chat-messages/parts'
 import { segmentTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
+import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
 
-/** A tappable option is the user's own reply, so it goes out VISIBLE — the
- *  model's next message answers a real turn, not a hidden [setup] note. */
+/** A tapped option is submitted as the user's own visible message rather than as a hidden [setup] note, so the
+ *  model's next message answers a real turn. */
 const FALLBACK_OPTION = "Let's figure it out together"
 
 /**
- * The "first build" card — the close of the get-to-know-you beat. The model
- * asks a thoughtful question about what the user wants to BUILD first, then
- * places this card with the options IT generated from the whole conversation:
+ * The last question card before the handoff. The model asks what the user wants to build first, then places this card
+ * with options it wrote from the conversation so far:
  * `::onboarding{step="first" options="A Discord bot|A habit tracker|…"}`.
  */
 export function FirstBuildCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
-  const [picked, setPicked] = useState<null | string>(null)
+  // The pick lives with the other answers, not in component state: the
+  // visible submit rebuilds the transcript and a local flag came back null,
+  // leaving every chip clickable after one had already been sent. A typed
+  // reply in the composer closes the card the same way a chip does.
+  const messageId = useAuiState(state => state.message.id)
 
-  // Parse + validate the model's options: up to 4, each short enough to sit on
-  // a chip, deduped case-insensitively (models repeat themselves). Garbage in
-  // (0-1 usable) must not strand the user — the prose says "pick one below",
-  // so fall back to the one option we can always offer.
+  const answeredInComposer = answeredAfter(useStore(view.$messages), messageId)
+
+  const committed =
+    useStore($onboardingAnswers)
+      .committed.find(step => step.startsWith('first:'))
+      ?.slice(6) ?? null
+
+  const picked = committed ?? (answeredInComposer ? '' : null)
+
+  // The 60-character limit keeps an option on one chip. The dedupe is case-insensitive because models repeat
+  // themselves. Fewer than 2 usable options falls back to FALLBACK_OPTION, because the model's prose has already
+  // told the user to pick one below.
   const seen = new Set<string>()
 
   const parsed = (attrs.options ?? '')
@@ -73,12 +85,12 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
   const options = parsed.length < 2 ? [FALLBACK_OPTION] : parsed
 
   const pick = (option: string) => {
-    if (picked || locked) {
+    if (picked !== null || locked) {
       return
     }
 
     if (requestComposerSubmit(option, { target })) {
-      setPicked(option)
+      markStepCommitted(`first:${option}`)
     }
   }
 
@@ -94,15 +106,13 @@ export function FirstBuildCard({ attrs, locked }: CardProps) {
 }
 
 /**
- * The handoff card — where the first build leaves this chat. Setup emits
- * `::onboarding{step="handoff" task="…" brief="…"}` once the task is decided,
- * and the card performs it: raise the beacon, and the wiring effect opens a
- * session on the user's default profile, seeds it, and moves the user there.
+ * Moves the first build out of this chat. Setup emits
+ * `::onboarding{step="handoff" task="…" brief="…"}` once the task is decided. This card sets the request atom, and
+ * the wiring effect then creates a session on the user's default profile, seeds it, and moves the user there.
  *
- * Nothing to ask — the build's shape was settled by the `first` step and there
- * is one surface now, so the card just narrates: opening → landed. The request
- * atom and accepted receipt make re-parses, re-mounts, and relaunches inert,
- * and a locked (replayed) transcript never re-fires.
+ * The `first` step already settled what to build, so this card asks nothing and only reports the state of the handoff.
+ * The request atom and the accepted receipt stop a re-parse, a re-mount, or a relaunch from starting a second handoff,
+ * and a locked (replayed) transcript never starts one.
  */
 export function HandoffCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
@@ -215,7 +225,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
   )
 }
 
-/** Progress comes from this transcript, so virtualization cannot append history. */
+/** The earlier steps are derived from this transcript on every render, so a re-mount cannot lose or repeat them. */
 export function ProgressCard({ attrs, locked }: CardProps) {
   const view = useSessionView()
   const messages = useStore(view.$messages)

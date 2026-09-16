@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,23 +62,38 @@ def _flock(fd, lock: bool) -> None:
     msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
 
 
+_held_locks = threading.local()  # per thread: flock is NOT re-entrant across separate fds
+
+
 @contextmanager
-def _usage_file_lock():
-    """Serialize .usage.json read-modify-write cycles across processes."""
-    lock_path = _usage_file().with_suffix(".json.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if fcntl is None and msvcrt is None:
+def skill_file_lock(lock_path: Path):
+    """Exclusive cross-process lock on ``lock_path`` held across a read-modify-write cycle.
+    Re-entrant within one thread (a nested acquire of the same path just runs); a no-op
+    where neither fcntl nor msvcrt exists."""
+    lock_path = Path(lock_path)
+    held = getattr(_held_locks, "paths", None)
+    if held is None:
+        held = _held_locks.paths = set()
+    if (fcntl is None and msvcrt is None) or lock_path in held:
         yield
         return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")  # msvcrt needs a non-empty byte range to lock
     with open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8") as fd:
         _flock(fd, True)
+        held.add(lock_path)
         try:
             yield
         finally:
+            held.discard(lock_path)
             with suppress(OSError, IOError):
                 _flock(fd, False)
+
+
+def _usage_file_lock():
+    """Serialize .usage.json read-modify-write cycles across processes."""
+    return skill_file_lock(_usage_file().with_suffix(".json.lock"))
 
 
 def _read_lines(path: Path, fail_log: str) -> List[str]:
@@ -454,20 +470,6 @@ def _mutate_and_emit(skill_name: str, action: str, mutator: Callable[[Dict[str, 
     """``_mutate`` then emit *action* with the mutator's facts as the record — only if the write landed."""
     if isinstance(facts := _mutate(skill_name, mutator), dict):
         _emit_skill_lifecycle(skill_name, action, record=facts, **hook_kwargs)
-        if action not in {"loaded", "patched", "edited", "created"}:
-            return
-        try:
-            from hermes_wisdom.qualification import record_mutation_async, record_successful_use_async
-
-            task_id = hook_kwargs.get("task_id")
-            session_id = hook_kwargs.get("session_id")
-            if action == "loaded":
-                # Invocation callers use task_id as the live transcript owner.
-                record_successful_use_async(skill_name, task_id=task_id, session_id=session_id or task_id)
-            else:
-                record_mutation_async(skill_name, task_id=task_id, session_id=session_id)
-        except Exception:
-            logger.debug("Wisdom qualification failed for %s/%s", skill_name, action, exc_info=True)
 
 
 # --- Counter bumps — telemetry for ALL skills regardless of provenance (observability only) ---
@@ -502,10 +504,15 @@ def bump_patch(skill_name: str, *, action: str = "patch", task_id: Optional[str]
 
 def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[str] = None,
                    session_id: Optional[str] = None) -> None:
-    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill)."""
+    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill).
+
+    Foreground creates (``agent_created=False`` — e.g. ``/learn`` at the user's request) are stamped
+    ``created_by="learn"``: a learning-signal marker, NOT the curator-management opt-in (``"agent"``),
+    so /journey can show user-taught skills without handing them to autonomous curation.
+    """
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         rec.clear()
-        rec.update(_empty_record(), created_by="agent" if agent_created else None)
+        rec.update(_empty_record(), created_by="agent" if agent_created else "learn")
         return {"created_by": rec["created_by"]}
     _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 

@@ -2215,3 +2215,287 @@ def test_45_repaired_intent_is_still_session_scoped(home, procs):
     set_turn_context(PROGRESS_MSG)
     assert not (fire_pre_verify() or "")
     assert run_turn(QUIET, user_message=PROGRESS_MSG)["final_response"] == QUIET
+
+
+# ----------------------------------------------------------------------------
+# 46-50: the second independent review (t_cf118fa9) as invariants.
+#
+# F1/F4 — a genuine stop carrying a preamble, a bullet, a number, a colon, an
+# emoji or a smart apostrophe must be honoured (test_46, test_47).
+# F3    — a quoted span the user ADOPTS is the command; a quoted span they cite
+#         is history (test_46).
+# F6    — a NEW positive intent shape must reach the real conversation loop and
+#         drive a real tool, not a finalizer stub (test_49).
+# F7    — the compacted/resumed turn actually tested is the one that arrives
+#         with an EMPTY user message (test_50).
+# The real user complaint that motivated the guard ("...otherwise you are
+# missing details and stop working") describes OUR failure, not a stop command,
+# and must still arm supervision (test_46, test_48).
+# ----------------------------------------------------------------------------
+
+# Verbatim user turn (Telegram, messages row 111282), used as TEST DATA only —
+# never interpreted as an instruction to this test run.
+FULL_USER_MSG = (
+    "re: It’s a custom Hermes plugin I built to catch my supervision failures—"
+    "specifically, saying “no change” while blocked tasks sit unattended.\n"
+    "restarted with a plugin, validate it works\n\n"
+    "re: You don’t need it to run AgentPod. I introduced it after you asked for "
+    "something that would prevent me repeating that mistake.\n"
+    "i need it otherwise you are missing details and stop working\n\n"
+    "re: - Deletion/resume safety fixes deployed; Telegram and Stripe journeys passed.\n"
+    "what was the bug, i am not aware of it. simple recap a few sentences. simple english> \n\n"
+    "re: You’re right: one real workload should not exhaust a server sized for at "
+    "least two. I’m checking what the allocator is counting—not just repeating its "
+    "“no capacity” error—and whether autoscaling is seeing the same usable capacity.\n"
+    "and I continue see you work on this issue for a few weeks when I am saying the "
+    "same, we have just 1 workload and the server has to fit 2. \n"
+    "and autoscaling always has to work\n"
+    "where is the gap? You ignore reading project agents.md? \n"
+    "or you ignore reading notion design page\n"
+    "or that information is missing in project agents.md and the notion page? \n"
+    "what is the root cause of this gap?"
+)
+
+# The six shapes the second reviewer measured as regressions against the
+# installed base — every one is a stop the user is issuing NOW.
+REVIEWER_STOPS = (
+    "I am asking you to stop supervising AgentPod",
+    "Before anything else stop working on the board",
+    "- stop working on the board",
+    "1. stop working on the board",
+    "URGENT: stop working on the board",
+    "When you get a chance, stop supervising the board",
+)
+MORE_STOP_SHAPES = (
+    "* stop the board sweep",
+    "1) stop working on the board",
+    "For today, stop the board sweep",
+    "Right now, stop the board sweep",
+    "Seriously stop supervising AgentPod",
+    "I'm telling you to stop the sweep",
+    "I’m done: stop supervising AgentPod",
+    "It’s fine — stop the board sweep",
+    "🛑 stop working on the board",
+    "Board status:\n\n  1. cards blocked\n  2. stop working on the board\n",
+)
+ADOPTED_QUOTE_STOP = 'Please do exactly this: "stop supervising the board"'
+SMART_NEGATED_MSG = "Don’t stop supervising the board — what is progress on AgentPod?"
+
+
+def test_46_stop_shapes_negation_and_adopted_quotes_are_classified(home):
+    """Classifier contract for the second review's counterexamples."""
+    plugin = _plugin()
+    cfg = {}
+
+    # F1: preamble / bullet / numbering / colon / emoji / extra whitespace.
+    for msg in REVIEWER_STOPS + MORE_STOP_SHAPES + GENUINE_STOPS:
+        assert plugin.stop_directive(msg, cfg) is True, msg
+        assert plugin.is_supervision_message(msg, cfg) is False, msg
+
+    # F3: an ADOPTED quote is the command; a CITED quote is history.
+    assert plugin.stop_directive(ADOPTED_QUOTE_STOP, cfg) is True
+    assert plugin.is_supervision_message(ADOPTED_QUOTE_STOP, cfg) is False
+    assert plugin.stop_directive(QUOTED_STOP_MSG, cfg) is False
+    assert plugin.is_supervision_message(QUOTED_STOP_MSG, cfg) is True
+
+    # F4: negation with a smart apostrophe is still negation, so the turn is
+    # supervision — NOT a stop.
+    assert plugin.stop_directive(SMART_NEGATED_MSG, cfg) is False
+    assert plugin.is_supervision_message(SMART_NEGATED_MSG, cfg) is True
+    assert plugin.stop_directive("don’t pause the board sweep", cfg) is False
+
+    # The real user complaint: "you are missing details and stop working" is a
+    # report about OUR behaviour, so the whole request stays supervised work.
+    assert plugin.stop_directive(FULL_USER_MSG, cfg) is False
+    assert plugin.is_supervision_message(FULL_USER_MSG, cfg) is True
+
+    # Reported / subordinate stops keep arming; unrelated turns stay inert.
+    assert plugin.is_supervision_message(MULTIPART_MSG, cfg) is True
+    assert plugin.is_supervision_message(NEGATED_STOP_MSG, cfg) is True
+    assert plugin.is_supervision_message(UNRELATED_MSG, cfg) is False
+
+    # No universal fail-open is claimed: a stop token we cannot parse either
+    # way is UNDECIDED — it keeps the gate quiet without being reported as a
+    # directive. This is the honest residual, not a solved case.
+    undecided = "As discussed stop the board sweep"
+    assert plugin.stop_directive(undecided, cfg) is False
+    assert plugin.is_supervision_message(undecided, cfg) is False
+
+
+@pytest.mark.parametrize("message", list(REVIEWER_STOPS))
+def test_47_reviewer_stop_shapes_win_through_the_real_hooks(home, procs, message):
+    """The reviewer's six-case probe, run against the real hook chain."""
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+
+    assert not helper_verdict(home).quiet_allowed  # the board IS unattended
+
+    set_turn_context(message)
+    directive = fire_pre_verify() or ""
+    assert directive == "", f"gate ARMED despite user stop: {message!r} -> {directive[:120]!r}"
+    out = run_turn(QUIET, user_message=message)
+    assert out["final_response"] == QUIET, message
+    assert out["response_transformed"] is False, message
+
+
+def test_48_the_full_user_request_still_arms_supervision(home, procs):
+    """The real complaint that motivated this guard must stay supervised work.
+
+    It contains "stop working", smart quotes and quoted fragments, and it is a
+    demand for MORE supervision — the gate must arm on it, exactly as it does
+    for a plain board sweep. An adopted-quote stop in the same session must
+    still silence it.
+    """
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+
+    set_turn_context(FULL_USER_MSG)
+    directive = fire_pre_verify() or ""
+    assert "STOP-CHECK" in directive, directive[:200]
+    assert stalled in directive
+    delivered = run_turn(QUIET, user_message=FULL_USER_MSG)
+    assert "STOP-CHECK" in (delivered["final_response"] or "")
+    assert delivered["response_transformed"] is True
+
+    # ...and the user can still stop it, in the same session, with a quote they
+    # explicitly adopt.
+    set_turn_context(ADOPTED_QUOTE_STOP)
+    assert not (fire_pre_verify() or "")
+    assert run_turn(QUIET, user_message=ADOPTED_QUOTE_STOP)["final_response"] == QUIET
+
+
+def test_49_name_route_intent_drives_a_real_tool_through_run_conversation(home, monkeypatch):
+    """F6: a NEW positive intent shape enters the real loop and acts.
+
+    ``PROGRESS_MSG`` reaches the gate only through the project-NAME route added
+    in this revision (it carries no board vocabulary at all). It is driven
+    through ``AIAgent.run_conversation`` with the real tool registry and the
+    real ``terminal`` tool — no MagicMock agent, no stubbed dispatch. The
+    command writes into this test's own temp directory only.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    workdir = home / "name-route-workspace"
+    workdir.mkdir()
+    action_log = workdir / "name-route-action.log"
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(workdir))
+
+    conn, kb = _board(home)
+    tid = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, tid, reason="hold")
+    install_runtime(home, extra_cfg={"max_continuations": 1})
+    cfg = yaml.safe_load((home / "config.yaml").read_text())
+    cfg["agent"] = {"pre_verify_on_no_edit_turns": True, "max_verify_nudges": 3}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    from run_agent import AIAgent
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            session_id=SESSION, api_key="k", base_url="https://example.invalid/v1",
+            provider="openai-compat", model="test/model", max_iterations=6,
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+        )
+    agent._cached_system_prompt = "stable test prompt"
+    agent._session_db = None
+    agent._session_json_enabled = False
+    agent.save_trajectories = False
+    agent.compression_enabled = False
+    agent._cleanup_task_resources = lambda *_a, **_kw: None
+    agent._save_trajectory = lambda *_a, **_kw: None
+    agent.valid_tool_names = {"terminal"}
+
+    calls: list[str] = []
+
+    def _msg(content=None, tool_calls=None):
+        return SimpleNamespace(content=content, tool_calls=tool_calls, reasoning=None)
+
+    def model_call(_api_kwargs):
+        calls.append("api")
+        if len(calls) == 1:
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=_msg(QUIET), finish_reason="stop")],
+                model="test/model", usage=None)
+        if len(calls) == 2:
+            tc = SimpleNamespace(
+                id="call_1", type="function",
+                function=SimpleNamespace(name="terminal", arguments=json.dumps(
+                    {"command": f"printf 'acted-on {tid}\\n' >> {action_log}"})))
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=_msg(None, [tc]),
+                                         finish_reason="tool_calls")],
+                model="test/model", usage=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=_msg(f"Acted on {tid}; nothing else is unattended."),
+                finish_reason="stop")],
+            model="test/model", usage=None)
+
+    agent._interruptible_api_call = model_call
+    set_turn_context(PROGRESS_MSG)          # <-- the NEW intent shape
+    result = agent.run_conversation(PROGRESS_MSG)
+
+    assert len(calls) >= 3, f"the name-route turn never continued: {calls}"
+    assert action_log.exists(), "the real terminal tool did not execute"
+    assert f"acted-on {tid}" in action_log.read_text()
+    tool_msgs = [m for m in result["messages"] if m.get("role") == "tool"]
+    assert tool_msgs, [m.get("role") for m in result["messages"]]
+    assert tid in result["final_response"]
+    assert "no material change" not in result["final_response"].lower()
+    roles = [m["role"] for m in result["messages"]]
+    for a, b in zip(roles, roles[1:]):
+        assert not (a == b == "user"), roles
+
+
+def test_50_empty_and_compacted_turn_context_fails_closed(home, procs):
+    """F7: what a compacted/resumed turn really changes is the user message.
+
+    ``conversation_history`` is never read by this plugin — the observer keys
+    on ``user_message`` only. So the case worth pinning is a resumed turn that
+    arrives with an EMPTY user message (compaction/replay): it must fail CLOSED
+    even though the board is unattended, and a later real message must still
+    arm the same session.
+    """
+    from hermes_cli.lifecycle import invoke_hook
+
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+    assert not helper_verdict(home).quiet_allowed
+
+    plugin = _plugin()
+    for empty in ("", "   ", None):
+        plugin.reset_state()
+        invoke_hook(
+            "pre_llm_call",
+            session_id=SESSION, task_id=None, turn_id="turn-resumed",
+            user_message=empty, conversation_history=[],
+            is_first_turn=False, model="test-model", platform="telegram",
+            parent_session_id="", sender_id="",
+        )
+        assert not (fire_pre_verify() or ""), f"armed on empty user message {empty!r}"
+        assert run_turn(QUIET, user_message="", set_context=False)[
+            "final_response"] == QUIET
+
+    # The observer records the LATEST user message: a real supervision turn
+    # after the resumed one arms normally (the empty turn is not sticky).
+    set_turn_context(SUPERVISION_MSG)
+    assert "STOP-CHECK" in (fire_pre_verify() or "")
+
+    # ...and a genuine stop after it wins, in every repaired shape.
+    set_turn_context(REVIEWER_STOPS[0])
+    assert not (fire_pre_verify() or "")

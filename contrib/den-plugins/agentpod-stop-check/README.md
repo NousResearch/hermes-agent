@@ -290,11 +290,27 @@ The trigger is the turn's **user message**, classified by intent:
   Aliases come from `agentpod_stop_check.project_aliases` (default
   `["agentpod"]`) plus `board` / `project_id` / `tenant` when configured.
 
-Parsing is fail-open toward the user: anything the clause/negation analysis
-cannot decide keeps the old behaviour, so the gate can never become *less*
-willing to honour a stop. Session scope, the opt-in enable flag and the bounded
-continuation budget are unchanged — the wider positive routes widen intent
-recognition, never scope (`test_45`).
+A stop is recognised through its preamble, a bullet or number, a colon, an
+emoji, leading whitespace or a smart apostrophe (`test_46`, `test_47`), and a
+quoted span the user explicitly **adopts** (`Please do exactly this: "stop
+supervising the board"`) is the command, not history (`test_46`). Quoting is
+not automatically historical; the frame that introduces the quote decides.
+
+There is **no universal fail-open**, and none is claimed. Each stop token gets
+one of three verdicts: *command* (silences the gate), *reported* — negated,
+cited, or carrying its own subject/subordinator ("tenants **stop working**
+after an LXD restart", "you are missing details **and stop working**", which is
+the user describing the agent's failure and is still supervision), and
+*undecided* — a live stop token in a shape the clause analysis cannot place
+("As discussed stop the board sweep"). An **undecided token keeps the gate
+quiet**: the doubt is spent on the user, never on the supervision. It is not
+reported as a directive, so `stop_directive()` stays an honest
+*clearly-commanded* answer. The undecided class is a real, acknowledged
+residual, not a solved case.
+
+Session scope, the opt-in enable flag and the bounded continuation budget are
+unchanged — the wider positive routes widen intent recognition, never scope
+(`test_45`).
 
 ## Tests
 
@@ -303,7 +319,7 @@ scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py 
 scripts/run_tests.sh tests/run_agent/test_pre_verify_no_edit_turns.py tests/agent/test_verify_hooks.py -q
 ```
 
-55 tests (41 functions): the 10 acceptance scenarios, the first independent review's
+65 tests (46 functions): the 10 acceptance scenarios, the first independent review's
 adversarial findings as invariants (`test_11`–`test_23`), the re-review's
 R1–R8 as invariants (`test_24`–`test_33`), and this round's two acceptance
 blockers (`test_34`–`test_39`): the delivered post-cap answer under both
@@ -319,4 +335,14 @@ control. `test_41`-`test_45` are the message-intent repair: the classifier
 contract, the five supervision shapes driven through the real `pre_llm_call`
 dispatch + `pre_verify` aggregator + turn finalizer on an isolated board, a
 compacted-context turn whose current intent must survive the compaction
-summary, six genuine stop shapes that must still win, and session scope. Red-green and the three guard mutations: see the receipt.
+summary, six genuine stop shapes that must still win, and session scope.
+`test_46`-`test_50` are the second independent review's findings as
+invariants: the repaired stop shapes and adopted-vs-cited quotes in the
+classifier (`test_46`), the reviewer's six-case probe through the real hook
+chain (`test_47`), the real user complaint that must stay supervised work
+(`test_48`), the project-name intent route driven through a real
+`AIAgent.run_conversation` into the unpatched `terminal` tool (`test_49`), and
+the resumed/compacted turn that arrives with an EMPTY user message and must
+fail closed (`test_50`). Note the scope of each claim: `test_42`/`test_44`
+drive the real **hooks** (aggregator + finalizer), while `test_33`/`test_49`
+are the ones that drive the real **loop**. Red-green and the three guard mutations: see the receipt.

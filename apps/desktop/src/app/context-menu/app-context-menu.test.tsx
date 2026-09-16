@@ -407,7 +407,7 @@ describe('AppContextMenu', () => {
 
     const menu = (await screen.findByText('Settings')).closest('[data-slot="dropdown-menu-content"]')
 
-    expect(menu?.classList.contains('z-[80]')).toBe(true)
+    expect(menu?.classList.contains('z-(--z-over-modal-content)')).toBe(true)
   })
 
   it('skips plain right-clicks inside a skip-marked surface, but not links in it', async () => {

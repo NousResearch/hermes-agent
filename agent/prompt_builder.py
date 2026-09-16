@@ -314,6 +314,14 @@ KANBAN_GUIDANCE = (
     "own run; board tasks are for cross-agent handoffs that outlive one API loop."
 )
 
+
+def resolve_kanban_worker_guidance(tool_names: set[str] | frozenset[str]) -> str:
+    """Return Kanban lifecycle guidance only for a dispatcher-owned worker."""
+    if "kanban_show" not in tool_names or not os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        return ""
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+    return KANBAN_GUIDANCE if is_dispatcher_owned_worker_context() else ""
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do or plan to do without actually doing "

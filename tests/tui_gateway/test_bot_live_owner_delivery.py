@@ -113,8 +113,8 @@ def test_mailbox_poll_skips_owner_lookup_without_a_mailbox(monkeypatch, tmp_path
     import tools.bot_live_delivery as mailbox
     lookups = []
     monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: lookups.append(home) or None)
-    poll = _facade(monkeypatch, session_notifications._poll_bot_live_delivery_once, {
-        "_session_home": lambda session: tmp_path, "_session_turn_admission": _session_turn_admission})
+    monkeypatch.setattr(srv, "_session_home", lambda session: tmp_path)
+    poll = session_notifications._poll_bot_live_delivery_once
     session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
                "active_session_lease": SimpleNamespace(lease_id="lease", released=False)}
     assert poll("live", session) is False
@@ -142,9 +142,9 @@ def test_failing_mailbox_poll_backs_off_and_warns_once_per_window(monkeypatch):
         attempts.append(sid)
         raise RuntimeError("active session file lock unavailable")
 
+    monkeypatch.setattr(srv, "_poll_bot_live_delivery_once", failing)
     monkeypatch.setattr(session_notifications, "logger", log)
-    guarded = _facade(monkeypatch, session_notifications._poll_bot_live_delivery_guarded, {
-        "_poll_bot_live_delivery_once": failing})
+    guarded = session_notifications._poll_bot_live_delivery_guarded
     session = {}
     for now in (0.0, 0.5, 1.0, 6.0, 12.0, 61.0):
         guarded("live", session, now)

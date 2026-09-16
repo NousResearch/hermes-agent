@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { host } from '@/sdk'
 
 import {
   $workspaceIsPage,
@@ -196,12 +197,10 @@ describe('navigateToWorkspacePage', () => {
  * like the sidebar does.
  */
 describe('host.navigate', () => {
-  it('fronts the centered route tile even when already on the contributed page', async () => {
+  it('fronts the centered route tile even when already on the contributed page', () => {
     const dispose = contributeRoute()
 
     try {
-      const { host } = await import('@/sdk')
-
       window.location.hash = `#${CONTRIBUTED_ROUTE}`
       vi.mocked(revealTreePane).mockClear()
       vi.mocked(noteActiveTreeGroup).mockClear()
@@ -217,9 +216,7 @@ describe('host.navigate', () => {
     }
   })
 
-  it('preserves normal workspace-page navigation', async () => {
-    const { host } = await import('@/sdk')
-
+  it('preserves normal workspace-page navigation', () => {
     host.navigate(SKILLS_ROUTE)
 
     expect(window.location.hash).toBe(`#${SKILLS_ROUTE}`)
@@ -227,9 +224,7 @@ describe('host.navigate', () => {
     expect(fronted()).toBe(true)
   })
 
-  it('does not front the pane for a chat route', async () => {
-    const { host } = await import('@/sdk')
-
+  it('does not front the pane for a chat route', () => {
     host.navigate(sessionRoute('sess-a'))
 
     expect(revealTreePane).not.toHaveBeenCalled()

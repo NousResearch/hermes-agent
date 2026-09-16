@@ -2674,6 +2674,7 @@ export const ru = defineLocale({
     voiceDictation: 'Голосовая диктовка',
     speakReplies: 'Зачитывать ответы вслух',
     stopSpeakingReplies: 'Перестать зачитывать ответы вслух',
+    wakeWord: phrase => `Слово-пробуждение «${phrase}»`,
     wakeWordListening: phrase => `Слово-пробуждение: «${phrase}» — слушает`,
     wakeWordOff: phrase => `Слово-пробуждение: «${phrase}» — выключено`,
     wakeWordPausedVoice: phrase => `Слово-пробуждение: «${phrase}» — приостановлено во время голосового чата`,

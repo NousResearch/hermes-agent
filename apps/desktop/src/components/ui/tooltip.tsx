@@ -95,6 +95,7 @@ function TooltipTrigger({ onFocus, ...props }: React.ComponentProps<typeof Toolt
 
 function TooltipContent({
   className,
+  side,
   sideOffset = 6,
   children,
   ...props
@@ -109,8 +110,15 @@ function TooltipContent({
         // elapses the chip appears at once.
         // pointer-events-none: the tip must never steal hover/clicks from the
         // chrome underneath (titlebar tools, adjacent tabs, etc.).
-        className={cn('pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none', className)}
+        // A tip beside its trigger rags toward it: wrapped lines hang off the
+        // edge nearest the control, not away from it.
+        className={cn(
+          'pointer-events-none z-(--z-over-modal) w-fit max-w-64 select-none',
+          side === 'left' && 'text-right',
+          className
+        )}
         data-slot="tooltip-content"
+        side={side}
         sideOffset={sideOffset}
         {...props}
       >

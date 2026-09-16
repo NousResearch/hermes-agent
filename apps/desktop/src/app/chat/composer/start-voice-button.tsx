@@ -33,7 +33,7 @@ export function StartVoiceButton({
 
   return (
     <span className="flex items-center">
-      <Tip label={engine ? `${label} — ${engine}` : label}>
+      <Tip label={engine ? `${label} — ${engine}` : label} side="left">
         <Button
           aria-label={label}
           className={cn(PRIMARY_ICON_BTN, engine && 'rounded-r-none')}
@@ -50,7 +50,7 @@ export function StartVoiceButton({
       </Tip>
       {engine ? (
         <DropdownMenu>
-          <Tip label={t.composer.voiceEngine}>
+          <Tip label={t.composer.voiceEngine} side="left">
             <DropdownMenuTrigger asChild>
               <Button
                 aria-label={t.composer.voiceEngine}

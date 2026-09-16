@@ -880,3 +880,59 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+
+class TestWeixinShortChatSplitLabelGuard:
+    """Regression tests for #107946: a structured "Label: value" block must not
+    be split into separate bubbles by the short-chat heuristic, no matter how
+    short its lines are; genuine short chats — even ones carrying a stray
+    label-looking line — must keep splitting."""
+
+    XIAOMI_CONFIRMATION = "\n".join([
+        "Model switched to `mimo-v2.5-pro`",
+        "Provider: xiaomi",
+        "Context: 200,000 tokens",
+        "Max output: 8,192 tokens",
+        "Capabilities: reasoning, tools, vision",
+        "Saved to session — use /model reset to clear",
+    ])
+
+    def test_structured_confirmation_with_short_lines_not_split(self):
+        # Every line is ≤48 chars and unindented, so all lines look chatty;
+        # four of six are "Label: value" → majority → keep one bubble.
+        assert weixin._should_split_short_chat_block_for_weixin(self.XIAOMI_CONFIRMATION) is False
+
+    def test_structured_confirmation_delivered_as_single_message(self):
+        chunks = weixin._split_text_for_weixin_delivery(self.XIAOMI_CONFIRMATION, max_length=4096)
+        assert chunks == [self.XIAOMI_CONFIRMATION]
+
+    def test_long_capabilities_line_still_not_split(self):
+        # MiniMax form: the 52-char capabilities line fails the chatty gate —
+        # pre-existing behaviour, unaffected by the label guard.
+        block = self.XIAOMI_CONFIRMATION.replace(
+            "Capabilities: reasoning, tools, vision",
+            "Capabilities: reasoning, tools, vision, open weights",
+        )
+        assert weixin._should_split_short_chat_block_for_weixin(block) is False
+
+    def test_pure_short_chat_still_split(self):
+        block = "\n".join(["hey are you there", "just checking", "call me when free"])
+        assert weixin._should_split_short_chat_block_for_weixin(block) is True
+
+    def test_chat_with_stray_label_line_still_split(self):
+        # A genuine chat carrying one "meeting moved: 3pm" line: 1/3 label
+        # lines is not a majority — the exchange must keep splitting.
+        block = "\n".join(["meeting moved: 3pm", "ok sounds good", "see you there"])
+        assert weixin._should_split_short_chat_block_for_weixin(block) is True
+
+    def test_two_line_chat_with_one_label_line_still_split(self):
+        block = "\n".join(["meeting moved: 3pm", "great"])
+        assert weixin._should_split_short_chat_block_for_weixin(block) is True
+
+    def test_all_label_two_line_block_not_split(self):
+        block = "\n".join(["A: 1", "B: 2"])
+        assert weixin._should_split_short_chat_block_for_weixin(block) is False
+
+    def test_non_latin_short_chat_still_split(self):
+        block = "\n".join(["你吃饭了吗", "还没呢", "一起？"])
+        assert weixin._should_split_short_chat_block_for_weixin(block) is True
+

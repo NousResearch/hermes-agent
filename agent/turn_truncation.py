@@ -519,7 +519,9 @@ def _recover_hidden_truncation_phase(
     agent: Any, request: Any, _retry: TurnRetryState, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, effective_task_id: Any,
     current_turn_user_idx: Any, truncated_tool_call_retries: int, retry_count: int,
-    compression_attempts: int, chunking_progress: Optional["_ChunkingProgress"] = None,
+    compression_attempts: int, length_continue_retries: int = 0,
+    truncated_response_parts: Optional[List[str]] = None,
+    chunking_progress: Optional["_ChunkingProgress"] = None,
 ) -> TruncationVerdict:
     """Bounded chunking recovery for a truncation the router hid behind a non-``length``
     ``finish_reason`` (see ``turn_tool_validation.HiddenTruncationRequest``).
@@ -530,16 +532,21 @@ def _recover_hidden_truncation_phase(
     ``_request_chunked_tool_retry`` and its terminal refusal — no duplicated recovery logic
     and no second, weaker bound.
 
-    ``_retry`` is the loop's LIVE ``TurnRetryState`` (not a fresh throwaway instance): the
-    restart flag ``_request_chunked_tool_retry`` arms has to be visible to
-    ``apply_retry_restarts`` after this phase returns, exactly as on the ``length`` path. The
-    broken response is discarded here and never staged, persisted or executed.
+    ``_retry`` is the loop's LIVE ``TurnRetryState`` (not a fresh throwaway instance), but this
+    phase runs AFTER ``apply_retry_restarts`` for its iteration and the loop rebuilds ``_retry``
+    at the top of the next one — so the restart flag ``_request_chunked_tool_retry`` arms is not
+    consumed here. What drives the recovery on this path is the staged chunking nudge on
+    ``messages`` plus the ``"break"`` verdict (the loop restarts the iteration); the flag is
+    load-bearing only on the ``finish_reason="length"`` path, whose phase runs before
+    ``apply_retry_restarts`` in its own iteration. The broken response is discarded here and
+    never staged, persisted or executed.
     """
     st = _Trunc(
         agent=agent, response=None, finish_reason=request.finish_reason,
         conversation_history=conversation_history, api_call_count=api_call_count,
         effective_task_id=effective_task_id, current_turn_user_idx=current_turn_user_idx,
-        messages=messages, length_continue_retries=0, truncated_response_parts=[],
+        messages=messages, length_continue_retries=length_continue_retries,
+        truncated_response_parts=list(truncated_response_parts or []),
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
         compression_attempts=compression_attempts, chunking_progress=chunking_progress,
         trunc_msg=request.assistant_message,

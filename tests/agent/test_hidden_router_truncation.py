@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.turn_truncation import _TRUNCATED_FINAL
 from tests.agent.test_run_agent import _mock_response, _mock_tool_call
 
 # Unrepairable: JSON cut off inside a string, no closing brace — an output-limit cut of an
@@ -214,7 +215,12 @@ class TestBoundedAndSharedBudget:
         )
         assert dispatched == [], "an incomplete tool call must never execute"
         assert result["completed"] is False
-        assert "truncated" in (result["final_response"] or "").lower()
+        # The turn ends with the canonical truncation copy and its verdict code. Upstream moved
+        # the user-facing sentence into agent/turn_failure_copy (site_copy("truncated")), so the
+        # old "truncated" substring assertion was an outdated expectation — the code plus the
+        # canonical copy is the stable contract.
+        assert result["failure_reason"] == "truncated"
+        assert result["final_response"] == _TRUNCATED_FINAL
         # No exponential max_tokens boost ladder on this path.
         assert {_request_max_tokens(c) for c in calls} == {4096}
 
@@ -405,3 +411,37 @@ class TestProviderFlaggedPathUnchanged:
         assert dispatched == []
         assert result["completed"] is False
         assert {_request_max_tokens(c) for c in calls} == {4096}
+
+
+class TestTurnScopedRetryStateSurvivesThePhase:
+    """The recovery phase hands the loop's own verdict fields back (``_run_phase`` copies
+    every field of the returned verdict onto ``_LoopState``), so it must not clobber
+    turn-scoped retry state the turn had already accumulated — the text-continuation counter
+    and the accumulated partial fragments both live on the loop, not on the per-iteration
+    ``TurnRetryState``."""
+
+    def test_phase_preserves_turn_scoped_continuation_state(self, loop_agent):
+        from types import SimpleNamespace
+
+        from agent.turn_retry_state import TurnRetryState
+        from agent.turn_truncation import _ChunkingProgress, _recover_hidden_truncation_phase
+
+        request = SimpleNamespace(
+            finish_reason="tool_calls",
+            assistant_message=_hidden_truncated_response("tool_calls").choices[0].message,
+            broken_tools=["write_file"],
+        )
+        messages = [{"role": "user", "content": "write the file"}]
+
+        verdict = _recover_hidden_truncation_phase(
+            loop_agent, request, TurnRetryState(), messages=messages,
+            conversation_history=None, api_call_count=1, effective_task_id="task",
+            current_turn_user_idx=0, truncated_tool_call_retries=0, retry_count=0,
+            compression_attempts=0, length_continue_retries=3,
+            truncated_response_parts=["already stitched"], chunking_progress=_ChunkingProgress(),
+        )
+
+        assert verdict.action == "break"
+        assert verdict.length_continue_retries == 3
+        assert verdict.truncated_response_parts == ["already stitched"]
+

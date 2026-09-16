@@ -672,6 +672,25 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.retryable is False
 
+    def test_supported_api_model_names_wording_is_model_not_found(self):
+        """A deterministic 400 naming the ids the provider will accept.
+
+        Regression for #113272: a retired/renamed model id gets "The
+        supported API model names are ..., but you passed ...", which none
+        of the previous patterns matched — the failure stayed ``unknown``
+        (retryable, no fallback) and the agent burned retries on a request
+        that could never succeed.
+        """
+        msg = (
+            "The supported API model names are deepseek-v3.2 or "
+            "deepseek-reasoner, but you passed deepseek-v4-flash"
+        )
+        for e in (Exception(msg), MockAPIError(msg, status_code=400)):
+            result = classify_api_error(e)
+            assert result.reason == FailoverReason.model_not_found
+            assert result.retryable is False
+            assert result.should_fallback is True
+
     def test_404_generic(self):
         # Generic 404 with no "model not found" signal — common for local
         # llama.cpp/Ollama/vLLM endpoints with slightly wrong paths.  Treat

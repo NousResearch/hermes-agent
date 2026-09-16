@@ -78,9 +78,8 @@ export interface BotMeta {
   /** Out of the agent-to-agent mesh (neither advertised to nor addressable by other agents),
    *  unlike `hidden`, this desktop's display concern. Read by the gateway and the relay publisher. */
   private?: boolean
-  /** Mesh circle: this bot sees and can message only bots in the same circle, locally and
-   *  across the relay. Empty/unset = the shared default circle (today's behaviour). Ordering:
-   *  force_private > private (a circle of one) > circle > shared. Trimmed, max 64 chars. */
+  /** Mesh circle: this bot sees and can message only bots in the same circle, locally and across
+   *  the relay; empty means the shared default. Ordering: force_private > private > circle. */
   circle?: string
   shape?: string
   title?: string

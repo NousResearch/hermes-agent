@@ -28,6 +28,7 @@ from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_holders import read_only_db_uri
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -36,7 +37,7 @@ from hermes_state_errors import (
 )
 from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
-    _set_last_init_error, get_last_init_error,
+    _register_test_instance, _set_last_init_error, get_last_init_error,
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
 from hermes_state_sessions import SessionSessionsMixin
@@ -45,8 +46,9 @@ from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
+import hermes_state_lockguard as _lockguard
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -101,10 +103,11 @@ class SessionResumeTooLargeError(ValueError):
         self, message_count: int, limit: int = _MAX_SAFE_MESSAGES, scope: str = "across its lineage",
     ):
         self.message_count, self.limit = message_count, limit
+        self.scope = scope
         super().__init__(
-            f"session has at least {message_count} active messages {scope}; "
-            f"safe resume limit is {limit}. Export the session instead, or set "
-            "sessions.max_resume_messages: 0 in config.yaml to disable the guard."
+            f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
+            "Start a fresh chat and use `hermes sessions export` to keep a copy, or raise the limit "
+            "with `hermes config set sessions.max_resume_messages 0`."
         )
 
 
@@ -295,14 +298,20 @@ def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dic
         return messages
     out: List[Dict[str, Any]] = []
     skip_next_assistant = False
+    previous_was_harness = False
     for msg in messages:
         if _is_background_review_harness_message(msg):
-            skip_next_assistant = True
+            # A consecutive harness prompt occupies the preceding prompt's
+            # immediate reply slot, so it must not arm another assistant skip.
+            skip_next_assistant = not previous_was_harness
+            previous_was_harness = True
             continue
         if skip_next_assistant:
             skip_next_assistant = False
             if isinstance(msg, dict) and msg.get("role") == "assistant":
+                previous_was_harness = False
                 continue  # the curator-mode reply to the harness prompt
+        previous_was_harness = False
         out.append(msg)
     return out
 
@@ -334,13 +343,43 @@ def _strip_stale_tool_call_markers(messages: List[Dict[str, Any]]) -> List[Dict[
     return messages
 
 
-def format_session_db_unavailable(prefix: str = "Session database not available") -> str:
-    """User-facing message with the captured init cause (+ WAL-docs hint for NFS/SMB locking failures)."""
+_SESSION_DB_CONSEQUENCE = "Sessions will not be saved until this is fixed."
+_NETWORK_DRIVE_HINT = " If the database lives on a network drive, move it to a local disk."
+_NETWORK_DRIVE_GLOSS = "the session database could not be opened; it may be on a network or unsupported drive"
+_NETWORK_DRIVE_ACTION = (
+    "Move it to a local disk (`hermes doctor` shows where it is), then start Hermes again."
+)
+
+
+def format_session_db_unavailable(
+    prefix: str = "Hermes can't open its session history right now",
+    *,
+    details: bool = False,
+) -> str:
+    """User-facing one-liner: ``<prefix>: <gloss>. <consequence> <action>[ network hint]``.
+
+    The cause table lives in ``hermes_state_user_copy`` so CLI, gateway and TUI agree. Chat
+    surfaces (gateway, TUI) get the one-liner; ``details=True`` (the CLI banner) appends a
+    ``Details: <raw cause>`` line for the raw SQLite text. Network filesystems (NFS/SMB/FUSE/ZFS)
+    cannot host SQLite's write-ahead log: when the raw cause carries one of those markers the
+    message names the network-drive suspicion, because ``hermes doctor --fix`` cannot repair a
+    mount — only moving the file can."""
     cause = get_last_init_error()
     if not cause:
-        return f"{prefix}."
-    hint = " (state.db may be on NFS/SMB/FUSE/ZFS — see https://www.sqlite.org/wal.html)"
-    return f"{prefix}: {cause}{hint if any(m in cause.lower() for m in _WAL_INCOMPAT_MARKERS) else ''}."
+        return f"{prefix}. {_SESSION_DB_CONSEQUENCE} Run `hermes doctor` to check the storage location."
+    from hermes_state_user_copy import describe_storage_failure
+    failure = describe_storage_failure(cause)
+    gloss, action, hint = failure.gloss, failure.action, ""
+    if any(m in cause.lower() for m in _WAL_INCOMPAT_MARKERS):
+        if failure.cause == "unknown":
+            gloss, action = _NETWORK_DRIVE_GLOSS, _NETWORK_DRIVE_ACTION
+        else:
+            hint = _NETWORK_DRIVE_HINT
+    text = f"{prefix}: {gloss}. {_SESSION_DB_CONSEQUENCE} {action}{hint}"
+    if details:
+        from hermes_state_user_copy import storage_failure_details
+        text += f"\nDetails: {storage_failure_details(cause)}"
+    return text
 
 
 # Auto-repair at most once per DB path per process (no repair loops; serialises concurrent
@@ -521,6 +560,7 @@ class SessionDB(
         self._retired_capture_lock = threading.Lock()
         self._retire_connection: Optional[Callable[[Any], None]] = None
         self._connection_pinned = False  # one unmatched C reference taken at most once per handle
+        self._wal_lock_guard: dict = {}  # hermes_state_lockguard.hold() record, see _open_writer
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -559,6 +599,10 @@ class SessionDB(
             if not initialization_complete:
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+            else:
+                # Test-isolation runs only (gated inside the helper): register
+                # for the suite-level leak sweep in tests/conftest.py.
+                _register_test_instance(self)
 
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
@@ -599,6 +643,11 @@ class SessionDB(
             self._connect_and_init_with_lock_patience()
         # FTS optimization is OPT-IN (`hermes db optimize`); no background worker races session lifecycle.
         self._ensure_db_file_generation()
+        if self._wal_active:
+            # OFD copies of the two POSIX locks that keep a sibling's close from unlinking this WAL
+            # generation: any in-process open()/close() of state.db or -shm cancels SQLite's own
+            # (howtocorrupt §2.2); these survive it. Lifted in close().
+            self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _open_read_only(self) -> None:
         """Read-only attach for cross-profile aggregation: no schema init, NO write
@@ -636,7 +685,7 @@ class SessionDB(
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
         are borrowed by whichever thread reads next; exclusive ownership is enforced by pool checkout."""
         conn = _connect_tracked_db(
-            f"file:{self.db_path}?mode=ro", tracking_path=self.db_path, uri=True,
+            read_only_db_uri(self.db_path), tracking_path=self.db_path, uri=True,
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
@@ -652,13 +701,12 @@ class SessionDB(
         except OSError:
             zsize = -1
         qpath = quarantine_invalid_state_db(self.db_path, already_locked=already_locked)
+        where = f"moved aside to {qpath}" if qpath else "left in place (it could not be moved aside)"
         msg = (
-            f"state.db has no SQLite header ({zsize} bytes). "
-            f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
-            f"Restore from {self.db_path.parent / 'state-snapshots'} via `hermes snapshot list` / "
-            f"`hermes snapshot restore <id>` if available, or salvage the preserved bytes with "
-            f"`hermes sessions recover --source {qpath or self.db_path}`. "
-            "Opening a fresh empty database so the agent can start."
+            f"state.db was empty or damaged ({zsize} bytes) and has been {where}; Hermes started with a "
+            "fresh, empty session database. To bring old sessions back, run "
+            f"`hermes sessions recover --source {qpath or self.db_path} --inspect-only`, or restore a "
+            "snapshot with `/snapshot list` then `/snapshot restore <id>` (terminal `hermes` chat only)."
         )
         logger.error(msg)
         _set_last_init_error(msg)
@@ -858,6 +906,8 @@ class SessionDB(
                 f"in flight (a session-teardown path called close() before "
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
+        if self._wal_active:  # a reopened writer is a live generation holder like the first open
+            self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
@@ -1105,7 +1155,7 @@ class SessionDB(
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
                 for target, fd_path in _proc_fd_targets(os.getpid()):
-                    canonical = _canonical_sqlite_path(target)
+                    canonical = _state_holders.canonical_sqlite_path(target)
                     if (" (deleted)" in target and canonical in watched
                             and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True
@@ -1325,6 +1375,10 @@ class SessionDB(
             return
         try:
             with self._lock:
+                if self._conn is None:
+                    return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
+                if self._wal_lock_guard:
+                    _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])
@@ -1401,6 +1455,7 @@ class SessionDB(
                         self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
+                _lockguard.release(self._wal_lock_guard)  # before the close: see release()
                 if retire_without_close:
                     self._pin_connection(self._conn)
                     self._conn = None

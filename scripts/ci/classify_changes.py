@@ -96,8 +96,9 @@ _PY_RELEVANT_SITE = (
 # Editing only the JSON in an apps/-only PR would otherwise skip the one test
 # that can catch the drift, so these force the Python lane too.
 _PY_RELEVANT_CONTRACT_FILES = {
-    # tests/tui_gateway/test_gateway_event_contract.py
-    "apps/shared/src/gateway-events.json",
+    # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
+    "apps/shared/src/gateway-contract.generated.ts",
+    "apps/shared/src/gateway-contract.openrpc.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
 }
@@ -131,7 +132,7 @@ _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
 # Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
 # Electron side that launches it) and the pytest files that spawn it.
 _DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
-_DESKTOP_UPDATER_TEST_PREFIX = "tests/test_desktop_update_"
+_DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
 _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/updater-process.ts",
     "apps/desktop/electron/managed-ssh-update.ts",

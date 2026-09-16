@@ -2,8 +2,8 @@ import type { UsageModelData } from '@hermes/shared/billing'
 import type {
   GatewayEvent,
   GatewayEventName,
-  GatewayTranscriptMessage,
-  SessionInflightTurn,
+  InflightTurn,
+  TranscriptMessage,
   Usage
 } from '@hermes/shared/gateway-events'
 import type { HermesSkin } from '@hermes/shared/skin'
@@ -68,13 +68,6 @@ export type {
   UsageBarData,
   UsageModelData
 } from '@hermes/shared/billing'
-
-export type CommandDispatchResponse =
-  | { output?: string; type: 'exec' | 'plugin' }
-  | { target: string; type: 'alias' }
-  | { display?: string; message?: string; name: string; type: 'skill' }
-  | { display?: string; message: string; notice?: string; type: 'send' }
-  | { message: string; notice?: string; type: 'prefill' }
 
 // ── Config ───────────────────────────────────────────────────────────
 
@@ -208,10 +201,10 @@ export interface SessionActiveListResponse {
 }
 
 export interface SessionActivateResponse {
-  inflight?: null | SessionInflightTurn
+  inflight?: null | InflightTurn
   info?: SessionInfo
   message_count?: number
-  messages: GatewayTranscriptMessage[]
+  messages: TranscriptMessage[]
   running?: boolean
   session_id: string
   session_key?: string
@@ -280,7 +273,7 @@ export interface SessionCompressResponse {
   before_messages?: number
   before_tokens?: number
   info?: SessionInfo
-  messages?: GatewayTranscriptMessage[]
+  messages?: TranscriptMessage[]
   removed?: number
   summary?: {
     headline?: string
@@ -323,20 +316,10 @@ export interface BackgroundStartResponse {
   task_id?: string
 }
 
-export interface ClarifyRespondResponse {
-  ok?: boolean
-}
-
-export interface ApprovalRespondResponse {
-  ok?: boolean
-}
-
-export interface SudoRespondResponse {
-  ok?: boolean
-}
-
-export interface SecretRespondResponse {
-  ok?: boolean
+/** `clarify.lock` — one batch-clarify answer locked; `expired` when the request already ended. */
+export interface ClarifyLockResponse {
+  remaining?: string[]
+  status: 'expired' | 'ok'
 }
 
 // ── Shell / clipboard / input ────────────────────────────────────────

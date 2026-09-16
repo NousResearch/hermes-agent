@@ -1,4 +1,4 @@
-import type { ModelOptionsResponse } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -7,7 +7,6 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
 import {
@@ -70,7 +69,7 @@ export function useModelMenuController({
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResponse> =>
+    queryFn: (): Promise<ModelOptionsResult> =>
       requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -9,6 +10,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import _first_parsed, _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.session_peers import sanitize_peer_id
 from hermes_cli.config import cfg_get
 from utils import read_json_or_empty
 
@@ -24,7 +26,7 @@ _INHERITED_KEYS = (
     "recallSync",
 )
 # clone_honcho_for_profile also carries the operator's runtime-to-peer routing intent.
-_CLONE_KEYS = _INHERITED_KEYS[:3] + ("sessionPeerPrefix",) + _INHERITED_KEYS[3:] + (
+_CLONE_KEYS = _INHERITED_KEYS[:3] + ("sessionPeerPrefix", "sessionAiPeerPrefix") + _INHERITED_KEYS[3:] + (
     "pinUserPeer", "userPeerAliases", "runtimePeerPrefix",
 )
 _IDENTITY_MAPPING_KEYS = ("pinPeerName", "pinUserPeer", "userPeerAliases", "runtimePeerPrefix")
@@ -66,15 +68,91 @@ def _local_config_path() -> Path:
     return get_hermes_home() / "honcho.json"
 
 
+class _ReadConfig(dict):
+    """A command's config, with the ``snapshot`` and ``path`` _write_config() needs to apply only its edits."""
+
+    def __init__(self, raw: dict, path: Path):
+        super().__init__(raw)
+        self.snapshot, self.path = copy.deepcopy(raw), path
+
+
 def _read_config() -> dict:
-    return read_json_or_empty(_config_path())
+    path = _config_path()
+    return _ReadConfig(read_json_or_empty(path), path)
+
+
+class ConfigWriteRefused(Exception):
+    """honcho.json exists on disk but does not parse, so no command may overwrite it."""
+
+
+def _refuse_unparseable(path: Path) -> dict:
+    """Return ``path``'s parsed content ({} when absent); raise ConfigWriteRefused when it exists but cannot
+    be parsed, since writing back ``{}`` would drop every host."""
+    from plugins.memory.honcho.oauth import _read_config_strict
+    try:
+        return _read_config_strict(path)
+    except (OSError, ValueError) as e:
+        raise ConfigWriteRefused(f"{path} exists but could not be read as JSON ({e}). Nothing was written. "
+                                 "Fix or move the file, then re-run.") from e
+
+
+def _apply_edits(base: dict, edited: dict, current: dict) -> dict:
+    """Return ``current`` with the root keys and ``hosts.<h>.<k>`` the command changed (``base`` to ``edited``)
+    applied. An untouched key keeps its on-disk value, so a rotation that landed while the command ran survives."""
+    out = copy.deepcopy(current)
+    for key in (set(base) | set(edited)) - {"hosts"}:
+        if key in edited and edited[key] != base.get(key):
+            out[key] = copy.deepcopy(edited[key])
+        elif key not in edited and key in base:
+            out.pop(key, None)
+    base_hosts, edited_hosts = base.get("hosts") or {}, edited.get("hosts") or {}
+    out_hosts = out.setdefault("hosts", {}) if (base_hosts or edited_hosts or "hosts" in current) else None
+    for host in set(base_hosts) | set(edited_hosts):
+        if host not in edited_hosts:
+            out_hosts.pop(host, None)
+            continue
+        b, e = base_hosts.get(host) or {}, edited_hosts[host]
+        block = out_hosts.setdefault(host, {})
+        for key in set(b) | set(e):
+            if key in e and e[key] != b.get(key):
+                block[key] = copy.deepcopy(e[key])
+            elif key not in e and key in b:
+                block.pop(key, None)
+    return out
+
+
+def _overlay_local(seed: dict, local: dict) -> dict:
+    """Return ``seed`` with ``local``'s root keys and ``hosts.<h>.<k>`` keys on top. The local file wins,
+    so a grant or rotation it already holds is what the command's edits land on."""
+    out = copy.deepcopy(seed)
+    for key, value in local.items():
+        if key != "hosts":
+            out[key] = copy.deepcopy(value)
+    for host, block in (local.get("hosts") or {}).items():
+        out.setdefault("hosts", {}).setdefault(host, {}).update(copy.deepcopy(block))
+    return out
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:
-    path = path or _local_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Persist ``cfg`` under the token refresh's cross-process lock. The object _read_config() returned
+    has only its edits applied onto a fresh read of disk; a plain dict is written whole. A read that
+    resolved to a seed file (~/.honcho or a profile) is written whole only while ``path`` does not exist."""
+    from plugins.memory.honcho.oauth import _config_refresh_lock, _refresh_lock
     from utils import atomic_json_write
-    atomic_json_write(path, cfg, mode=0o600)
+    path = path or _local_config_path()
+    # The file lock is best-effort; _refresh_lock is what keeps an in-process refresh thread out.
+    with _refresh_lock, _config_refresh_lock(path):
+        disk = _refuse_unparseable(path)
+        out = cfg
+        if isinstance(cfg, _ReadConfig):
+            if cfg.path == path:
+                out = _apply_edits(cfg.snapshot, cfg, disk)
+            elif path.exists():
+                out = _apply_edits(cfg.snapshot, cfg, _overlay_local(cfg.snapshot, disk))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, out, mode=0o600)
+        if isinstance(cfg, _ReadConfig):  # a later write on the same object applies only edits made after this one
+            cfg.snapshot, cfg.path = copy.deepcopy(dict(cfg)), path
 
 
 def _label(host: str) -> str:
@@ -111,15 +189,16 @@ def _default_block_and_key(cfg: dict) -> tuple[dict, bool]:
     return cfg_get(cfg, "hosts", HOST, default={}), bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
 
 
-def _resolve_api_key(cfg: dict) -> str:
-    """API key with host -> root -> env fallback. A self-hosted ``baseUrl`` without a key
-    yields ``"local"`` so credential guards accept it: the URL must be http/https (so
-    ``baseUrl: true`` can't pass) or a schemeless host:port (legacy ``localhost:8000``;
-    the SDK rejects those itself)."""
-    key = _host_block(cfg, _host_key()).get("apiKey") or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+def _resolve_api_key(cfg: dict, block: dict | None = None, *, env: bool = True) -> str:
+    """API key for ``block`` (default: the active host's block), host -> root -> env. A self-hosted
+    http(s) or host:port ``baseUrl`` without a key yields "local" so credential guards accept it.
+    ``env=False`` counts only what is on disk: a variable can vanish from the next process."""
+    block = _host_block(cfg, _host_key()) if block is None else block
+    key = (block.get("apiKey") or cfg.get("apiKey", "") or (os.environ.get("HONCHO_API_KEY", "") if env else ""))
     if key:
         return key
-    base_url = (cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "") or "").strip()
+    base_url = (block.get("baseUrl") or block.get("base_url") or cfg.get("baseUrl") or cfg.get("base_url")
+                or (os.environ.get("HONCHO_BASE_URL", "") if env else "") or "").strip()
     if not base_url:
         return key
     from urllib.parse import urlparse
@@ -215,8 +294,10 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
         new_block["pinUserPeer"] = default_block["pinPeerName"]
     # AI peer is profile-specific (bare profile name: Honcho peer IDs allow no dots);
     # workspace is shared so all profiles see the same context.
-    new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST,
-                     enabled=default_block.get("enabled", True))
+    new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST)
+    # The default host's apiKey is not inherited; the block stays unenabled until this profile signs in.
+    if _resolve_api_key(cfg, new_block, env=False):
+        new_block["enabled"] = default_block.get("enabled", True)
     cfg.setdefault("hosts", {})[new_host] = new_block
     _write_config(cfg)
     _ensure_peer_exists(new_host)  # eager so the peer exists before first message
@@ -240,7 +321,11 @@ def _sync_profiles(verbose: bool) -> int:
 
     created = skipped = 0
     for p in (p for p in profiles if p.name != "default"):
-        if clone_honcho_for_profile(p.name):
+        try:
+            cloned = clone_honcho_for_profile(p.name)
+        except ConfigWriteRefused as e:
+            return say(f"  {e}\n") or created
+        if cloned:
             say(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
@@ -263,11 +348,16 @@ def sync_honcho_profiles_quiet() -> int:
 
 
 def cmd_enable(args) -> None:
-    """Enable Honcho for the active profile."""
+    """Enable Honcho for the active profile; refuses a block that cannot authenticate."""
     cfg = _read_config()
     host = _host_key()
     label = _label(host)
     block = cfg.setdefault("hosts", {}).setdefault(host, {})
+    if not _resolve_api_key(cfg, block, env=False):
+        profile = _active_profile_name()
+        setup = "hermes honcho setup" + (f" --target-profile {profile}" if profile != "default" else "")
+        return print(f"  {label}Honcho stays disabled: no API key or base URL is configured for this profile, and the default "
+                     f"profile's key is not shared.\n  Run '{setup}' to sign in, or set apiKey on hosts.{host} in {_config_path()}.\n")
     if block.get("enabled") is True:
         return print(f"  {label}Honcho is already enabled.\n")
     block["enabled"] = True
@@ -393,7 +483,7 @@ def _configure_raw_identity_mapping(hermes_host, current_pin, current_aliases, c
                           "runtimePeerPrefix — namespace for unknown IDs (blank for none)")
 
 
-def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> None:
+def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str, new_host: bool) -> None:
     """Gateway identity mapping step. Only the gateway supplies a runtime user ID (CLI/TUI/
     desktop fall through to peerName), so the step is gated on gateway detection."""
     current_pin, current_aliases, current_prefix, aliases_from_root, prefix_from_root = (
@@ -405,34 +495,50 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
         print(f"\n  Gateway platforms detected: {', '.join(gw_platforms)}")
     else:
         notice, question = (
-            ("\n  Gateway identity mapping routes platform users to memory peers.",
+            ("\n  Each gateway account (a Telegram user, a Discord user, ...)\n"
+             "  resolves to a peer. Honcho builds one representation per peer.",
              "Running the Hermes gateway (Telegram/Discord/etc.)? (y/N)") if gw_platforms is None else
-            ("\n  No gateway platforms connected — identity mapping only affects\n"
-             "  gateway users, so this step doesn't apply here.", "Configure gateway mapping anyway? (y/N)"))
+            ("\n  No gateway platforms connected — nothing to map.", "Configure anyway? (y/N)"))
         print(notice)
         if not _yes(_prompt(question, default="n")):
             return
 
     peer_target = hermes_host.get("peerName") or current_peer or "user"
-    default_choice = {"single": "1", "hybrid": "2"}.get(current_shape, "3")
-    print("\n  How should gateway users map to memory peers?\n"
-          "    [1] just me — every non-agent user collapses to your peer\n"
-          "    [2] me + other people — keep mine pooled, others separate\n"
-          "    [3] only other people — everyone gets their own peer\n"
-          "    [s] skip (leave untouched)   [e] edit raw keys")
+    ai_peer_label = hermes_host.get("aiPeer") or cfg.get("aiPeer") or "hermes"
+    # Fresh configs default to the personal shape; configured ones keep their detected shape.
+    identity_configured = not new_host or any(k in cfg for k in _IDENTITY_MAPPING_KEYS)
+    default_choice = {"single": "1", "hybrid": "2", "multi": "3"}[current_shape] if identity_configured else "1"
+    print("\n  This step covers the HUMAN mapping only. Each account using the\n"
+          "  gateway resolves to a peer — the entity Honcho reasons about over\n"
+          f"  time. This agent is already its own peer ('{ai_peer_label}'), and each\n"
+          "  Hermes profile brings its own AI peer to the gateway.\n"
+          "\n  How should accounts resolve?\n"
+          "    [1] single peer — one person uses this agent; every account\n"
+          f"        resolves to '{peer_target}'. The common personal setup.\n"
+          "        Never for a gateway serving other people — their memory\n"
+          "        would merge into yours\n"
+          "    [2] your peer + one per other account — your accounts are\n"
+          f"        aliased to '{peer_target}'; each other account gets its own\n"
+          "        peer until you alias it. For a gateway you share\n"
+          "    [3] one peer per account — no aliases; every account is its\n"
+          "        own peer. For agents serving other people\n"
+          "    [s] skip (leave untouched)   [e] edit raw keys\n"
+          f"\n  Tip: alias your Telegram UID and your Discord ID to '{peer_target}' —\n"
+          "  both accounts then resolve to one peer.")
     choice = _prompt("Choice", default=default_choice).strip().lower()
 
     if choice in {"2", "me+others", "both"}:
-        pooled = _prompt("  Keep my own memory pooled across platforms? (Y/n)", default="y").strip().lower()
+        pooled = _prompt("  Resolve all YOUR accounts to one peer? (Y/n)", default="y").strip().lower()
         shape = "hybrid" if pooled in {"y", "yes", ""} else "multi"
     else:
         shape = _SHAPE_CHOICES.get(choice, "skip")
 
     # Un-pinning without aliasing strands the pooled peerName history; steer toward pooling.
     if current_pin and shape == "multi":
-        print(f"\n  ⚠ Un-pinning will orphan memory accumulated under peer\n"
-              f"    '{peer_target}'.  Existing gateway users resolve to fresh,\n    empty peers.")
-        if _prompt("  Pool my own memory instead (alias my IDs to peerName)? (Y/n)", default="y").strip().lower() in {"y", "yes", ""}:
+        print(f"\n  ⚠ The peer '{peer_target}' already has a representation built\n"
+              f"    from your messages. One peer per account means your accounts\n"
+              f"    resolve to new peers with no history.")
+        if _prompt(f"  Keep your accounts resolving to '{peer_target}' instead? (Y/n)", default="y").strip().lower() in {"y", "yes", ""}:
             shape = "hybrid"
 
     if shape == "skip":
@@ -449,7 +555,7 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
         _scrub_identity_mapping(hermes_host)  # each shape starts from a clean slate
         hermes_host["pinUserPeer"] = shape == "single"
         if shape == "single":
-            print(f"  All non-agent gateway users route to '{peer_target}' (pin overrides aliases).")
+            print(f"  Every gateway account resolves to peer '{peer_target}'.")
         else:
             aliases = prior_aliases if shape == "multi" else _collect_operator_aliases(prior_aliases, peer_target)
             if aliases:
@@ -457,8 +563,8 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
             _apply_runtime_prefix(hermes_host, current_prefix, prefix_from_root,
                                   "Runtime peer prefix (e.g. 'telegram_', blank for none)" if shape == "multi" else
                                   "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)")
-            print("  Each gateway user → own peer." if shape == "multi" else
-                  f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            print("  Each gateway account resolves to its own peer." if shape == "multi" else
+                  f"  Your accounts resolve to '{peer_target}'; each other account to its own peer.")
     _echo_identity_mapping(hermes_host)
 
 
@@ -504,10 +610,13 @@ def _headless() -> tuple[bool, bool]:
         return False, True
 
 
-def _apply_grant_to_host(hermes_host: dict, cred) -> None:
-    """Store an OAuth grant on the host block; the wizard's final save persists it."""
+def _apply_grant_to_host(cfg: dict, hermes_host: dict, cred) -> None:
+    """Store an OAuth grant on the host block and in ``cfg``'s snapshot. install_grant already wrote it to disk,
+    so the final save must not copy it over a rotation that lands during the later prompts."""
     hermes_host["apiKey"] = cred.access_token
     hermes_host["oauth"] = cred.oauth_block()
+    if (snapshot := getattr(cfg, "snapshot", None)) is not None:
+        snapshot.setdefault("hosts", {}).setdefault(_host_key(), {}).update(apiKey=cred.access_token, oauth=cred.oauth_block())
     if cred.consent_peer_name:  # default the peer prompt to the consent name
         hermes_host["peerName"] = cred.consent_peer_name
     print("  Authorized — token saved. Let's finish configuring.\n")
@@ -535,7 +644,7 @@ def _setup_local_auth(cfg: dict, hermes_host: dict) -> None:
         print("\n  No local JWT set. Local no-auth ready.")
 
 
-def _setup_device_login(hermes_host: dict, write_path: Path, *, open_browser: bool) -> bool:
+def _setup_device_login(cfg: dict, hermes_host: dict, write_path: Path, *, open_browser: bool) -> bool:
     """RFC 8628 device-code sign-in. Returns False if setup must abort."""
     from plugins.memory.honcho.oauth_flow import (
         AccessDenied, AuthorizationTimeout, DeviceCode, DeviceCodeExpired, DeviceFlowError, authorize_via_device_code,
@@ -565,12 +674,12 @@ def _setup_device_login(hermes_host: dict, write_path: Path, *, open_browser: bo
               if isinstance(e, DeviceFlowError) and e.error == "http_429" else f"\n  Device sign-in failed: {e}\n" + _RETRY_HINT)
     else:
         print(" approved")
-        _apply_grant_to_host(hermes_host, cred)
+        _apply_grant_to_host(cfg, hermes_host, cred)
         return True
     return False
 
 
-def _setup_browser_login(hermes_host: dict, write_path: Path) -> bool:
+def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Loopback OAuth sign-in. Tokens merge into the in-memory cfg so the wizard's final save
     keeps them; settings stay wizard-owned (apply_config=False). Returns False on abort."""
     from plugins.memory.honcho.oauth_flow import authorize_via_loopback
@@ -586,14 +695,14 @@ def _setup_browser_login(hermes_host: dict, write_path: Path) -> bool:
     except Exception as e:
         print(f"  OAuth sign-in failed: {e}\n" + _RETRY_HINT)
         return False
-    _apply_grant_to_host(hermes_host, cred)
+    _apply_grant_to_host(cfg, hermes_host, cred)
     return True
 
 
 def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Cloud auth: OAuth (browser), device code, or API key. Returns False on abort."""
     cfg.pop("baseUrl", None)  # cloud uses SDK default
-    from plugins.memory.honcho.oauth import OAuthCredential
+    from plugins.memory.honcho.oauth import OAuthCredential, is_oauth_access_token
     existing_oauth = OAuthCredential.from_host_block(hermes_host)
     device_available = _device_login_available()
     is_remote, can_browse = _headless()
@@ -615,17 +724,23 @@ def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
                      default=default_method).strip().lower()
 
     if device_available and method in {"device", "d"}:
-        return _setup_device_login(hermes_host, write_path, open_browser=can_browse and not is_remote)
+        return _setup_device_login(cfg, hermes_host, write_path, open_browser=can_browse and not is_remote)
     if method in {"oauth", "o"}:
-        return _setup_browser_login(hermes_host, write_path)
-    print(f"\n  Current API key: {_mask(cfg.get('apiKey', ''))}")
+        return _setup_browser_login(cfg, hermes_host, write_path)
+    # A leftover grant on the host block would shadow the pasted key.
+    stale_grant = existing_oauth is not None or is_oauth_access_token(hermes_host.get("apiKey"))
+    current = ("" if stale_grant else hermes_host.get("apiKey", "")) or cfg.get("apiKey", "")
+    print(f"\n  Current API key: {_mask(current)}")
     if new_key := _prompt("Honcho API key (leave blank to keep current)", secret=True):
         cfg["apiKey"] = new_key
-    if cfg.get("apiKey"):
-        return True
-    print("\n  No API key configured. Get yours at https://app.honcho.dev\n"
-          "  Run 'hermes honcho setup' again once you have a key.\n")
-    return False
+    key = new_key or current
+    if not key:
+        print("\n  No API key configured. Get yours at https://app.honcho.dev\n"
+              "  Run 'hermes honcho setup' again once you have a key.\n")
+        return False
+    hermes_host.pop("oauth", None)
+    hermes_host["apiKey"] = key
+    return True
 
 
 def _menu(header: str, *lines: str) -> None:
@@ -702,8 +817,16 @@ def _setup_tuning(cfg: dict, hermes_host: dict) -> None:
 
 def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
+    try:
+        _setup_wizard(args)
+    except ConfigWriteRefused as e:
+        print(f"  {e}\n")
+
+
+def _setup_wizard(args) -> None:
     cfg = _read_config()
     write_path, read_path = _local_config_path(), _config_path()
+    _refuse_unparseable(write_path)  # before the questions, not after them
     print(f"\nHoncho memory setup\n{RULE}\n  Honcho gives Hermes persistent cross-session memory.\n  Config: {write_path}")
     if read_path != write_path and read_path.exists():
         print(f"  (seeding from existing config at {read_path})")
@@ -714,6 +837,8 @@ def cmd_setup(args) -> None:
     hermes_host = cfg.setdefault("hosts", {}).setdefault(_host_key(), {})
     _migrate_pin_key(cfg)  # canonicalize legacy pinPeerName before detection/writes
     _migrate_pin_key(hermes_host)
+    # Taken before the prompts populate the block: an existing install must not default to pinning every account.
+    new_host = not any(k in hermes_host or k in cfg for k in (*_IDENTITY_MAPPING_KEYS, "peerName", "workspace", "enabled"))
 
     # --- 1. Cloud or local? ---
     print("  Deployment:\n    cloud -- Honcho cloud (api.honcho.dev)\n    local -- self-hosted Honcho server")
@@ -736,7 +861,9 @@ def cmd_setup(args) -> None:
         if new := _prompt(label, default=default):
             hermes_host[key] = new
 
-    _setup_identity_mapping(cfg, hermes_host, current_peer)
+    _setup_identity_mapping(cfg, hermes_host, current_peer, new_host)
+    print("\n  For a gateway with many users and agents, run\n"
+          "  'hermes honcho peers map' to map accounts interactively.")
 
     _setup_tuning(cfg, hermes_host)
     hermes_host["enabled"] = True
@@ -922,8 +1049,437 @@ def _cmd_status_all() -> None:
     print("\n  * active profile\n")
 
 
+def _state_db_path() -> Path:
+    """Return the state.db path for the targeted profile."""
+    if _profile_override and _profile_override not in {"default", "custom"}:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+            return get_profile_dir(_profile_override) / "state.db"
+        except Exception:
+            pass
+    return get_hermes_home() / "state.db"
+
+
+def _seen_gateway_accounts(db_path: Path) -> list[dict]:
+    """Gateway accounts recorded in state.db, most recent first.
+
+    A session row keeps only its last routing peer, so a shared thread contributes its most recent
+    author and not every participant. The row's origin does not record whether the author was a bot.
+    """
+    if not db_path.exists():
+        return []
+    import sqlite3
+    from contextlib import closing
+    # profile_name marks which profile a multiplexing gateway routed the
+    # session to; older state.db files predate the column.
+    query = """SELECT source, user_id,
+                      MAX(COALESCE(display_name, '')),
+                      MAX(COALESCE(origin_json, '')),
+                      COUNT(*){profiles_col}
+                 FROM sessions
+                WHERE user_id IS NOT NULL AND user_id != ''
+                GROUP BY source, user_id
+                ORDER BY MAX(COALESCE(started_at, 0)) DESC"""
+    try:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+            try:
+                rows = conn.execute(query.format(
+                    profiles_col=", GROUP_CONCAT(DISTINCT COALESCE(profile_name, 'default'))",
+                )).fetchall()
+            except sqlite3.OperationalError:
+                rows = [r + (None,) for r in conn.execute(query.format(profiles_col="")).fetchall()]
+    except sqlite3.Error as e:
+        print(f"  (state.db unreadable: {e}; the accounts list is unavailable)", file=sys.stderr)
+        return []
+
+    accounts = []
+    for source, user_id, display_name, origin_json, count, profiles in rows:
+        try:
+            origin = dict(json.loads(origin_json)) if origin_json else {}
+        except Exception:
+            origin = {}
+        accounts.append({
+            "platform": source or "?",
+            "user_id": str(user_id),
+            "user_id_alt": str(origin.get("user_id_alt") or ""),
+            "label": origin.get("user_name") or display_name or "",
+            "sessions": count,
+            "profiles": sorted(profiles.split(",")) if profiles else [],
+        })
+    return accounts
+
+
+def _preview_peer_resolution(
+    user_id: str, *, pin: bool, aliases: dict, prefix: str, peer_name: str,
+    user_id_alt: str = "",
+) -> str:
+    """Resolve through the runtime resolver and label the rung that decided: pin, alias, prefix, raw.
+    Only the runtime knows when a prefixed id gets a hash suffix, so the CLI must not recompute it."""
+    from plugins.memory.honcho.client import HonchoClientConfig
+    from plugins.memory.honcho.session import HonchoSessionManager
+
+    config = HonchoClientConfig(peer_name=peer_name or None, pin_peer_name=bool(pin),
+                                user_peer_aliases=aliases, runtime_peer_prefix=prefix)
+    manager = HonchoSessionManager(config=config, runtime_user_peer_name=user_id,
+                                   runtime_user_peer_name_alt=user_id_alt or None)
+    resolved = manager._resolve_user_peer_id("preview")
+    if pin and peer_name:
+        return f"{resolved} (pinned)"
+    # The runtime resolver tries the alt ID (Signal UUID, Feishu union_id) after the primary.
+    aliased = any(isinstance(aliases.get(rid), str) and aliases[rid].strip() for rid in (user_id, user_id_alt) if rid)
+    if not aliased and prefix.strip():
+        return f"{resolved} (prefixed)"
+    return resolved
+
+
+def _resolution_base(resolved: str) -> str:
+    """Strip display suffixes so the name can be checked against peer IDs."""
+    return resolved.removesuffix(" (pinned)").removesuffix(" (prefixed)")
+
+
+# Workspaces holding thousands of peers (public bots) must not stall the CLI.
+_PEERS_MAP_FETCH_CAP = 200
+
+
+def _peers_map_client(workspace: str | None = None):
+    """(client, config) for the active host, or (None, None) offline. ``workspace`` overrides the configured one."""
+    try:
+        from dataclasses import replace
+        from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client
+        hcfg = HonchoClientConfig.from_global_config(host=_host_key())
+        if not (hcfg.api_key or hcfg.base_url):
+            return None, None
+        if workspace and workspace != hcfg.workspace_id:
+            hcfg = replace(hcfg, workspace_id=workspace)
+        return get_honcho_client(hcfg), hcfg
+    except Exception:
+        return None, None
+
+
+def _api_workspace_peers(client) -> list[str] | None:
+    """Workspace peer IDs, at most _PEERS_MAP_FETCH_CAP. None = API unavailable."""
+    if client is None:
+        return None
+    try:
+        peers: list[str] = []
+        page = client.peers(page=1, size=50)
+        # Iterating a SyncPage walks every following page; .items is the one page asked for.
+        while True:
+            peers += [str(p.id) for p in page.items]
+            if len(peers) >= _PEERS_MAP_FETCH_CAP or not page.has_next_page():
+                return peers[:_PEERS_MAP_FETCH_CAP]
+            page = page.get_next_page()
+    except Exception:
+        return None
+
+
+def _api_workspaces(client) -> list[str] | None:
+    """Workspace IDs this key can reach. None = API unavailable."""
+    if client is None:
+        return None
+    try:
+        return [str(w) for w in client.workspaces(size=50).items]
+    except Exception:
+        return None
+
+
+def _api_peer_detail(client, peer_id: str) -> str:
+    """Short peek at a peer: its card, or a clear absence note."""
+    try:
+        card = client.peer(peer_id).get_card()
+        if card:
+            text = str(card).strip()
+            return text[:400] + ("…" if len(text) > 400 else "")
+        return "(no peer card yet)"
+    except Exception as e:
+        return f"(peer detail unavailable: {e})"
+
+
+def _classify_workspace_peers(
+    peer_ids: list[str], cfg: dict, accounts: list[dict],
+    aliases: dict, prefix: str, profile_rows: list[tuple[str, str, dict]],
+) -> dict[str, str]:
+    """Label workspace peers from local config; 'unrecognized' when honest."""
+    labels: dict[str, str] = {}
+    active_host = _host_key()
+    root_peer = cfg.get("peerName") or ""
+
+    hermes_hosts = {hostk for _, hostk, _ in profile_rows}
+    for name, hostk, block in profile_rows:
+        pn = block.get("peerName") or root_peer
+        ai = block.get("aiPeer") or cfg.get("aiPeer") or hostk
+        if pn:
+            labels.setdefault(
+                sanitize_peer_id(pn),
+                "your peer (peerName)" if hostk == active_host
+                else f"peerName of profile {name}",
+            )
+        who = "this profile" if hostk == active_host else f"profile {name}"
+        labels.setdefault(sanitize_peer_id(ai), f"AI peer · {who}")
+
+    # Host blocks that are not Hermes profiles: other apps sharing the config.
+    for hostk, block in (cfg.get("hosts") or {}).items():
+        if hostk in hermes_hosts or not isinstance(block, dict):
+            continue
+        for key, kind in (("peerName", "peer"), ("aiPeer", "AI peer")):
+            val = block.get(key)
+            if isinstance(val, str) and val.strip():
+                labels.setdefault(sanitize_peer_id(val.strip()), f"{kind} of app '{hostk}'")
+
+    for target in aliases.values():
+        if isinstance(target, str) and target.strip():
+            labels.setdefault(sanitize_peer_id(target.strip()), "alias target")
+
+    for acct in accounts:
+        rid = acct["user_id"]
+        for candidate in ([rid, prefix + rid] if prefix else [rid]):
+            labels.setdefault(sanitize_peer_id(candidate), f"runtime peer · {acct['platform']} {rid}")
+
+    return {
+        pid: labels.get(pid) or ("fallback peer (pre-identity traffic)" if pid.startswith("user-") else "unrecognized")
+        for pid in peer_ids
+    }
+
+
+def _sibling_resolutions(cfg: dict, acct: dict, profile_rows: list[tuple[str, str, dict]]) -> dict[str, str]:
+    """Resolved peer per profile for one account (profile name → peer)."""
+    out = {}
+    for name, _hostk, block in profile_rows:
+        pin, aliases, prefix, _, _ = _resolve_effective_identity_mapping(cfg, block)
+        out[name] = _resolution_base(_preview_peer_resolution(
+            acct["user_id"], pin=pin, aliases=aliases, prefix=prefix,
+            peer_name=block.get("peerName") or cfg.get("peerName") or "",
+            user_id_alt=acct["user_id_alt"],
+        ))
+    return out
+
+
+def _render_peers_map_view(
+    workspace: str, ws_peers: list[str] | None, labels: dict,
+    accounts: list[dict], cfg: dict, profile_rows: list[tuple[str, str, dict]], *,
+    pin: bool, working: dict, prefix: str, peer_name: str,
+) -> None:
+    if ws_peers is None:
+        print(f"\nWorkspace '{workspace}' — peers unavailable (offline or not configured)")
+        print("  Mapping still works; target peers are typed instead of picked.")
+    else:
+        print(f"\nWorkspace '{workspace}' — {len(ws_peers)} peers\n" + "─" * 62)
+        if not ws_peers:
+            print("  No peers here yet — peers appear after the first conversation.")
+            print("  Wrong workspace? 'w' lists the workspaces this key can see.")
+        for i, pid in enumerate(ws_peers, 1):
+            print(f"  p{i:<4} {pid:<30} {labels.get(pid, '')}")
+        if len(ws_peers) >= _PEERS_MAP_FETCH_CAP:
+            print(f"  … listing capped at {_PEERS_MAP_FETCH_CAP} peers.")
+        if ws_peers and not any(v.startswith(("your peer", "AI peer")) for v in labels.values()):
+            print(f"\n  None of these match your configured identity ('{peer_name or workspace}').")
+            print("  Wrong workspace? 'w' lists the workspaces this key can see.")
+
+    active_profile = _active_profile_name()
+    print(f"\nGateway accounts seen on this machine ({len(accounts)})\n" + "─" * 62)
+    if not accounts:
+        print("  None recorded yet. Accounts appear here after the gateway")
+        print("  handles a message from them. You can still map a runtime ID")
+        print("  by typing it at the prompt below.")
+        return
+    print(f"  {'#':<4} {'Platform':<10} {'Runtime ID':<22} {'Name':<14} {'Resolves to'}")
+    known = set(ws_peers or [])
+    for idx, acct in enumerate(accounts, 1):
+        resolved = _preview_peer_resolution(
+            acct["user_id"], pin=pin, aliases=working, prefix=prefix,
+            peer_name=peer_name, user_id_alt=acct["user_id_alt"],
+        )
+        mine = _resolution_base(resolved)
+        marker = "" if ws_peers is None else (" ✓" if mine in known else " ○ new")
+        diverging = {
+            n: v for n, v in _sibling_resolutions(cfg, acct, profile_rows).items()
+            if n != active_profile and v != mine
+        }
+        div = "  ≠ " + ", ".join(f"{n}→{v}" for n, v in sorted(diverging.items())) if diverging else ""
+        profiles = acct.get("profiles") or []
+        via = f"  (traffic → {', '.join(profiles)})" if profiles and active_profile not in profiles else ""
+        print(
+            f"  {idx:<4} {acct['platform']:<10} {acct['user_id']:<22} "
+            f"{acct['label'][:13]:<14} {resolved}{marker}{div}{via}"
+        )
+
+
+def _workspaces_flow(client, current_ws: str, cfg: dict, host: str):
+    """List reachable workspaces; browse one; optionally repoint the profile.
+
+    Returns (workspace, client, ws_peers) after a confirmed switch, else None.
+    """
+    ws_list = _api_workspaces(client)
+    if not ws_list:
+        print("  Workspace list unavailable (offline or not configured).")
+        return None
+    print(f"\n  Workspaces this key can see ({len(ws_list)}):")
+    for i, w in enumerate(ws_list, 1):
+        print(f"    {i:<4} {w}{'  ← current' if w == current_ws else ''}")
+    print("\n  Tip: for a full workspace browser, install honcho-cli")
+    print("  (uv tool install honcho-cli).")
+    sel = _prompt("Browse a workspace (number, blank to go back)", default="").strip()
+    if not (sel.isdigit() and 1 <= int(sel) <= len(ws_list)):
+        return None
+    target_ws = ws_list[int(sel) - 1]
+    b_client, _ = _peers_map_client(workspace=target_ws)
+    b_peers = _api_workspace_peers(b_client)
+    if b_peers is None:
+        print(f"  Could not list peers of '{target_ws}'.")
+        return None
+    print(f"\n  Workspace '{target_ws}' — {len(b_peers)} peers")
+    for pid in b_peers[:30]:
+        print(f"    {pid}")
+    if len(b_peers) > 30:
+        print(f"    … and {len(b_peers) - 30} more")
+    if target_ws == current_ws:
+        return None
+    if not _yes(_prompt(
+        f"Point this profile at '{target_ws}'? Existing memory stays in '{current_ws}'. (y/N)",
+        default="n",
+    )):
+        return None
+    cfg.setdefault("hosts", {}).setdefault(host, {})["workspace"] = target_ws
+    _write_config(cfg)
+    print(f"  workspace → '{target_ws}' (written to host block [{host}])")
+    return target_ws, b_client, b_peers
+
+
+def _save_alias_map(cfg: dict, host: str, working: dict, aliases_from_root: bool) -> None:
+    """Persist the edited alias map, asking for scope when it is shared."""
+    profiles = _all_profile_host_configs()
+    write_root = aliases_from_root
+    if aliases_from_root and len(profiles) > 1:
+        scope = _prompt("Apply to all profiles (root) or only this profile? (all/this)", default="all")
+        if scope.strip().lower() in {"this", "t", "host", "only"}:
+            write_root = False
+            print(f"  This forks [{host}] from the shared root map — future root")
+            print("  edits no longer reach this profile.")
+
+    target = cfg if write_root else cfg.setdefault("hosts", {}).setdefault(host, {})
+    # An empty host map is an explicit override; popping the key would re-inherit the root aliases.
+    target["userPeerAliases"] = working
+    target_desc = f"host block [{host}]"
+    if write_root:
+        target_desc = "root config (shared by all profiles)"
+        active_ws = _host_block(cfg, host).get("workspace") or cfg.get("workspace") or host
+        other_ws: dict[str, list[str]] = {}
+        for name, hostk, block in profiles:
+            ws = block.get("workspace") or cfg.get("workspace") or hostk
+            if ws != active_ws:
+                other_ws.setdefault(ws, []).append(name)
+        for ws, names in sorted(other_ws.items()):
+            print(f"  ⚠ root aliases also apply in workspace '{ws}' (profile")
+            print(f"    {', '.join(names)}) — picked peers may not exist there.")
+
+    _write_config(cfg)
+    print(f"\n  userPeerAliases = {working}")
+    if not working and not write_root and cfg.get("userPeerAliases"):
+        print(f"  (empty host map: root aliases no longer apply to [{host}])")
+    print(f"  written to {target_desc} in {_local_config_path()}\n")
+
+
+def cmd_peers_map(args) -> None:
+    """Interactively map gateway accounts to Honcho user peers."""
+    cfg = _read_config()
+    host = _host_key()
+    hermes_host = _host_block(cfg, host)
+    pin, aliases, prefix, aliases_from_root, _ = _resolve_effective_identity_mapping(cfg, hermes_host)
+    peer_name = hermes_host.get("peerName") or cfg.get("peerName") or ""
+
+    if pin:
+        print("\n  pinUserPeer is on: every gateway account resolves to peer")
+        print(f"  '{peer_name or '(peerName not set)'}' and aliases have no effect.")
+        print("  Turn the pin off with 'hermes honcho setup' to use per-account peers.")
+        if not _yes(_prompt("Edit aliases anyway? (y/N)", default="n")):
+            print("  Nothing changed.\n")
+            return
+
+    accounts = _seen_gateway_accounts(_state_db_path())
+    working = dict(aliases) if isinstance(aliases, dict) else {}
+    client, client_cfg = _peers_map_client()
+    workspace = (
+        getattr(client_cfg, "workspace_id", None)
+        or hermes_host.get("workspace") or cfg.get("workspace") or host
+    )
+    ws_peers = _api_workspace_peers(client)
+    # list_profiles() parses every profile's config.yaml; one scan serves every row and re-render.
+    profile_rows = _all_profile_host_configs()
+
+    def show() -> dict[str, str]:
+        labels = _classify_workspace_peers(ws_peers or [], cfg, accounts, working, prefix, profile_rows)
+        _render_peers_map_view(workspace, ws_peers, labels, accounts, cfg, profile_rows,
+                               pin=pin, working=working, prefix=prefix, peer_name=peer_name)
+        return labels
+
+    labels = show()
+    print("\n  Map: account number or a runtime ID · pN inspects a peer ·")
+    print("  w lists workspaces · blank finishes.")
+    changed = repointed = False
+    while True:
+        sel = _prompt("Account (blank to finish)", default="").strip()
+        if not sel:
+            break
+        low = sel.lower()
+
+        if low == "w":
+            switched = _workspaces_flow(client, workspace, cfg, host)
+            if switched:
+                workspace, client, ws_peers = switched
+                labels = show()
+                repointed = True
+            continue
+
+        if low.startswith("p") and low[1:].isdigit() and ws_peers:
+            n = int(low[1:])
+            if 1 <= n <= len(ws_peers):
+                pid = ws_peers[n - 1]
+                print(f"\n  {pid} — {labels.get(pid, '')}")
+                print(f"  {_api_peer_detail(client, pid)}\n")
+            continue
+
+        if sel.isdigit() and 1 <= int(sel) <= len(accounts):
+            acct = accounts[int(sel) - 1]
+            rid, alt = acct["user_id"], acct["user_id_alt"]
+            label = f"{acct['platform']} {rid}" + (f" ({acct['label']})" if acct["label"] else "")
+        else:
+            rid, alt, label = sel, "", sel
+        prev_resolved = _resolution_base(_preview_peer_resolution(
+            rid, pin=pin, aliases=working, prefix=prefix, peer_name=peer_name, user_id_alt=alt,
+        ))
+
+        current = working.get(rid, "")
+        hint = " (pN from the peers table, a name, '-' clears)" if ws_peers else ""
+        entered = _prompt(f"Peer for {label}{hint}", default=current).strip()
+        if entered == "-":
+            if rid in working:
+                del working[rid]
+                changed = True
+                print(f"    cleared: {rid}")
+            continue
+        if ws_peers and entered[:1].lower() == "p" and entered[1:].isdigit() and 0 < int(entered[1:]) <= len(ws_peers):
+            entered = ws_peers[int(entered[1:]) - 1]
+        if entered and entered != current:
+            working[rid] = entered
+            changed = True
+            print(f"    {rid} → {entered} — future messages resolve to '{entered}'")
+            if ws_peers is not None and sanitize_peer_id(entered) not in ws_peers:
+                print(f"    '{entered}' is a new peer — created on first message.")
+            if prev_resolved in (ws_peers or ()) and prev_resolved != sanitize_peer_id(entered):
+                print(f"    peer '{prev_resolved}' keeps its existing history.")
+
+    if not changed:
+        print("  Aliases unchanged.\n" if repointed else "  Nothing changed.\n")
+        return
+    _save_alias_map(cfg, host, working, aliases_from_root)
+
+
 def cmd_peers(args) -> None:
     """Show peer identities across all profiles."""
+    if getattr(args, "peers_action", None) == "map":
+        cmd_peers_map(args)
+        return
+
     rows = _all_profile_host_configs()
     cfg = _read_config()
     print(f"\nHoncho peer identities ({len(rows)} profiles)\n{'─' * 50}\n"
@@ -1292,7 +1848,10 @@ _SUBCOMMANDS = (
     ("status", "Show current Honcho config and connection status", cmd_status, (
         ("--all", dict(action="store_true", help="Show config overview across all profiles")),
     )),
-    ("peers", "Show peer identities across all profiles", cmd_peers, ()),
+    ("peers", "Show peer identities across all profiles ('peers map' to map gateway accounts)", cmd_peers, (
+        ("peers_action", dict(nargs="?", default=None, choices=("map",), metavar="map",
+                              help="'map': interactively map gateway accounts to user peers")),
+    )),
     ("sessions", "List known Honcho session mappings", cmd_sessions, ()),
     ("map", "Map current directory to a Honcho session name (no arg = list mappings)", cmd_map, (
         ("session_name", dict(nargs="?", default=None,
@@ -1341,7 +1900,10 @@ def honcho_command(args) -> None:
     if handler is None:
         return print(f"  Unknown honcho command: {sub}\n"
                      "  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
-    handler(args)
+    try:
+        handler(args)
+    except ConfigWriteRefused as e:
+        print(f"  {e}\n")
 
 
 def register_cli(subparser) -> None:

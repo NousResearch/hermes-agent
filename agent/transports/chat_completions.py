@@ -13,6 +13,7 @@ from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
     kimi_supported_efforts, requested_effort,
 )
+from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -219,6 +220,23 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _has_replayable_thought_signature(extra_content: Any) -> bool:
+    """Whether OpenRouter's Gemini sidecar contains a usable thought signature.
+
+    Gemini accepts the signature either directly or under its ``google``
+    namespace.  Replaying an empty or non-string value makes a multimodal
+    request fail with ``Corrupted thought signature``; omit that sidecar while
+    leaving the stored history untouched.
+    """
+    if not isinstance(extra_content, dict):
+        return False
+    candidate = extra_content.get("thought_signature")
+    google = extra_content.get("google")
+    if candidate is None and isinstance(google, dict):
+        candidate = google.get("thought_signature")
+    return isinstance(candidate, str) and bool(candidate.strip())
+
+
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
     """``obj.<name>``, else the same key from pydantic ``model_extra`` (some SDKs park fields there)."""
     value = getattr(obj, name, None)
@@ -331,7 +349,9 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
             if not isinstance(tc, dict):
                 continue
             keys = [k for k in _STRIP_TC_KEYS if k in tc]
-            if strip_extra_content and "extra_content" in tc:
+            if "extra_content" in tc and (
+                strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
+            ):
                 keys.append("extra_content")
             if keys:
                 if copied_tool_calls is None:
@@ -512,7 +532,9 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = response.choices[0]
         msg = getattr(choice, "message", None)
         _fr = getattr(choice, "finish_reason", None)
-        finish_reason = (str(_fr) if isinstance(_fr, int) else _fr) or "stop"  # Poolside returns int finish_reason
+        # Poolside returns int finish_reason; Gemini-fronting gateways return
+        # uppercase STOP / MAX_TOKENS — fold to the OpenAI contract here.
+        finish_reason = _normalize_finish_reason(str(_fr) if isinstance(_fr, int) else _fr) or "stop"
 
         tool_calls = None
         if getattr(msg, "tool_calls", None):

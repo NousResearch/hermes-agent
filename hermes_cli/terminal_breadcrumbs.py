@@ -126,7 +126,7 @@ def resolve_breadcrumb_session() -> Optional[str]:
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB(read_only=True)  # existence + lineage lookup only; no writer connection
     except Exception:
         return None
     try:

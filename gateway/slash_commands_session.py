@@ -737,7 +737,8 @@ class GatewaySessionCommandsMixin:
                     f.write(rendered)
 
             await asyncio.to_thread(_render_and_write)
-            adapter = self.get_adapter(source.platform)
+            # Profile-aware: under multiplex the requester's bot lives in _profile_adapters, not self.adapters.
+            adapter = self._adapter_for_source(source)
             if not adapter:
                 return "Platform adapter not found to send the document."
             await adapter.send_document(chat_id=source.chat_id, file_path=temp_path,

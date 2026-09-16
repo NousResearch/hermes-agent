@@ -203,6 +203,7 @@ agentpod_stop_check:
   max_hold_age_seconds: 259200
   max_owner_runtime_seconds: 3600
   turn_context_ttl_seconds: 900       # supervision context expiry
+  project_aliases: ["agentpod"]       # names that make a progress question supervision
   max_findings: 5
   max_report_chars: 700               # platform budget for the fallback text
   max_continuations: 2
@@ -265,6 +266,36 @@ projects, profiles, boards and sessions are never read. A same-session user
 stop/topic change ("stop the board sweep, forget it for now") wins immediately;
 an unrelated question is untouched no matter how its answer is phrased.
 
+## Which messages are supervision (intent, not keyword occurrence)
+
+The trigger is the turn's **user message**, classified by intent:
+
+* A **stop directive** silences the gate immediately, exactly as before
+  ("stop the board sweep, forget it for now", "pause the sweep", "not now",
+  "stop — forget the board, what's the weather?").
+* A stop *token* that is **not** a directive no longer silences it. Three
+  cases, all previously misclassified and all now regression-tested
+  (`test_41`–`test_45`):
+  * **negated** — "Do **not** stop supervising the board", "never stop the
+    sweep";
+  * **quoted / historical** — `you said "stop working on the board" last week`
+    (quoted spans are excluded; an intra-word apostrophe is not a quote);
+  * **not in imperative position** — the token has its own grammatical subject,
+    so it reports on the system rather than commanding the agent
+    ("tenants **stop working** after an LXD restart"). A multi-part request
+    that contains such a clause is still supervision.
+* A **status/progress question naming the project** is supervision even with no
+  board vocabulary ("What is progress on AgentPod?"). The project name is
+  required for this route, so "any update on my flight?" stays untouched.
+  Aliases come from `agentpod_stop_check.project_aliases` (default
+  `["agentpod"]`) plus `board` / `project_id` / `tenant` when configured.
+
+Parsing is fail-open toward the user: anything the clause/negation analysis
+cannot decide keeps the old behaviour, so the gate can never become *less*
+willing to honour a stop. Session scope, the opt-in enable flag and the bounded
+continuation budget are unchanged — the wider positive routes widen intent
+recognition, never scope (`test_45`).
+
 ## Tests
 
 ```bash
@@ -272,7 +303,7 @@ scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py 
 scripts/run_tests.sh tests/run_agent/test_pre_verify_no_edit_turns.py tests/agent/test_verify_hooks.py -q
 ```
 
-40 tests: the 10 acceptance scenarios, the first independent review's
+55 tests (41 functions): the 10 acceptance scenarios, the first independent review's
 adversarial findings as invariants (`test_11`–`test_23`), the re-review's
 R1–R8 as invariants (`test_24`–`test_33`), and this round's two acceptance
 blockers (`test_34`–`test_39`): the delivered post-cap answer under both
@@ -284,4 +315,8 @@ the unpinned launch that binds nothing). `test_33` drives a real
 `AIAgent.run_conversation` whose post-continuation tool call is dispatched
 through the **unpatched** `handle_function_call` into the real `terminal` tool;
 `test_27` is a controlled start-time fixture. Test 10 is a mutation
-control. Red-green and the three guard mutations: see the receipt.
+control. `test_41`-`test_45` are the message-intent repair: the classifier
+contract, the five supervision shapes driven through the real `pre_llm_call`
+dispatch + `pre_verify` aggregator + turn finalizer on an isolated board, a
+compacted-context turn whose current intent must survive the compaction
+summary, six genuine stop shapes that must still win, and session scope. Red-green and the three guard mutations: see the receipt.

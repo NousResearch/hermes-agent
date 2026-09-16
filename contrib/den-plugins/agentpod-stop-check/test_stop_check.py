@@ -2026,3 +2026,192 @@ def test_40_preflight_refuses_a_stale_verdict_cap_ordering(home):
     g_ok = pf.Gate()
     pf.probe_scope(cfg_path, None, g_ok)
     assert "cap ordering" not in g_ok.failures, g_ok.lines
+
+
+# ----------------------------------------------------------------------------
+# t_8c480dce message-intent repair (test_41 - test_45).
+#
+# RED on the previous revision: the classifier matched ANY occurrence of a stop
+# word before testing supervision, so a NEGATED stop ("do not stop supervising
+# the board"), a QUOTED historical stop and a real multi-part request that
+# merely mentions things that "stop working" all silenced the gate; and a
+# status question that names the project by name matched no positive pattern.
+# GREEN here. Real user stop / pause / topic-change precedence is unchanged
+# (test_44), as is opt-in session scope (test_45).
+# ----------------------------------------------------------------------------
+
+def _plugin():
+    from contrib_stopcheck import plugin  # type: ignore
+
+    return plugin
+
+
+NEGATED_STOP_MSG = "Do not stop supervising the board."
+QUOTED_STOP_MSG = (
+    'Earlier you said "stop working on the board" — that was last week. '
+    "Keep supervising AgentPod now."
+)
+MULTIPART_MSG = (
+    "Fix the guard, then the AgentPod lifecycle bug where tenants stop working "
+    "after an LXD restart, and tell me the progress on AgentPod."
+)
+PROGRESS_MSG = "What is progress on AgentPod?"
+HEARTBEAT_MSG = "Recurring supervision heartbeat: check the board for unattended cards."
+GENUINE_STOPS = (
+    "stop the board sweep, forget it for now",
+    "pause the board sweep",
+    "forget it for now",
+    "stop — forget the board, what's the weather?",
+    "hold off on the board sweep",
+    "not now",
+)
+
+
+def test_41_intent_classification_separates_directive_from_mention():
+    """Classifier contract: negation, quoting and grammatical subject."""
+    plugin = _plugin()
+    cfg = {}
+
+    # Supervision, despite containing a stop token.
+    for msg in (NEGATED_STOP_MSG, QUOTED_STOP_MSG, MULTIPART_MSG):
+        assert plugin.stop_directive(msg, cfg) is False, msg
+        assert plugin.is_supervision_message(msg, cfg) is True, msg
+
+    # Supervision by project name + progress, with no board vocabulary at all.
+    assert plugin.is_supervision_message(PROGRESS_MSG, cfg) is True
+    assert plugin.is_supervision_message(HEARTBEAT_MSG, cfg) is True
+
+    # A genuine stop still wins, in every shape the previous revision caught.
+    for msg in GENUINE_STOPS:
+        assert plugin.stop_directive(msg, cfg) is True, msg
+        assert plugin.is_supervision_message(msg, cfg) is False, msg
+
+    # Unrelated turns stay untouched — the alias route does NOT gate every
+    # progress question, only ones naming the supervised project.
+    for msg in (UNRELATED_MSG, "any update on my flight?",
+                "what is the progress of the kubernetes upgrade?"):
+        assert plugin.is_supervision_message(msg, cfg) is False, msg
+
+    # The alias set is configuration, not a hardcoded product list.
+    assert plugin.is_supervision_message("any update on Taro?", cfg) is False
+    assert plugin.is_supervision_message(
+        "any update on Taro?", {"project_aliases": ["taro"]}) is True
+    assert plugin.is_supervision_message(
+        PROGRESS_MSG, {"project_aliases": ["taro"]}) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [NEGATED_STOP_MSG, QUOTED_STOP_MSG, MULTIPART_MSG, PROGRESS_MSG, HEARTBEAT_MSG],
+)
+def test_42_supervision_intent_reaches_the_real_hooks(home, procs, message):
+    """End-to-end on an isolated board: these messages must ARM the gate.
+
+    Drives the real pre_llm_call dispatch, the real pre_verify aggregator and
+    the real turn finalizer — not the classifier helper.
+    """
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+
+    v = helper_verdict(home)
+    assert not v.quiet_allowed, [f.line() for f in v.findings]
+
+    set_turn_context(message)
+    directive = fire_pre_verify() or ""
+    assert "STOP-CHECK" in directive, (message, directive)
+    assert stalled in directive, (message, directive)
+
+    delivered = run_turn(QUIET, user_message=message)
+    assert "STOP-CHECK" in (delivered["final_response"] or ""), delivered["final_response"]
+    assert delivered["response_transformed"] is True
+
+
+def test_43_compacted_context_keeps_the_current_user_intent(home, procs):
+    """A compacted conversation must not lose the turn's own intent.
+
+    The pre_llm_call payload carries a compaction summary in the history and
+    the *current* user message alongside it. The gate must key on the current
+    message, and a compaction summary that quotes an old stop must not silence
+    it — nor may a compaction summary alone arm it.
+    """
+    from hermes_cli.lifecycle import invoke_hook
+
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+
+    compacted = [
+        {"role": "system", "content": "[context compressed] Earlier the user said "
+                                      "'stop the board sweep'; 14 tool calls elided."},
+        {"role": "assistant", "content": "[compaction summary] board swept, quiet."},
+    ]
+
+    plugin = _plugin()
+    plugin.reset_state()
+    invoke_hook(
+        "pre_llm_call",
+        session_id=SESSION, task_id=None, turn_id="turn-compacted",
+        user_message=NEGATED_STOP_MSG, conversation_history=compacted,
+        is_first_turn=False, model="test-model", platform="telegram",
+        parent_session_id="", sender_id="",
+    )
+    assert "STOP-CHECK" in (fire_pre_verify() or ""), "compacted turn lost intent"
+
+    # The compaction metadata is NOT the user's intent: an unrelated current
+    # message stays inert even with board vocabulary all over the history.
+    plugin.reset_state()
+    invoke_hook(
+        "pre_llm_call",
+        session_id=SESSION, task_id=None, turn_id="turn-compacted-2",
+        user_message=UNRELATED_MSG, conversation_history=compacted,
+        is_first_turn=False, model="test-model", platform="telegram",
+        parent_session_id="", sender_id="",
+    )
+    assert not (fire_pre_verify() or "")
+    assert run_turn(QUIET, user_message=UNRELATED_MSG,
+                    set_context=False)["final_response"] == QUIET
+
+
+@pytest.mark.parametrize("message", list(GENUINE_STOPS))
+def test_44_a_genuine_stop_still_wins_through_the_real_hooks(home, procs, message):
+    """Precedence preserved: a real stop/pause/topic-change silences the gate."""
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+
+    assert not helper_verdict(home).quiet_allowed  # the board IS unattended
+
+    set_turn_context(message)
+    assert not (fire_pre_verify() or ""), message
+    out = run_turn(QUIET, user_message=message)
+    assert out["final_response"] == QUIET, message
+    assert out["response_transformed"] is False, message
+
+
+def test_45_repaired_intent_is_still_session_scoped(home, procs):
+    """The wider positive routes do not widen SCOPE: other sessions stay inert."""
+    conn, kb = _board(home)
+    live_card(conn, kb, procs)
+    stalled = kb.create_task(conn, title="unattended", assignee="software-engineer")
+    kb.block_task(conn, stalled, reason="hold")
+    install_runtime(home)
+
+    for message in (PROGRESS_MSG, NEGATED_STOP_MSG, MULTIPART_MSG):
+        set_turn_context(message, session_id=OTHER_SESSION)
+        assert not (fire_pre_verify(session_id=OTHER_SESSION) or ""), message
+        out = run_turn(QUIET, session_id=OTHER_SESSION, user_message=message)
+        assert out["final_response"] == QUIET, message
+        assert out["response_transformed"] is False, message
+
+    # ...and disabling the plugin keeps every new route inert too.
+    install_runtime(home, extra_cfg={"enabled": False})
+    set_turn_context(PROGRESS_MSG)
+    assert not (fire_pre_verify() or "")
+    assert run_turn(QUIET, user_message=PROGRESS_MSG)["final_response"] == QUIET

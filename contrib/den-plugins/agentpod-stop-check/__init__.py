@@ -100,6 +100,14 @@ DEFAULT_SUPERVISION_PATTERNS = (
     r"\bcheck (?:on )?(?:the )?(?:work|workers|tasks|cards|project)\b",
 )
 # Same-session user override: stop / drop it / change of subject.
+#
+# These patterns locate a CANDIDATE stop token. They are deliberately broad;
+# `_stop_directive()` below decides whether the candidate is actually a
+# directive the user is giving *now*, because a bare occurrence of "stop"
+# is not a stop command: "do not stop supervising the board" (negated),
+# `you said "stop working"` (quoted history) and "tenants stop working after
+# an LXD restart" (a report about the system) all contain one and none of
+# them asks the agent to stop.
 DEFAULT_STOP_PATTERNS = (
     r"\bstop\b",
     r"\bpause\b",
@@ -109,6 +117,46 @@ DEFAULT_STOP_PATTERNS = (
     r"\bnever ?mind\b",
     r"\bleave it\b",
     r"\bnot now\b",
+)
+
+# The project this gate supervises. A status/progress question that names the
+# project by NAME ("what is progress on AgentPod?") is a supervision turn even
+# though it uses none of the board vocabulary above. Override/extend with
+# `agentpod_stop_check.project_aliases`; `board` / `project_id` / `tenant`
+# (when configured) are folded in automatically. An alias is REQUIRED for this
+# route, so an unrelated progress question ("any update on my flight?") is
+# still untouched.
+DEFAULT_PROJECT_ALIASES = ("agentpod",)
+
+_PROGRESS_PATTERN = re.compile(
+    r"\b(?:status|statuses|update|updates|progress|state of|where (?:are|is) (?:we|it|things)"
+    r"|how (?:is|are|'s) (?:it|things|we|that)|what'?s? left|outstanding|in flight|going on)\b"
+)
+
+# Spans the user is QUOTING (their own history, logs, an error string). A stop
+# token inside one is never a directive issued on this turn.
+_QUOTED_SPAN = re.compile(
+    r"\"[^\"]*\"|`[^`]*`|\u201c[^\u201d]*\u201d|\u2018[^\u2019]*\u2019"
+    # A single quote only delimits when it is not an intra-word apostrophe,
+    # so "don't stop, it's fine" is never mangled into a quoted span.
+    r"|(?<![A-Za-z0-9])'[^']*'(?![A-Za-z0-9])",
+    re.DOTALL,
+)
+# Clause boundaries. A directive occupies its own clause.
+_CLAUSE_SPLIT = re.compile(r"[.!?;\n\u2014]+|,")
+# Words that may precede an imperative without making it non-imperative.
+_DIRECTIVE_LEAD = re.compile(
+    r"^(?:\s*(?:ok|okay|alright|actually|hey|so|and|but|then|also|now|yeah|yes|no|"
+    r"please|just|kindly|i want you to|i'?d like you to|i need you to|"
+    r"you (?:can|should|must|need to|could|may)|can you|could you|would you|will you|"
+    r"let'?s|lets|we (?:should|can|need to))\b[\s,:_\-\u2013\u2014]*)*$"
+)
+# A negation immediately governing the candidate ("do not stop", "never stop",
+# "no need to pause", "instead of stopping").
+_NEGATION = re.compile(
+    r"\b(?:not|never|cannot|can'?t|won'?t|wont|don'?t|dont|doesn'?t|didn'?t|shouldn'?t|"
+    r"no need to|without|instead of|rather than|avoid|refrain from|keep from)\b"
+    r"(?:\s+\w+){0,3}\s*$"
 )
 
 _LOCK = threading.Lock()
@@ -148,15 +196,82 @@ def _matches(patterns, text: str) -> bool:
     return any(re.search(p, blob) for p in patterns)
 
 
+def _strip_quoted(text: str) -> str:
+    """Blank out quoted spans, preserving offsets is unnecessary — clauses are
+    re-derived from the result. Quoted text is something the user is *citing*
+    (their own earlier words, a log line, an error), not instructing."""
+    return _QUOTED_SPAN.sub(" ", text or "")
+
+
+def stop_directive(text: str, cfg: Optional[dict] = None) -> bool:
+    """Is the user telling the agent, on THIS turn, to stop / drop the topic?
+
+    Precedence for a real stop is preserved exactly: an imperative
+    "stop the board sweep, forget it for now" still wins over every
+    supervision signal. What no longer counts as a stop is a token that is
+
+      * inside a quoted span (historical / cited text), or
+      * negated ("do not stop", "never stop", "no need to pause"), or
+      * not in imperative position — it has a grammatical subject of its own
+        ("tenants stop working after an LXD restart"), so it describes the
+        system rather than commanding the agent.
+
+    Anything that fails to parse falls back to the old occurrence test, so the
+    guard can never become *less* willing to honour a stop.
+    """
+    cfg = cfg or {}
+    patterns = cfg.get("stop_patterns") or DEFAULT_STOP_PATTERNS
+    blob = _strip_quoted(text).lower()
+    if not blob.strip():
+        return False
+    for clause in _CLAUSE_SPLIT.split(blob):
+        if not clause.strip():
+            continue
+        for pattern in patterns:
+            for m in re.finditer(pattern, clause):
+                prefix = clause[: m.start()]
+                if _NEGATION.search(prefix):
+                    continue
+                if _DIRECTIVE_LEAD.match(prefix):
+                    return True
+    return False
+
+
+def _project_aliases(cfg: dict) -> set:
+    raw = cfg.get("project_aliases")
+    if raw is None:
+        raw = list(DEFAULT_PROJECT_ALIASES)
+    if isinstance(raw, str):
+        raw = [raw]
+    values = [str(v) for v in (raw or [])]
+    for key in ("board", "project_id", "tenant"):
+        val = cfg.get(key)
+        if val:
+            values.append(str(val))
+    return {v.strip().lower() for v in values if v and v.strip()}
+
+
+def _names_the_project(text: str, cfg: dict) -> bool:
+    blob = (text or "").lower()
+    return any(
+        re.search(r"\b" + re.escape(alias) + r"\b", blob)
+        for alias in _project_aliases(cfg)
+    )
+
+
 def is_supervision_message(text: str, cfg: dict) -> bool:
     """Supervision context comes from the USER's message, never the answer.
 
-    A stop / topic-change in the same session wins over everything else.
+    A real stop / topic-change in the same session wins over everything else
+    (see ``stop_directive`` for what "real" means). Otherwise the turn is a
+    supervision turn when it uses board vocabulary, or when it asks for
+    status/progress on the supervised project BY NAME.
     """
-    stop = cfg.get("stop_patterns") or DEFAULT_STOP_PATTERNS
-    if _matches(stop, text):
+    if stop_directive(text, cfg):
         return False
-    return _matches(cfg.get("supervision_patterns") or DEFAULT_SUPERVISION_PATTERNS, text)
+    if _matches(cfg.get("supervision_patterns") or DEFAULT_SUPERVISION_PATTERNS, text):
+        return True
+    return bool(_PROGRESS_PATTERN.search((text or "").lower())) and _names_the_project(text, cfg)
 
 
 def _supervision_turn(cfg: dict, session_id: str) -> bool:

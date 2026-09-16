@@ -154,6 +154,13 @@ def build_profile_terminal_scope(
         if isinstance(raw_terminal, dict):
             _apply(raw_terminal)
     _resolve_scope_cwd_placeholder(scope)
+    from tools.terminal_workspace import kanban_workspace
+    try:
+        workspace = kanban_workspace()
+    except ValueError as exc:
+        raise TerminalPolicyUnavailable(str(exc)) from exc
+    if workspace:
+        scope["TERMINAL_CWD"] = workspace
     return scope
 
 

@@ -75,6 +75,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -331,7 +332,7 @@ function MessageBubble({
     compaction: {
       bg: "bg-muted/50",
       text: "text-muted-foreground italic",
-      label: "Context handoff",
+      label: t.sessions.roles.compaction ?? en.sessions.roles.compaction!,
     },
   };
 
@@ -549,8 +550,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
+        aria-label={t.sessions.renameSession ?? en.sessions.renameSession!}
+        title={t.sessions.renameSession ?? en.sessions.renameSession!}
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
@@ -568,8 +569,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
+        aria-label={t.sessions.exportSession ?? en.sessions.exportSession!}
+        title={t.sessions.exportSessionJson ?? en.sessions.exportSessionJson!}
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -651,7 +652,7 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder="Session title"
+                      placeholder={t.sessions.sessionTitlePlaceholder ?? en.sessions.sessionTitlePlaceholder!}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
@@ -659,8 +660,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      aria-label={t.sessions.saveTitle ?? en.sessions.saveTitle!}
+                      title={t.sessions.saveTitle ?? en.sessions.saveTitle!}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
@@ -674,8 +675,8 @@ function SessionRow({
                       ghost
                       size="icon"
                       className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      aria-label={t.sessions.cancelRename ?? en.sessions.cancelRename!}
+                      title={t.sessions.cancelRename ?? en.sessions.cancelRename!}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >
@@ -872,6 +873,8 @@ export default function SessionsPage() {
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const pruneOldSessionsLabel =
+    t.sessions.pruneOldSessions ?? en.sessions.pruneOldSessions!;
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -1016,13 +1019,13 @@ export default function SessionsPage() {
         onClick={() => setPruneOpen(true)}
         prefix={<Archive />}
       >
-        Prune old sessions
+        {pruneOldSessionsLabel}
       </Button>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd]);
+  }, [setEnd, pruneOldSessionsLabel]);
 
   useEffect(() => {
     if (!sourceMenuOpen) return;
@@ -1653,10 +1656,9 @@ export default function SessionsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Prune old sessions</DialogTitle>
+            <DialogTitle>{pruneOldSessionsLabel}</DialogTitle>
             <DialogDescription>
-              Permanently remove archived sessions whose last activity is older
-              than the given number of days. Active sessions are never pruned.
+              {t.sessions.pruneDescription ?? en.sessions.pruneDescription!}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
@@ -1664,7 +1666,7 @@ export default function SessionsPage() {
               htmlFor="prune-days"
               className="text-xs font-medium text-muted-foreground"
             >
-              Older than (days)
+              {t.sessions.olderThanDays ?? en.sessions.olderThanDays!}
             </label>
             <Input
               id="prune-days"
@@ -1693,7 +1695,7 @@ export default function SessionsPage() {
               className="gap-1.5"
             >
               {pruning && <Spinner className="text-sm" />}
-              Prune
+              {t.sessions.prune ?? en.sessions.prune!}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1705,32 +1707,32 @@ export default function SessionsPage() {
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statsTotal ?? en.sessions.statsTotal!}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statsActiveInStore ?? en.sessions.statsActiveInStore!}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statsArchived ?? en.sessions.statsArchived!}</span>
           </div>
           <div className="flex flex-col">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="text-xs text-muted-foreground">{t.sessions.statsMessages ?? en.sessions.statsMessages!}</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
             <div className="flex flex-col">
               <span className="text-lg font-semibold tabular-nums leading-none">
                 {Object.keys(stats.by_source).length}
               </span>
-              <span className="text-xs text-muted-foreground">Sources</span>
+              <span className="text-xs text-muted-foreground">{t.sessions.statsSources ?? en.sessions.statsSources!}</span>
             </div>
           )}
         </div>
@@ -1985,12 +1987,12 @@ export default function SessionsPage() {
                 className="shrink-0"
                 disabled={importingSessions}
                 onClick={() => importInputRef.current?.click()}
-                aria-label="Import exported sessions"
-                title="Import exported session JSON or JSONL"
+                aria-label={t.sessions.importSessionsAria ?? en.sessions.importSessionsAria!}
+                title={t.sessions.importSessionsTitle ?? en.sessions.importSessionsTitle!}
                 prefix={importingSessions ? <Spinner /> : <Upload />}
               >
                 <span className="font-mondwest normal-case text-xs">
-                  Import sessions
+                  {t.sessions.importSessions ?? en.sessions.importSessions!}
                 </span>
               </Button>
             )}

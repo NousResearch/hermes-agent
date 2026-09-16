@@ -68,6 +68,23 @@ export interface Translations {
     // component until translated, matching the enriched-profiles keys.
     gateway?: string;
     gatewayHint?: string;
+    /** Optional — English fallback until translated. Shared labels lifted from page JSX. */
+    add?: string;
+    change?: string;
+    remove?: string;
+    configure?: string;
+    done?: string;
+    name?: string;
+    description?: string;
+    copy?: string;
+    enable?: string;
+    disable?: string;
+    install?: string;
+    installed?: string;
+    installing?: string;
+    saveChanges?: string;
+    restartGateway?: string;
+    restarting?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -208,11 +225,32 @@ export interface Translations {
     newChat: string;
     previousPage: string;
     nextPage: string;
+    /** Optional — English fallback until translated. */
+    renameSession?: string;
+    exportSession?: string;
+    exportSessionJson?: string;
+    sessionTitlePlaceholder?: string;
+    saveTitle?: string;
+    cancelRename?: string;
+    pruneOldSessions?: string;
+    pruneDescription?: string;
+    olderThanDays?: string;
+    prune?: string;
+    statsTotal?: string;
+    statsActiveInStore?: string;
+    statsArchived?: string;
+    statsMessages?: string;
+    statsSources?: string;
+    importSessions?: string;
+    importSessionsAria?: string;
+    importSessionsTitle?: string;
     roles: {
       user: string;
       assistant: string;
       system: string;
       tool: string;
+      /** Optional — English fallback until translated. */
+      compaction?: string;
     };
   };
 
@@ -241,6 +279,8 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    /** Optional — English fallback until translated. */
+    tokenAnalyticsHidden?: string;
   };
 
   // ── Models page ──
@@ -254,6 +294,35 @@ export interface Translations {
     toolCalls: string;
     noModelsData: string;
     startSession: string;
+    /** Optional — English fallback until translated. */
+    mainModel?: string;
+    current?: string;
+    auxiliaryTask?: string;
+    allAuxiliaryTasks?: string;
+    expensiveModelWarning?: string;
+    switchAnyway?: string;
+    auxiliaryTasksTitle?: string;
+    auxiliaryTasks?: string;
+    resetAllToAuto?: string;
+    resetAuxTitle?: string;
+    resetAuxDescription?: string;
+    resetAll?: string;
+    setAuxiliary?: string;
+    moaTitle?: string;
+    moaHint?: string;
+    setDefault?: string;
+    addPreset?: string;
+    newPresetPlaceholder?: string;
+    defaultPreset?: string;
+    referenceModels?: string;
+    addReferenceModel?: string;
+    aggregator?: string;
+    saving?: string;
+    selectMoaModel?: string;
+    modelSettings?: string;
+    appliesToNewSessions?: string;
+    mixtureOfAgents?: string;
+    setMainModel?: string;
   };
 
   // ── Logs page ──
@@ -323,6 +392,25 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    /** Optional — English fallback until translated. */
+    advancedFields?: string;
+    provider?: string;
+    defaultOption?: string;
+    model?: string;
+    baseUrlOverride?: string;
+    noAgentLabel?: string;
+    script?: string;
+    workdir?: string;
+    continuityLabel?: string;
+    contextFromLabel?: string;
+    noToolsetsAvailable?: string;
+    skillsOptional?: string;
+    noSkillsForProfile?: string;
+    jobs?: string;
+    blueprints?: string;
+    profile?: string;
+    allProfiles?: string;
+    editJob?: string;
     delivery: {
       local: string;
       telegram: string;
@@ -386,6 +474,20 @@ export interface Translations {
     catalogConfirmInstallNote?: string;
     catalogRequiresEnv?: string;
     removedFromCatalog?: string;
+    // Memory-provider setup panel (optional keys, English fallback).
+    setupResults?: string;
+    pythonDependencies?: string;
+    installProviderDependencies?: string;
+    installingProviderDependencies?: string;
+    externalDependency?: string;
+    installDependency?: string;
+    verifyDependency?: string;
+    installNamed?: string;
+    verifyNamed?: string;
+    hideSecret?: string;
+    showSecret?: string;
+    saveMemoryProvider?: string;
+    saveContextEngine?: string;
   };
 
   // ── Profiles page ──
@@ -482,6 +584,43 @@ export interface Translations {
     profileSelector?: string;
     currentProfile?: string;
     managingProfile?: string;
+    /** Learn/create dialogs, hub browser and skill detail (optional, English fallback). */
+    hubPanel?: string;
+    learnSkill?: string;
+    learnHint?: string;
+    newSkill?: string;
+    localFileOrDirectory?: string;
+    learnDirPlaceholder?: string;
+    url?: string;
+    learnUrlPlaceholder?: string;
+    anythingElse?: string;
+    learnTextPlaceholder?: string;
+    learnIt?: string;
+    editSkillMd?: string;
+    editNamed?: string;
+    hubSearchPlaceholder?: string;
+    hubSearch?: string;
+    updateAll?: string;
+    featuredSkills?: string;
+    featuredHint?: string;
+    noHubMatches?: string;
+    connectedHubs?: string;
+    details?: string;
+    readSkillMd?: string;
+    rescan?: string;
+    securityScan?: string;
+    skillMdEmpty?: string;
+    sourceLoadFailed?: string;
+    runScanHint?: string;
+    installAllowed?: string;
+    needsConfirmation?: string;
+    installBlocked?: string;
+    noRiskyPatterns?: string;
+    editSkillTitle?: string;
+    editSkillDescription?: string;
+    createSkillDescription?: string;
+    categoryOptional?: string;
+    saving?: string;
   };
 
   // ── Config page ──
@@ -895,5 +1034,151 @@ export interface Translations {
       confirmTitle?: string;
       confirmManyTitle?: string;
     };
+  };
+
+  // ── Webhooks page (optional section — locales fall back to English) ──
+  webhooks?: {
+    newSubscription: string;
+    deleteTitle: string;
+    deleteDescription: string;
+    deleteDescriptionNamed: string;
+    subscriptionCreated: string;
+    webhookUrl: string;
+    secretShownOnce: string;
+    namePlaceholder: string;
+    descriptionPlaceholder: string;
+    events: string;
+    eventsPlaceholder: string;
+    deliverTo: string;
+    deliverLog: string;
+    deliverEmail: string;
+    deliverGithubComment: string;
+    deliverOnly: string;
+    deliverOnlyHint: string;
+    prompt: string;
+    promptPlaceholder: string;
+    creating: string;
+    receiverDisabled: string;
+    receiverDisabledHint: string;
+    enableWebhooks: string;
+    enabling: string;
+    restartNeeded: string;
+    subscriptions: string;
+    subscriptionsHint: string;
+    noSubscriptions: string;
+  };
+
+  // ── MCP page (optional section — locales fall back to English) ──
+  mcp?: {
+    addServer: string;
+    removeTitle: string;
+    removeDescription: string;
+    removeDescriptionNamed: string;
+    addMcpServer: string;
+    transport: string;
+    url: string;
+    authentication: string;
+    bearerToken: string;
+    bearerTokenPlaceholder: string;
+    bearerTokenHint: string;
+    oauthHint: string;
+    command: string;
+    args: string;
+    envLabel: string;
+    adding: string;
+    installTitle: string;
+    installRequiresEnv: string;
+    yourServers: string;
+    noServers: string;
+    browseCatalog: string;
+    envVars: string;
+    connectedNoTools: string;
+    tools: string;
+    connectionFailed: string;
+    authenticateWithOAuth: string;
+    authenticate: string;
+    testConnection: string;
+    catalog: string;
+    catalogHint: string;
+    noCatalogEntries: string;
+    endpoint: string;
+    runs: string;
+    installsFrom: string;
+    bootstrapCommands: string;
+    setupNotes: string;
+  };
+
+  // ── Files page (optional section — locales fall back to English) ──
+  files?: {
+    refreshFiles: string;
+    path: string;
+    go: string;
+    upload: string;
+    uploadFiles: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    loading: string;
+    chooseFiles: string;
+    size: string;
+    modified: string;
+    actions: string;
+    loadingFiles: string;
+    noFiles: string;
+    createFolder: string;
+    target: string;
+    folderNamePlaceholder: string;
+  };
+
+  // ── Channels page (optional section — locales fall back to English) ──
+  channels?: {
+    states: {
+      connected: string;
+      pendingRestart: string;
+      gatewayStopped: string;
+      startFailed: string;
+      disconnected: string;
+      notConfigured: string;
+      disabled: string;
+      error: string;
+    };
+    restartToApply: string;
+    restartNow: string;
+    useOwnTelegramBot: string;
+    configureTitle: string;
+    botfatherGuide: string;
+    setupGuide: string;
+    saving: string;
+    saveAndEnable: string;
+    test: string;
+    starting: string;
+    pairWithQr: string;
+    whatsappConfigured: string;
+    mode: string;
+    modeBot: string;
+    modeSelfChat: string;
+    allowedWhatsappNumbers: string;
+    connected: string;
+    openChatLink: string;
+    saveAndRestart: string;
+    whatsappQrAlt: string;
+    linked: string;
+    existingWhatsappSession: string;
+    waitingForQr: string;
+    scanWithLinkedDevices: string;
+    chooseTelegramMethod: string;
+    quickSetup: string;
+    recommended: string;
+    createWithQr: string;
+    useOwnBot: string;
+    manualSetup: string;
+    ready: string;
+    allowedUsers: string;
+    ownerDetected: string;
+    addAtLeastOneUserId: string;
+    telegramUserIdPlaceholder: string;
+    telegramQrAlt: string;
+    waiting: string;
+    openTelegram: string;
   };
 }

@@ -14,7 +14,6 @@ afterEach(() => {
 
 it('does not promote a different runtime tile into the active transcript owner', () => {
   const ownerRoute = { connectionId: 'local', profile: 'other-profile', mode: 'local' as const }
-  $activeSessionId.set('active-runtime')
   setSessions([{ id: 'shared', profile: 'default', source: 'desktop' } as never])
   $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'other-runtime', ownerRoute }])
 
@@ -22,7 +21,6 @@ it('does not promote a different runtime tile into the active transcript owner',
 })
 
 it('does not treat an ownerless active tile as corroboration for a stale hint', () => {
-  $activeSessionId.set('active-runtime')
   setSessions([{ id: 'shared', profile: 'default', source: 'desktop' } as never])
   setSessionOwnerHint('shared', { connectionId: 'stale-connection', profile: 'stale-profile', mode: 'remote' })
   $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'active-runtime' }])

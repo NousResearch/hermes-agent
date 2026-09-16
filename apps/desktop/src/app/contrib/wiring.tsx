@@ -492,7 +492,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         activeSessionIdRef,
         busyRef,
         requestSequenceRef: activeTranscriptRequestSequenceRef,
-        resolveSession: id => resolveActiveTranscriptSession(id, activeSessionIdRef.current),
+        resolveSession: resolveActiveTranscriptSession,
         selectedStoredSessionIdRef,
         signatureRef: activeTranscriptSignatureRef,
         updateSessionState

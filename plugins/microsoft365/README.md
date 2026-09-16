@@ -1,65 +1,39 @@
 # Microsoft 365 Plugin
 
-## Business value
+The single **Microsoft 365 Plugin** provides bounded, operation-gated Graph access across Outlook, SharePoint, OneDrive, Calendar, Teams, Microsoft To Do, and Microsoft Planner. The shared boundary owns authentication, permissions, request limits, approval intent, and redaction; Teams Bot Framework and `teams_pipeline` remain separate adapters.
 
-The **Microsoft 365 Plugin** gives Hermes one controlled path into the Microsoft work graph: it can find business context, manage documents, coordinate Teams conversations, schedule work, and turn follow-ups into tasks. This supports workflows such as researching a customer thread, attaching the relevant file, scheduling the next step, and recording the resulting task without copying data between unrelated integrations.
+## Capability truth
 
-## Why one plugin
+| Service | Implemented operations | Application auth status |
+|---|---|---|
+| Outlook | search, read, create_draft, send | supported |
+| SharePoint / OneDrive | search, read, download_files, upload_files | supported |
+| Calendar | search, create_events, update_events | supported |
+| Teams | list_teams, list_channels, search_messages | supported; `send_messages` is retained but blocked as delegated-only |
+| Microsoft To Do | list_task_lists, search, read, create_tasks, update_tasks | supported |
+| Microsoft Planner | list_plans, list_buckets, list_tasks, read, create_tasks, update_tasks | separate Planner builders; see permission evidence |
 
-Outlook, SharePoint, OneDrive, Calendar, Teams, and Planner/To Do share Microsoft Graph authentication, request builders, permission review, and approval policy. Keeping them in one plugin avoids duplicated credentials and inconsistent safety gates while retaining service- and operation-level flags. The Teams Bot Framework adapter and `teams_pipeline` remain separate because they are different transports and runtime contracts.
+Enable individual operations under `plugins.entries.microsoft365.settings.capabilities`. One tool is registered per enabled capability, and its action enum includes only enabled operations supported by the configured auth mode.
 
-## Tool-surface control for the model
+## Binary file contract
 
-Enable operations individually under `plugins.entries.microsoft365.settings.capabilities`:
+Uploads require `content_base64`, a relative `path`, and optional `content_type` (default `application/octet-stream`). Downloads return bounded `content_base64`, `content_type`, `size`, and `path`. The limit is 10 MiB per transfer. Empty files are valid. Paths use UTF-8 URL encoding, must be relative, and reject empty, `.` or `..` segments (including backslash traversal). The plugin never writes arbitrary local destinations and never silently discards bytes. Files over the limit fail before Graph client creation. Uploads use the official drive-item content `put(bytes)` builder; downloads use the official content `get()` builder. Large-file upload sessions are not claimed.
 
-```yaml
-capabilities:
-  outlook: {search: true, read: true, create_draft: true, send: false}
-  sharepoint: {search: true, read: true, download_files: true, upload_files: true}
-  onedrive: {search: true, read: true, download_files: true, upload_files: true}
-  calendar: {search: true, create_events: true, update_events: true}
-  teams: {list_teams: true, list_channels: true, search_messages: true, send_messages: false}
-  planner: {list_task_lists: true, search: true, read: true, create_tasks: true, update_tasks: false}
+## Authentication, permissions, and approval
+
+The implemented mode is `azure.identity.ClientSecretCredential` with Graph `https://graph.microsoft.com/.default` and application roles. It does not implement delegated authorization-code, device-code, or To Do/Planner delegated flow. Endpoint-specific permissions and official sources are in [`references/graph-permissions.md`](references/graph-permissions.md). Preflight reports `authentication: not_tested`, `permissions: not_tested`, and `admin_consent: required`; local readiness is not proof of tenant consent or connectivity.
+
+The `pre_tool_call` hook emits a host approval directive for enabled writes. Validation of action-specific arguments happens before approval/client work in the handler, while the host remains the canonical policy chokepoint. Credentials are never returned in results. Configure the client secret through Hermes' secret scope/environment (`MICROSOFT365_CLIENT_SECRET`); it is not printed, logged, or included in status responses.
+
+## Verification
+
+Run:
+
+```bash
+python -m pytest tests/plugins/test_microsoft365_plugin.py tests/plugins/test_microsoft365_tasks_6_12.py -q
+python -m pytest tests/tools/test_microsoft_graph_client.py tests/tools/test_microsoft_graph_auth.py -q
+python -m hermes_cli.plugin_validate plugins/microsoft365/plugin.yaml
+python -m compileall -q plugins/microsoft365
 ```
 
-The model sees one tool per enabled capability, and each tool's `action` enum contains only configured operations supported by the active application-only mode. Disabled, unsupported, and unknown operations are rejected before Graph client creation. The full operation catalog remains visible in configuration metadata, including disabled/unsupported selections and their reasons. `microsoft365_preflight` is local: it reports derived application permissions and identifies operations unavailable in app-only mode. Service-level `true` remains supported and enables every operation for compatibility.
-
-Supported operations are Outlook search/read/create draft/send; SharePoint and OneDrive search/read/download/upload; Calendar search/create/update events; Teams list teams/list channels/search (message send is retained in the catalog but unsupported for app-only auth); and Planner/To Do task-list search/read/create/update tasks. Reads use `get`; writes use generated SDK models and `post`, `patch`, or `put` request-builder methods. No raw Graph HTTP is used.
-
-## Authentication and permissions
-
-This implementation uses `azure.identity.ClientSecretCredential` with the Microsoft Graph `https://graph.microsoft.com/.default` scope. Its mode is explicitly represented as `client_credentials` / `application`: it obtains an app-only token from application permissions granted to the Entra app. It does **not** implement delegated authorization-code, device-code, or user-consent flow. Delegated scope names are not sufficient for this plugin.
-
-`OPERATION_PERMISSIONS` is therefore application-permission-only and operation-specific:
-
-- Outlook: `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`.
-- SharePoint: `Sites.Read.All`, `Files.Read.All`, `Files.ReadWrite.All`.
-- OneDrive: `Files.Read.All`, `Files.ReadWrite.All`.
-- Calendar: `Calendars.Read`, `Calendars.ReadWrite`.
-- Teams reads: `Team.ReadBasic.All`, `Channel.ReadBasic.All`, `Chat.Read.All`, `ChannelMessage.Read.All` as applicable to the operation.
-- Planner/To Do: `Tasks.Read.All`, `Tasks.ReadWrite.All`.
-
-Teams `send_messages` remains in the requested operation surface and is approval-gated, but is reported as unsupported in this application-only mode because the channel/chat send endpoint has no corresponding application permission. The plugin does not relabel delegated `ChatMessage.Send` as an app permission. An administrator must grant tenant admin consent for the exact application roles required by enabled operations; Graph endpoint and tenant policy can impose additional restrictions. `user_id` must identify the target user for app-only user-resource calls; `/me` is a delegated convention and is not a substitute for an app-only user ID.
-
-## Security invariants
-
-- Every write calls Hermes' host-owned `tools.approval.request_tool_approval` using rule key `microsoft365.<capability>.<operation>`.
-- Only the host result shape `{"approved": true}` can approve; plugin-local strings cannot bypass the host gate.
-- Approval errors, denial, timeout, unavailable interactive context, or malformed results fail closed.
-- The Graph client is created only after the operation is enabled and approval succeeds.
-- Credentials are never included in tool results; returned objects are bounded and secret-key redacted.
-- The permission report is derived from enabled operations rather than requesting a blanket permission set.
-
-Preflight fields distinguish local readiness from remote checks: `ready`/`locally_ready` means required local fields, SDK availability, a real `user_id` for user resources, and supported selections are present. `authentication` and `permissions` remain `not_tested`; readiness does not prove token acquisition, tenant consent, endpoint access, or connectivity. This plugin does not currently wire preflight into a separate save/apply UI gate.
-
-Approval is a policy layer, not a sandbox. It does not limit what an already-authorized Entra application can do if the application has broader roles, and it cannot contain a compromised dependency or Graph service. Use least-privilege app registration, tenant controls, secret rotation, and endpoint/network controls as defense in depth.
-
-## PR-facing rationale
-
-This change keeps the full requested Microsoft 365 workflow surface while making its trust boundary explicit: one plugin owns Graph auth and operation policy, the model receives only enabled capability tools, writes remain host-approved, and preflight tells administrators what app-only consent actually means. It improves safety claims without pretending that delegated permissions or approval prompts provide a sandbox.
-
-## Test evidence
-
-The targeted plugin tests pass with `py -3.11 -m pytest tests/plugins/test_microsoft365_plugin.py -q` (20 passed). They cover operation-specific least privilege, app-only permission names, delegated-permission non-claims, unsupported operation reporting, generated SDK models/request builders, disabled-operation rejection, host-owned approval directives, and fail-closed approval before client creation. No credentials or network access are needed.
-
-The repository environment has Trio installed but does not have the `pytest-trio` plugin installed. Consequently these plugin tests exercise async handlers through `asyncio.run`; no Trio test run is claimed, and this limitation is not a hidden test failure.
+Known limitation: the current implementation is app-only; Teams message sending remains visible in administrative configuration metadata but is mechanically blocked and absent from model-facing schemas. Planner permission support is documented as endpoint evidence, not a claim that remote tenant consent has been verified.

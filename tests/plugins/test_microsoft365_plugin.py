@@ -9,7 +9,8 @@ EXPECTED = {
  "onedrive": ("search","read","download_files","upload_files"),
  "calendar": ("search","create_events","update_events"),
  "teams": ("list_teams","list_channels","search_messages","send_messages"),
- "planner": ("list_task_lists","search","read","create_tasks","update_tasks"),
+ "todo": ("list_task_lists","search","read","create_tasks","update_tasks"),
+ "planner": ("list_plans","list_buckets","list_tasks","read","create_tasks","update_tasks"),
 }
 
 def test_advertised_operations_cover_unified_read_write_scope():
@@ -97,10 +98,10 @@ def test_fake_sdk_builder_methods_and_models_are_used(monkeypatch):
     monkeypatch.setattr(tools, "_model", lambda name, **kw: SimpleNamespace(model_name=name, **kw))
     class Context:
         def get_config(self, key, default=None): return {"capabilities":{"onedrive":{"upload_files":True}}}.get(key, default)
-    result=json.loads(asyncio.run(tools._run("onedrive", {"action":"upload_files","path":"a.txt","content":"x"}, Context())))
+    result=json.loads(asyncio.run(tools._run("onedrive", {"action":"upload_files","path":"a.txt","content_base64":"eA=="}, Context())))
     assert result.get("success") is True, result
     assert any(c[0] == "put" for c in calls)
-    assert any(c[0] == "with_url" for c in calls)
+    assert any(c[0] == "item_with_path" for c in calls)
 
 def test_send_uses_generated_send_mail_body_and_action_builder(monkeypatch):
     from plugins.microsoft365 import tools
@@ -149,7 +150,7 @@ def test_drive_read_downloads_and_upload_puts_via_drive_item_content(monkeypatch
         def get_config(self, key, default=None):
             return {"capabilities":{"onedrive":{"read":True, "download_files":True, "upload_files":True}}}.get(key, default)
     for action, expected in (("read", "get"), ("download_files", "get"), ("upload_files", "put")):
-        args = {"action":action, "path":"folder/a.txt", "content":b"x"}
+        args = {"action":action, "path":"folder/a.txt", "content_base64":"eA=="}
         result = json.loads(asyncio.run(tools._run("onedrive", args, Context())))
         assert result.get("success") is True, result
         assert any(call[0] == expected for call in calls)
@@ -222,7 +223,7 @@ def test_preflight_is_not_ready_for_me_or_unsupported_selection():
     assert result["permissions"] == "not_tested"
     assert "user_id" in result["missing"]
     assert result["unsupported_operations"] == ["teams.send_messages"]
-    assert result["configuration"]["client_secret"] == "[redacted]"
+    assert result["configuration"]["client_secret"] == "[REDACTED]"
 
 
 def test_preflight_can_be_locally_ready_without_claiming_remote_access():

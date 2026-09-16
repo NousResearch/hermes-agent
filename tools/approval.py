@@ -802,7 +802,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
                     is_ask: bool, smart: bool = False,
                     permanent_capable: bool = True, pending_body=None,
-                    explanation: dict | None = None) -> dict:
+                    explanation: dict | None = None, human_description: str | None = None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``warnings`` are the ``(key, _, is_tirith)`` tuples :func:`_persist_choice` stores on
@@ -812,6 +812,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     actually asked, so a smart APPROVE never pays for redacting a large script. ``explanation`` is the
     sanitised model-supplied purpose/effect/risk (command gate), attached to the gateway notify
     payload and the pending-approval entry so approval surfaces can render it.
+    ``description`` remains scanner-only authority for the guardian, plugin transports,
+    hooks and decision results. ``human_description`` is untrusted display context
+    for built-in human prompts only, never an input to automated decisions.
     """
     from agent.redact import redact_sensitive_text
 
@@ -879,7 +882,15 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 data["smart_denied"] = True
             if explanation is not None:
                 data["explanation"] = explanation
-            decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
+            def notify_human(approval_data):
+                # Enqueued metadata and approval hooks retain scanner authority;
+                # only the built-in human rendering callback sees model context.
+                human_data = dict(approval_data)
+                if human_description is not None:
+                    human_data["description"] = redact_sensitive_text(human_description)
+                return notify_cb(human_data)
+
+            decision = _await_gateway_decision(session_key, notify_human, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
                                description=description, outcome="notify_failed", noun=spec.noun)
@@ -925,7 +936,10 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     hook_kwargs = dict(command=prompt_command, description=prompt_description, pattern_key=pattern_key,
                        pattern_keys=list(pattern_keys), session_key=session_key, surface="cli")
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
+    human_prompt_description = human_description if human_description is not None else prompt_description
+    if spec.redact_cli:
+        human_prompt_description = redact_sensitive_text(human_prompt_description)
+    choice = prompt_dangerous_approval(prompt_command, human_prompt_description, allow_permanent=allow_permanent,
                                        smart_denied=smart_denied, approval_callback=approval_callback)
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
@@ -1196,7 +1210,11 @@ def _approval_context_or_fallback(approval_context: dict | None) -> dict:
     return _clean_approval_context(approval_context)
 
 
-_FORGE_RE = re.compile(r'^[/!](approve|deny)|^(⚠|⚠️)', re.IGNORECASE)
+_FORGE_RE = re.compile(
+    r'^[\s>*_`#~\-]*[/!](approve|deny)|^(⚠|⚠️)|'
+    r'(?:End unverified context|Model-provided context\s*\(unverified\))',
+    re.IGNORECASE,
+)
 
 
 def _sanitize_explanation(explanation: dict | None) -> dict:
@@ -1243,7 +1261,7 @@ def _sanitize_explanation(explanation: dict | None) -> dict:
         # surface. Match past leading whitespace — an indented "/approve"
         # still reads as an instruction line.
         safe_lines = [
-            ln for ln in value.split("\n") if not _FORGE_RE.match(ln.lstrip())
+            ln for ln in value.split("\n") if not _FORGE_RE.search(ln.lstrip())
         ]
         value = "\n".join(safe_lines)
         if len(value) > 1000:
@@ -1380,12 +1398,12 @@ def check_all_command_guards(command: str, env_type: str,
     # allowlist permanently. Pure-tirith findings are session-max by design, so a tirith-only prompt hides Always;
     # mixed prompts offer it (the pattern key persists, tirith downgrades to session — see _persist_choice).
     return _human_decision(
-        _COMMAND_GATE, command=command, description=enhanced_desc,
+        _COMMAND_GATE, command=command, description=combined_desc,
         pattern_key=primary_key, pattern_keys=all_keys, warnings=warnings,
         session_key=session_key, approval_callback=approval_callback,
         is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask, smart=approval_mode == "smart",
         permanent_capable=any(not is_t for _, _, is_t in warnings),
-        explanation=approval_explanation,
+        explanation=approval_explanation, human_description=enhanced_desc,
     )
 
 

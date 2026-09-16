@@ -1564,7 +1564,12 @@ class TurnRunner:
         # Ambiguous delivery keeps the pending request armed for a late reply;
         # the decision wait still blocks on silence. Never send a duplicate.
         # Preserve upstream expiry notices for delivered or possibly-delivered prompts.
-        register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+        try:
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+        except Exception:
+            # Delivery has already succeeded (or may have succeeded). A notice
+            # bookkeeping failure must not withdraw the user's pending decision.
+            logger.warning("Approval expiry-notice registration failed", exc_info=True)
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

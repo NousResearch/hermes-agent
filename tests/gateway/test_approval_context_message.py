@@ -543,3 +543,26 @@ def test_text_error_result_is_notify_failure(monkeypatch, result):
     with pytest.raises(ApprovalDeliveryError):
         _deliver_approval_message(**kwargs)
     assert len(adapter.sent_messages) == 1
+
+
+@pytest.mark.parametrize("outcome", ["sent", "ambiguous", "failed", "declined"])
+@pytest.mark.parametrize("notice_fails", [False, True])
+def test_text_expiry_registration_preserves_delivery_outcome(monkeypatch, outcome, notice_fails):
+    import gateway.run as gw_run
+    import gateway.run_turn_runner_approval_settle as settle
+    from gateway.run_turn_runner import ApprovalDeliveryError
+
+    adapter = FakeTextAdapter()
+    kwargs = _make_deliver_kwargs(adapter, monkeypatch)
+    monkeypatch.setattr(gw_run, "_approval_send_outcome", lambda *a, **kw: outcome)
+    notice = MagicMock(side_effect=RuntimeError("synthetic notice failure") if notice_fails else None)
+    monkeypatch.setattr(settle, "register_timeout_notice", notice)
+    if outcome in {"failed", "declined"}:
+        with pytest.raises(ApprovalDeliveryError):
+            _deliver_approval_message(**kwargs)
+        notice.assert_not_called()
+    else:
+        _deliver_approval_message(**kwargs)
+        notice.assert_called_once()
+        assert notice.call_args.kwargs["card_message_id"] is None
+    assert len(adapter.sent_messages) == 1

@@ -13,12 +13,23 @@ import {
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Field } from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import {
   runSessionControlAction,
@@ -27,7 +38,12 @@ import {
   type SessionControlHeartbeat
 } from '@/store/session-control'
 
-import { type ConfirmState, formatHeartbeatCountdown, formatHeartbeatInterval } from './session-control-utils'
+import {
+  type ConfirmState,
+  formatHeartbeatCountdown,
+  formatHeartbeatInterval,
+  formatHeartbeatIntervalInput
+} from './session-control-utils'
 
 interface HeartbeatSectionProps {
   heartbeat: SessionControlHeartbeat
@@ -65,10 +81,21 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
 
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editPrompt, setEditPrompt] = useState('')
+  const [editInterval, setEditInterval] = useState('')
+  // What the dialog staged when it opened: parsing changes against it keeps an untouched field out of
+  // the request, so a newer edit from another window is not overwritten by this dialog's stale copy.
+  const [editBaseline, setEditBaseline] = useState({ interval: '', prompt: '' })
   const isBusy = Boolean(pendingAction)
 
   const handleAction = useCallback(
-    async (action: SessionControlAction, args?: SessionControlActionArgs): Promise<boolean> => {
+    async (
+      action: SessionControlAction,
+      args?: SessionControlActionArgs,
+      onFailure?: (message: string) => void
+    ): Promise<boolean> => {
       onFeedback(null, null)
 
       try {
@@ -78,13 +105,26 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
         return true
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        onFeedback(ctrl.actionFailed(msg), null)
+        const failure = ctrl.actionFailed(msg)
+        onFeedback(failure, null)
+        onFailure?.(failure)
 
         return false
       }
     },
     [sessionId, onFeedback, ctrl]
   )
+
+  const openEditHeartbeat = useCallback(() => {
+    const prompt = heartbeat.prompt
+    const interval = formatHeartbeatIntervalInput(heartbeat.interval_seconds)
+
+    setEditPrompt(prompt)
+    setEditInterval(interval)
+    setEditBaseline({ interval, prompt })
+    setEditError(null)
+    setEditOpen(true)
+  }, [heartbeat.interval_seconds, heartbeat.prompt])
 
   const stateLabel = heartbeat.status === 'paused' ? ctrl.heartbeatPaused : ctrl.heartbeatActive
   const now = useHeartbeatClock(heartbeat.status === 'active')
@@ -120,6 +160,11 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
 
     return (
       <>
+        <Item disabled={isBusy} onSelect={openEditHeartbeat}>
+          <Codicon name="edit" size="0.8rem" />
+          <span>{ctrl.editHeartbeat}</span>
+        </Item>
+        <Sep />
         {heartbeat.status === 'active' && (
           <Item disabled={isBusy} onSelect={() => void handleAction('heartbeat.pause')}>
             <Codicon name="debug-pause" size="0.8rem" />
@@ -190,15 +235,93 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
                 <StatusControlRow className="text-[0.73rem] leading-4 text-foreground/92 break-words" icon="bell">
                   {heartbeat.prompt}
                 </StatusControlRow>
-                <StatusControlRow icon="history">
-                  {ctrl.heartbeatFiredCount(heartbeat.fire_count)}
-                </StatusControlRow>
+                <StatusControlRow icon="history">{ctrl.heartbeatFiredCount(heartbeat.fire_count)}</StatusControlRow>
               </div>
             </StatusSection>
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent className="w-44">{renderMenuItems(true)}</ContextMenuContent>
       </ContextMenu>
+
+      <Dialog onOpenChange={setEditOpen} open={editOpen}>
+        <DialogContent className="max-w-md">
+          <form
+            onSubmit={async e => {
+              e.preventDefault()
+              const prompt = editPrompt.trim()
+              const interval = editInterval.trim()
+
+              if (!prompt || !interval || isBusy) {
+                return
+              }
+
+              // Send only the fields the user actually changed: the staged snapshot can be older than the
+              // live heartbeat (another window edited it meanwhile), and echoing an untouched field would
+              // silently restore its superseded value.
+              const changes =
+                prompt !== editBaseline.prompt && interval !== editBaseline.interval
+                  ? { interval, prompt }
+                  : prompt !== editBaseline.prompt
+                    ? { prompt }
+                    : interval !== editBaseline.interval
+                      ? { interval }
+                      : null
+
+              if (!changes) {
+                setEditOpen(false)
+
+                return
+              }
+
+              setEditError(null)
+              const ok = await handleAction('heartbeat.update', changes, setEditError)
+
+              if (ok) {
+                setEditOpen(false)
+              }
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{ctrl.editHeartbeat}</DialogTitle>
+              <DialogDescription>{ctrl.editHeartbeatDescription}</DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4 py-2">
+              <Field htmlFor="heartbeat-edit-message" label={ctrl.heartbeatMessageLabel}>
+                <Textarea
+                  autoFocus
+                  disabled={isBusy}
+                  id="heartbeat-edit-message"
+                  onChange={event => setEditPrompt(event.target.value)}
+                  rows={3}
+                  value={editPrompt}
+                />
+              </Field>
+              <Field htmlFor="heartbeat-edit-interval" label={ctrl.heartbeatFrequencyLabel}>
+                <Input
+                  disabled={isBusy}
+                  id="heartbeat-edit-interval"
+                  onChange={event => setEditInterval(event.target.value)}
+                  placeholder={ctrl.heartbeatFrequencyPlaceholder}
+                  value={editInterval}
+                />
+              </Field>
+            </div>
+            {editError && (
+              <div className="text-xs text-destructive" role="alert">
+                {editError}
+              </div>
+            )}
+            <DialogFooter>
+              <Button disabled={isBusy} onClick={() => setEditOpen(false)} type="button" variant="ghost">
+                {t.common.cancel}
+              </Button>
+              <Button disabled={isBusy || !editPrompt.trim() || !editInterval.trim()} type="submit">
+                {t.common.save}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {confirmState && (
         <ConfirmDialog

@@ -471,13 +471,16 @@ class SessionControlAction(WireEnum):
     heartbeat_pause = "heartbeat.pause"
     heartbeat_resume = "heartbeat.resume"
     heartbeat_clear = "heartbeat.clear"
+    heartbeat_update = "heartbeat.update"
 
 
 class SessionControlArgs(Params):
-    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``."""
+    """Subgoal text/index or heartbeat prompt/interval; the handler validates each action."""
 
     text: str | None = None
     index: int | None = None
+    prompt: str | None = None
+    interval: str | None = None
 
 
 class SessionControlParams(ProfileParams):

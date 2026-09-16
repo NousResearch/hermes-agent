@@ -39,6 +39,12 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 
 `/hb` is an alias. Works on the CLI, the TUI / Desktop app, and gateway platforms (on Slack, use `/hermes heartbeat …`).
 
+## Editing from the Desktop card
+
+The Desktop app's session status card renders the live heartbeat (message, interval, next fire, fire count) with an actions menu: **Edit**, pause / resume, and clear. **Edit** opens a form for the message and the interval, using the same grammar as the command (`10m`, `every 2h`, `90s`).
+
+Editing is not a reset. The heartbeat keeps its creation time, status, and fire count; a changed interval re-anchors the timer to now — the same rule as `resume` — so shortening the interval never fires a stale tick on save, while a message-only edit leaves the schedule untouched.
+
 ## Behavior details
 
 - **Idle-only.** A heartbeat never interrupts a running turn. If the agent is busy when the tick comes due, it fires at the next idle poll. In the gateway, an idle watched session wakes proactively; no new inbound message is needed.

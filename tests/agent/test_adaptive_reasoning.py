@@ -865,7 +865,7 @@ class TestRunConversationWiring(unittest.TestCase):
         baseline = agent.reasoning_config
         notices = []
         agent.notice_callback = notices.append
-        rejected = {"interrupted": True, "final_response": "cancelled"}
+        rejected = {"interrupted": True, "final_response": "cancelled", "messages": []}
 
         def reject(*args, **kwargs):
             self.assertIs(agent.reasoning_config, baseline)
@@ -875,6 +875,10 @@ class TestRunConversationWiring(unittest.TestCase):
             self.assertIs(agent.run_conversation(DEBUG_MSG), rejected)
         self.assertEqual(notices, [])
         self.assertIsNone(agent._adaptive_prev_effort)
+        self.assertIs(agent.reasoning_config, baseline)
+        self.assertEqual(rejected["messages"][0]["content"], DEBUG_MSG)
+        from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+        self.assertTrue(rejected["messages"][0][_PERSIST_AFTER_ADMISSION_INTERRUPT])
 
     def test_review_fence_sees_baseline(self):
         from unittest.mock import patch

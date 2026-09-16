@@ -354,9 +354,44 @@ def collect_fleet_versions(*, pre_restart_pids: Optional[list[int]] = None) -> l
             gw_state = record.get("gateway_state")
             if pid in _pre_restart and isinstance(gw_state, str) and gw_state and gw_state not in _NOT_EXPECTED_STATES:
                 results.append(_fleet_row(profile, pid, None, record.get("code_version"), None, state="down"))
+        results.extend(_multiplexed_rows(results, expected_sha))
     except Exception as exc:
         logger.debug("Fleet version probe failed: %s", exc)
     return results
+
+
+def _multiplexed_rows(rows: list[dict[str, Any]], expected_sha: Any) -> list[dict[str, Any]]:
+    """Rows for profiles a multiplexer serves but that hold no gateway of their own.
+
+    One multiplexer serves several profiles, so only its own home has a live
+    gateway pid and every other served profile would otherwise be missing from
+    the matrix — an obligation no restart could discharge (#113350). A profile
+    that answered for itself above keeps that row: its own gateway is the
+    better evidence.
+    """
+    covered = {row.get("profile") for row in rows}
+    extra: list[dict[str, Any]] = []
+    for row in list(rows):
+        for profile in _served_profiles(row.get("profile")):
+            if profile in covered:
+                continue
+            covered.add(profile)
+            extra.append(
+                _fleet_row(profile, row.get("pid"), row.get("code_sha"), row.get("code_version"), expected_sha)
+            )
+    return extra
+
+
+def _served_profiles(profile: Optional[str]) -> list[str]:
+    """Profiles the gateway in ``profile``'s home reports serving, itself excluded."""
+    from gateway.status import read_runtime_status
+
+    home = dict(_profile_homes()).get(profile or "")
+    record = read_runtime_status(home / "gateway_state.json") if home else None
+    served = (record or {}).get("served_profiles")
+    if not isinstance(served, list):
+        return []
+    return [name for name in served if isinstance(name, str) and name and name != profile]
 
 
 _FLEET_ROW_LINES = {

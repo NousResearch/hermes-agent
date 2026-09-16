@@ -118,16 +118,15 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "the session database file was replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
         "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
-        "`hermes {profile_arg}doctor --fix`, which "
-        "would repair the wrong file in place — then start it again and send your message "
-        "once more. Advanced recovery steps are in the log."
+        "`hermes {profile_arg}doctor --fix`, which would repair the wrong file in place — "
+        "then start it again and send your message once more. Advanced recovery steps are "
+        "in the log."
     ),
     "deleted_wal": (
         "the session database was changed or replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start it "
-        "again and send your "
-        "message once more. Advanced recovery steps are in the log."
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start "
+        "it again and send your message once more. Advanced recovery steps are in the log."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -165,9 +164,8 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
 _PERSISTENCE_DEFAULT_EXPLANATION = (
     "Hermes couldn't save this conversation, so it stopped rather than lose your messages. "
     "Possible causes: the drive is out of room, or another Hermes process is holding the "
-    "database. Close other Hermes windows, run `hermes {profile_arg}doctor` to check storage, "
-        "then send "
-    "your message again."
+    "database. Close other Hermes windows, run `hermes {profile_arg}doctor` to check "
+    "storage, then send your message again."
 )
 
 

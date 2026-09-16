@@ -43,12 +43,13 @@ def _profile_has_own_credentials(profile_dir: Path) -> bool:
             provider_env_vars.update(pconfig.api_key_env_vars)
     if _dotenv_has_provider_key(profile_dir / ".env", provider_env_vars):
         return True
+    # Raw-file diagnostic over another profile's config.yaml: the owner API, not a bare yaml load.
+    from hermes_cli.config import read_user_config_raw
     try:
-        import yaml
-        cfg = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8")) or {}
+        cfg = read_user_config_raw(profile_dir / "config.yaml")
     except Exception:
         return False
-    model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
+    model_cfg = cfg.get("model")
     return isinstance(model_cfg, dict) and any(
         str(model_cfg.get(k) or "").strip() for k in ("base_url", "api_key"))
 

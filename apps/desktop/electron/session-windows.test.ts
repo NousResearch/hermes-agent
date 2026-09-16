@@ -95,6 +95,18 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
+test('buildSessionWindowUrl carries exact owner fields before the hash route', () => {
+  const url = buildSessionWindowUrl('shared', {
+    devServer: 'http://localhost:5173',
+    ownerRoute: { connectionId: 'source-b', profile: 'profile-b', targetProfile: 'target-b' }
+  })
+
+  assert.equal(
+    url,
+    'http://localhost:5173/?win=secondary&ownerConnectionId=source-b&ownerProfile=profile-b&ownerTargetProfile=target-b#/shared'
+  )
+})
+
 test('buildInstanceWindowUrl marks a full peer without selecting a specialized renderer', () => {
   const url = buildInstanceWindowUrl({ devServer: 'http://localhost:5173/' })
 
@@ -233,6 +245,29 @@ test('registry trims the session id before keying', () => {
   registry.openOrFocus('  s1  ', () => win)
 
   assert.equal(registry.has('s1'), true)
+})
+
+test('registry keeps same-id windows separate for different exact owners', () => {
+  const registry = createSessionWindowRegistry()
+  const ownerA = { connectionId: 'source-a', profile: 'profile-a', targetProfile: 'target-a' }
+  const ownerB = { connectionId: 'source-b', profile: 'profile-b', targetProfile: 'target-b' }
+  const first = makeFakeWindow()
+  const second = makeFakeWindow()
+
+  assert.equal(
+    registry.openOrFocus('shared-id', () => first, ownerA),
+    first
+  )
+  assert.equal(
+    registry.openOrFocus('shared-id', () => second, ownerB),
+    second
+  )
+  assert.equal(registry.size, 2)
+  assert.equal(registry.has('shared-id', ownerA), true)
+  assert.equal(registry.has('shared-id', ownerB), true)
+
+  registry.openOrFocus('shared-id', () => makeFakeWindow(), ownerA)
+  assert.equal(first.calls.focus, 1)
 })
 
 test('chatWindowWebPreferences leaves background throttling to the runtime stream dial', () => {

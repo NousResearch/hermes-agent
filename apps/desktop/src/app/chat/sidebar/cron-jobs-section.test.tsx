@@ -5,7 +5,7 @@ import { fmtDayTime } from '@/lib/time'
 import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import type { CronJob, SessionInfo } from '@/types/hermes'
 
-import { SidebarCronJobsSection } from './cron-jobs-section'
+import { CronJobSidebarRuns, SidebarCronJobsSection } from './cron-jobs-section'
 
 // The peek's run list comes off the backend; the liveness flags below are the
 // endpoint's own (`hermes_cli/web_routers/cron.py`: `is_active` is
@@ -153,4 +153,18 @@ describe('SidebarCronJobsSection run peek — zombie cron runs (#88443)', () => 
     expect(screen.queryByRole('button', { name: runLabel(output) })).toBeNull()
     expect(isStoredTranscriptReadOnly(output.id)).toBe(false)
   })
+})
+
+it('hands the clicked cron run row and its exact owner to session opening', async () => {
+  const run = { id: 'run-1', last_active: 1, profile: 'worker', connection_id: 'source-b' } as SessionInfo
+  getCronJobRuns.mockResolvedValue([run])
+  const onOpenRun = vi.fn()
+  render(
+    <I18nProvider configClient={null} initialLocale="en">
+      <CronJobSidebarRuns jobId="job-1" onOpenRun={onOpenRun} />
+    </I18nProvider>
+  )
+  const button = await screen.findByRole('button')
+  fireEvent.click(button)
+  expect(onOpenRun).toHaveBeenCalledWith('run-1', run)
 })

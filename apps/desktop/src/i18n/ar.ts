@@ -25,7 +25,15 @@ export const ar = defineLocale({
   titlebar: arChrome.titlebar,
   keybinds: arChrome.keybinds,
   language: arSettings.language,
-  settings: arSettings.settings,
+  settings: {
+    ...arSettings.settings,
+    sessions: {
+      ...arSettings.settings.sessions,
+      sidebarOpenInNewTabTitle: 'فتح علامة تبويب أو التركيز عليها',
+      sidebarOpenInNewTabDesc:
+        'النقر العادي على جلسة في الشريط الجانبي يفتح علامة تبويب أو يركّز عليها. عطّل هذا الخيار للفتح في علامة التبويب الرئيسية. يستخدم Cmd/Ctrl+نقر علامة تبويب دائماً.'
+    }
+  },
   skills: arCapabilities.skills,
   agents: arCapabilities.agents,
   commandCenter: arCommandCenter.commandCenter,

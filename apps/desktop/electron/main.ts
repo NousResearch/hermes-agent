@@ -553,8 +553,10 @@ import {
   chatWindowWebPreferences,
   createSessionWindowRegistry,
   instanceWindowBounds,
+  normalizeSessionWindowOwnerRoute,
   SESSION_WINDOW_MIN_HEIGHT,
-  SESSION_WINDOW_MIN_WIDTH
+  SESSION_WINDOW_MIN_WIDTH,
+  type SessionWindowOwnerRoute
 } from './session-windows'
 import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
@@ -13808,8 +13810,15 @@ function spawnSecondaryWindow({
   connectionId,
   sessionId,
   profile,
+  ownerRoute,
   watch
-}: { connectionId?: null | string; sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
+}: {
+  connectionId?: null | string
+  sessionId?: string
+  profile?: null | string
+  ownerRoute?: SessionWindowOwnerRoute
+  watch?: boolean
+} = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -13883,6 +13892,7 @@ function spawnSecondaryWindow({
       connectionId,
       devServer: DEV_SERVER,
       profile,
+      ownerRoute,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch
     }),
@@ -13893,8 +13903,25 @@ function spawnSecondaryWindow({
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
+function createSessionWindow(
+  sessionId,
+  {
+    connectionId = null,
+    ownerRoute,
+    profile = null,
+    watch = false
+  }: {
+    connectionId?: null | string
+    ownerRoute?: SessionWindowOwnerRoute
+    profile?: null | string
+    watch?: boolean
+  } = {}
+) {
+  return sessionWindows.openOrFocus(
+    sessionId,
+    () => spawnSecondaryWindow({ connectionId, ownerRoute, profile, sessionId, watch }),
+    ownerRoute
+  )
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -15796,6 +15823,7 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   createSessionWindow(sessionId.trim(), {
     connectionId: typeof opts?.connectionId === 'string' ? opts.connectionId : null,
     profile: typeof opts?.profile === 'string' ? opts.profile : null,
+    ownerRoute: normalizeSessionWindowOwnerRoute(opts?.ownerRoute),
     watch: opts?.watch === true
   })
 

@@ -182,6 +182,43 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_startup_warning_suppressed_when_later_checkout_gateway_supersedes_marker(
+    monkeypatch, capsys,
+):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="old")
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: "new")
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "state": "current", "code_sha": "new"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+
+
+@pytest.mark.parametrize(
+    "marker_sha,fleet",
+    [
+        pytest.param("new", [{"state": "current", "code_sha": "new"}], id="current-marker"),
+        pytest.param("old", [], id="empty-fleet"),
+        pytest.param("old", [{"state": "stale", "code_sha": "old"}], id="stale-gateway"),
+        pytest.param("old", [{"state": "unknown", "code_sha": None}], id="unknown-gateway"),
+    ],
+)
+def test_startup_warning_kept_without_current_superseding_gateway(
+    monkeypatch, capsys, marker_sha, fleet,
+):
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=marker_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: "new")
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: fleet)
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "pulled new code but did not restart" in capsys.readouterr().err
+
+
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40

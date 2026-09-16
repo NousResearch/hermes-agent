@@ -383,7 +383,7 @@ def _finish_dashboard_update_cleanup(
 
     See #83595.
     """
-    from hermes_cli.update_cmd import _m, _reload_process_scan_modules
+    from hermes_cli.update_cmd import _m, _record_update_step, _reload_process_scan_modules
     if node_failures:
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
@@ -392,9 +392,22 @@ def _finish_dashboard_update_cleanup(
 
     _reload_process_scan_modules()
 
-    stop_result = _m()._kill_stale_dashboard_processes(
-        restart_managed=True, already_restarted_units=already_restarted_units
-    )
+    try:
+        stop_result = _m()._kill_stale_dashboard_processes(
+            restart_managed=True, already_restarted_units=already_restarted_units
+        )
+    except Exception as exc:
+        # Isolated like every sibling post-update step: this runs in the pre-pull interpreter
+        # against pulled code, and a symbol gap here (#112604) used to abort the fleet matrix,
+        # reconciliation and the inner receipt finalize that follow it. A dashboard/serve left
+        # on pre-update code is still caught by the survivor probe → reconciliation (exit 1).
+        logger.warning("Post-update dashboard cleanup failed: %s", exc)
+        _record_update_step("dashboard_cleanup", False, f"{type(exc).__name__}: {exc}")
+        print()
+        print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
+        print("  If one is still running, restart it so it serves the updated code:")
+        print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
+        return
     if not stop_result.get("unrecovered"):
         return
 

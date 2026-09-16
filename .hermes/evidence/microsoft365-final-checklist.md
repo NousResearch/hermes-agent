@@ -62,4 +62,4 @@ Observed on `e7a6a41` (before the evidence-only commit below):
 | `py -3.11 -m compileall -q plugins/microsoft365` | 0 | no output |
 | `git diff --check origin/main...HEAD` | 0 | no whitespace errors |
 
-The Graph failure matches the pre-existing baseline captured in `.hermes/evidence/microsoft365-baseline.md`; it is reported rather than silently filtered. The final evidence commit does not alter production code or test behavior.
+The same Graph failure was observed in `.hermes/evidence/microsoft365-baseline.md`; that baseline explicitly did not establish a clean-origin comparison, so this remains an unresolved environment/upstream attribution rather than a claim that the failure is pre-existing. It is reported rather than silently filtered. The final evidence commit does not alter production code or test behavior.

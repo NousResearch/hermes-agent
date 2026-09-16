@@ -1206,11 +1206,11 @@ agent:
   # slow or unreachable MCP servers. Default 600.
   # build_wait_timeout: 600
 
-  # Max app-level retry attempts for API errors (connection drops, provider
-  # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
-  # to 1 if you use fallback providers and want fast failover on flaky
-  # primaries (default 3). The OpenAI SDK does its own low-level retries
-  # underneath this wrapper — this is the Hermes-level loop.
+  # Base attempts per Hermes-level API retry cycle, including the first call
+  # (default 3 = one initial attempt + up to two retries). Set 1 to shorten
+  # the cycle; 0 and negative values are clamped to 1. SDK and streaming
+  # retries are separate. Primary transport recovery can restart the cycle;
+  # provider-specific error handling can adjust the budget or fall back early.
   # api_max_retries: 3
 
   # Once api_max_retries AND the fallback chain are spent on a transient outage

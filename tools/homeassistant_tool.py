@@ -94,9 +94,15 @@ async def _async_get_state(entity_id: str) -> Dict[str, Any]:
         "last_changed": data.get("last_changed"), "last_updated": data.get("last_updated")}
 
 
-def _build_service_payload(entity_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> Dict:
-    """JSON payload for a HA service call; ``entity_id`` overrides data["entity_id"]."""
-    payload: Dict[str, Any] = dict(data or {})
+def _build_service_payload(
+    entity_id: Optional[str | list[str]] = None,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the JSON payload for a HA service call."""
+    payload: Dict[str, Any] = {}
+    if data:
+        payload.update(data)
+    # entity_id parameter takes precedence over data["entity_id"]
     if entity_id:
         payload["entity_id"] = entity_id
     return payload
@@ -110,7 +116,10 @@ def _parse_service_response(domain: str, service: str, result: Any) -> Dict[str,
 
 
 async def _async_call_service(
-    domain: str, service: str, entity_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None,
+    domain: str,
+    service: str,
+    entity_id: Optional[str | list[str]] = None,
+    data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     result = await _api_json(
         "POST", f"/api/services/{domain}/{service}", 15, _build_service_payload(entity_id, data))
@@ -183,8 +192,23 @@ def _handle_call_service(args: dict, **kw) -> str:
             f"Service domain '{domain}' is blocked for security. "
             f"Blocked domains: {', '.join(sorted(_BLOCKED_DOMAINS))}")
     entity_id = args.get("entity_id")
-    if entity_id and not _ENTITY_ID_RE.match(entity_id):
-        return tool_error(f"Invalid entity_id format: {entity_id}")
+    if isinstance(entity_id, str):
+        # Be forgiving of the common LLM form "light.a, light.b": normalize it
+        # to Home Assistant's native entity_id array instead of forcing another
+        # model/tool correction round.
+        if "," in entity_id:
+            entity_id = [item.strip() for item in entity_id.split(",") if item.strip()]
+        elif not _ENTITY_ID_RE.match(entity_id):
+            return tool_error(f"Invalid entity_id format: {entity_id}")
+    if isinstance(entity_id, list):
+        if not entity_id:
+            entity_id = None
+        else:
+            invalid = [item for item in entity_id if not isinstance(item, str) or not _ENTITY_ID_RE.match(item)]
+            if invalid:
+                return tool_error(f"Invalid entity_id format: {', '.join(map(str, invalid))}")
+    elif entity_id is not None and not isinstance(entity_id, str):
+        return tool_error("entity_id must be a string or list of strings")
     data = args.get("data")
     if isinstance(data, str):  # XML tool-calling mode delivers data as a JSON string
         try:

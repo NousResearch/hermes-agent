@@ -224,6 +224,37 @@ class TestEntityIdValidation:
             "light", "turn_off", ["light.bedroom", "light.kitchen"], None
         )
 
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_rejects_invalid_item_in_entity_id_array(self, mock_call_service):
+        """A list with one malformed item is rejected wholesale, never partially dispatched."""
+        json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "turn_off",
+            "entity_id": ["light.bedroom", "../../config/api"],
+        }))
+        mock_call_service.assert_not_awaited()
+
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_rejects_non_string_entity_id_type(self, mock_call_service):
+        """entity_id of an unsupported scalar type is rejected before dispatch."""
+        json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "turn_off",
+            "entity_id": 42,
+        }))
+        mock_call_service.assert_not_awaited()
+
+    @patch("tools.homeassistant_tool._async_call_service", new_callable=AsyncMock)
+    def test_call_service_empty_entity_id_list_becomes_none(self, mock_call_service):
+        """An empty array means 'no target' (scene-style service), not an error."""
+        mock_call_service.return_value = {"success": True}
+        json.loads(_handle_call_service({
+            "domain": "scene",
+            "service": "turn_on",
+            "entity_id": [],
+        }))
+        mock_call_service.assert_awaited_once_with("scene", "turn_on", None, None)
+
 
 # ---------------------------------------------------------------------------
 # String-data deserialization (XML tool calling workaround)

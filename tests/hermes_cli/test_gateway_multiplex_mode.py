@@ -135,3 +135,15 @@ def test_live_record_outranks_the_raw_flag_for_other_processes(fleet, monkeypatc
     record["served_profiles"] = ["default", "coder", "ops"]
     (root / "gateway_state.json").write_text(json.dumps(record))
     assert mode.default_gateway_multiplexes(root) is True
+
+
+def test_guard_refusal_is_recorded_in_runtime_status_and_cleared_on_default(tmp_path, monkeypatch):
+    """A guard refusal must be visible to `hermes gateway status`, not only in the boot log; a later
+    boot that multiplexes clears it (a stale reason would misdescribe the live gateway)."""
+    from gateway import status as gw_status
+    from hermes_cli.gateway_multiplex_mode import MultiplexDecision, record_multiplex_decision
+    monkeypatch.setattr(gw_status, "_get_runtime_status_path", lambda: tmp_path / "gateway_state.json")
+    record_multiplex_decision(MultiplexDecision(False, "guard", "profile(s) 'coder' still run their own gateway"))
+    assert "coder" in gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"]
+    record_multiplex_decision(MultiplexDecision(True, "default", "unset; default applies"))
+    assert gw_status.read_runtime_status(tmp_path / "gateway_state.json")["multiplex_standalone_reason"] is None

@@ -1482,6 +1482,19 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print("  can refuse to start another copy until this process stops.")
 
 
+def _print_multiplex_standalone_reason() -> None:
+    """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
+    try:
+        from gateway.status import read_runtime_status
+        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+    except Exception:
+        return
+    if reason:
+        print(f"⚠ Serving the default profile only (gateway.multiplex_profiles unset): {reason}")
+        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
+        print("  Keep per-profile gateways: hermes config set gateway.multiplex_profiles false")
+
+
 def _print_served_ingress_urls(profile: str | None = None) -> None:
     """Callback URLs of inbound-port platforms the live multiplexer serves for secondary profiles
     (the value to paste into the Twilio / LINE / Teams / BlueBubbles console)."""
@@ -6421,6 +6434,7 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
@@ -6428,6 +6442,7 @@ def _cmd_status(args):
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
+            _print_multiplex_standalone_reason()
             _print_served_ingress_urls()
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])

@@ -123,7 +123,18 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     return decision
 
 
+def record_multiplex_decision(decision: MultiplexDecision) -> None:
+    """Persist a guard refusal into ``gateway_state.json`` so `hermes gateway status` can show why this
+    gateway serves one profile while the default says multiplex; any other verdict clears the field."""
+    try:
+        from gateway.status import write_runtime_status
+        write_runtime_status(multiplex_standalone_reason=decision.reason if decision.source == "guard" else None)
+    except Exception:
+        logger.debug("could not record the multiplex decision", exc_info=True)
+
+
 def log_multiplex_decision(decision: MultiplexDecision) -> None:
+    record_multiplex_decision(decision)
     if decision.source == "config" and not decision.enabled:
         logger.info("gateway.multiplex_profiles is false: serving this profile only "
                     "(hermes gateway migrate --multiplex folds every profile onto the default gateway).")

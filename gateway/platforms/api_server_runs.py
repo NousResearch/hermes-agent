@@ -128,6 +128,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
     self._run_idempotency_ids: set[str] = set()
     self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
+    # Run ids interrupted by gateway shutdown are distinct from client-requested
+    # stops, which must retain their normal ``cancelled`` result.
+    self._shutdown_interrupted_run_ids: set[str] = set()
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -392,7 +395,7 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -658,6 +661,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
     try:
         self._set_run_status(run_id, "running")
+        if run_id in self._shutdown_interrupted_run_ids:
+            _finish("interrupted", error="Gateway shutdown interrupted the run.")
+            return
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
@@ -671,6 +677,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
+        if run_id in self._shutdown_interrupted_run_ids:
+            _finish("interrupted", error="Gateway shutdown interrupted the run.")
+            return
         status, fields = terminal_run_status(result)
         if status == "cancelled":
             _finish("cancelled", fields)

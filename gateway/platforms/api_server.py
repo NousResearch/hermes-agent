@@ -1200,6 +1200,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
         ``GatewayRunner._running_agents``): exactly the set the drain waits on. Returns count."""
+        # Publish a terminal state before the process is allowed to exit.  Without
+        # this, a drain timeout can leave durable /v1/runs records in ``running``
+        # and the next gateway instance cannot distinguish abandoned work from a
+        # genuinely active review.
+        for run_id in set(getattr(self, "_active_run_tasks", {})) | set(
+                getattr(self, "_active_run_agents", {})):
+            try:
+                self._shutdown_interrupted_run_ids.add(run_id)
+                self._set_run_status(
+                    run_id, "interrupted",
+                    error="Gateway shutdown interrupted the run.",
+                    last_event="run.interrupted")
+            except Exception as exc:
+                logger.debug("[api_server] failed recording shutdown for run %s: %s", run_id, exc)
         # Dedupe by identity: an agent in both registries must be interrupted once.
         agents = {id(agent): agent for agent in (
             *self._active_run_agents.values(), *self._shutdown_interruptible_agents.values())

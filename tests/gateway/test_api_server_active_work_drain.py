@@ -113,10 +113,12 @@ class TestAPIServerAdapterWorkCount:
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         agent = MagicMock()
         adapter._active_run_agents = {"run-1": agent}
+        adapter._set_run_status("run-1", "running")
 
         assert adapter.interrupt_active_runs("gateway shutdown") == 1
 
         agent.interrupt.assert_called_once_with("gateway shutdown")
+        assert adapter._run_statuses["run-1"]["status"] == "interrupted"
 
 
 class TestDrainWaitsForApiWork:
@@ -607,5 +609,4 @@ class TestShutdownSettleWindow:
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
             _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
         ]
-
 

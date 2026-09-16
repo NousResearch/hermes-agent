@@ -423,6 +423,15 @@ class OpenAICompatRoutesMixin:
             return _error_response("Invalid JSON in request body", 400)
         from gateway.platforms.api_server import _request_relay_metadata
         relay_metadata = _request_relay_metadata(body)
+        prompt_builtin = None
+        hermes_extension = body.get("hermes")
+        # The adapter refuses to start without a key. Keep manual no-key test wiring from
+        # turning this internal extension into forgeable provenance on a generic OpenAI route.
+        if self._expected_api_key() and isinstance(hermes_extension, dict):
+            from agent.prompt_builtin_runtime import normalize_prompt_builtin_origin
+            prompt_builtin = normalize_prompt_builtin_origin(
+                hermes_extension.get("prompt_builtin")
+            )
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
@@ -511,6 +520,8 @@ class OpenAICompatRoutesMixin:
             # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
+        if prompt_builtin is not None:
+            run_kwargs["prompt_builtin"] = prompt_builtin
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -554,7 +565,9 @@ class OpenAICompatRoutesMixin:
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            fingerprint_keys=[
+                "model", "provider", "model_options", "messages", "tools", "tool_choice", "stream", "hermes",
+            ],
             route="chat_completions",
         )
         if err is not None:
@@ -683,6 +696,13 @@ class OpenAICompatRoutesMixin:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
+            if isinstance(result, dict) and isinstance(
+                result.get("prompt_builtin_completion"), dict
+            ):
+                await response.write(_sse_frame(
+                    {"prompt_builtin_completion": result["prompt_builtin_completion"]},
+                    event="hermes.prompt_builtin.completion",
+                ))
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
             if finish_reason != "stop":
                 if err_msg:

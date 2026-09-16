@@ -8,7 +8,10 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent import relay_runtime
+from agent import prompt_builtin_runtime
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -281,6 +284,70 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     assert [event[0] for event in db.events] == ["acquire"]
     assert agent._interrupt_requested is False
     assert agent._interrupt_message is None
+
+
+@pytest.mark.parametrize(("interrupted", "expected_status"), [(False, "failed"), (True, "interrupted")])
+def test_prompt_builtin_completion_covers_lease_admission_exit(monkeypatch, interrupted, expected_status):
+    db = _DB(acquire_result=False)
+    agent = _agent_with_db(db)
+    emitted = []
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda name, **payload: emitted.append((name, payload)),
+    )
+    if interrupted:
+        def acquire_with_abort(session_id, holder, **kwargs):
+            agent._interrupt_requested = True
+            return False
+        db.acquire_session_turn_lease = acquire_with_abort
+
+    result = AIAgent.run_conversation(
+        agent,
+        "prompt",
+        prompt_builtin={"name": "learn", "raw_args": "topic", "run_id": "run-admission"},
+    )
+
+    assert result["prompt_builtin_completion"]["status"] == expected_status
+    assert emitted == [("post_prompt_builtin_run", result["prompt_builtin_completion"])]
+    assert prompt_builtin_runtime._current_run.get() is None
+
+
+@pytest.mark.parametrize(
+    ("failure_phase", "exc_type", "expected_status"),
+    [("setup", RuntimeError, "failed"), ("turn", InterruptedError, "interrupted")],
+)
+def test_prompt_builtin_completion_covers_setup_and_propagated_cancellation(
+    monkeypatch, failure_phase, exc_type, expected_status,
+):
+    agent = _agent_with_db(_DB(session_exists=False))
+    emitted = []
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda name, **payload: emitted.append((name, payload)),
+    )
+
+    if failure_phase == "setup":
+        def fail_setup(*_args, **_kwargs):
+            raise exc_type("setup failed")
+        monkeypatch.setattr(relay_runtime.SESSION_COORDINATOR, "acquire_conversation", fail_setup)
+    else:
+        def fail_turn(*_args, **_kwargs):
+            raise exc_type("cancelled")
+        monkeypatch.setattr("agent.conversation_loop.run_conversation", fail_turn)
+
+    with pytest.raises(exc_type):
+        AIAgent.run_conversation(
+            agent,
+            "prompt",
+            prompt_builtin={"name": "learn", "raw_args": "topic", "run_id": "run-exception"},
+        )
+
+    assert len(emitted) == 1
+    assert emitted[0][0] == "post_prompt_builtin_run"
+    assert emitted[0][1]["status"] == expected_status
+    assert prompt_builtin_runtime._current_run.get() is None
 
 
 def test_pre_admission_user_row_in_history_is_flushed_once():

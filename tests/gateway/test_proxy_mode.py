@@ -1,5 +1,7 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import json
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -159,11 +161,15 @@ class TestRunAgentProxyDispatch:
             session_id="test-session-123",
             session_key="test-key",
             run_generation=7,
+            prompt_builtin={"name": "learn", "raw_args": "topic", "run_id": "run-proxy"},
         )
 
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
+        assert runner._run_agent_via_proxy.call_args.kwargs["prompt_builtin"] == {
+            "name": "learn", "raw_args": "topic", "run_id": "run-proxy",
+        }
 
 
 class TestRunAgentViaProxy:
@@ -222,6 +228,37 @@ class TestRunAgentViaProxy:
         # Verify response was assembled
         assert result["final_response"] == "Hello world"
 
+    @pytest.mark.asyncio
+    async def test_prompt_builtin_round_trips_through_terminal_sse_extension(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.setenv("GATEWAY_PROXY_KEY", "test-key-123")
+        runner = _make_runner()
+        completion = {
+            "command": "learn", "request": "topic", "run_id": "run-proxy",
+            "session_id": "session-abc", "task_id": "session-abc", "platform": "api_server",
+            "status": "completed", "artifacts": [{"kind": "skill", "name": "topic"}],
+        }
+        resp = _FakeSSEResponse(status=200, sse_chunks=[
+            'data: {"choices":[{"delta":{"content":"done"}}]}\n\n',
+            "event: hermes.prompt_builtin.completion\n"
+            f'data: {{"prompt_builtin_completion": {json.dumps(completion)}}}\n\n',
+            "data: [DONE]\n\n",
+        ])
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}), _patch_aiohttp(session), patch(
+            "aiohttp.ClientTimeout"
+        ):
+            result = await runner._run_agent_via_proxy(
+                message="learn", context_prompt="", history=[], source=_make_source(),
+                session_id="session-abc",
+                prompt_builtin={"name": "learn", "raw_args": "topic", "run_id": "run-proxy"},
+            )
+
+        assert session.captured_json["hermes"]["prompt_builtin"] == {
+            "name": "learn", "raw_args": "topic", "run_id": "run-proxy",
+        }
+        assert result["prompt_builtin_completion"] == completion
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):

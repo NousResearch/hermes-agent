@@ -48,6 +48,7 @@ class TurnFacadeMixin:
             set_conversation_context,
         )
         from agent.prompt_cache_scope import declared_conversation_scope_safe
+        from agent.prompt_builtin_runtime import begin_prompt_builtin, finish_prompt_builtin
         from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
@@ -71,7 +72,8 @@ class TurnFacadeMixin:
         relay_lease = relay_turn = lease = None
         # Scope tokens start None: early returns leave the try before the set_*() calls and
         # the finally resets each one unconditionally.
-        token = affinity_token = acct_token = prompt_builtin_token = None
+        token = affinity_token = acct_token = None
+        prompt_builtin_token = begin_prompt_builtin(prompt_builtin)
         task_started = task_finished = False
         relay_outcome = "failed"
 
@@ -91,7 +93,13 @@ class TurnFacadeMixin:
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
-                return admission.early_result
+                result = finish_prompt_builtin(
+                    prompt_builtin_token, admission.early_result,
+                    session_id=str(getattr(self, "session_id", None) or session_id),
+                    task_id=effective_task_id, platform=task_context["platform"],
+                )
+                prompt_builtin_token = None
+                return result
             lease = admission.lease
             conversation_history = admission.conversation_history
 
@@ -128,9 +136,6 @@ class TurnFacadeMixin:
             acct_token = set_accounting_context(
                 getattr(self, "_session_db", None), getattr(self, "session_id", None)
             )
-
-            from agent.prompt_builtin_runtime import begin_prompt_builtin, finish_prompt_builtin
-            prompt_builtin_token = begin_prompt_builtin(prompt_builtin)
 
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
@@ -170,17 +175,20 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            cancelled = isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
+                type(exc).__name__ == "CancelledError"
+            )
             if prompt_builtin_token is not None:
                 finish_prompt_builtin(
                     prompt_builtin_token,
-                    {"failed": True, "error": type(exc).__name__},
+                    {"interrupted": True} if cancelled else {
+                        "failed": True, "error": type(exc).__name__,
+                    },
                     session_id=str(getattr(self, "session_id", None) or session_id),
                     task_id=effective_task_id, platform=task_context["platform"],
                 )
                 prompt_builtin_token = None
-            if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
-                type(exc).__name__ == "CancelledError"
-            ):
+            if cancelled:
                 relay_outcome = "cancelled"
             elif isinstance(exc, TimeoutError):
                 relay_outcome = "timed_out"

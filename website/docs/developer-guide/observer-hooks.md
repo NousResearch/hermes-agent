@@ -153,7 +153,9 @@ outside a prompt-backed command do not emit this completion hook.
 
 The same payload is available to host surfaces as
 `result["prompt_builtin_completion"]`. The hook is additive and observer-only;
-its return value is ignored.
+its return value is ignored. Gateway proxy mode carries the payload in the
+terminal `hermes.prompt_builtin.completion` SSE event before `[DONE]`; only the
+authenticated Hermes-to-Hermes extension field can establish command origin.
 
 ### Request-Scoped API Hooks
 

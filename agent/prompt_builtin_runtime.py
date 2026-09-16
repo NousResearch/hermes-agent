@@ -7,6 +7,7 @@ additive completion hook after the whole turn settles.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import uuid
 from contextvars import ContextVar, Token
@@ -15,6 +16,8 @@ from typing import Any, Mapping, MutableMapping, Optional
 
 
 _PENDING_KEY = "_pending_prompt_builtin_runs"
+_COMMAND_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}\Z")
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 
 
 @dataclass
@@ -36,6 +39,25 @@ def make_prompt_builtin_origin(command: str, raw_args: str = "") -> dict[str, st
         "raw_args": str(raw_args or ""),
         "run_id": uuid.uuid4().hex,
     }
+
+
+def normalize_prompt_builtin_origin(origin: Any) -> Optional[dict[str, str]]:
+    """Validate and normalize turn provenance before it enters the runtime context."""
+    if not isinstance(origin, Mapping):
+        return None
+    name = origin.get("name")
+    raw_args = origin.get("raw_args", "")
+    run_id = origin.get("run_id")
+    if not isinstance(name, str) or not isinstance(raw_args, str):
+        return None
+    name = name.strip().lstrip("/")
+    if not _COMMAND_RE.fullmatch(name):
+        return None
+    if run_id in (None, ""):
+        run_id = uuid.uuid4().hex
+    if not isinstance(run_id, str) or not _RUN_ID_RE.fullmatch(run_id):
+        return None
+    return {"name": name, "raw_args": raw_args, "run_id": run_id}
 
 
 def stage_prompt_builtin(
@@ -75,13 +97,9 @@ def take_prompt_builtin(owner: MutableMapping[str, Any] | Any, message: Any) -> 
 
 def begin_prompt_builtin(origin: Optional[Mapping[str, Any]]) -> Optional[Token]:
     """Bind one prompt-built-in run for tool observers in this context tree."""
-    if not isinstance(origin, Mapping) or not str(origin.get("name") or "").strip():
+    normalized = normalize_prompt_builtin_origin(origin)
+    if normalized is None:
         return None
-    normalized = {
-        "name": str(origin.get("name") or "").strip().lstrip("/"),
-        "raw_args": str(origin.get("raw_args") or ""),
-        "run_id": str(origin.get("run_id") or uuid.uuid4().hex),
-    }
     return _current_run.set(PromptBuiltinRun(normalized))
 
 

@@ -37,6 +37,21 @@ def _int_value(value: Any) -> int:
         return 0
 
 
+def _runtime_route(session_row: dict) -> tuple[str, str]:
+    """``(provider, base_url)`` from the persisted live-routing snapshot.
+
+    The gateway records the route actually serving a session — including any active
+    fallback provider — into ``model_config.gateway_runtime`` on every provider switch.
+    ``billing_provider`` can lag that route (no accounting has landed yet, or an upstream
+    proxy omits streaming usage), so status/usage gap-fill from this snapshot instead of
+    showing the configured default (#75535). Reuses the canonical
+    ``SessionDB.session_gateway_runtime`` parser (JSON-string-or-dict ``model_config``,
+    wrong-typed values, None filtering) so the two endpoints never drift from resume."""
+    from hermes_state import SessionDB
+    runtime = SessionDB.session_gateway_runtime(session_row)
+    return _clean_str(runtime.get("provider")), _clean_str(runtime.get("base_url"))
+
+
 def _n(obj, attr: str):
     return getattr(obj, attr, 0) or 0
 
@@ -120,6 +135,9 @@ def _status_model_route(
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
     model_name = model_name or _resolve_gateway_model(user_config)
+    # Before the configured default: consult the persisted live-routing snapshot so a session
+    # served by a fallback provider shows THAT provider, not the config default (#75535).
+    provider_name = provider_name or _runtime_route(session_row)[0]
     provider_name = provider_name or _clean_str(model_cfg.get("provider"))
     # No raw ``model.context_length`` pin here: the resolver applies it only while the displayed
     # route still matches the configured one (a session /model switch must not inherit it).
@@ -641,7 +659,16 @@ class GatewayStatusCommandsMixin:
             return persisted, route if isinstance(route, dict) else {}
         persisted, recent = await _quiet(_rows, ({}, {}))
         row = recent if recent.get("billing_provider") else persisted
-        return row.get("billing_provider"), row.get("billing_base_url")
+        provider = row.get("billing_provider")
+        base_url = row.get("billing_base_url")
+        # Gap-fill EITHER missing field from the live-routing snapshot: a session on a fallback
+        # provider (or one whose base_url never got billed) must not fall through to the config
+        # default (#75535). Fill each independently so a partial billing row is still completed.
+        if not provider or not base_url:
+            runtime_provider, runtime_base_url = _runtime_route(persisted)
+            provider = provider or runtime_provider
+            base_url = base_url or runtime_base_url
+        return provider, base_url
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights [N | --days N] [--source S] -- usage insights and analytics."""

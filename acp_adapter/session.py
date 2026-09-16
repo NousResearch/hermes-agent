@@ -100,12 +100,51 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
 
+def _acp_base_toolsets(config: dict | None = None) -> List[str]:
+    """Base toolset list for an ACP session.
+
+    Resolved through the shared per-platform resolver (``_get_platform_tools``) so ACP
+    agrees with cli/api_server instead of hardcoding ``hermes-acp``: an explicit
+    ``platform_toolsets.acp`` wins, and plugin toolsets (rlm, a2a, ...) plus the
+    platform's MCP servers are folded in. Falls back to ``hermes-acp`` on any config
+    error so session creation never breaks.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        cfg = config if isinstance(config, dict) else load_config()
+        return sorted(_get_platform_tools(cfg, "acp", include_default_mcp_servers=False))
+    except Exception:
+        logger.debug("Failed to resolve ACP platform toolsets", exc_info=True)
+    return ["hermes-acp"]
+
+
 def _expand_acp_enabled_toolsets(toolsets: List[str] | None = None,
                                  mcp_server_names: List[str] | None = None) -> List[str]:
-    """Return ACP toolsets plus explicit MCP server toolsets for this session."""
-    names = [n for n in (toolsets or ["hermes-acp"]) if n]
-    names += [f"mcp-{s}" for s in (mcp_server_names or []) if s]
-    return list(dict.fromkeys(names))
+    """Return ACP toolsets plus explicit MCP server toolsets for this session.
+
+    ``toolsets`` (an already-resolved list) is authoritative when given; otherwise the base
+    comes from :func:`_acp_base_toolsets`. Plugin toolsets are then folded in through the
+    canonical platform resolution used by cli/api_server (``_enabled_plugin_toolsets``): an
+    active plugin toolset (rlm, project, ...) is exposed unless it is platform-default-off or
+    recorded as known for the ACP platform. Without this, ACP sessions could never see
+    plugin-registered tools even though the plugin system prompt section is injected.
+    """
+    resolved = [str(n) for n in (toolsets or []) if n]
+    base = resolved or _acp_base_toolsets()
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _enabled_plugin_toolsets, _get_plugin_toolset_keys
+        cfg = load_config()
+        plugin_keys = _get_plugin_toolset_keys()
+        if plugin_keys:
+            base = sorted(set(base) | _enabled_plugin_toolsets(cfg, "acp", base, plugin_keys))
+    except Exception:
+        # Fallback: keep the base only — never break session creation over plugin folding.
+        logger.debug("Failed to fold plugin toolsets into ACP toolsets", exc_info=True)
+    base = list(base) + [f"mcp-{s}" for s in (mcp_server_names or []) if s]
+    return list(dict.fromkeys(base))
 
 
 def _parse_model_config(mc: Any) -> dict:
@@ -395,7 +434,13 @@ class SessionManager:
         ]
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
-            "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
+            # Resolve through the shared platform resolver so plugin toolsets (rlm, ...) and an
+            # explicit ``platform_toolsets.acp`` are present from the first turn, not only after
+            # the post-MCP-registration refresh (see _expand_acp_enabled_toolsets). MCP markers are
+            # appended by _expand_acp_enabled_toolsets when servers are actually registered.
+            "enabled_toolsets": _expand_acp_enabled_toolsets(
+                _acp_base_toolsets(config), mcp_server_names=configured_mcp_servers
+            ),
             "model": model or default_model,
             "cwd": cwd,
         }

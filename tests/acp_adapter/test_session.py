@@ -253,6 +253,94 @@ class TestListAndCleanup:
 # ---------------------------------------------------------------------------
 
 
+class TestAcpToolsetResolution:
+    """ACP must resolve toolsets through the shared platform resolver, not a hardcoded
+    ``hermes-acp``: without it, plugin-registered tools (rlm, ...) never reach the model
+    even though the plugin prompt section is injected."""
+    _STUB_RUNTIME = {
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "base_url": "https://openrouter.example/v1",
+        "api_key": "***",
+        "command": None,
+        "args": [],
+    }
+
+    def test_expand_folds_active_plugin_toolsets(self, monkeypatch):
+        """A plugin toolset absent from an explicit platform list is still folded in."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys", lambda: {"rlm"}
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._enabled_plugin_toolsets",
+            lambda _cfg, _platform, _names, _keys: {"rlm"},
+        )
+        assert acp_session._expand_acp_enabled_toolsets(["hermes-acp"]) == ["hermes-acp", "rlm"]
+
+    def test_expand_appends_mcp_server_markers(self, monkeypatch):
+        """Explicit MCP servers become ``mcp-<name>`` markers on top of the base toolsets."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr("hermes_cli.tools_config._get_plugin_toolset_keys", lambda: set())
+        out = acp_session._expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=["olympus"])
+        assert out == ["hermes-acp", "mcp-olympus"]
+
+    def test_base_toolsets_honor_explicit_platform_config(self, monkeypatch):
+        """An explicit ``platform_toolsets.acp`` wins over the platform default."""
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"platform_toolsets": {"acp": ["web", "file"]}}
+        )
+        assert acp_session._acp_base_toolsets() == ["file", "web"]
+
+    def test_base_toolsets_fall_back_when_resolver_fails(self, monkeypatch):
+        """A resolver failure degrades to the historical default instead of breaking session
+        creation."""
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            MagicMock(side_effect=RuntimeError("bad config")),
+        )
+        assert acp_session._acp_base_toolsets({"platform_toolsets": {}}) == ["hermes-acp"]
+
+    def test_fold_failure_keeps_base_toolsets(self, monkeypatch):
+        """A plugin-folding failure must not drop the base toolsets."""
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            MagicMock(side_effect=RuntimeError("discovery exploded")),
+        )
+        assert acp_session._expand_acp_enabled_toolsets(["hermes-acp"]) == ["hermes-acp"]
+
+    def test_create_session_resolves_plugin_toolsets(self, tmp_path, monkeypatch):
+        """End-to-end: a created session's toolset list carries the plugin toolset, so the
+        plugin's tools are actually callable by the model."""
+        captured = {}
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                model=kwargs.get("model"), enabled_toolsets=kwargs.get("enabled_toolsets")
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"model": {"provider": "openrouter", "default": "test-model"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda _cfg, _platform, **_kwargs: ["hermes-acp", "rlm"],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None, **kwargs: dict(self._STUB_RUNTIME),
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            SessionManager(db=db).create_session(cwd="/work")
+
+        assert "rlm" in captured["enabled_toolsets"]
+
+
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 

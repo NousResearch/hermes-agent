@@ -58,15 +58,27 @@ def test_load_tools_only_caches_guidance_for_a_real_worker(
     assert agent.tools == tools
 
 
-@pytest.mark.parametrize("task", ["task-1", "", "   "])
-def test_tool_guidance_fallback_resolves_at_assembly_without_cached_attribute(
+@pytest.mark.parametrize("task", [None, "", "   ", "task-1"])
+def test_tool_guidance_fallback_is_session_static_without_cached_attribute(
     monkeypatch, task, isolated_hermes_home
 ):
-    if task:
-        monkeypatch.setenv("HERMES_KANBAN_TASK", task)
-    else:
+    if task is None:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_KANBAN_TASK", task)
     agent = type("Agent", (), {"valid_tool_names": {"kanban_show"}})()
-    first = _tool_guidance_block(agent)
+    with nullcontext():
+        first = _tool_guidance_block(agent)
     monkeypatch.setenv("HERMES_KANBAN_TASK", "changed-after-assembly")
-    assert first == (pb.KANBAN_GUIDANCE if task.strip() else None)
+    with non_dispatcher_owned_context():
+        second = _tool_guidance_block(agent)
+    expected = pb.KANBAN_GUIDANCE if task is not None and task.strip() else None
+    assert first == second == expected
+
+    agent = type("Agent", (), {"valid_tool_names": {"kanban_show"}})()
+    with non_dispatcher_owned_context():
+        first = _tool_guidance_block(agent)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "changed-after-assembly")
+    with nullcontext():
+        second = _tool_guidance_block(agent)
+    assert first == second == None

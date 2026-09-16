@@ -13238,6 +13238,78 @@ def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_places_accepted_steer_before_final_result(monkeypatch):
+    """#112501: a steer consumed by a finishing delegated turn stays before its result."""
+    session_ref: dict[str, dict | None] = {"session": None}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            with session_ref["session"]["history_lock"]:
+                server._record_inflight_correction(
+                    session_ref["session"], "use the safer approach"
+                )
+            # A delegated runtime can return the accepted steer after its final
+            # result when its session closes. The gateway must repair that order.
+            return {
+                "final_response": "final result",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "final result"},
+                    {"role": "user", "content": "use the safer approach"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    session_ref["session"] = server._sessions["sid"]
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "original task"},
+            }
+        )
+
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert [row["content"] for row in server._sessions["sid"]["history"]] == [
+            "original task",
+            "use the safer approach",
+            "final result",
+        ]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_history_commit_keeps_an_already_ordered_typed_steer_once():
+    """The repair preserves a runtime that already returned canonical order."""
+    from agent.prompt_builder import steer_user_row
+
+    session = _session()
+    session["inflight_turn"] = {"corrections": ["use the safer approach"]}
+    messages = [
+        {"role": "user", "content": "original task"},
+        steer_user_row("use the safer approach"),
+        {"role": "assistant", "content": "final result"},
+    ]
+
+    committed = server._place_accepted_corrections_before_final_result(session, messages)
+
+    assert [row["role"] for row in committed] == ["user", "user", "assistant"]
+    assert sum(row.get("display_kind") == "steer" for row in committed) == 1
+
+
 def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch):
     marker = {"role": "user", "content": "[model switched]"}
     seen = {}

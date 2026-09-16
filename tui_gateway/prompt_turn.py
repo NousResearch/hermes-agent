@@ -253,6 +253,72 @@ def _start_turn_voice() -> tuple[Any, bool]:
         return tts_queue, False
 
 
+def _place_accepted_corrections_before_final_result(session: dict, messages: list) -> list:
+    """Repair terminal history ordering for steers accepted during this live turn.
+
+    The in-flight snapshot is written by the gateway at acceptance time, while
+    delegated runtimes may flush their own user row only after their final
+    assistant row.  Keep that durable acceptance record authoritative and
+    place each matching steer immediately before the final result.
+    """
+    turn = session.get("inflight_turn")
+    corrections = [str(text).strip() for text in (turn or {}).get("corrections") or ()]
+    corrections = [text for text in corrections if text]
+    if not corrections:
+        return messages
+
+    from agent.conversation_compression import _extract_steer_text_from_message
+    from agent.prompt_builder import steer_user_row
+
+    def visible_user_text(message: object) -> str:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return ""
+        return (_extract_steer_text_from_message(message)
+                or _content_display_text(message.get("content"))).strip()
+
+    final_assistant = max(
+        (index for index, message in enumerate(messages)
+         if isinstance(message, dict) and message.get("role") == "assistant"),
+        default=-1,
+    )
+    if final_assistant < 0:
+        return messages
+
+    # Prefer a stranded tail row over an earlier same-text user message.  If a
+    # runtime omitted the row entirely, synthesize the canonical typed steer
+    # row from the gateway's accepted in-flight metadata.
+    used: set[int] = set()
+    correction_rows: list[dict] = []
+    for correction in corrections:
+        matches = [
+            index for index, message in enumerate(messages)
+            if index not in used and visible_user_text(message) == correction
+        ]
+        stranded = [index for index in matches if index > final_assistant]
+        typed = [
+            index for index in matches
+            if isinstance(messages[index], dict) and messages[index].get("display_kind") == "steer"
+        ]
+        # A lone untyped match before the result could be the original prompt
+        # with identical wording, not a persisted correction. Canonical steer
+        # rows are typed; duplicate raw matches still let the later one win.
+        existing = stranded or typed or (matches[-1:] if len(matches) > 1 else [])
+        if existing:
+            index = existing[0]
+            used.add(index)
+            correction_rows.append(messages[index])
+        else:
+            correction_rows.append(steer_user_row(correction))
+
+    committed = [message for index, message in enumerate(messages) if index not in used]
+    final_assistant = max(
+        (index for index, message in enumerate(committed)
+         if isinstance(message, dict) and message.get("role") == "assistant"),
+        default=-1,
+    )
+    return [*committed[:final_assistant], *correction_rows, *committed[final_assistant:]]
+
+
 def _commit_turn_history(
     session: dict, result: dict, history: list, history_version: int) -> str | None:
     """Write the agent's messages back to session history; returns a client warning or None.
@@ -260,9 +326,10 @@ def _commit_turn_history(
     pivot marker (compare content, not indices: ``_append_model_switch_marker`` strips prior
     markers in place); any other desync is surfaced, never dropped."""
     with session["history_lock"]:
+        messages = _place_accepted_corrections_before_final_result(session, result["messages"])
         current_version = int(session.get("history_version", 0))
         if current_version == history_version:
-            session["history"] = result["messages"]
+            session["history"] = messages
             session["history_version"] = history_version + 1
             return None
         # History mutated externally during the turn. Check if the only mutation was a pivot marker the
@@ -278,7 +345,7 @@ def _commit_turn_history(
         if current_no_markers == history_no_markers and any(
                 _is_pivot_marker(e) for e in current_history):
             # Auto-compression can leave the result shorter than the turn-start history.
-            msgs = result["messages"]
+            msgs = messages
             new_messages = msgs[len(history):] if len(msgs) > len(history) else list(msgs)
             session["history"] = current_history + new_messages
             session["history_version"] = current_version + 1

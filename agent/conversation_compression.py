@@ -2850,6 +2850,17 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
     memory_context = ""
     memory_manager = getattr(agent, "_memory_manager", None)
     evidence_messages = _direct_messages_for_pre_compress_memory(messages)
+    # The durable-checkpoint guarantee protects a durable transcript. A persistence-isolated agent
+    # (``build_cache_parity_fork``: background review, ``/btw``) has none — ``_persist_disabled`` is set,
+    # the session DB is severed and it is built with ``skip_memory=True``, so no provider can checkpoint
+    # and the fork's transcript is discarded on teardown. It replays the parent's snapshot, so it reaches
+    # the compress threshold exactly when the parent does and failing closed killed the whole auxiliary
+    # pass (every background review, on every long session). Require a checkpoint only where one protects
+    # something; isolated agents still reach their providers through the best-effort path below. The flag
+    # itself stays armed, so provider-side native compaction stays suppressed (``native_compaction.py``)
+    # and a same-model fork's request bytes keep the parent's prompt-cache prefix.
+    if getattr(agent, "_persist_disabled", False):
+        checkpoint_required = False
     if checkpoint_required:
         supports_checkpoint = getattr(memory_manager, "supports_pre_compress_checkpoint", None)
         if memory_manager is None or not callable(supports_checkpoint):

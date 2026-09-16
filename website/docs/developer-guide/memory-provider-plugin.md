@@ -228,6 +228,14 @@ compacts its own thread with no truthful pre-compaction boundary, so a
 required checkpoint cannot be guaranteed there. The checkpoint-aware Hermes
 compressor stays the only lossy authority.
 
+Persistence-isolated agents are the one exception to the requirement: an agent
+with `_persist_disabled` (the background-review and `/btw` forks built by
+`agent/background_review.py::build_cache_parity_fork`) discards its transcript
+instead of writing it to a session, and is built with `skip_memory=True`, so no
+provider can take a checkpoint and none is required — such a fork compacts its
+own in-memory snapshot normally. The flag itself stays armed there, so
+provider-side native compaction stays suppressed.
+
 What your provider receives depends on its declared API version. Version 1
 providers (the implicit default — every pre-existing provider) keep the
 historical contract: the raw message list, exactly as before. Version 2

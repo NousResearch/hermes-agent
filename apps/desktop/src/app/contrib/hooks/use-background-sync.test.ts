@@ -182,6 +182,24 @@ afterEach(() => {
   resetTypingActivityTracking()
 })
 
+describe('resolveActiveTranscriptSession', () => {
+  it('does not promote a different runtime tile into the active transcript owner', () => {
+    const ownerRoute = { connectionId: 'local', profile: 'other-profile', mode: 'local' as const }
+    setSessions([{ id: 'shared', profile: 'default', source: 'desktop' } as never])
+    $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'other-runtime', ownerRoute }])
+
+    expect(resolveActiveTranscriptSession('shared', 'active-runtime')).toEqual({ profile: 'default' })
+  })
+
+  it('does not treat an ownerless active tile as corroboration for a stale hint', () => {
+    setSessions([{ id: 'shared', profile: 'default', source: 'desktop' } as never])
+    setSessionOwnerHint('shared', { connectionId: 'stale-connection', profile: 'stale-profile', mode: 'remote' })
+    $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'active-runtime' }])
+
+    expect(resolveActiveTranscriptSession('shared', 'active-runtime')).toEqual({ profile: 'default' })
+  })
+})
+
 describe('active transcript refresh', () => {
   beforeEach(() => {
     vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('answer') as never)

@@ -20,7 +20,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
-import type { SessionProfileRoute } from '@/store/session-request-router'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
@@ -33,7 +33,7 @@ import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 interface ActiveTranscriptSession {
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerRoute
   profile?: string | null
 }
 
@@ -97,7 +97,7 @@ function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
 }
 
-type TileTranscriptTarget = { ownerRoute?: SessionProfileRoute; storedSessionId: string; runtimeId?: string }
+type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
 
 /** Signature key per tile — carries the owner route so two connections/profiles
  *  sharing a stored id (or a tile re-homed to another owner) never alias. */

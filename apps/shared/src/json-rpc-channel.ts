@@ -69,6 +69,14 @@ export class JsonRpcGatewayError extends Error {
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
 
+/** JSON-RPC "internal error" — used when a server→client request handler throws. */
+export const JSON_RPC_INTERNAL_ERROR = -32603
+
+/** Console sink so handler crashes are visible in the renderer devtools/console log. */
+const reportChannelError = (message: string, error: unknown): void => {
+  console.error(`[json-rpc-channel] ${message}`, error)
+}
+
 /** Map a raw `error` member of a response frame to the typed error every surface inspects. */
 export function jsonRpcErrorFromFrame(raw: unknown, fallbackMessage = 'Hermes RPC failed'): JsonRpcGatewayError {
   const err = (raw && typeof raw === 'object' ? raw : {}) as JsonRpcErrorPayload
@@ -351,10 +359,38 @@ export class JsonRpcRequestChannel {
       fail: (code, message) => send({ error: { code, message } })
     }
 
+    let handled = false
+
     for (const handler of this.requestHandlers) {
-      if (handler(request) !== false) {
-        return true
+      let accepted: boolean | void
+
+      try {
+        accepted = handler(request)
+      } catch (error) {
+        // A crashing handler must not leave the backend waiting out its full
+        // deadline (clarify blocks 3600s): answer -32603 and stop. The `send`
+        // guard makes this a no-op if the handler already responded.
+        request.fail(JSON_RPC_INTERNAL_ERROR, `server request handler crashed: ${method}`)
+        this.options.onUnhandledRequest?.({ id, method, params })
+
+        if (error instanceof Error) {
+          reportChannelError(`server request handler threw for ${method} (${id})`, error)
+        } else {
+          reportChannelError(`server request handler threw for ${method} (${id})`, new Error(String(error)))
+        }
+
+        return false
       }
+
+      if (accepted !== false) {
+        handled = true
+
+        break
+      }
+    }
+
+    if (handled) {
+      return true
     }
 
     request.fail(JSON_RPC_METHOD_NOT_FOUND, `no handler for server request: ${method}`)

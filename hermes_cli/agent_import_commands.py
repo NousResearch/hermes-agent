@@ -77,8 +77,15 @@ def import_commands(importer, source_root: Path) -> None:
             importer.record("slash-command", source, destination, "skipped", "Destination contains a symlink")
             continue
         if destination.parent.exists() and not importer.overwrite:
-            importer.record("slash-command", source, destination, "conflict", "Destination command skill already exists")
-            continue
+            from hermes_cli.agent_import_sync import skill_tree_digest
+            if source.stem not in importer.sync_skills:
+                importer.record("slash-command", source, destination, "conflict", "Destination command skill already exists")
+                continue
+            expected = importer.sync_skills[source.stem]
+            if expected is not None and skill_tree_digest(destination.parent) != expected:
+                importer.record("slash-command", source, destination, "conflict",
+                                "Imported command skill was modified locally — not refreshed")
+                continue
 
         def write(destination=destination, content=content):
             try:

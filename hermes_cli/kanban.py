@@ -659,6 +659,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     if dl:
                         diags_by_task[tid] = dl
 
+        guard_rows = conn.execute("SELECT id, status FROM tasks WHERE status IN ('ready', 'review')").fetchall()
+        for row in guard_rows:
+            if getattr(args, "task", None) and row["id"] != args.task:
+                continue
+            guard = kbd.respawn_guard_diagnostic(conn, row["id"], row["status"])
+            if guard is not None:
+                diags_by_task.setdefault(row["id"], []).append(guard)
+
         sev = getattr(args, "severity", None)
         if sev:
             floor = kd.SEVERITY_ORDER.index(sev)

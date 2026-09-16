@@ -1375,12 +1375,13 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
+    (worker PR URL without a newer explicit requeue; re-spawning risks a
+    duplicate PR). Operator reference links are not publication evidence. The review
     lane skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1443,17 +1444,50 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # An explicit requeue after the comments requests another attempt. Compare
+    # event IDs, not second-resolution timestamps: unblock and comment can share
+    # a timestamp, and a later publication must reactivate duplicate protection.
+    latest_event = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? "
+        "AND kind IN ('commented', 'status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed', 'changes_requested') "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    if latest_event is not None and latest_event["kind"] != "commented":
+        return None
+
+    # 4. Only worker comments are publication evidence. Operator reference links
+    # supply context; they do not say this task's worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ? "
+        "AND author IN (?, 'worker')",
+        (task_id, pr_cutoff, row["assignee"]),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
             return "active_pr"
 
     return None
 
+
+
+def respawn_guard_diagnostic(conn: sqlite3.Connection, task_id: str, lane: str):
+    """Use the actual dispatch predicate for read-only operator diagnostics."""
+    from hermes_cli.kanban_diagnostics import Diagnostic, DiagnosticAction
+    if lane not in {"ready", "review"}:
+        return None
+    reason = check_respawn_guard(conn, task_id, lane=lane)
+    if reason is None:
+        return None
+    recovery = {
+        "active_pr": "Review the existing PR; explicitly requeue only if further work is required.",
+        "recent_success": "Review the completed run; explicitly requeue only if further work is required.",
+        "blocker_auth": "Restore the assigned provider credentials, then explicitly unblock the task.",
+        "rate_limit_cooldown": "Wait for the provider cooldown; dispatch will retry after it expires.",
+    }[reason]
+    return Diagnostic(kind="dispatch_guard", severity="warning", title="Dispatch deferred",
+                      detail=recovery, data={"reason": reason},
+                      actions=[DiagnosticAction(kind="cli_hint", label="Inspect task",
+                                                payload={"command": f"hermes kanban show {task_id}"})])
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be

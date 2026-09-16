@@ -82,6 +82,71 @@ class TestFormatters:
         assert decoded["signal"] == "SIGTERM"
         assert "weird" in decoded
 
+    def test_log_line_keeps_parent_identity_without_argv(self):
+        secret = "mongodb+srv://user:hunter2-CANARY@cluster.example/db"
+        line = sf.format_context_for_log({
+            "signal": "SIGTERM",
+            "under_systemd": False,
+            "loadavg_1m": 0.25,
+            "parent": {
+                "pid": 42,
+                "name": "systemd",
+                "cmdline": f"docker exec -e LINEAR_API_KEY={secret} myimage",
+            },
+        })
+        assert secret not in line
+        assert "parent_cmdline" not in line
+        assert "hunter2" not in line
+        assert "parent_pid=42" in line
+        assert "parent_name=systemd" in line
+        assert "loadavg_1m=0.25" in line
+
+
+# ---------------------------------------------------------------------------
+# persisted snapshots must never include process argv
+# ---------------------------------------------------------------------------
+
+_ARGV_CANARY = "lin_api_CANARY_SHUTDOWN_FORENSICS_9f3a2c"
+
+
+def _cmdline_bytes_with_canary(path: Path) -> bytes:
+    text = str(path).replace("\\", "/")
+    if text.endswith("/cmdline"):
+        return b"python\x00-c\x00--token=" + _ARGV_CANARY.encode("utf-8")
+    raise OSError("not a cmdline path")
+
+
+class TestArgvFreePersistence:
+
+    def test_proc_summary_omits_cmdline_even_when_proc_has_a_secret(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(Path, "read_bytes", _cmdline_bytes_with_canary)
+        summary = sf._proc_summary(424242)
+        blob = json.dumps(summary)
+        assert _ARGV_CANARY not in blob
+        assert "cmdline" not in summary
+        assert summary["pid"] == 424242
+
+    def test_snapshot_json_does_not_persist_proc_cmdline(self, monkeypatch):
+        monkeypatch.setattr(Path, "read_bytes", _cmdline_bytes_with_canary)
+        payload = sf.context_as_json(sf.snapshot_shutdown_context(signal.SIGTERM))
+        assert _ARGV_CANARY not in payload
+        decoded = json.loads(payload)
+        for key in ("self", "parent", "tracer"):
+            node = decoded.get(key) or {}
+            assert "cmdline" not in node
+
+    def test_diagnostic_script_requests_comm_not_argv(self):
+        script = sf._async_diagnostic_script("SIGTERM", 1234)
+        assert "auxf" not in script
+        assert "ps aux" not in script
+        assert "-plau" not in script
+        assert "args" not in script
+        assert "comm" in script
+        assert "pstree -pl 1234" in script
+        assert "=== shutdown diagnostic @ SIGTERM ===" in script
+
 
 # ---------------------------------------------------------------------------
 # spawn_async_diagnostic
@@ -89,7 +154,7 @@ class TestFormatters:
 
 class TestSpawnAsyncDiagnostic:
     # The diagnostic wraps its script in GNU coreutils ``timeout`` and the script
-    # body is Linux-only (``ps auxf --sort``, ``/proc/loadavg``, ``dmesg``,
+    # body is Linux-only (``ps -eo ... comm``, ``/proc/loadavg``, ``dmesg``,
     # ``pstree``). On hosts without ``timeout`` (macOS) Popen raises and the
     # producer returns None by design (fail-soft), so the spawn can only be
     # observed on Linux.
@@ -118,6 +183,33 @@ class TestSpawnAsyncDiagnostic:
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+
+    @pytest.mark.linux_only
+    def test_listing_commands_omit_argv_and_create_owner_only_log(
+        self, tmp_path, monkeypatch
+    ):
+        captured: dict = {}
+
+        class _Spawn:
+            def __init__(self, args, **kwargs):
+                captured["args"] = args
+                self.pid = 77
+
+        monkeypatch.setattr(sf.subprocess, "Popen", _Spawn)
+        log_path = tmp_path / "diag.log"
+        log_path.write_text("prior\n", encoding="utf-8")
+        os.chmod(log_path, 0o644)
+        pid = sf.spawn_async_diagnostic(log_path, "SIGTERM")
+        assert pid == 77
+        argv = captured["args"]
+        assert isinstance(argv, (list, tuple))
+        joined = " ".join(str(part) for part in argv)
+        assert "auxf" not in joined
+        assert "ps aux" not in joined
+        assert "-plau" not in joined
+        assert "comm" in joined
+        assert "pstree" in joined
+        assert (log_path.stat().st_mode & 0o777) == 0o600
 
 
 # ---------------------------------------------------------------------------

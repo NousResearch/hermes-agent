@@ -455,7 +455,14 @@ export function getSession(id: string, profile?: ProfileScope): Promise<SessionI
 export function getSessionMessages(
   id: string,
   profile?: ProfileScope,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {},
+  page: {
+    beforeId?: number
+    includeCompacted?: boolean
+    limit?: number
+    offset?: number
+    order?: 'latest' | 'oldest'
+    projection?: 'todo-state' | 'todo-state-candidates'
+  } = {},
   options: { passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
@@ -469,6 +476,14 @@ export function getSessionMessages(
 
   if (page.limit !== undefined) {
     query.set('limit', String(page.limit))
+  }
+
+  if (page.projection) {
+    query.set('projection', page.projection)
+  }
+
+  if (page.beforeId !== undefined) {
+    query.set('before_id', String(page.beforeId))
   }
 
   if (page.offset !== undefined) {

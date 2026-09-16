@@ -18,7 +18,6 @@ import {
 } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionListFingerprint, sessionMessagesSignature } from '@/lib/session-signatures'
-import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
 import { pendingSessionReplay } from '@/store/gateway'
 import { $sidebarShowArchived } from '@/store/layout'
 import { $changeEventsAvailable, $cronChangeTick, $projectsChangeTick, $sessionsChangeTick } from '@/store/live-sync'
@@ -50,19 +49,42 @@ import {
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
+  captureTodoWriteFence,
   clearActiveSessionTodos,
   clearSessionTodos,
-  restoreSessionTodosFromSnapshot,
-  setSessionTodos,
-  todosForHydration
+  releaseTodoHydrationToken
 } from '@/store/todos'
 
 import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
+import { hydrateSessionTodos, resolveStoredSessionTodoMessages } from '../wiring-todo-hydration'
 
 interface ActiveTranscriptSession {
   ownerRoute?: SessionOwnerRoute
   profile?: string | null
+}
+
+function ownerRouteTranscriptKey(ownerRoute: SessionOwnerRoute, storedSessionId: string): string {
+  return JSON.stringify([
+    ownerRoute.connectionId,
+    ownerRoute.profile,
+    ownerRoute.targetProfile ?? '',
+    ownerRoute.mode ?? '',
+    storedSessionId
+  ])
+}
+
+function activeTranscriptOwnerKey(
+  session: ActiveTranscriptSession | null | undefined,
+  storedSessionId: string
+): string | undefined {
+  if (!session) {
+    return undefined
+  }
+
+  return session.ownerRoute
+    ? ownerRouteTranscriptKey(session.ownerRoute, storedSessionId)
+    : `${session.profile ?? 'default'}:${storedSessionId}`
 }
 
 /** Profile/connection scope used to read an active transcript from storage. */
@@ -158,12 +180,22 @@ function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: C
   return false
 }
 
+/** A post-turn fallback read is stale once a later turn owns the runtime or
+ *  its transcript moved; snapshots the transcript at call time. */
+export function postTurnHydrationSupersededCheck(runtimeSessionId: string): () => boolean {
+  const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
+
+  return () =>
+    runtimeOwnsLiveTranscript(runtimeSessionId) ||
+    transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
+}
+
 /** Zero persisted rows read over a populated runtime bound to the SAME stored
  *  session. An empty page is not proof the transcript is empty — it is also
  *  what a respawning backend (or a state.db read racing the change event)
  *  returns. A runtime rebound to another stored id while the read was in
  *  flight holds no evidence about the requested transcript. */
-function emptyPageOverPopulatedTranscript(
+export function emptyPageOverPopulatedTranscript(
   page: readonly unknown[],
   current: ClientSessionState | undefined,
   storedSessionId: string
@@ -213,12 +245,14 @@ function tileListRow(storedSessionId: string) {
  */
 export async function reconcileTileTranscripts({
   requestSequenceRef,
+  isOwnerCurrent = () => true,
   signatureRef,
   updateSessionState,
   tiles: tilesOverride
 }: {
   requestSequenceRef: MutableRefObject<number>
   signatureRef: MutableRefObject<Map<string, string>>
+  isOwnerCurrent?: () => boolean
   tiles?: TileTranscriptTarget[]
   updateSessionState: (
     sessionId: string,
@@ -240,6 +274,10 @@ export async function reconcileTileTranscripts({
   }
 
   for (const tile of tiles) {
+    if (!isOwnerCurrent()) {
+      return
+    }
+
     const storedSessionId = tile.storedSessionId
     const runtimeSessionId = tile.runtimeId
 
@@ -259,12 +297,11 @@ export async function reconcileTileTranscripts({
 
     const requestId = ++requestSequenceRef.current
 
-    // With a tiles override (test path), the live $sessionTiles check can't
-    // see the synthetic tile — treat override tiles as present.
-    const tileStillPresent = () =>
-      tilesOverride
-        ? tilesOverride.some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
-        : $sessionTiles.get().some(t => t.storedSessionId === storedSessionId && t.runtimeId === runtimeSessionId)
+    // The exact store record is this read's tile incarnation. Close/reopen
+    // and runtime rebind both replace it, even when the identifiers return to
+    // the same values; an older response must not cross that retirement
+    // barrier. Synthetic override tiles keep their supplied identity.
+    const tileIsCurrent = () => (tilesOverride ?? $sessionTiles.get()).includes(tile)
 
     // Bot tiles are pinned to an exact owner (connection + target profile);
     // read from that backend, not whichever profile is foreground. Tiles
@@ -286,6 +323,8 @@ export async function reconcileTileTranscripts({
       }
     }
 
+    const todoHydrationFence = captureTodoWriteFence(runtimeSessionId)
+
     try {
       const replay = pendingSessionReplay(runtimeSessionId)
 
@@ -295,7 +334,8 @@ export async function reconcileTileTranscripts({
 
       if (
         requestId !== requestSequenceRef.current ||
-        !tileStillPresent() ||
+        !isOwnerCurrent() ||
+        !tileIsCurrent() ||
         runtimeOwnsLiveTranscript(runtimeSessionId)
       ) {
         continue
@@ -306,7 +346,7 @@ export async function reconcileTileTranscripts({
       // A freshly minted draft tile has no state.db row until the first prompt
       // persists it (#123622) — reading its transcript before anything was ever
       // sent only ever 404s.
-      if (!messagesAtRequest?.length && sessionCreatedThisRun(storedSessionId)) {
+      if (!$sessionStates.get()[runtimeSessionId]?.messages.length && sessionCreatedThisRun(storedSessionId)) {
         continue
       }
 
@@ -324,7 +364,8 @@ export async function reconcileTileTranscripts({
         requestId !== requestSequenceRef.current ||
         runtimeOwnsLiveTranscript(runtimeSessionId) ||
         transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
-        !tileStillPresent()
+        !isOwnerCurrent() ||
+        !tileIsCurrent()
 
       const current = $sessionStates.get()[runtimeSessionId]
 
@@ -367,6 +408,20 @@ export async function reconcileTileTranscripts({
         continue
       }
 
+      const todoMessages = await resolveStoredSessionTodoMessages(storedSessionId, profileScope, latest.messages)
+
+      if (requestId !== requestSequenceRef.current || stale()) {
+        signatureRef.current.delete(signatureKey)
+
+        continue
+      }
+
+      const todoAccepted = hydrateSessionTodos(runtimeSessionId, todoMessages, todoHydrationFence)
+
+      if (!todoAccepted) {
+        continue
+      }
+
       signatureRef.current.set(signatureKey, signature)
 
       // Remember the row fingerprint that produced this transcript, so the
@@ -401,6 +456,8 @@ export async function reconcileTileTranscripts({
       )
     } catch {
       // Non-fatal: the next change event retries.
+    } finally {
+      releaseTodoHydrationToken(todoHydrationFence)
     }
   }
 }
@@ -419,103 +476,91 @@ export async function hydrateStoredSessionTranscript({
   storedProfile: ProfileScope
   updateSessionState: ActiveTranscriptRefreshDeps['updateSessionState']
 }): Promise<void> {
-  const replay = pendingSessionReplay(runtimeSessionId)
+  const todoHydrationFence = captureTodoWriteFence(runtimeSessionId)
+  const ownerAtStart = JSON.stringify(resolveActiveTranscriptSession(storedSessionId, runtimeSessionId))
+  try {
+    const replay = pendingSessionReplay(runtimeSessionId)
 
-  if (replay && !(await replay)) {
-    return
-  }
-
-  const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
-
-  const superseded = () =>
-    runtimeOwnsLiveTranscript(runtimeSessionId) ||
-    transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
-
-  for (let index = 0; index < Math.max(1, attempts); index += 1) {
-    if (index > 0) {
-      await new Promise(resolve => window.setTimeout(resolve, 250))
-    }
-
-    if (superseded()) {
+    if (replay && !(await replay)) {
       return
     }
 
-    try {
-      const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
-      const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+    const turnSuperseded = postTurnHydrationSupersededCheck(runtimeSessionId)
+    const superseded = () =>
+      turnSuperseded() ||
+      JSON.stringify(resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)) !== ownerAtStart
 
-      if (replayAtReturn && !(await replayAtReturn)) {
-        return
+    for (let index = 0; index < Math.max(1, attempts); index += 1) {
+      if (index > 0) {
+        await new Promise(resolve => window.setTimeout(resolve, 250))
       }
-
-      // This fallback belongs to the completed turn, not any subsequent turn
-      // that ran during the read or retry delay. Its todo restore is stale too.
-      if (superseded()) {
-        return
-      }
-
-      // A zero-row page over the populated turn is a transient read, not the
-      // answer.
-      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
-        continue
-      }
-
-      const messages = await extendRefreshPageToOverlap(
-        toChatMessages(latest.messages),
-        $sessionStates.get()[runtimeSessionId]?.messages ?? [],
-        olderPageReader(storedSessionId, storedProfile, latest)
-      )
 
       if (superseded()) {
         return
       }
 
-      updateSessionState(
-        runtimeSessionId,
-        state => ({
-          ...state,
-          // Keep backfilled pages, un-acked optimistic input, local errors, and
-          // trailing client-local system notices (#126422).
-          messages: preserveLocalSystemNotices(
-            preserveLocalAssistantErrors(
-              preserveLocalPendingTurnMessages(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+      try {
+        const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
+        const replayAtReturn = pendingSessionReplay(runtimeSessionId)
+
+        if (replayAtReturn && !(await replayAtReturn)) {
+          return
+        }
+
+        // This fallback belongs to the completed turn, not any subsequent turn
+        // that ran during the read or retry delay. Its todo restore is stale too.
+        if (superseded()) {
+          return
+        }
+
+        // A zero-row page over the populated turn is a transient read, not the
+        // answer.
+        if (
+          emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)
+        ) {
+          continue
+        }
+
+        const messages = await extendRefreshPageToOverlap(
+          toChatMessages(latest.messages),
+          $sessionStates.get()[runtimeSessionId]?.messages ?? [],
+          olderPageReader(storedSessionId, storedProfile, latest)
+        )
+
+        if (superseded()) {
+          return
+        }
+
+        const todoMessages = await resolveStoredSessionTodoMessages(storedSessionId, storedProfile, latest.messages)
+        if (superseded()) return
+        if (!hydrateSessionTodos(runtimeSessionId, todoMessages, todoHydrationFence)) return
+
+        updateSessionState(
+          runtimeSessionId,
+          state => ({
+            ...state,
+            // Keep backfilled pages, un-acked optimistic input, local errors, and
+            // trailing client-local system notices (#126422).
+            messages: preserveLocalSystemNotices(
+              preserveLocalAssistantErrors(
+                preserveLocalPendingTurnMessages(
+                  graftRefreshedTailOntoBackfill(messages, state.messages),
+                  state.messages
+                ),
                 state.messages
               ),
               state.messages
-            ),
-            state.messages
-          )
-        }),
-        storedSessionId
-      )
-      const snapshot = latestSessionTodoSnapshot(messages)
-
-      if (snapshot) {
-        // Deferred Desktop resume sends no todo_state on its initial ACK.
-        // The persisted tool result is the first authoritative snapshot.
-        restoreSessionTodosFromSnapshot(runtimeSessionId, snapshot, false)
+            )
+          }),
+          storedSessionId
+        )
+        return
+      } catch {
+        // Best-effort fallback when live stream payloads are empty.
       }
-
-      const latestTodos = latestSessionTodos(messages)
-      const restored = todosForHydration(latestTodos)
-
-      if (latestTodos?.length === 0) {
-        // An explicit empty result retires the list; missing paged history does not.
-        // A valid older snapshot must not mask a newer legacy clear without a revision.
-        if (!snapshot || snapshot.todos.length > 0) {
-          clearSessionTodos(runtimeSessionId)
-        }
-      } else if (restored) {
-        setSessionTodos(runtimeSessionId, restored)
-      } else {
-        clearActiveSessionTodos(runtimeSessionId)
-      }
-
-      return
-    } catch {
-      // Best-effort fallback when live stream payloads are empty.
     }
+  } finally {
+    releaseTodoHydrationToken(todoHydrationFence)
   }
 }
 
@@ -542,36 +587,49 @@ export async function reconcileActiveTranscript({
     return
   }
 
+  const ownerKey = activeTranscriptOwnerKey(stored, storedSessionId)
+
+  if (!ownerKey) {
+    return
+  }
+
+  const ownerIsCurrent = () =>
+    activeTranscriptOwnerKey(resolveSession(storedSessionId, runtimeSessionId), storedSessionId) === ownerKey
+
   const requestId = requestSequenceRef.current + 1
   requestSequenceRef.current = requestId
-  const replay = pendingSessionReplay(runtimeSessionId)
-
-  if (replay && !(await replay)) {
-    return
-  }
-
-  if (
-    requestId !== requestSequenceRef.current ||
-    busyRef.current ||
-    runtimeOwnsLiveTranscript(runtimeSessionId) ||
-    selectedStoredSessionIdRef.current !== storedSessionId ||
-    activeSessionIdRef.current !== runtimeSessionId
-  ) {
-    return
-  }
-
-  // Busy at both endpoints can be false even though an entire turn streamed
-  // while HTTP was in flight. Never let that older read replace newer text.
-  const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
 
   // A freshly minted draft has no state.db row until the first prompt persists it
   // (#123622) — reading its transcript before anything was ever sent only ever
   // 404s, since an empty local view already IS the correct (empty) render.
-  if (!messagesAtRequest?.length && sessionCreatedThisRun(storedSessionId)) {
+  if (!$sessionStates.get()[runtimeSessionId]?.messages.length && sessionCreatedThisRun(storedSessionId)) {
     return
   }
 
+  const todoHydrationFence = captureTodoWriteFence(runtimeSessionId)
+
   try {
+    const replay = pendingSessionReplay(runtimeSessionId)
+
+    if (replay && !(await replay)) {
+      return
+    }
+
+    if (
+      requestId !== requestSequenceRef.current ||
+      busyRef.current ||
+      runtimeOwnsLiveTranscript(runtimeSessionId) ||
+      selectedStoredSessionIdRef.current !== storedSessionId ||
+      activeSessionIdRef.current !== runtimeSessionId ||
+      !ownerIsCurrent()
+    ) {
+      return
+    }
+
+    // Busy at both endpoints can be false even though an entire turn streamed
+    // while HTTP was in flight. Never let that older read replace newer text.
+    const messagesAtRequest = $sessionStates.get()[runtimeSessionId]?.messages
+
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
@@ -588,7 +646,8 @@ export async function reconcileActiveTranscript({
       runtimeOwnsLiveTranscript(runtimeSessionId) ||
       transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
-      activeSessionIdRef.current !== runtimeSessionId
+      activeSessionIdRef.current !== runtimeSessionId ||
+      !ownerIsCurrent()
 
     const current = $sessionStates.get()[runtimeSessionId]
 
@@ -596,15 +655,7 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = stored.ownerRoute
-      ? JSON.stringify([
-          stored.ownerRoute.connectionId,
-          stored.ownerRoute.profile,
-          stored.ownerRoute.targetProfile ?? '',
-          stored.ownerRoute.mode ?? '',
-          storedSessionId
-        ])
-      : `${stored.profile ?? 'default'}:${storedSessionId}`
+    const signatureKey = ownerKey
 
     // Same rule as the warm-activation guard (use-session-actions/index.ts):
     // publishing the page would blank the thread and trip the routed loading
@@ -630,6 +681,18 @@ export async function reconcileActiveTranscript({
       return
     }
 
+    const todoMessages = await resolveStoredSessionTodoMessages(storedSessionId, profileScope, latest.messages)
+
+    if (stale()) {
+      return
+    }
+
+    const todoAccepted = hydrateSessionTodos(runtimeSessionId, todoMessages, todoHydrationFence)
+
+    if (!todoAccepted) {
+      return
+    }
+
     signatureRef.current.set(signatureKey, signature)
 
     updateSessionState(
@@ -652,6 +715,8 @@ export async function reconcileActiveTranscript({
     )
   } catch {
     // Non-fatal: the next change event or manual resume can hydrate the view.
+  } finally {
+    releaseTodoHydrationToken(todoHydrationFence)
   }
 }
 
@@ -879,6 +944,11 @@ export function rehydrateLiveSessionStatuses(
           messages: sealOpenToolParts(existing.messages)
         })
       }
+
+      // The same authoritative absence also substitutes for a missed terminal
+      // todo cleanup. Reuse the normal policy so finished linger and explicit
+      // active/paused continuation snapshots remain intact.
+      clearActiveSessionTodos(runtimeSessionId)
     }
   }
 
@@ -1315,6 +1385,7 @@ export function useBackgroundSync({
       return
     }
 
+    let retired = false
     let lastRunAt = 0
     let timer: null | number = null
     let typingDeferTimer: null | number = null
@@ -1342,6 +1413,7 @@ export function useBackgroundSync({
       // (#93942 scenario A). Signature-gated per tile, so no-change ticks
       // cost nothing.
       void reconcileTileTranscripts({
+        isOwnerCurrent: () => !retired,
         requestSequenceRef: tileRequestSequenceRef,
         signatureRef: tileSignatureRef,
         updateSessionState
@@ -1392,6 +1464,7 @@ export function useBackgroundSync({
     })
 
     return () => {
+      retired = true
       unsubscribe()
 
       if (timer !== null) {
@@ -1403,6 +1476,8 @@ export function useBackgroundSync({
       }
     }
   }, [
+    activeConnectionId,
+    activeGatewayProfile,
     changeEventsAvailable,
     gatewayState,
     refreshMessagingSessions,

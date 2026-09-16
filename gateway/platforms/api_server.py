@@ -102,6 +102,7 @@ _CAPABILITY_ENDPOINTS = (
     ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")))
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
+_TODO_STATE_RESPONSE_MAX_BYTES = 1_100_000
 
 
 def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_permanent: bool) -> list[str]:
@@ -406,8 +407,11 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+    display_metadata = message.get("display_metadata")
+    # Todo-state carriers may pass display_metadata through as raw JSON text.
     if (message.get("display_kind") == "hidden"
-            and (message.get("display_metadata") or {}).get("notification_category") == "diagnostic"):
+            and isinstance(display_metadata, dict)
+            and display_metadata.get("notification_category") == "diagnostic"):
         # Retain row identity and execution evidence in storage, not in the notification UI.
         return {k: v for k, v in message.items() if k in {
             "id", "session_id", "role", "timestamp", "display_kind", "platform_message_id",
@@ -3048,7 +3052,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name",
             "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content",
-            "display_kind")
+            "display_kind", "display_metadata")
         return {key: message.get(key) for key in safe_keys if key in message}
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
@@ -3300,6 +3304,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         resolved_id = await asyncio.to_thread(db.resolve_resume_session_id, session_id)
+        projection = request.query.get("projection")
         raw_limit, raw_offset = request.query.get("limit"), request.query.get("offset", "0")
         order = request.query.get("order")
         if order not in (None, "oldest", "latest"):
@@ -3311,6 +3316,45 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             offset = requested_limit = -1
         if offset < 0 or (requested_limit is not None and requested_limit < 0):
             return _error_response("limit and offset must be non-negative integers", 400, code="invalid_pagination")
+        if projection in {"todo-state", "todo-state-candidates"}:
+            if (
+                offset != 0
+                or order is not None
+                or request.query.get("before_id") is not None
+                or (projection == "todo-state" and requested_limit is not None)
+            ):
+                return _error_response(
+                    "Todo-state projection is a single bounded authoritative read",
+                    400,
+                    code="invalid_pagination",
+                )
+            messages = await asyncio.to_thread(db.get_todo_state_messages, resolved_id)
+            if messages is None:
+                return _error_response(
+                    "Todo state migration is still in progress",
+                    503,
+                    code="todo_state_migration_pending",
+                )
+            projected = [self._message_response(message) for message in messages]
+            response_body = {
+                "object": "list",
+                "session_id": resolved_id,
+                "data": projected,
+                "pagination": {
+                    "limit": 2,
+                    "returned": len(projected),
+                    "has_more": False,
+                    "exhausted": True,
+                    "next_before_id": None,
+                },
+            }
+            if len(json.dumps(response_body).encode("utf-8")) > _TODO_STATE_RESPONSE_MAX_BYTES:
+                return _error_response(
+                    "Todo-state projection exceeded its bounded response contract",
+                    413,
+                    code="todo_state_response_too_large",
+                )
+            return web.json_response(response_body)
         default_page = requested_limit is None
         latest_page = order == "latest" or (order is None and default_page)
         limit = 500 if default_page else min(requested_limit, 500)

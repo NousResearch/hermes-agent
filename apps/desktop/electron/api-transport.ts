@@ -36,6 +36,14 @@
 import http from 'node:http'
 import https from 'node:https'
 
+type ByteLimitedResponse = {
+  headers: Record<string, string | string[] | undefined>
+  on(event: 'error', listener: (error: Error) => void): unknown
+  on(event: 'data', listener: (chunk: Buffer | Uint8Array | string) => void): unknown
+  on(event: 'end', listener: () => void): unknown
+  destroy?: () => void
+}
+
 // JSON pool: many small concurrent calls (session lists, config, prompts).
 const HTTP_JSON_AGENT = new http.Agent({ keepAlive: true, maxSockets: 50 })
 const HTTPS_JSON_AGENT = new https.Agent({ keepAlive: true, maxSockets: 50 })
@@ -78,6 +86,133 @@ const TRANSIENT_CODES = new Set([
 const NEVER_SENT_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH'])
 
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+const TODO_STATE_TRANSPORT_RESPONSE_BYTES = 1_100_000
+
+class ResponseBodyTooLargeError extends Error {
+  code = 'HERMES_RESPONSE_BODY_TOO_LARGE'
+  maxBytes: number
+  observedBytes: number
+  declaredBytes: number | null
+
+  constructor({ maxBytes, observedBytes, declaredBytes = null }) {
+    super(`Hermes response exceeded the ${maxBytes}-byte transport limit`)
+    this.name = 'ResponseBodyTooLargeError'
+    this.maxBytes = maxBytes
+    this.observedBytes = observedBytes
+    this.declaredBytes = declaredBytes
+  }
+}
+
+function responseByteLimitForApiRequest(request: any): number | null {
+  if (String(request?.method || 'GET').toUpperCase() !== 'GET') {
+    return null
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(String(request?.path || ''), 'http://hermes.local')
+  } catch {
+    return null
+  }
+  if (parsed.searchParams.get('projection') !== 'todo-state') {
+    return null
+  }
+  if (!/^\/api\/sessions\/[^/]+\/messages$/.test(parsed.pathname)) {
+    return null
+  }
+  return TODO_STATE_TRANSPORT_RESPONSE_BYTES
+}
+
+function readJsonResponseWithByteLimit(
+  response: ByteLimitedResponse,
+  { maxBytes, abort }: { maxBytes: number; url?: string; abort?: () => void }
+): Promise<string> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    return Promise.reject(new TypeError('maxBytes must be a non-negative safe integer'))
+  }
+
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let observedBytes = 0
+    let settled = false
+
+    const settleReject = error => {
+      if (settled) {
+        return
+      }
+      settled = true
+      reject(error)
+    }
+    response.on('error', settleReject)
+
+    const rawDeclared = response.headers['content-length']
+    const declaredText = Array.isArray(rawDeclared) ? rawDeclared[0] : rawDeclared
+    const declaredBytes = typeof declaredText === 'string' && /^\d+$/.test(declaredText) ? Number(declaredText) : null
+
+    if (declaredBytes !== null && Number.isSafeInteger(declaredBytes) && declaredBytes > maxBytes) {
+      settled = true
+      const error = new ResponseBodyTooLargeError({ maxBytes, observedBytes: 0, declaredBytes })
+
+      if (abort) {
+        abort()
+      } else {
+        response.destroy?.()
+      }
+
+      reject(error)
+
+      return
+    }
+
+    response.on('data', chunk => {
+      if (settled) {
+        return
+      }
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      observedBytes += bytes.length
+      if (observedBytes > maxBytes) {
+        settled = true
+        if (abort) {
+          abort()
+        } else {
+          response.destroy?.()
+        }
+        reject(new ResponseBodyTooLargeError({ maxBytes, observedBytes, declaredBytes }))
+        return
+      }
+      chunks.push(bytes)
+    })
+    response.on('end', () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      resolve(Buffer.concat(chunks, observedBytes).toString('utf8'))
+    })
+  })
+}
+
+function readApiJsonResponseWithByteLimit(
+  response: ByteLimitedResponse,
+  { method = 'GET', url, path, abort }: { method?: string; url: string; path?: string; abort?: () => void }
+): Promise<string> {
+  let requestPath = path
+  if (!requestPath) {
+    try {
+      const parsed = new URL(url)
+      requestPath = `${parsed.pathname}${parsed.search}`
+    } catch {
+      return Promise.reject(new TypeError('url must be an absolute HTTP URL'))
+    }
+  }
+
+  const maxBytes = responseByteLimitForApiRequest({ method, path: requestPath })
+
+  return readJsonResponseWithByteLimit(response, {
+    maxBytes: maxBytes ?? Number.MAX_SAFE_INTEGER,
+    url,
+    abort
+  })
+}
 
 function isIdempotentMethod(method) {
   return IDEMPOTENT_METHODS.has(String(method || 'GET').toUpperCase())
@@ -277,7 +412,12 @@ export {
   isTransientTransportError,
   jsonAgentFor,
   readJsonErrorBody,
+  readApiJsonResponseWithByteLimit,
+  readJsonResponseWithByteLimit,
   readStatusCode,
+  ResponseBodyTooLargeError,
+  responseByteLimitForApiRequest,
   shouldRetryRequest,
+  TODO_STATE_TRANSPORT_RESPONSE_BYTES,
   withRetry
 }

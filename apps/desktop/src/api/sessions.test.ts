@@ -6,8 +6,15 @@ vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   ambientOwnerConnectionId: vi.fn(() => 'prometheus'),
-  capabilityScoped: vi.fn(),
   connectionScoped: vi.fn(() => ({})),
+  capabilityScoped: vi.fn((scope?: null | string | { connectionId?: null | string; profile?: null | string }) =>
+    typeof scope === 'string'
+      ? { profile: scope }
+      : {
+          ...(scope?.connectionId ? { connectionId: scope.connectionId } : {}),
+          ...(scope?.profile ? { profile: scope.profile } : {})
+        }
+  ),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
@@ -22,16 +29,25 @@ const {
   getSession,
   getLatestSessionMessages,
   renameSession,
+  getSessionMessages,
+  listSidebarSessions,
   setSessionArchived,
   setSessionPinnedRemote,
-  setSessionUnreadRemote,
-  listSidebarSessions
+  setSessionUnreadRemote
 } = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(client.capabilityScoped).mockImplementation(scope =>
+    typeof scope === 'string'
+      ? { profile: scope }
+      : {
+          ...(scope?.connectionId ? { connectionId: scope.connectionId } : {}),
+          ...(scope?.profile ? { profile: scope.profile } : {})
+        }
+  )
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
   vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
 })
@@ -318,6 +334,42 @@ describe('session reads pin the owner connection (#125372)', () => {
     expect(hermesApi.mock.calls[0][0]).toMatchObject({
       connectionId: 'other-conn',
       profile: 'tommy'
+    })
+  })
+})
+
+describe('Todo-state candidate projection', () => {
+  it('preserves exact remote ownership for a one-shot authoritative state read', async () => {
+    hermesApi.mockResolvedValue({ messages: [], session_id: 'stored-collision' } as never)
+
+    await getSessionMessages(
+      'stored-collision',
+      { connectionId: 'remote-b', profile: 'target-b' },
+      {
+        projection: 'todo-state'
+      }
+    )
+
+    expect(hermesApi).toHaveBeenCalledWith({
+      connectionId: 'remote-b',
+      path: '/api/sessions/stored-collision/messages?profile=target-b&projection=todo-state',
+      profile: 'target-b'
+    })
+  })
+
+  it('preserves exact remote ownership while keyset-paging bounded candidates', async () => {
+    hermesApi.mockResolvedValue({ messages: [], session_id: 'stored-collision' } as never)
+
+    await getSessionMessages('stored-collision', { connectionId: 'remote-b', profile: 'target-b' }, {
+      beforeId: 77,
+      limit: 32,
+      projection: 'todo-state-candidates'
+    } as never)
+
+    expect(hermesApi).toHaveBeenCalledWith({
+      connectionId: 'remote-b',
+      path: '/api/sessions/stored-collision/messages?profile=target-b&limit=32&projection=todo-state-candidates&before_id=77',
+      profile: 'target-b'
     })
   })
 })

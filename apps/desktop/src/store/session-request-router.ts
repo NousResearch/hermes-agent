@@ -73,6 +73,13 @@ export const isSessionOwnerRoute = (owner: SessionOwnerScope): owner is SessionO
     typeof (owner as Partial<SessionOwnerRoute>).profile === 'string'
   )
 
+export function ownerRouteProfileScope(ownerRoute: SessionOwnerRoute): { connectionId: string; profile: string } {
+  return {
+    connectionId: ownerRoute.connectionId,
+    profile: ownerRoute.targetProfile ?? ownerRoute.profile
+  }
+}
+
 const isRoute = isSessionOwnerRoute
 
 function routeParams(route: SessionProfileRoute, params: Record<string, unknown>): Record<string, unknown> {

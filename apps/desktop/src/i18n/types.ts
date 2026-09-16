@@ -3360,6 +3360,7 @@ export interface Translations {
     goalDone: string
     goalPaused: string
     goalWaiting: string
+    restoredUnfinished: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
     previousTodos: (done: number, total: number) => string

@@ -16,6 +16,7 @@ import type { AddressInfo } from 'node:net'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
+import * as apiTransport from './api-transport'
 import {
   destroyKeepaliveAgents,
   htmlResponseError,
@@ -412,4 +413,164 @@ describe('htmlResponseError', () => {
       htmlResponseError('https://gateway.example.com/api/profiles', 302, 'https://gateway.example.com/login').message
     ).toMatch(/authentication proxy/)
   })
+})
+
+describe('bounded Todo projection transport', () => {
+  function serverAddress(server: http.Server): string {
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  }
+
+  function responseFor(server: http.Server, path = '/api/sessions/s/messages?projection=todo-state') {
+    return new Promise<http.IncomingMessage>((resolve, reject) => {
+      const request = http.request(new URL(path, serverAddress(server)), resolve)
+      request.on('error', reject)
+      request.end()
+    })
+  }
+
+  it('routes both token and OAuth Todo responses through the pre-parse byte limit', async () => {
+    const readApiBounded = (apiTransport as any).readApiJsonResponseWithByteLimit
+    expect(typeof readApiBounded).toBe('function')
+
+    const todoPaths = [
+      '/api/sessions/local/messages?projection=todo-state',
+      '/api/sessions/remote/messages?projection=todo-state',
+      '/api/sessions/remote/messages?profile=work&projection=todo-state'
+    ]
+    for (const path of todoPaths) {
+      expect((apiTransport as any).responseByteLimitForApiRequest({ method: 'GET', path })).toBe(1_100_000)
+    }
+
+    let hits = 0
+    let attempts = 0
+    const oversized = JSON.stringify({ value: 'x'.repeat(1_100_001) })
+    const server = http.createServer((_request, response) => {
+      hits += 1
+      response.setHeader('content-type', 'application/json')
+      response.setHeader('content-length', String(Buffer.byteLength(oversized)))
+      response.end(oversized)
+    })
+    const base = await listen(server)
+    const url = `${base}/api/sessions/remote/messages?profile=work&projection=todo-state`
+
+    try {
+      await expect(
+        withRetry(
+          state => {
+            attempts += 1
+            state.bodySent = true
+
+            return new Promise((resolve, reject) => {
+              const request = http.request(url, response => {
+                readApiBounded(response, {
+                  method: 'GET',
+                  url,
+                  abort: () => request.destroy()
+                }).then(resolve, reject)
+              })
+              request.on('error', reject)
+              request.end()
+            })
+          },
+          { method: 'GET', maxRetries: 2, delayFn: () => Promise.resolve() }
+        )
+      ).rejects.toMatchObject({
+        code: 'HERMES_RESPONSE_BODY_TOO_LARGE',
+        observedBytes: 0,
+        declaredBytes: Buffer.byteLength(oversized)
+      })
+      expect(attempts).toBe(1)
+      expect(hits).toBe(1)
+    } finally {
+      server.close()
+    }
+  }, 20_000)
+
+  it('rejects Todo projection bytes before parse and without transport retry', async () => {
+    const readBounded = (apiTransport as any).readJsonResponseWithByteLimit
+    const responseLimit = (apiTransport as any).responseByteLimitForApiRequest
+    expect(typeof readBounded).toBe('function')
+    expect(typeof responseLimit).toBe('function')
+
+    expect(responseLimit({ method: 'GET', path: '/api/sessions/remote/messages?projection=todo-state' })).toBe(
+      1_100_000
+    )
+    expect(responseLimit({ method: 'GET', path: '/api/sessions/remote/messages?limit=50' })).toBeNull()
+
+    const oversizedBodies = [
+      JSON.stringify({ value: 'a'.repeat(2_000) }),
+      JSON.stringify({ value: '界'.repeat(700) }),
+      JSON.stringify({ value: '😀'.repeat(600) })
+    ]
+    for (const body of oversizedBodies) {
+      const server = http.createServer((_request, response) => {
+        response.setHeader('content-type', 'application/json')
+        response.write(body.slice(0, Math.floor(body.length / 2)))
+        response.end(body.slice(Math.floor(body.length / 2)))
+      })
+      await listen(server)
+      try {
+        const incoming = await responseFor(server)
+        let thrown: any
+        try {
+          await readBounded(incoming, { maxBytes: 1_024, url: serverAddress(server) })
+        } catch (error) {
+          thrown = error
+        }
+        expect(thrown?.code).toBe('HERMES_RESPONSE_BODY_TOO_LARGE')
+        expect(thrown?.observedBytes).toBeGreaterThan(1_024)
+        expect(thrown?.observedBytes).toBeLessThanOrEqual(3_024)
+        expect(shouldRetryRequest(thrown, 'GET', { bodySent: true })).toBe(false)
+      } finally {
+        server.close()
+      }
+    }
+  }, 20_000)
+
+  it('handles declared length, mismatch, and chunked Unicode by encoded bytes', async () => {
+    const readBounded = (apiTransport as any).readJsonResponseWithByteLimit
+    expect(typeof readBounded).toBe('function')
+
+    const cases = [
+      { value: 'a'.repeat(100), declared: true },
+      { value: '界'.repeat(100), declared: false },
+      { value: '😀'.repeat(100), declared: false }
+    ]
+    for (const entry of cases) {
+      const body = JSON.stringify({ value: entry.value })
+      const server = http.createServer((_request, response) => {
+        response.setHeader('content-type', 'application/json')
+        if (entry.declared) {
+          response.setHeader('content-length', String(Buffer.byteLength(body)))
+        }
+        response.end(body)
+      })
+      await listen(server)
+      try {
+        const incoming = await responseFor(server)
+        await expect(
+          readBounded(incoming, { maxBytes: Buffer.byteLength(body), url: serverAddress(server) })
+        ).resolves.toBe(body)
+      } finally {
+        server.close()
+      }
+    }
+
+    const mismatch = http.createServer((_request, response) => {
+      response.setHeader('content-type', 'application/json')
+      response.setHeader('content-length', '4096')
+      response.end('{}')
+    })
+    await listen(mismatch)
+    try {
+      const incoming = await responseFor(mismatch)
+      await expect(readBounded(incoming, { maxBytes: 1_024, url: serverAddress(mismatch) })).rejects.toMatchObject({
+        code: 'HERMES_RESPONSE_BODY_TOO_LARGE',
+        observedBytes: 0,
+        declaredBytes: 4096
+      })
+    } finally {
+      mismatch.close()
+    }
+  }, 20_000)
 })

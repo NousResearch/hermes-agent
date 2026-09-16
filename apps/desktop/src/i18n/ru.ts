@@ -3155,6 +3155,7 @@ export const ru = defineLocale({
     running: 'Выполняется',
     stop: 'Стоп',
     dismiss: 'Скрыть',
+    restoredUnfinished: 'Восстановлена незавершённая работа',
     exit: code => `exit ${code}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Ход ${turn}/${maxTurns}`,

@@ -46,7 +46,10 @@ export const ar = defineLocale({
   artifactPreview: arArtifacts.artifactPreview,
   sidebar: arChrome.sidebar,
   composer: arChat.composer,
-  statusStack: arChat.statusStack,
+  statusStack: {
+    ...arChat.statusStack,
+    restoredUnfinished: 'عمل غير مكتمل تمت استعادته'
+  },
   updates: arBoot.updates,
   guidedGreeting: arBoot.guidedGreeting,
   install: arBoot.install,

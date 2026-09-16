@@ -32,7 +32,7 @@ import {
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
-import { latestSessionTodoSnapshot } from '@/lib/todos'
+import { hydrateSessionTodos, resolveStoredSessionTodoMessages } from '@/app/contrib/wiring-todo-hydration'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
@@ -114,6 +114,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionControl } from '@/store/session-control'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
@@ -148,8 +149,14 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { forgetSessionUnread } from '@/store/session-unread'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { clearSessionSubagents } from '@/store/subagents'
-import { clearSessionTodos, restoreSessionTodosFromSnapshot } from '@/store/todos'
+import {
+  clearSessionTodos,
+  clearTodoContinuation,
+  bindTodoHydrationToken,
+  captureTodoWriteFence,
+  releaseTodoHydrationToken,
+  restoreSessionTodosFromSnapshot
+} from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
 import type {
@@ -1651,6 +1658,9 @@ export function useSessionActions({
           setCurrentBranch(cachedViewState.branch)
           setSessionStartedAt(cachedViewState.runtimeStartedAt)
 
+          const todoHydrationFence = captureTodoWriteFence(cachedRuntimeId)
+          let todoHistory: SessionMessage[] = []
+
           try {
             const replay = pendingSessionReplay(cachedRuntimeId)
 
@@ -1788,7 +1798,10 @@ export function useSessionActions({
                   ? false
                   : resolveResumedBusy(activated.running ?? cachedViewState.busy, Boolean(latestCachedState?.busy))
 
-              restoreSessionTodosFromSnapshot(cachedRuntimeId, activated.todo_state, running)
+              if (running && bindTodoHydrationToken(todoHydrationFence, cachedRuntimeId)) {
+                restoreSessionTodosFromSnapshot(cachedRuntimeId, activated.todo_state, running)
+              }
+              todoHistory = activated.messages
 
               const preHydrationClearedClarify =
                 pendingApproval && clarifyAuthoritativelyAbsent && staleClarifyAtActivateStart
@@ -1929,6 +1942,7 @@ export function useSessionActions({
                   persistedMatchesActivatedSession &&
                   (persisted.messages.length || !activatedMessages.length)
                 ) {
+                  todoHistory = persisted.messages
                   acceptedPersistedDisplayTranscript = Boolean(expectedProvenance)
 
                   // The REST hydration is a newest-tail page; graft it onto any
@@ -2075,11 +2089,13 @@ export function useSessionActions({
                 pendingConnectionProjection?.messages ?? pendingClarifyProjection?.messages ?? visibleClarifyMessages
 
               if (!running) {
-                restoreSessionTodosFromSnapshot(
-                  cachedRuntimeId,
-                  latestSessionTodoSnapshot(visibleActivatedMessages),
-                  false
+                const todoMessages = await resolveStoredSessionTodoMessages(
+                  storedSessionId,
+                  sessionRestScope,
+                  todoHistory
                 )
+                if (!hydration.owns()) return
+                hydrateSessionTodos(cachedRuntimeId, todoMessages, todoHydrationFence)
               }
 
               releaseTranscriptView()
@@ -2167,6 +2183,7 @@ export function useSessionActions({
             sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
             dropSessionState(cachedRuntimeId)
           } finally {
+            releaseTodoHydrationToken(todoHydrationFence)
             releaseTranscriptView()
           }
         }
@@ -2230,6 +2247,7 @@ export function useSessionActions({
         storedSessionId
       })
 
+      const todoHydrationFence = captureTodoWriteFence()
       let resumedRunning = false
       // A recovered in-flight tail means the turn already produced output, so
       // it resumes into the streaming state rather than the "awaiting first
@@ -2274,6 +2292,7 @@ export function useSessionActions({
             ...(sessionProfile ? { profile: sessionProfile } : {})
           })
         ).then(resumed => {
+          bindTodoHydrationToken(todoHydrationFence, resumed.session_id)
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
 
@@ -2437,14 +2456,16 @@ export function useSessionActions({
           Boolean(sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.busy)
         )
 
-        restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
-
-        if (!resumedRunning && prefetchApplied && prefetchMatchesResumedSession && prefetchedTranscriptMessages) {
-          restoreSessionTodosFromSnapshot(
-            resumed.session_id,
-            latestSessionTodoSnapshot(prefetchedTranscriptMessages),
-            false
+        if (resumedRunning && bindTodoHydrationToken(todoHydrationFence, resumed.session_id)) {
+          restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
+        } else if (!resumedRunning && bindTodoHydrationToken(todoHydrationFence, resumed.session_id)) {
+          const todoMessages = await resolveStoredSessionTodoMessages(
+            storedSessionId,
+            sessionRestScope,
+            prefetchMatchesResumedSession && prefetchedResult ? prefetchedResult.messages : resumed.messages
           )
+          if (!isCurrentResume()) return
+          hydrateSessionTodos(resumed.session_id, todoMessages, todoHydrationFence)
         }
 
         // Crash-survivable turn progress: fold a journaled in-flight tail
@@ -2799,6 +2820,7 @@ export function useSessionActions({
 
         notifyError(err, copy.resumeFailed)
       } finally {
+        releaseTodoHydrationToken(todoHydrationFence)
         displayRead.release()
 
         if (isCurrentResume()) {
@@ -3423,9 +3445,19 @@ export function useSessionActions({
           }
         }
 
-        if (closingRuntimeId) {
-          clearQueuedPrompts(closingRuntimeId)
-          clearSessionControl(closingRuntimeId)
+        const retiredRuntimeIds = new Set([
+          closingRuntimeId,
+          runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        ])
+        for (const id of [...removedIds, ...retiredRuntimeIds]) {
+          if (!id) continue
+          clearSessionGoal(id)
+          resetSessionBackground(id)
+          clearSessionControl(id)
+          clearSessionTodos(id)
+          clearTodoContinuation(id)
+          clearSessionSubagents(id)
+          clearQueuedPrompts(id)
         }
 
         // A tiled copy of this session must not outlive it: collapse the pane

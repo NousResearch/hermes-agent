@@ -928,8 +928,12 @@ def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     compressed = [
         {
             "role": "user",
-            "content": "[Your active task list was preserved across context compression]",
+            "content": (
+                "[Your active task list was preserved across context compression]\n"
+                "- [>] 1. finish the task (in_progress)"
+            ),
             "_todo_snapshot_synthetic": True,
+            "display_kind": "hidden",
         },
     ]
     _insert_real_user_anchor(compressed, dict(anchor))
@@ -937,6 +941,8 @@ def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     assert len(compressed) == 1
     assert compressed[0]["content"].startswith("REAL HUMAN ASK")
     assert not compressed[0].get("_todo_snapshot_synthetic")
+    assert compressed[0].get("display_kind") is None
+    assert compressed[0]["display_metadata"]["todo_snapshot"] is True
 
 def test_compression_persists_child_handoff_immediately(tmp_path: Path) -> None:
     db = SessionDB(db_path=tmp_path / "state.db")

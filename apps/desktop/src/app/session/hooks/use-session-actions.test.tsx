@@ -17,6 +17,7 @@ import {
   getAllSessionMessages,
   getLatestSessionMessages,
   getSession,
+  getSessionMessages,
   type ProfileScope,
   type SessionInfo,
   type SessionResumeResult,
@@ -109,7 +110,17 @@ import {
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
-import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
+import { $retainedTodosBySession } from '@/store/todos'
+import {
+  $preservedTodosBySession,
+  $todosBySession,
+  _todoHydrationAuthorityStatsForTests,
+  clearAllSessionTodos,
+  clearAllTodoContinuations,
+  clearSessionTodos,
+  setSessionTodos
+} from '@/store/todos'
+import { LEGACY_TODOS_277757, legacyEvidenceMessage277757 } from '@/test/evidence-row-277757'
 import { dropTranscriptTail, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -136,6 +147,7 @@ vi.mock('@/hermes', async importOriginal => ({
   getAllSessionMessages: vi.fn(),
   getLatestSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
+  getSessionMessages: vi.fn(),
   setApiRequestProfile: vi.fn(),
   setSessionArchived: vi.fn()
 }))
@@ -166,6 +178,27 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+const TODO_CARRIER_HEADER = '[Your active task list was preserved across context compression]'
+const resumeCarrierTodos = [
+  { content: 'parent', id: 'plan', status: 'completed' as const },
+  { content: 'child', id: 'child', parent: 'plan', status: 'in_progress' as const },
+  { content: 'next', id: 'next', status: 'pending' as const }
+]
+
+const resumeCarrierMessages = [
+  {
+    content: `${TODO_CARRIER_HEADER}\n- [x] plan. parent (completed)\n  - [>] child. child (in_progress)\n- [ ] next. next (pending)`,
+    display_kind: 'hidden' as const,
+    display_metadata: { todo_snapshot: { todos: resumeCarrierTodos } },
+    role: 'user' as const,
+    timestamp: 1
+  }
+]
+const ordinaryFullTailMessages = Array.from({ length: 120 }, (_, index) => ({
+  content: `ordinary persisted tail message ${index}`,
+  role: 'assistant' as const,
+  timestamp: index + 1
+}))
 
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
@@ -1740,6 +1773,8 @@ describe('resumeSession failure recovery', () => {
     clearAllPrompts()
     dropTranscriptTail('stored-A')
     clearSessionTodos('runtime-1')
+    clearAllSessionTodos()
+    clearAllTodoContinuations()
     vi.restoreAllMocks()
   })
 
@@ -1768,6 +1803,351 @@ describe('resumeSession failure recovery', () => {
     expect(requestGateway).not.toHaveBeenCalled()
     expect($resumeFailedSessionId.get()).toBeNull()
     expect($selectedStoredSessionId.get()).toBeNull()
+  })
+
+  it.each([
+    ['structured carrier', resumeCarrierMessages, resumeCarrierTodos],
+    ['legacy evidence row 277757', [legacyEvidenceMessage277757], LEGACY_TODOS_277757]
+  ])(
+    'restores carrier-only todo state from the cold REST prefetch using %s',
+    async (_label, carrierMessages, expectedTodos) => {
+      const stateMapRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
+
+      setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: carrierMessages,
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.resume') {
+          return {
+            info: {},
+            message_count: 1,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: 'runtime-cold',
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
+
+      expect($todosBySession.get()['runtime-cold']).toEqual(expectedTodos)
+      expect(JSON.stringify(stateMapRef.current.get('runtime-cold')?.messages ?? [])).not.toContain(TODO_CARRIER_HEADER)
+    }
+  )
+
+  it.each([
+    ['structured carrier', resumeCarrierMessages, resumeCarrierTodos],
+    ['legacy evidence row 277757', [legacyEvidenceMessage277757], LEGACY_TODOS_277757]
+  ])(
+    'restores carrier-only todo state while activating a warm runtime using %s',
+    async (_label, carrierMessages, expectedTodos) => {
+      const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+        current: new Map([['stored-1', 'runtime-warm']])
+      }
+      const warmState = createClientSessionState('stored-1')
+
+      warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+      const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+        current: new Map([['runtime-warm', warmState]])
+      }
+
+      setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: carrierMessages,
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'session.activate') {
+          return {
+            info: {},
+            message_count: 1,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: 'runtime-warm',
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+      expect($todosBySession.get()['runtime-warm']).toEqual(expectedTodos)
+      expect(JSON.stringify(sessionStateByRuntimeIdRef.current.get('runtime-warm')?.messages ?? [])).not.toContain(
+        TODO_CARRIER_HEADER
+      )
+    }
+  )
+
+  it.each([
+    ['cold', false, 'runtime-cold-paged'],
+    ['warm', true, 'runtime-warm-paged']
+  ] as const)(
+    'restores row 277757 beyond a full 120-message tail during %s resume',
+    async (_label, warm, runtimeSessionId) => {
+      const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+        current: warm ? new Map([['stored-1', runtimeSessionId]]) : new Map()
+      }
+      const warmState = createClientSessionState('stored-1')
+
+      warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+      const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+        current: warm ? new Map([[runtimeSessionId, warmState]]) : new Map()
+      }
+
+      setSessions([storedSession({ id: 'stored-1', message_count: 121 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: ordinaryFullTailMessages,
+        session_id: 'stored-1'
+      } as never)
+      vi.mocked(getSessionMessages).mockResolvedValue({
+        messages: [legacyEvidenceMessage277757],
+        pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 1 },
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === (warm ? 'session.activate' : 'session.resume')) {
+          return {
+            info: {},
+            message_count: 121,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: runtimeSessionId,
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+      expect(getSessionMessages).toHaveBeenCalledWith('stored-1', undefined, {
+        projection: 'todo-state'
+      })
+      expect($todosBySession.get()[runtimeSessionId]).toEqual(LEGACY_TODOS_277757)
+    }
+  )
+
+  it.each([
+    ['cold', false, 'runtime-cold-absent'],
+    ['warm', true, 'runtime-warm-absent']
+  ] as const)(
+    'clears stale Todo state only after genuine candidate exhaustion during %s resume',
+    async (_label, warm, runtimeSessionId) => {
+      const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+        current: warm ? new Map([['stored-1', runtimeSessionId]]) : new Map()
+      }
+      const warmState = createClientSessionState('stored-1')
+
+      warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+      const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+        current: warm ? new Map([[runtimeSessionId, warmState]]) : new Map()
+      }
+
+      setSessionTodos(runtimeSessionId, [{ content: 'stale Todo', id: 'stale', status: 'in_progress' }])
+      setSessions([storedSession({ id: 'stored-1', message_count: 121 })])
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({
+        messages: ordinaryFullTailMessages,
+        session_id: 'stored-1'
+      } as never)
+      vi.mocked(getSessionMessages).mockResolvedValue({
+        messages: [],
+        pagination: { exhausted: true, has_more: false, limit: 32, next_before_id: null, returned: 0 },
+        session_id: 'stored-1'
+      } as never)
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === (warm ? 'session.activate' : 'session.resume')) {
+          return {
+            info: {},
+            message_count: 121,
+            messages: [],
+            messages_omitted: true,
+            resumed: 'stored-1',
+            running: false,
+            session_id: runtimeSessionId,
+            session_key: 'stored-1'
+          } as never
+        }
+
+        return {} as never
+      })
+
+      await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+      expect(getSessionMessages).toHaveBeenCalledWith('stored-1', undefined, {
+        projection: 'todo-state'
+      })
+      expect($todosBySession.get()[runtimeSessionId]).toBeUndefined()
+    }
+  )
+
+  it('keeps a newer live Todo write while cold resume waits for an older REST carrier', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const liveTodos = [{ content: 'new live progress', id: 'live', status: 'in_progress' as const }]
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-cold',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.anything()))
+    await act(async () => {
+      await Promise.resolve()
+      setSessionTodos('runtime-cold', liveTodos)
+    })
+
+    await act(async () => {
+      persisted.resolve({ messages: resumeCarrierMessages, session_id: 'stored-1' } as never)
+      await resumePromise
+    })
+
+    expect($todosBySession.get()['runtime-cold']).toEqual(liveTodos)
+    expect($preservedTodosBySession.get()['runtime-cold']).toBeUndefined()
+  })
+
+  it('keeps a newer live Todo write while warm activation waits for an older post-barrier REST carrier', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    const liveTodos = [{ content: 'new warm progress', id: 'live-warm', status: 'in_progress' as const }]
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-1', 'runtime-warm']])
+    }
+    const warmState = createClientSessionState('stored-1')
+
+    warmState.messages = [{ id: 'cached-user', parts: [{ text: 'cached question', type: 'text' }], role: 'user' }]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['runtime-warm', warmState]])
+    }
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          info: {},
+          message_count: 1,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-warm',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+    act(() => setSessionTodos('runtime-warm', liveTodos))
+
+    await act(async () => {
+      persisted.resolve({ messages: resumeCarrierMessages, session_id: 'stored-1' } as never)
+      await resumePromise
+    })
+
+    expect($todosBySession.get()['runtime-warm']).toEqual(liveTodos)
+    expect($preservedTodosBySession.get()['runtime-warm']).toBeUndefined()
+  })
+
+  it('keeps a newer Todo clear while cold resume waits for an older REST carrier', async () => {
+    const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+
+    setSessions([storedSession({ id: 'stored-1', message_count: 1 })])
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          messages_omitted: true,
+          resumed: 'stored-1',
+          running: true,
+          session_id: 'runtime-cold-clear',
+          session_key: 'stored-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(<ResumeHarness onReady={ready => (resume = ready)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    const resumePromise = resume!('stored-1', true)
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.anything()))
+    await act(async () => {
+      await Promise.resolve()
+      setSessionTodos('runtime-cold-clear', [{ content: 'live before clear', id: 'live', status: 'in_progress' }])
+      clearSessionTodos('runtime-cold-clear')
+    })
+
+    await act(async () => {
+      persisted.resolve({ messages: resumeCarrierMessages, session_id: 'stored-1' } as never)
+      await resumePromise
+    })
+
+    expect($todosBySession.get()['runtime-cold-clear']).toBeUndefined()
+    expect($preservedTodosBySession.get()['runtime-cold-clear']).toBeUndefined()
   })
 
   it.each([
@@ -2294,6 +2674,26 @@ describe('resumeSession failure recovery', () => {
     expect(renderedMessages).toContain('prompt after compression')
     expect(renderedMessages).toContain('answer after compression')
     expect(renderedMessages).not.toContain('answer before compression')
+  })
+
+  it('does NOT throw out of the fallback when REST also fails (no unhandled rejection)', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('request timed out: session.resume')
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('network down'))
+
+    // resumeSession must resolve (swallow the fallback failure), not reject.
+    await expect(runResume(requestGateway)).resolves.toBeUndefined()
+    expect(_todoHydrationAuthorityStatsForTests()).toMatchObject({
+      activeSessionCount: 0,
+      activeTokenCount: 0,
+      latestSessionCount: 0
+    })
   })
 
   it('leaves the failure latch clear when resume succeeds', async () => {
@@ -8410,51 +8810,51 @@ describe('branchStoredSession failure retry', () => {
 })
 
 it('keeps the running projection stream target when an accepted queued user follows it', async () => {
-    const storedMessages = [
-      { content: 'earlier question', role: 'user', timestamp: 1 },
-      { content: 'earlier answer', role: 'assistant', timestamp: 2 }
-    ]
+  const storedMessages = [
+    { content: 'earlier question', role: 'user', timestamp: 1 },
+    { content: 'earlier answer', role: 'assistant', timestamp: 2 }
+  ]
 
-    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: storedMessages, session_id: 'stored-1' } as never)
 
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.resume') {
-        return {
-          session_id: 'runtime-queued',
-          session_key: 'stored-1',
-          resumed: 'stored-1',
-          message_count: storedMessages.length,
-          messages: storedMessages,
-          running: true,
-          inflight: {
-            user: 'running prompt',
-            assistant: 'partial answer',
-            streaming: true
-          },
-          queued: { user: 'accepted queued prompt' },
-          info: {}
-        } as never
-      }
+  const requestGateway = vi.fn(async (method: string) => {
+    if (method === 'session.resume') {
+      return {
+        session_id: 'runtime-queued',
+        session_key: 'stored-1',
+        resumed: 'stored-1',
+        message_count: storedMessages.length,
+        messages: storedMessages,
+        running: true,
+        inflight: {
+          user: 'running prompt',
+          assistant: 'partial answer',
+          streaming: true
+        },
+        queued: { user: 'accepted queued prompt' },
+        info: {}
+      } as never
+    }
 
-      return {} as never
-    })
-
-    let resumedState: ClientSessionState | undefined
-    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
-
-    render(
-      <ResumeHarness
-        onReady={ready => (resume = ready)}
-        onStateUpdate={(_sessionId, state) => (resumedState = state)}
-        requestGateway={requestGateway}
-      />
-    )
-    await waitFor(() => expect(resume).not.toBeNull())
-    await resume!('stored-1', true)
-
-    expect(resumedState?.messages.slice(-2).map(message => message.id)).toEqual([
-      'assistant-stream-runtime-queued',
-      'user-queued-runtime-queued'
-    ])
-    expect(resumedState?.streamId).toBe('assistant-stream-runtime-queued')
+    return {} as never
   })
+
+  let resumedState: ClientSessionState | undefined
+  let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+  render(
+    <ResumeHarness
+      onReady={ready => (resume = ready)}
+      onStateUpdate={(_sessionId, state) => (resumedState = state)}
+      requestGateway={requestGateway}
+    />
+  )
+  await waitFor(() => expect(resume).not.toBeNull())
+  await resume!('stored-1', true)
+
+  expect(resumedState?.messages.slice(-2).map(message => message.id)).toEqual([
+    'assistant-stream-runtime-queued',
+    'user-queued-runtime-queued'
+  ])
+  expect(resumedState?.streamId).toBe('assistant-stream-runtime-queued')
+})

@@ -453,16 +453,34 @@ def _llm_configs(longform: bool = False, *, config=None) -> list[dict]:
         "api_key": model_cfg.get("api_key"),
     }, *get_fallback_chain(config)]
     configs: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
-    for route in routes:
+    seen: set[tuple[str, str, str]] = {
+        (
+            primary_provider.lower(),
+            primary_model.lower(),
+            str(model_cfg.get("base_url") or "").strip().rstrip("/").lower(),
+        ),
+    }
+    for idx, route in enumerate(routes):
         exact_model = str(route.get("model") or "").strip()
         provider = str(route.get("provider") or "").strip()
         base_url = str(route.get("base_url") or "").strip().rstrip("/") or None
         identity = (provider.lower(), exact_model.lower(), (base_url or "").lower())
-        if not provider or not exact_model or identity in seen:
+        if not provider or not exact_model or (idx > 0 and identity in seen):
             continue
-        route_model_id = str(route.get("route_model_id") or exact_model).strip()
-        if route_model_id != primary_model:
+        route_model_id = str(route.get("route_model_id") or "").strip()
+        primary_slug = primary_model.rsplit("/", 1)[-1]
+        route_slot = str(route.get("route_slot") or "").strip()
+        route_class = str(route.get("route_class") or "").strip().lower()
+        same_model = (
+            route_model_id in (primary_model, primary_slug)
+            if route_model_id
+            else exact_model in (primary_model, primary_slug)
+        )
+        # Registry-emitted cross-model slots (text fallback, local final
+        # resort) are governance-approved chain members even though they
+        # serve a different model id; route_slot+route_class mark them.
+        sanctioned_cross_model = bool(route_slot) and route_class in ("perm", "gated")
+        if not (same_model or sanctioned_cross_model):
             continue
         seen.add(identity)
         try:
@@ -683,12 +701,15 @@ def _call_llm(system: str, user: str, cfg: dict, timeout: int = 90,
             cfg["_failure_status"] = r.status_code
             cfg["_failure_reason"] = _classify_failure_reason(r.status_code, r.text[:400])
             transient = r.status_code == 429 or r.status_code >= 500
-            if transient and attempt == 0:
+            if transient and attempt < 2:
+                # Free-tier providers (xkiro etc.) 500 in short bursts; a
+                # single 1s retry does not clear a burst, so give it three
+                # attempts with a short backoff before moving on.
                 print(
-                    f"[llm_generate] transient LLM HTTP {r.status_code}; retrying once",
+                    f"[llm_generate] transient LLM HTTP {r.status_code}; retrying",
                     file=sys.stderr,
                 )
-                time.sleep(1.0)
+                time.sleep(2.0 * (attempt + 1))
                 continue
             print(f"[llm_generate] LLM HTTP {r.status_code}: {r.text[:160]}", file=sys.stderr)
             return None

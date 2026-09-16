@@ -147,6 +147,10 @@ gateway:
 
 The opt-out applies to **all** send paths — final answers, streamed updates, interim commentary, tool-progress bubbles, and out-of-process cron delivery (`deliver=buzz`).
 
+## Agent directory
+
+The adapter publishes a replaceable kind-10100 agent-directory event to the relay: on every WebSocket connection, whenever the joined roster changes, and on the poll cadence for poll transport (over a short-lived authenticated socket). Buzz's agent picker reads it to show the agent's name, its joined community channels, and whether it answers anyone (`allow_all_users: true`) or only an allow-list. The projection is derived from the live effective policy and the joined roster, so it never advertises wider access than the Gateway actually grants; a deny-all policy is published as an empty allow-list, which the picker treats as ineligible. When `BUZZ_AUTH_TAG` is set, the tag's NIP-OA conditions are verified against the event before publication and attached to it. The event is signed with the adapter's own key, and publication waits for the relay's acknowledgement; a rejected event ends the connection like any other transport error.
+
 ## Access control
 
 By default the Buzz-specific allow-list is empty. Buzz-specific access is granted by `BUZZ_ALLOW_ALL_USERS=true` or by listing npubs/hex pubkeys in `BUZZ_ALLOWED_USERS` (or `allowed_users` in config.yaml). These controls are not the complete Gateway authorization boundary: profile pairing approvals and global `GATEWAY_ALLOWED_USERS`, its `*` wildcard, or `GATEWAY_ALLOW_ALL_USERS` are additive and can authorize users beyond the Buzz-specific policy. Community membership itself is enforced by the relay — only members can post.

@@ -3,9 +3,24 @@
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 This root file holds only what applies everywhere. Each area has its own `AGENTS.md` (aim for
 ~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning
-past that); see the **routing table** at the end and read the area file before editing in that area.
+past that); use the **routing table** at the end to read the area file for the code
+being changed, not every area guide. Use `CONTRIBUTING.md` for development setup
+and PR requirements, and the matching `website/docs/developer-guide/` document
+for deeper subsystem background. Unrelated edits do not require a full docs tour.
 
-**Never give up on the right solution.**
+## Completion criteria
+
+A change is ready for review when the requested behavior is implemented, the
+relevant invariants have evidence, and the diff contains only the agreed scope.
+Bug fixes include regression evidence that fails on the base and passes with the
+fix; affected and neighboring behavior is covered. Changes to resolution chains,
+config propagation, security boundaries, remote backends, or file/network I/O
+include the real-path validation against a temporary `HERMES_HOME` required below.
+Relevant docs and area-specific checks are complete. The handoff names commands
+actually run, their outcomes, and unverified paths or blockers; mocks alone do
+not establish that a real integration works. An initial implementation is not
+completion when requested validation remains outstanding. If a required check
+needs consent or unavailable infrastructure, report the gap rather than claim success.
 
 ## What Hermes Is
 
@@ -325,6 +340,15 @@ changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit
   appendages to facades, new god helpers, compat aliases, wrappers.
 
 ## Testing (applies everywhere)
+
+Within the requested scope, you may run local tests with disposable fixtures,
+fix failures caused by the change, and rerun affected tests without repeated
+approval. Keep the runner's credential stripping, temporary-state fixtures,
+and per-file isolation intact. This is not blanket permission for live tests:
+the runner is not an OS or network sandbox and preserves the real `HOME`.
+Tests requiring live credentials, paid APIs, remote services, real profile data,
+or changes to running services need explicit human approval. Never expose
+secrets or bypass approval/opt-in gates to make a test pass.
 
 **ALWAYS use `scripts/run_tests.sh`**, never bare `pytest`. It enforces CI parity: credential
 vars unset, `TZ=UTC`, `LANG=C.UTF-8`, `HERMES_HOME` → temp dir, and per-file subprocess

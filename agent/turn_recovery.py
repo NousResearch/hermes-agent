@@ -99,7 +99,7 @@ def _failure_discriminators(api_error: Optional[Exception], classified: Any) -> 
         # Extraction is not validation: preserve unknown identifiers, but omit
         # diagnostic prose, normalized values, and oversized values rather than
         # rewriting them.
-        if raw_code_is_exact and isinstance(code, str) and _PROVIDER_CODE_PATTERN.fullmatch(code):
+        if raw_code_is_exact and isinstance(code, str) and code != "error" and _PROVIDER_CODE_PATTERN.fullmatch(code):
             discriminators["failure_provider_code"] = code
     return discriminators
 

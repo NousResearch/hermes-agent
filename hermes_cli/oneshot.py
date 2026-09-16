@@ -165,7 +165,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         for _key in _USAGE_FAILURE_DISCRIMINATOR_KEYS:
             _value = result.get(_key)
             if _key == "failure_provider_code" and (
-                type(_value) is not str or not _USAGE_FAILURE_PROVIDER_CODE_PATTERN.fullmatch(_value)
+                type(_value) is not str or _value == "error" or not _USAGE_FAILURE_PROVIDER_CODE_PATTERN.fullmatch(_value)
             ):
                 continue
             if _value is not None:

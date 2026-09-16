@@ -369,3 +369,18 @@ class TestLiveCodexWallShape:
             assert getattr(exc, "body", {})["error"]["type"] == "error"
             d = _failure_discriminators(exc, _classified())
             assert d["failure_provider_code"] == "server_error"
+
+    def test_sse_generic_frame_without_code_does_not_invent_provider_code(self, tmp_path):
+        from agent.codex_runtime import _raise_stream_error
+        from hermes_cli.oneshot import _write_usage_file
+
+        try:
+            _raise_stream_error({"type": "error", "message": "transport failed"})
+            raise AssertionError("expected _raise_stream_error to raise")
+        except Exception as exc:
+            result = _run_max_retries(exc, _classified())
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), result)
+        report = json.loads(path.read_text())
+        assert "failure_provider_code" not in result
+        assert "failure_provider_code" not in report

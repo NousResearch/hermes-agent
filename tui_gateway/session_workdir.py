@@ -197,7 +197,7 @@ def _register_session_cwd(session: dict | None) -> None:
         return
     # Workspace moves must reach lazy/restarted runtimes, not just terminal tools.
     # Do not reinitialize memory providers or invalidate the cached system prompt.
-    if (agent := session.get("agent")) is not None:
+    if hasattr(agent := session.get("agent"), "session_cwd"):
         agent.session_cwd = session.get("cwd") or None
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides

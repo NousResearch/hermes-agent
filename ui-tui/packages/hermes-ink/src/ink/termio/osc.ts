@@ -99,7 +99,11 @@ export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env
     return false
   }
 
-  return !!env['SSH_CONNECTION'] || (!env['TMUX'] && !env['STY'])
+  // tmux panes can outlive and be restored before the SSH client attaches, so
+  // their process environment may never contain SSH_CONNECTION. Always emit
+  // the DCS-wrapped sequence in tmux; allow-passthrough decides whether the
+  // outer terminal receives it, while the tmux paste buffer remains available.
+  return !!env['SSH_CONNECTION'] || !!env['TMUX'] || !env['STY']
 }
 
 /**

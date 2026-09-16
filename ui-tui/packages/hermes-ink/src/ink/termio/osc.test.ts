@@ -12,8 +12,11 @@ describe('tmuxLoadBuffer', () => {
 })
 
 describe('shouldEmitClipboardSequence', () => {
-  it('suppresses local multiplexer clipboard OSC by default', () => {
-    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)).toBe(false)
+  it('emits through tmux even when a restored pane lacks SSH environment variables', () => {
+    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)).toBe(true)
+  })
+
+  it('suppresses screen clipboard OSC by default', () => {
     expect(shouldEmitClipboardSequence({ STY: '1234.pts-0.host' } as NodeJS.ProcessEnv)).toBe(false)
   })
 
@@ -36,11 +39,8 @@ describe('shouldEmitClipboardSequence', () => {
     ).toBe(false)
   })
 
-  it('HERMES_TUI_FORCE_OSC52 takes precedence over TMUX suppression', () => {
-    // Without the override, local-in-tmux suppresses the OSC 52 sequence
-    // so the terminal multiplexer path wins. FORCE_OSC52=1 flips that
-    // back on for users whose tmux config supports passthrough.
-    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv)).toBe(false)
+  it('HERMES_TUI_FORCE_OSC52 keeps the tmux sequence enabled', () => {
+    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv)).toBe(true)
     expect(
       shouldEmitClipboardSequence({
         HERMES_TUI_FORCE_OSC52: '1',

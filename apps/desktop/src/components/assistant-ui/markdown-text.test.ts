@@ -385,6 +385,37 @@ describe('preprocessMarkdown', () => {
     expect(output).toBe('Per the paper, $\\sqrt[3]{8}$ is 2.')
   })
 
+  // `R$ 361,67` (Brazilian real): the sign is glued to a currency code and the
+  // amount usually follows a space, so neither the digit-after-dollar rule nor
+  // remark-math's own heuristics see a price — the `$` opened a span that ran
+  // to the next price. The invariant: every real-currency opener leaves as `\$`,
+  // every legitimate math span and code span is byte-identical to the input.
+  it.each([
+    [
+      'O investimento fica em 12x de R$ 361,67 no cartão ou R$ 3.497 à vista.',
+      'O investimento fica em 12x de R\\$ 361,67 no cartão ou R\\$ 3.497 à vista.'
+    ],
+    ['R$361,67 ou R$3.497', 'R\\$361,67 ou R\\$3.497'],
+    ['De R$ 1.997 por R$ 1.500 (R$ 3.497 no total).', 'De R\\$ 1.997 por R\\$ 1.500 (R\\$ 3.497 no total).'],
+    ['R\\$ 361,67 e R\\$3.497', 'R\\$ 361,67 e R\\$3.497'],
+    ['R$ 361,67 e $x^2 + y^2$ e R$ 3.497', 'R\\$ 361,67 e $x^2 + y^2$ e R\\$ 3.497'],
+    ['R$ 5 e $$a^2$$', 'R\\$ 5 e $$a^2$$'],
+    ['R$ 5\n\n$$\na^2\n$$', 'R\\$ 5\n\n$$\na^2\n$$'],
+    ['valor `R$ 361,67` e `R$3.497`', 'valor `R$ 361,67` e `R$3.497`'],
+    ['```\nR$ 361,67\n```', '```\nR$ 361,67\n```']
+  ])('escapes real-currency openers and leaves math and code alone: %j', (input, expected) => {
+    expect(preprocessMarkdown(input)).toBe(expected)
+  })
+
+  it('escapes a real-currency opener the same way while the sentence is still streaming', () => {
+    const sentence = 'O investimento fica em 12x de R$ 361,67 no cartão ou R$ 3.497 à vista.'
+    // Cut before the second `$`: a bare trailing `R$` is not yet a price, so the
+    // stable prefix is everything up to the currency code.
+    const partial = sentence.slice(0, sentence.lastIndexOf('R$') + 1)
+
+    expect(preprocessMarkdown(sentence).startsWith(preprocessMarkdown(partial))).toBe(true)
+  })
+
   it('shields inline math whose body contains an escaped dollar', () => {
     const output = preprocessMarkdown('$\\sqrt[3]{8} + \\$5$')
 

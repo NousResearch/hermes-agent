@@ -325,6 +325,20 @@ function opensCompleteInlineMath(text: string, openingIndex: number): boolean {
   return /^[\p{L}\p{N}\\{([|+\-=_^]/u.test(body)
 }
 
+// `R$ 361,67` — the Brazilian real. The sign is glued to a currency code and
+// the amount usually sits after a space, so neither the digit-after-dollar
+// rule nor remark-math's own heuristics recognize it; the `$` opens a span
+// that swallows the prose up to the next price. A `$` that closes an `R`
+// variable (`$R$`) is never followed by an amount, so requiring the `R` to
+// start a word and an amount to follow keeps math untouched.
+function isCurrencyCodeDollar(text: string, cursor: number): boolean {
+  if (text[cursor - 1] !== 'R' || /[\p{L}\p{N}_]/u.test(text[cursor - 2] || '')) {
+    return false
+  }
+
+  return /^[ \t\u00a0]*\d/u.test(text.slice(cursor + 1, cursor + 8))
+}
+
 /**
  * Escape price openers without corrupting balanced numeric inline math.
  *
@@ -333,18 +347,34 @@ function opensCompleteInlineMath(text: string, openingIndex: number): boolean {
  * the orphan closing dollar with a later formula and renders the intervening
  * prose as math. We retain the price behavior for `$5 and $10` and `$5-$10`,
  * but preserve balanced, same-line numeric math spans.
+ *
+ * Inline code spans are skipped: a `$` inside backticks is literal already,
+ * and the escape would surface as a visible backslash in the listing.
  */
 function escapeCurrencyDollarsPreservingMath(text: string): string {
+  return text
+    .split(INLINE_CODE_SPLIT_RE)
+    .map(part => (part.startsWith('`') ? part : escapeCurrencyDollarsInProse(part)))
+    .join('')
+}
+
+function escapeCurrencyDollarsInProse(text: string): string {
   let out = ''
   let copiedThrough = 0
 
   for (let cursor = 0; cursor < text.length; cursor += 1) {
-    if (
-      text[cursor] !== '$' ||
-      !/\d/u.test(text[cursor + 1] || '') ||
-      text[cursor - 1] === '$' ||
-      isEscapedAt(text, cursor)
-    ) {
+    if (text[cursor] !== '$' || text[cursor - 1] === '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    if (isCurrencyCodeDollar(text, cursor)) {
+      out += `${text.slice(copiedThrough, cursor)}\\$`
+      copiedThrough = cursor + 1
+
+      continue
+    }
+
+    if (!/\d/u.test(text[cursor + 1] || '')) {
       continue
     }
 

@@ -107,6 +107,19 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 event("message.start", None, doc="A turn began streaming; no payload.")
 
 
+class UserMessagePayload(Payload):
+    """An externally accepted user correction mirrored into the transcript."""
+
+    text: str
+
+
+event(
+    "message.user",
+    UserMessagePayload,
+    doc="A user correction accepted outside the attached TUI and rendered in its transcript.",
+)
+
+
 class StreamDeltaPayload(Payload):
     """``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``),
     ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning``

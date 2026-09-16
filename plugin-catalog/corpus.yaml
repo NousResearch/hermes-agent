@@ -1,6 +1,6 @@
 name: corpus
 repo: https://github.com/teakesdev/corpus-agent-kit
-sha: d9674ce070525f3aa2ee094b5498c2d176688413
+sha: 5e1a5a7ccf10aea9eae4c9a9e6d1c8da65cbe009
 subdir: plugins/corpus
 description: 'Hosted Corpus MCP (Streamable HTTP at corpuslaw.us/api/mcp) plus two bundled
   skills: US law search/get_node/list_coverage over 571k+ provisions, and LLC/nonprofit

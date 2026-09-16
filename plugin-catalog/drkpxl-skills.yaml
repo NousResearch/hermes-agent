@@ -1,0 +1,18 @@
+name: drkpxl-skills
+repo: https://github.com/drkpxl/drkpxl-skills
+sha: d81a9b5ee427a378839828d4a8eab3925468b7ce
+description: 'Personal daily newspaper skill for Hermes: weather, calendar, air quality,
+  curated 36-hour news from Reddit RSS + X + web search with per-story QR codes,
+  and newsletter digests, rendered to a single 8.5x11 newsprint page and printed
+  every morning. Plus six more installable skills: Tiny Air (US air quality MCP),
+  Bro (jargon translator), Copywriting, Delegate to pi, Prototype, Research,
+  and Requesting Code Review.'
+maintainer: drkpxl
+tier: community
+docs_url: https://github.com/drkpxl/drkpxl-skills#readme
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,11 +1,13 @@
 const PENDING_RENAME_KEY = 'hermes.desktop.pendingProfileRename.v1'
 const PENDING_RENAME_PREFIX = 'hermes.desktop.pendingProfileRename.v2:'
+const COMPLETED_RENAME_PREFIX = 'hermes.desktop.completedProfileRename.v1:'
 const TRANSCRIPT_PREFIX = 'hermes.transcript-tail.v2:'
 const TRANSCRIPT_INDEX_KEY = 'hermes.transcript-tail.v2-index'
 const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
 
 interface PendingProfileRename {
+  attemptId: string
   connectionId: string
   newName: string
   newNavigationSuffix: null | string
@@ -32,6 +34,7 @@ function parsePending(raw: string | null): PendingProfileRename | null {
     }
 
     return {
+      attemptId: typeof parsed.attemptId === 'string' && parsed.attemptId ? parsed.attemptId : 'legacy',
       connectionId: typeof parsed.connectionId === 'string' ? parsed.connectionId.trim() || 'local' : 'local',
       oldName: normalizedName(parsed.oldName),
       newName: normalizedName(parsed.newName),
@@ -53,41 +56,51 @@ function parsePending(raw: string | null): PendingProfileRename | null {
   }
 }
 
-function pendingStorageKey(pending: Pick<PendingProfileRename, 'connectionId' | 'newName' | 'oldName'>): string {
+function newAttemptId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+function pendingStorageKey(
+  pending: Pick<PendingProfileRename, 'attemptId' | 'connectionId' | 'newName' | 'oldName'>
+): string {
   return PENDING_RENAME_PREFIX + encodeURIComponent(
-    JSON.stringify([pending.connectionId, pending.oldName, pending.newName])
+    JSON.stringify([pending.connectionId, pending.oldName, pending.newName, pending.attemptId])
   )
 }
 
 function readPending(): Array<{ key: string; pending: PendingProfileRename }> {
-  const store = window.localStorage
-  const found: Array<{ key: string; pending: PendingProfileRename }> = []
+  try {
+    const store = window.localStorage
+    const found: Array<{ key: string; pending: PendingProfileRename }> = []
 
-  for (let index = 0; index < store.length; index += 1) {
-    const key = store.key(index)
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)
 
-    if (key?.startsWith(PENDING_RENAME_PREFIX)) {
-      const pending = parsePending(store.getItem(key))
+      if (key?.startsWith(PENDING_RENAME_PREFIX)) {
+        const pending = parsePending(store.getItem(key))
 
-      if (pending) {
-        found.push({ key, pending })
+        if (pending) {
+          found.push({ key, pending })
+        }
       }
     }
+
+    const legacy = parsePending(store.getItem(PENDING_RENAME_KEY))
+
+    if (legacy) {
+      found.push({ key: PENDING_RENAME_KEY, pending: legacy })
+    }
+
+    return found
+  } catch {
+    return []
   }
-
-  const legacy = parsePending(store.getItem(PENDING_RENAME_KEY))
-
-  if (legacy) {
-    found.push({ key: PENDING_RENAME_KEY, pending: legacy })
-  }
-
-  return found
 }
 
 function moveStorageValue(store: Storage, source: string, destination: string): void {
   const value = store.getItem(source)
 
-  if (value !== null && store.getItem(destination) === null) {
+  if (value !== null) {
     store.setItem(destination, value)
   }
 
@@ -144,19 +157,59 @@ function migrateTranscriptTails(store: Storage, oldName: string, newName: string
 }
 
 function migrateProfileState(oldName: string, newName: string, scope: ProfileRenameStateScope): void {
-  const store = window.localStorage
+  try {
+    migrateRememberedNavigation(
+      window.localStorage,
+      oldName,
+      newName,
+      scope.oldNavigationSuffix,
+      scope.newNavigationSuffix
+    )
+  } catch {
+    // Browser storage is presentation-only; the authoritative backend rename already succeeded.
+  }
 
-  migrateRememberedNavigation(
-    store,
-    oldName,
-    newName,
-    scope.oldNavigationSuffix,
-    scope.newNavigationSuffix
-  )
-  migrateTranscriptTails(store, oldName, newName, scope.connectionId)
-  window.dispatchEvent(
-    new CustomEvent('hermes:profile-renamed', { detail: { connectionId: scope.connectionId, newName, oldName } })
-  )
+  try {
+    migrateTranscriptTails(window.localStorage, oldName, newName, scope.connectionId)
+  } catch {
+    // Keep the in-memory registries moving even when persistent storage is unavailable.
+  }
+
+  try {
+    window.dispatchEvent(
+      new CustomEvent('hermes:profile-renamed', { detail: { connectionId: scope.connectionId, newName, oldName } })
+    )
+  } catch {
+    // A non-DOM test or restricted renderer has no live registries to notify.
+  }
+}
+
+function broadcastCompletedRename(pending: PendingProfileRename): void {
+  try {
+    const key = COMPLETED_RENAME_PREFIX + encodeURIComponent(pending.attemptId)
+    window.localStorage.setItem(key, JSON.stringify(pending))
+    window.localStorage.removeItem(key)
+  } catch {
+    // Other windows can reconcile on their next load; never fail the backend rename.
+  }
+}
+
+function removePending(pending: PendingProfileRename, attemptId?: string): void {
+  try {
+    for (const entry of readPending()) {
+      const sameIdentity =
+        entry.pending.connectionId === pending.connectionId &&
+        entry.pending.oldName === pending.oldName &&
+        entry.pending.newName === pending.newName
+      const sameAttempt = attemptId ? entry.pending.attemptId === attemptId : sameIdentity
+
+      if (sameIdentity && sameAttempt) {
+        window.localStorage.removeItem(entry.key)
+      }
+    }
+  } catch {
+    // A leftover marker only repeats an idempotent migration on a later boot.
+  }
 }
 
 /** Record intent before the rename request: a primary-profile rename reloads
@@ -166,87 +219,96 @@ export function stageProfileRenameState(
   oldName: string,
   newName: string,
   scope: ProfileRenameStateScope = { connectionId: 'local', newNavigationSuffix: '', oldNavigationSuffix: '' }
-): void {
-  const pending = { ...scope, oldName: normalizedName(oldName), newName: normalizedName(newName) }
+): string {
+  const pending = {
+    ...scope,
+    attemptId: newAttemptId(),
+    connectionId: scope.connectionId.trim() || 'local',
+    oldName: normalizedName(oldName),
+    newName: normalizedName(newName)
+  }
 
   try {
     window.localStorage.setItem(pendingStorageKey(pending), JSON.stringify(pending))
   } catch {
     // A storage-restricted renderer still completes the authoritative backend rename.
   }
+
+  return pending.attemptId
 }
 
 export function cancelProfileRenameState(
   oldName: string,
   newName: string,
-  scope: Pick<ProfileRenameStateScope, 'connectionId'> = { connectionId: 'local' }
+  scope: Pick<ProfileRenameStateScope, 'connectionId'> = { connectionId: 'local' },
+  attemptId?: string
 ): void {
-  const identity = {
-    connectionId: scope.connectionId.trim() || 'local',
-    oldName: normalizedName(oldName),
-    newName: normalizedName(newName)
-  }
-
-  window.localStorage.removeItem(pendingStorageKey(identity))
-
-  for (const entry of readPending()) {
-    if (
-      entry.key === PENDING_RENAME_KEY &&
-      entry.pending.connectionId === identity.connectionId &&
-      entry.pending.oldName === identity.oldName &&
-      entry.pending.newName === identity.newName
-    ) {
-      window.localStorage.removeItem(entry.key)
-    }
-  }
+  removePending(
+    {
+      attemptId: attemptId ?? 'legacy',
+      connectionId: scope.connectionId.trim() || 'local',
+      oldName: normalizedName(oldName),
+      newName: normalizedName(newName),
+      oldNavigationSuffix: null,
+      newNavigationSuffix: null
+    },
+    attemptId
+  )
 }
 
 export function completeProfileRenameState(
   oldName: string,
   newName: string,
-  scope: ProfileRenameStateScope = { connectionId: 'local', newNavigationSuffix: '', oldNavigationSuffix: '' }
+  scope: ProfileRenameStateScope = { connectionId: 'local', newNavigationSuffix: '', oldNavigationSuffix: '' },
+  attemptId?: string
 ): void {
-  const oldProfile = normalizedName(oldName)
-  const newProfile = normalizedName(newName)
-
-  if (oldProfile !== newProfile) {
-    migrateProfileState(oldProfile, newProfile, scope)
+  const pending = {
+    ...scope,
+    attemptId: attemptId ?? 'legacy',
+    connectionId: scope.connectionId.trim() || 'local',
+    oldName: normalizedName(oldName),
+    newName: normalizedName(newName)
   }
 
-  try {
-    window.localStorage.removeItem(
-      pendingStorageKey({ connectionId: scope.connectionId.trim() || 'local', oldName: oldProfile, newName: newProfile })
-    )
-
-    for (const entry of readPending()) {
-      if (
-        entry.key === PENDING_RENAME_KEY &&
-        entry.pending.connectionId === (scope.connectionId.trim() || 'local') &&
-        entry.pending.oldName === oldProfile &&
-        entry.pending.newName === newProfile
-      ) {
-        window.localStorage.removeItem(entry.key)
-      }
-    }
-  } catch {
-    // Best effort: repeating the idempotent migration on a later boot is safe.
+  if (pending.oldName !== pending.newName) {
+    migrateProfileState(pending.oldName, pending.newName, pending)
+    broadcastCompletedRename(pending)
   }
+
+  removePending(pending, attemptId)
 }
 
 /** Complete a rename whose successful primary-backend response reloaded the
  * renderer before RenameProfileDialog resumed. */
 export function recoverPendingProfileRenameState(activeProfile: string, activeConnectionId: string): boolean {
-  const pending = readPending().find(
+  const matches = readPending().filter(
     entry =>
       entry.pending.newName === normalizedName(activeProfile) &&
       entry.pending.connectionId === (activeConnectionId.trim() || 'local')
-  )?.pending
+  )
 
-  if (!pending) {
+  // Ambiguous concurrent targets need backend evidence to identify the winner.
+  // Fail closed rather than migrating presentation state from the wrong profile.
+  if (matches.length !== 1) {
     return false
   }
 
-  completeProfileRenameState(pending.oldName, pending.newName, pending)
+  const pending = matches[0].pending
+  completeProfileRenameState(pending.oldName, pending.newName, pending, pending.attemptId)
 
   return true
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (!event.key?.startsWith(COMPLETED_RENAME_PREFIX) || event.newValue === null) {
+      return
+    }
+
+    const pending = parsePending(event.newValue)
+
+    if (pending) {
+      migrateProfileState(pending.oldName, pending.newName, pending)
+    }
+  })
 }

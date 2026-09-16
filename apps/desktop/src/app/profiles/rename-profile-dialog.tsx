@@ -122,10 +122,11 @@ export function RenameProfileDialog({
       oldNavigationSuffix,
       newNavigationSuffix
     }
+    let renameAttemptId: string | undefined
 
     try {
       if (!isDefault) {
-        stageProfileRenameState(currentName, trimmed, renameStateScope)
+        renameAttemptId = stageProfileRenameState(currentName, trimmed, renameStateScope)
       }
 
       // A retained renderer socket for the old name would treat the rename's
@@ -139,7 +140,7 @@ export function RenameProfileDialog({
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
 
       if (!isDefault) {
-        completeProfileRenameState(currentName, trimmed, renameStateScope)
+        completeProfileRenameState(currentName, trimmed, renameStateScope, renameAttemptId)
       }
 
       await onRenamed?.(trimmed)
@@ -147,7 +148,7 @@ export function RenameProfileDialog({
       window.setTimeout(onClose, 800)
     } catch (err) {
       if (!isDefault) {
-        cancelProfileRenameState(currentName, trimmed, renameStateScope)
+        cancelProfileRenameState(currentName, trimmed, renameStateScope, renameAttemptId)
       }
 
       setStatus('idle')

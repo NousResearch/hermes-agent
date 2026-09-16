@@ -55,23 +55,23 @@ it('recovers a pending rename only for its owning connection and preserves null 
 it('keeps concurrent profile renames isolated by connection and identity', async () => {
   const migration = await import('./profile-rename-state')
 
-  migration.stageProfileRenameState('work', 'personal')
+  const localAttempt = migration.stageProfileRenameState('work', 'personal')
   migration.stageProfileRenameState('ops', 'production', {
     connectionId: 'gateway-a',
     oldNavigationSuffix: null,
     newNavigationSuffix: null
   })
-  migration.completeProfileRenameState('work', 'personal')
+  migration.completeProfileRenameState('work', 'personal', undefined, localAttempt)
 
   expect(migration.recoverPendingProfileRenameState('production', 'gateway-a')).toBe(true)
 
-  migration.stageProfileRenameState('shared', 'renamed')
+  const cancelledAttempt = migration.stageProfileRenameState('shared', 'renamed')
   migration.stageProfileRenameState('shared', 'renamed', {
     connectionId: 'gateway-b',
     oldNavigationSuffix: null,
     newNavigationSuffix: null
   })
-  migration.cancelProfileRenameState('shared', 'renamed', { connectionId: 'local' })
+  migration.cancelProfileRenameState('shared', 'renamed', { connectionId: 'local' }, cancelledAttempt)
 
   expect(migration.recoverPendingProfileRenameState('renamed', 'gateway-b')).toBe(true)
   expect(migration.recoverPendingProfileRenameState('renamed', 'local')).toBe(false)
@@ -87,6 +87,7 @@ it('re-homes every persisted session route after a profile rename', async () => 
 
   window.localStorage.setItem(`hermes.desktop.lastSessionId.profile.${oldName}`, 'session-1')
   window.localStorage.setItem(`hermes.desktop.lastRoute.profile.${oldName}`, '/session-1')
+  window.localStorage.setItem(`hermes.desktop.lastRoute.profile.${newName}`, '/stale-session')
   window.localStorage.setItem(`hermes.desktop.lastSessionId.profile.${siblingName}`, 'session-2')
   window.localStorage.setItem(`hermes.desktop.lastRoute.profile.${siblingName}`, '/session-2')
   window.localStorage.setItem(
@@ -122,6 +123,7 @@ it('re-homes every persisted session route after a profile rename', async () => 
   )
   window.localStorage.setItem('hermes.transcript-tail.v2-index', JSON.stringify([oldTail, foreignTail]))
   window.localStorage.setItem(`hermes.transcript-tail.v2:${oldTail}`, JSON.stringify({ messages: [{ id: 'u1' }] }))
+  window.localStorage.setItem(`hermes.transcript-tail.v2:${newTail}`, JSON.stringify({ messages: [{ id: 'stale' }] }))
   window.localStorage.setItem(`hermes.transcript-tail.v2:${foreignTail}`, JSON.stringify({ messages: [{ id: 'u2' }] }))
 
   // Hydrate the live registries before the rename event, matching an active
@@ -141,7 +143,9 @@ it('re-homes every persisted session route after a profile rename', async () => 
   expect(window.localStorage.getItem(`hermes.desktop.lastSessionId.profile.${siblingName}`)).toBe('session-2')
   expect(window.localStorage.getItem(`hermes.desktop.lastRoute.profile.${siblingName}`)).toBe('/session-2')
   expect(window.localStorage.getItem(`hermes.transcript-tail.v2:${oldTail}`)).toBeNull()
-  expect(window.localStorage.getItem(`hermes.transcript-tail.v2:${newTail}`)).not.toBeNull()
+  expect(JSON.parse(window.localStorage.getItem(`hermes.transcript-tail.v2:${newTail}`) ?? '{}')).toEqual({
+    messages: [{ id: 'u1' }]
+  })
   expect(window.localStorage.getItem(`hermes.transcript-tail.v2:${foreignTail}`)).not.toBeNull()
 
   const tiles = JSON.parse(window.localStorage.getItem('hermes.desktop.sessionTiles.v2') ?? '{}')

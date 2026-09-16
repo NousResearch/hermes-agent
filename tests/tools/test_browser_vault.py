@@ -858,6 +858,53 @@ class TestTwoFactor:
         # the real widget
         assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
+    def test_plain_indexed_otp_widget_without_maxlength_still_classifies(self):
+        """#113094: a JS split-OTP widget whose boxes carry only ``id=input-code-N`` — no autocomplete,
+        no name/label text, no ``maxlength`` — is picked up structurally and split one digit per box."""
+        from agent.vault_login_classifier import LoginControl, build_otp_fills, classify_otp_controls
+
+        def box(i, form=0, name=""):
+            return LoginControl("", form, i, "-", name or f"input-code-{i}", "text", None)
+
+        widget = [box(i) for i in range(6)]
+        classified = classify_otp_controls(widget)
+        assert [c.control.index for c in classified] == list(range(6))
+        assert [f["value"] for f in build_otp_fills(classified, "246810")] == list("246810")
+        # gaps in the numeric suffixes, split across forms, DOM neighbors inside the row, or under
+        # four boxes: none of that is a verified widget, so nothing classifies
+        assert classify_otp_controls([box(0), box(2), box(3), box(4), box(5), box(9)]) == []
+        assert classify_otp_controls([box(i, form=i % 2) for i in range(6)]) == []
+        assert classify_otp_controls([LoginControl("", 0, i * 2, "-", f"input-code-{i}", "text", None) for i in range(6)]) == []
+        assert classify_otp_controls([box(i) for i in range(3)]) == []
+        # once any real code-labeled field classifies, the structural fallback stays out of it
+        labeled = [LoginControl("", 0, 0, "Verification code", "backup", "text", None)] + widget
+        assert [c.control.index for c in classify_otp_controls(labeled)] == [0]
+        assert build_otp_fills(classify_otp_controls(labeled), "246810") == [
+            {"index": 0, "token": "one-time-code", "value": "246810"}]
+
+    def test_indexed_otp_widget_without_maxlength_reaches_the_secure_prompt(self):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        unlock_mod.set_code_prompt_callback(lambda site, hint: "246 810")
+        boxes = [{"index": i, "type": "text", "name": f"input-code-{i}", "label": "-", "autocomplete": "",
+                  "formIndex": 0} for i in range(6)]
+        seen = {}
+        fake_eval = lambda t, e: {"success": True, "result": json.dumps(boxes) if "querySelectorAll" in e else "https://acme.test/2fa"}
+
+        def fake_secret(t, e):
+            seen["expr"] = e
+            return {"success": True, "result": json.dumps({"filled": 6})}
+
+        with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
+             patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
+             patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
+            out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
+        unlock_mod.set_code_prompt_callback(None)
+        assert out["success"] and out["source"] == "user" and out["filled_fields"] == 6
+        assert re.findall(r'"value": "(\d)"', seen["expr"]) == list("246810")
+
     def test_no_code_field_points_at_passkey_or_device_approval(self):
         from tools import browser_vault_tool
 

@@ -134,11 +134,45 @@ _RE_OTP = re.compile(
 )
 
 
+# Plain-JS split-OTP widgets often expose no autocomplete, no label and no ``maxlength``; their only
+# signal is a shared indexed id/name (``input-code-0``..``input-code-5`` — the inspection JS folds the
+# id into ``name``) carried by one compact row of inputs.
+_RE_INDEXED_FIELD = re.compile(r"^(?P<base>.*[a-z_-])(?P<n>\d+)$", re.IGNORECASE)
+
+
+def _indexed_split_otp_group(controls: List[LoginControl]) -> List[LoginControl]:
+    """The verified split-OTP group among ``controls``: 4-8 same-form text-like inputs without
+    ``maxlength``, adjacent in DOM order, whose id/name tokens share one prefix with consecutive
+    numeric suffixes (``input-code-0``..``input-code-5``). Returns the group in DOM order, or []
+    unless every check passes — the structural bar that keeps coupon/promo/address inputs out."""
+    groups: Dict[tuple, List[List[Any]]] = {}
+    for c in controls:
+        if c.type not in ("text", "tel", "number", "") or c.max_length is not None:
+            continue
+        for token in c.name.split():
+            m = _RE_INDEXED_FIELD.match(token)
+            if m and len(re.sub(r"[^a-z]", "", m.group("base").lower())) >= 2:
+                groups.setdefault((c.form_index, m.group("base").lower()), []).append([int(m.group("n")), c])
+                break
+    for members in groups.values():
+        if not 4 <= len(members) <= 8:
+            continue
+        members.sort(key=lambda pair: pair[0])
+        suffixes = [n for n, _ in members]
+        if suffixes != list(range(suffixes[0], suffixes[0] + len(suffixes))):
+            continue
+        ordered = sorted((c for _, c in members), key=lambda c: c.index)
+        if all(b.index - a.index == 1 for a, b in zip(ordered, ordered[1:])):
+            return ordered
+    return []
+
+
 def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
     """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
     otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
     the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
-    fill spreads the code across them."""
+    fill spreads the code across them. A widget whose boxes carry no signal at all except an indexed
+    id pattern is picked up structurally (see ``_indexed_split_otp_group``)."""
     out: List[ClassifiedLoginControl] = []
     for c in controls:
         tokens = c.autocomplete.lower().split()
@@ -149,6 +183,8 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
             continue
         if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
+    if not out:
+        out.extend(ClassifiedLoginControl(c, 70, "one-time-code") for c in _indexed_split_otp_group(controls))
     return out
 
 
@@ -229,15 +265,20 @@ def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> Li
     """One fill per box. Default: the single best-scoring code field takes the whole code.
 
     Per-digit entry only when the page unmistakably uses it: exactly len(code) OTP controls that are all
-    ``maxlength=1``, all in the same form, and adjacent in DOM order (the classic N-box widget). Anything
-    looser (several code-like inputs scattered over a page) gets ONE field, never a digit sprayed across
-    unrelated inputs."""
+    ``maxlength=1``, all in the same form, and adjacent in DOM order (the classic N-box widget) — or,
+    when the widget omits ``maxlength`` entirely, exactly the verified indexed-pattern group
+    (``_indexed_split_otp_group``). Anything looser (several code-like inputs scattered over a page)
+    gets ONE field, never a digit sprayed across unrelated inputs."""
     best = max(otp_controls, key=lambda c: c.score)
     boxes = sorted((c for c in otp_controls if c.control.max_length == 1), key=lambda c: c.control.index)
     if (len(boxes) == len(code)
             and len({b.control.form_index for b in boxes}) == 1
             and all(b.control.index - a.control.index == 1 for a, b in zip(boxes, boxes[1:]))):
         return [{"index": b.control.index, "token": "one-time-code", "value": ch} for b, ch in zip(boxes, code)]
+    unbounded = [c.control for c in sorted(otp_controls, key=lambda c: c.control.index) if c.control.max_length is None]
+    if (len(unbounded) == len(code)
+            and [c.index for c in unbounded] == [c.index for c in _indexed_split_otp_group([c.control for c in otp_controls])]):
+        return [{"index": c.index, "token": "one-time-code", "value": ch} for c, ch in zip(unbounded, code)]
     return [{"index": best.control.index, "token": "one-time-code", "value": code}]
 
 

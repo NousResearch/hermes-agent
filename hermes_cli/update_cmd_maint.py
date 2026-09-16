@@ -118,12 +118,15 @@ def _evict_module(name: str) -> bool:
     survives the purge, which is how a pre-pull ``main_dashboard`` outlived it and crashed the
     dashboard cleanup (#111689).
     """
-    dropped = sys.modules.pop(name, None) is not None
+    dropped = sys.modules.pop(name, None)
     parent_name, _, child = name.rpartition(".")
     parent = sys.modules.get(parent_name)
-    if parent is not None and getattr(vars(parent).get(child), "__name__", None) == name:
+    # Identity, not name: a same-named module that something else already rebound on the
+    # package is newer than the one evicted here and must stay. ``vars()`` keeps a lazy
+    # package ``__getattr__`` (``providers``) from importing during the purge.
+    if parent is not None and dropped is not None and vars(parent).get(child) is dropped:
         del vars(parent)[child]
-    return dropped
+    return dropped is not None
 
 
 def _purge_stale_hermes_modules() -> None:

@@ -3449,7 +3449,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _persist_seen_message_ids(self) -> None:
         try:
-            self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(self._dedup_state_path.parent)
             with self._dedup_lock:
                 recent = self._seen_message_order[-self._dedup_cache_size:]
                 # Save as {msg_id: timestamp} so TTL filtering works across restarts.

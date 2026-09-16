@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Sanitized Microsoft 365 Plugin architecture</title>
+  <desc id="desc">Administrator capability flags flow to registered actions. The Hermes host approval gate precedes Graph client creation and Microsoft 365 services. Unsupported operations stop before the gate. Teams Bot Framework is a separate adapter.</desc>
+  <defs>
+    <style>
+      .bg { fill:#0f172a; } .box { fill:#1e293b; stroke:#94a3b8; stroke-width:2; rx:14; }
+      .gate { fill:#164e63; stroke:#67e8f9; stroke-width:3; rx:14; }
+      .stop { fill:#4c1d1d; stroke:#fca5a5; stroke-width:2; rx:14; }
+      .adapter { fill:#312e81; stroke:#c4b5fd; stroke-width:2; rx:14; }
+      text { font-family:Segoe UI,Arial,sans-serif; fill:#f8fafc; } .label { font-size:22px; font-weight:600; }
+      .small { font-size:16px; fill:#cbd5e1; } .arrow { stroke:#cbd5e1; stroke-width:3; fill:none; marker-end:url(#arrow); }
+      .dashed { stroke-dasharray:9 8; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L10,3 L0,6 Z" fill="#cbd5e1"/></marker>
+  </defs>
+  <rect class="bg" width="1200" height="680"/>
+  <text x="60" y="55" class="label">Microsoft 365 Plugin — sanitized control flow</text>
+  <text x="60" y="84" class="small">Policy intent is emitted by the plugin; the Hermes host owns approval transport.</text>
+
+  <rect class="box" x="60" y="145" width="235" height="112"/>
+  <text x="177" y="185" text-anchor="middle" class="label">Administrator flags</text>
+  <text x="177" y="215" text-anchor="middle" class="small">capability configuration</text>
+  <text x="177" y="238" text-anchor="middle" class="small">app-only identity</text>
+
+  <rect class="box" x="350" y="145" width="235" height="112"/>
+  <text x="467" y="185" text-anchor="middle" class="label">Registered actions</text>
+  <text x="467" y="215" text-anchor="middle" class="small">enabled + supported enum</text>
+  <text x="467" y="238" text-anchor="middle" class="small">preflight diagnostics</text>
+
+  <rect class="gate" x="640" y="125" width="255" height="152"/>
+  <text x="767" y="170" text-anchor="middle" class="label">Hermes host gate</text>
+  <text x="767" y="202" text-anchor="middle" class="small">pre_tool_call</text>
+  <text x="767" y="226" text-anchor="middle" class="small">approval for writes</text>
+  <text x="767" y="250" text-anchor="middle" class="small">fail closed on denial</text>
+
+  <rect class="box" x="950" y="145" width="190" height="112"/>
+  <text x="1045" y="185" text-anchor="middle" class="label">Graph client</text>
+  <text x="1045" y="215" text-anchor="middle" class="small">SDK builders/models</text>
+  <text x="1045" y="238" text-anchor="middle" class="small">after validation</text>
+
+  <path class="arrow" d="M295 201 H350"/><path class="arrow" d="M585 201 H640"/><path class="arrow" d="M895 201 H950"/>
+
+  <rect class="stop" x="350" y="335" width="300" height="122"/>
+  <text x="500" y="375" text-anchor="middle" class="label">Unsupported combination</text>
+  <text x="500" y="405" text-anchor="middle" class="small">for example, Teams send</text>
+  <text x="500" y="430" text-anchor="middle" class="small">stops before approval/client</text>
+  <path class="arrow dashed" d="M467 257 V335"/>
+
+  <rect class="box" x="950" y="335" width="190" height="122"/>
+  <text x="1045" y="375" text-anchor="middle" class="label">M365 services</text>
+  <text x="1045" y="405" text-anchor="middle" class="small">Graph endpoints</text>
+  <text x="1045" y="430" text-anchor="middle" class="small">tenant policy applies</text>
+  <path class="arrow" d="M1045 257 V335"/>
+
+  <rect class="adapter" x="60" y="520" width="350" height="85"/>
+  <text x="235" y="555" text-anchor="middle" class="label">Teams Bot Framework adapter</text>
+  <text x="235" y="582" text-anchor="middle" class="small">separate adjacent integration; unchanged</text>
+  <path class="arrow dashed" d="M235 520 V457"/>
+  <text x="235" y="485" text-anchor="middle" class="small">not routed through Graph plugin</text>
+
+  <text x="660" y="555" class="small">Trust boundary: approval is policy, not a sandbox.</text>
+  <text x="660" y="582" class="small">Secrets are redacted; no tenant data or credentials appear here.</text>
+</svg>

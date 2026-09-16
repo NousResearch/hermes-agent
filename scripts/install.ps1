@@ -1228,7 +1228,8 @@ function Resolve-UvCmd {
         # Re-probe rather than trusting the cached path: PATH can change
         # mid-session and a cached binary can be replaced by a broken shim.
         if ($script:UvCmd -eq "uv") {
-            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
             if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) { return }
         } elseif ((Test-Path $script:UvCmd) -and (Get-UsableUvVersion $script:UvCmd)) {
             return
@@ -1251,7 +1252,11 @@ function Resolve-UvCmd {
     # Fall back to PATH (covers edge cases where the installer ran in a
     # sibling process and HERMES_HOME wasn't propagated).  A PATH uv is the
     # most likely place to meet a package-manager shim, so probe it too.
-    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    # Get-Command returns every match; with two uv installs on PATH .Source is
+    # an array and the probe cannot launch it, so take the first (the one the
+    # shell would run).
+    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
     if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) {
         $script:UvCmd = "uv"
         return
@@ -1260,7 +1265,8 @@ function Resolve-UvCmd {
     # Refresh PATH from registry in case the current process started before
     # Install-Uv updated User PATH.
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
     if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) {
         $script:UvCmd = "uv"
         return

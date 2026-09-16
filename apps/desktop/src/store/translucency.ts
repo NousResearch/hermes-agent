@@ -170,6 +170,8 @@ export const isChatWindow = (search = typeof window === 'undefined' ? '' : windo
    the seam is measured from; styles.css picks the matching gradient
    direction off html[dir]. */
 let railObserver: null | ResizeObserver = null
+let railMutationObserver: MutationObserver | null = null
+let railMutationTarget: Element | null = null
 let railTarget: Element | null = null
 let railTrackingOn = false
 
@@ -205,6 +207,29 @@ const measureRailEdge = (): void => {
   root.style.setProperty('--glass-rail-edge', `${Math.max(0, Math.round(edge))}px`)
 }
 
+const armRailMutationObserver = (): void => {
+  if (!railMutationObserver) {
+    return
+  }
+
+  // Before the sidebar mounts there is no stable layout group to observe.
+  // Once it exists, limit observation to that group's direct children: the
+  // minimized zone removes/re-adds its body at this boundary, while transcript
+  // mutations deeper in the group do not need to wake this tracker.
+  const target = railTarget?.closest('[data-tree-group]') ?? document.documentElement
+
+  if (target === railMutationTarget) {
+    return
+  }
+
+  railMutationObserver.disconnect()
+  railMutationTarget = target
+  railMutationObserver.observe(
+    target,
+    target === document.documentElement ? { childList: true, subtree: true } : { childList: true }
+  )
+}
+
 const startRailTracking = (): void => {
   if (railTrackingOn) {
     // Already tracking: the ResizeObserver on the rail and the window resize
@@ -229,8 +254,24 @@ const startRailTracking = (): void => {
     railObserver = new ResizeObserver(() => measureRailEdge())
   }
 
+  // A minimized tree group unmounts the sidebar pane entirely. Restoring it
+  // mounts a fresh `[data-slot="sidebar"]`, so the ResizeObserver attached to
+  // the old element can never see the new rail. Watch the root for that
+  // replacement and let measureRailEdge re-attach the size observer. This is
+  // the same DOM change that used to leave the glass seam at 0px until a
+  // window resize happened to remeasure it.
+  if (typeof MutationObserver !== 'undefined' && !railMutationObserver) {
+    railMutationObserver = new MutationObserver(() => {
+      if (!railTarget?.isConnected) {
+        measureRailEdge()
+        armRailMutationObserver()
+      }
+    })
+  }
+
   window.addEventListener('resize', measureRailEdge)
   measureRailEdge()
+  armRailMutationObserver()
 }
 
 const stopRailTracking = (): void => {
@@ -243,6 +284,10 @@ const stopRailTracking = (): void => {
   if (railObserver && railTarget) {
     railObserver.unobserve(railTarget)
   }
+
+  railMutationObserver?.disconnect()
+  railMutationObserver = null
+  railMutationTarget = null
 
   railTarget = null
   window.removeEventListener('resize', measureRailEdge)

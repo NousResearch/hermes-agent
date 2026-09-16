@@ -287,6 +287,49 @@ describe('frost and area', () => {
     setTranslucencyMode('clear')
     expect(document.documentElement.hasAttribute('data-hermes-glass-scope')).toBe(false)
   })
+
+  it('remeasures the glass seam when a minimized sidebar mounts again', async () => {
+    setTranslucency(50)
+    setTranslucencyScope('sidebar')
+    setTranslucencyMode('glass')
+
+    const makeRail = () => {
+      const rail = document.createElement('div')
+      rail.dataset.slot = 'sidebar'
+      vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue({ right: 240, left: 0 } as DOMRect)
+
+      return rail
+    }
+
+    const firstRail = makeRail()
+    const group = document.createElement('div')
+    group.dataset.treeGroup = 'sidebar-zone'
+    group.append(firstRail)
+    document.body.append(group)
+
+    try {
+      // MutationObserver delivery is asynchronous, just like the real
+      // unmount/remount that happens when the tree group is restored.
+      await Promise.resolve()
+      expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('240px')
+
+      firstRail.remove()
+      await Promise.resolve()
+      expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('0px')
+
+      const restoredRail = makeRail()
+      group.append(restoredRail)
+      await Promise.resolve()
+      expect(document.documentElement.style.getPropertyValue('--glass-rail-edge')).toBe('240px')
+      group.remove()
+    } finally {
+      setTranslucencyMode('clear')
+      setTranslucency(TRANSLUCENCY_MIN)
+      setTranslucencyScope(DEFAULT_GLASS_SCOPE)
+      group.remove()
+      firstRail.remove()
+    }
+  })
 })
 
 // A held slider drag and a timed pulse from a picker click can overlap, which

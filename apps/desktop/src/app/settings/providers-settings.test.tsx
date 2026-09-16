@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -16,6 +17,7 @@ const onboarding = atom({ manual: false })
 
 vi.mock('@/store/profile', () => ({
   $activeGatewayProfile: atom('alpha'),
+  $profileColors: atom({}),
   $profiles: atom([]),
   refreshProfiles: async () => {},
   normalizeProfileKey: (p: string | null) => p || 'default'
@@ -105,7 +107,7 @@ async function renderProvidersSettings() {
 
 describe('ProvidersSettings', () => {
   it('reads and saves API keys for the shared Settings target and reloads when it changes', async () => {
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
+    const { $settingsScopeKey, $settingsScopeOverride, setSettingsScope } = await import('@/store/settings-scope')
     const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
     $activeGatewayProfile.set('profile-a')
     $settingsScopeOverride.set('profile-b')
@@ -123,8 +125,16 @@ describe('ProvidersSettings', () => {
     getEnvVars.mockResolvedValue({ WIDGET_API_KEY: keyVar({ provider: 'widget', provider_label: 'Widget' }) })
     const { ProvidersSettings } = await import('./providers-settings')
 
+    // Match SettingsView's owner-keyed lifecycle. The selector is tested at its
+    // own boundary, so change targets through the real store action here.
+    function Page() {
+      const scopeKey = useStore($settingsScopeKey)
+
+      return <ProvidersSettings key={scopeKey} onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />
+    }
+
     try {
-      const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
+      const { container } = render(<Page />)
       await screen.findByText('Widget')
       expect(getEnvVars).toHaveBeenLastCalledWith('profile-b')
       expect(screen.getByText('Applies to')).toBeTruthy()
@@ -133,7 +143,7 @@ describe('ProvidersSettings', () => {
       fireEvent.change(input, { target: { value: 'fixture-key' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
-      fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
+      act(() => setSettingsScope('profile-a'))
       await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith(undefined))
     } finally {
       cleanup()

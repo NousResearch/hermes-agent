@@ -21,19 +21,32 @@ export const HERMES_CONFIG_KEY = ['hermes-config-record'] as const
 // AGENTS.md scope-in-key rule). profileScopeKey folds a remote pin's
 // connection id into the suffix, so two gateways' same-named profiles never
 // share a cache row.
-export const hermesConfigKey = (profile?: ProfileScope) =>
-  profile == null ? HERMES_CONFIG_KEY : ([...HERMES_CONFIG_KEY, profileScopeKey(profile)] as const)
+export const hermesConfigKey = (profile?: ProfileScope, settingsScopeKey?: string) => {
+  if (profile && typeof profile === 'object' && profile.connectionId) {
+    return [...HERMES_CONFIG_KEY, profileScopeKey(profile)] as const
+  }
+
+  // Legacy profile strings still route through the ambient connection. A
+  // Settings remount must not seed its draft from that connection's old cache.
+  if (settingsScopeKey !== undefined) {
+    return [...HERMES_CONFIG_KEY, 'settings', settingsScopeKey] as const
+  }
+
+  if (profile != null) {
+    return [...HERMES_CONFIG_KEY, profileScopeKey(profile)] as const
+  }
+
+  return profile === null ? ([...HERMES_CONFIG_KEY, 'primary'] as const) : HERMES_CONFIG_KEY
+}
 
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.
 // `profile` scopes both the query key and the fetch; omitting it preserves the
 // exact app-wide behavior (base key, `profileScoped(undefined)` fallback).
-export const useHermesConfigRecord = (profile?: ProfileScope) =>
+export const useHermesConfigRecord = (profile?: ProfileScope, settingsScopeKey?: string) =>
   useQuery({
-    queryKey: hermesConfigKey(profile),
-    // null/undefined both mean "no override" → fetch with undefined so
-    // capabilityScoped falls back to the app-wide active profile (passing null
-    // would wrongly target the primary backend).
-    queryFn: () => getHermesConfigRecord(profile ?? undefined),
+    queryKey: hermesConfigKey(profile, settingsScopeKey),
+    // Preserve the API contract: only undefined follows the active profile.
+    queryFn: () => getHermesConfigRecord(profile),
     staleTime: 0
   })
 
@@ -41,8 +54,8 @@ export const useHermesConfigRecord = (profile?: ProfileScope) =>
 // write the suffixed per-profile cache instead — keeps the selector's optimistic
 // write-through landing on the same key its query reads.
 export const setHermesConfigCache = writeCache<HermesConfigRecord>(HERMES_CONFIG_KEY)
-export const hermesConfigCacheWriter = (profile?: ProfileScope) =>
-  writeCache<HermesConfigRecord>(hermesConfigKey(profile))
+export const hermesConfigCacheWriter = (profile?: ProfileScope, settingsScopeKey?: string) =>
+  writeCache<HermesConfigRecord>(hermesConfigKey(profile, settingsScopeKey))
 
-export const invalidateHermesConfig = (profile?: ProfileScope) =>
-  queryClient.invalidateQueries({ queryKey: hermesConfigKey(profile) })
+export const invalidateHermesConfig = (profile?: ProfileScope, settingsScopeKey?: string) =>
+  queryClient.invalidateQueries({ queryKey: hermesConfigKey(profile, settingsScopeKey) })

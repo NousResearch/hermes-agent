@@ -37,7 +37,10 @@ export function KeysSettings({ view }: KeysSettingsProps) {
   // Shared settings "Applies to" scope: fetch + edit the selected profile's
   // env store instead of the active one (undefined → active, the default
   // path — request-shaped so the API helpers never see a primary-targeting
-  // null).
+  // null). The LIVE selection drives the fetch/reset so an in-flight draft is
+  // dropped the moment the target changes (6201a8236f); queued saves are still
+  // pinned to the mounted owner by useEnvCredentials' isCurrent() guard, which
+  // fails closed once $settingsScopeKey moves.
   const scopeProfile = useStore($settingsRequestProfile)
   const { rowProps, vars } = useEnvCredentials(scopeProfile)
   const [openKey, setOpenKey] = useState<null | string>(null)

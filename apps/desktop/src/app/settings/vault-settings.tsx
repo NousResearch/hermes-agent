@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
@@ -21,8 +22,7 @@ import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
-import { $activeConnectionId } from '@/store/connections'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
@@ -32,7 +32,7 @@ import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
-export const vaultOwnerKey = (connectionId: null | string, profile: string) => `${connectionId ?? ''}::${profile}`
+
 const vaultQueryKey = (owner: string) => ['vault-items', owner] as const
 const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as const
 
@@ -160,13 +160,21 @@ export function VaultSettings() {
   // owner, so a profile switch / connection swap remounts it: dialogs close and drafts (including a
   // typed master password) are gone by construction rather than by cleanup code.
   const scopeProfile = useStore($settingsScopeProfile)
-  const connectionId = useStore($activeConnectionId)
-  const owner = vaultOwnerKey(connectionId, scopeProfile)
+  const { profile: scope, scopeKey: owner, isCurrent } = useSettingsOwner()
 
   const requestGateway = useCallback(
-    <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params, undefined, undefined, { spawnPriority: 'foreground' }),
-    [scopeProfile]
+    <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+      if (!isCurrent()) {
+        return Promise.reject(new Error(v.loadFailed))
+      }
+
+      return scope && typeof scope === 'object' && scope.connectionId
+        ? requestGatewayForAgent<T>(scope.connectionId, scope.profile ?? 'default', method, params)
+        : requestGatewayForProfile<T>(scopeProfile, method, params, undefined, undefined, {
+            spawnPriority: 'foreground'
+          })
+    },
+    [isCurrent, scope, scopeProfile, v.loadFailed]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
@@ -186,7 +194,7 @@ export function VaultSettings() {
   const pendingSecret = useRef<null | Record<string, string>>(null)
 
   const { data: sourcesData } = useQuery({
-    enabled: gatewayState === 'open',
+    enabled: Boolean(scope && typeof scope === 'object' && scope.connectionId) || gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
     // Manager detection can change while this settings page is closed. Mark this
     // metadata query immediately stale so remount and closed-to-open recovery
@@ -204,7 +212,7 @@ export function VaultSettings() {
   const invalidateVault = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: VAULT_SOURCES_QUERY_KEY })
-  }, [queryClient])
+  }, [queryClient, VAULT_QUERY_KEY, VAULT_SOURCES_QUERY_KEY])
 
   const setSourceEnabled = useMutation({
     mutationFn: ({ name, enabled }: { name: VaultSourceName; enabled: boolean }) =>
@@ -247,7 +255,7 @@ export function VaultSettings() {
   })
 
   const { data, error, isPending } = useQuery({
-    enabled: gatewayState === 'open',
+    enabled: Boolean(scope && typeof scope === 'object' && scope.connectionId) || gatewayState === 'open',
     queryKey: VAULT_QUERY_KEY,
     queryFn: async () => {
       const result = await requestGateway<{ items: VaultItem[] }>('vault.list', {})
@@ -304,7 +312,10 @@ export function VaultSettings() {
     setSearchParams(next, { replace: true })
   }, [openAdd, searchParams, setSearchParams])
 
-  const invalidate = useCallback(() => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }), [queryClient])
+  const invalidate = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: VAULT_QUERY_KEY }),
+    [queryClient, VAULT_QUERY_KEY]
+  )
 
   const addMutation = useMutation({
     mutationFn: async (payload: { kind: VaultKind; label: string; origin?: string }) => {

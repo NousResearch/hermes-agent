@@ -478,6 +478,194 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_reviewer_requested_rework_resumes_the_existing_worktree_once(
+    kanban_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A durable reviewer handoff resumes the same task artifact at spawn."""
+    import hermes_cli.profiles as profmod
+
+    fixed_now = 1_800_000_000
+    existing_workspace = tmp_path / "existing-worktree"
+    existing_workspace.mkdir()
+    captured: list[tuple[str, str, str | None]] = []
+
+    monkeypatch.setattr(kb.time, "time", lambda: fixed_now)
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(kbd, "_memory_pressure_level", lambda: "unknown")
+    monkeypatch.setattr(
+        kbd._kbw,
+        "_resolve_worktree_workspace",
+        lambda task, board=None: (existing_workspace, task.branch_name),
+    )
+
+    def spawn(task, workspace):
+        captured.append((task.id, workspace, task.branch_name))
+        return 4321
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="update the existing candidate",
+            assignee="coder",
+            workspace_kind="worktree",
+            workspace_path=str(existing_workspace),
+            branch_name="fix/existing-candidate",
+        )
+        implementation = kb.claim_task(conn, task_id, claimer="coder:implementation")
+        assert implementation is not None
+        kb.add_comment(
+            conn,
+            task_id,
+            author="coder",
+            body="PR: https://github.com/example/repo/pull/456",
+        )
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="candidate ready",
+            reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:independent")
+        assert review is not None
+        ok, implementer = kb.request_changes(
+            conn,
+            task_id,
+            reason="address finding 1",
+            expected_run_id=review.current_run_id,
+        )
+        assert (ok, implementer) == (True, "coder")
+        assert kb.get_task(conn, task_id).status == "ready"
+
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=spawn,
+            max_in_progress=4,
+            max_in_progress_per_profile=2,
+            reconcile_orphans=False,
+        )
+        assert result.respawn_guarded == []
+        assert result.spawned == [(task_id, "coder", str(existing_workspace))]
+        assert captured == [
+            (task_id, str(existing_workspace), "fix/existing-candidate")
+        ]
+        resumed = kb.get_task(conn, task_id)
+        assert resumed.status == "running"
+        assert resumed.workspace_path == str(existing_workspace)
+        assert resumed.branch_name == "fix/existing-candidate"
+
+        # A later tick cannot create a second implementation while the resumed
+        # run owns the active claim.
+        again = kbd.dispatch_once(
+            conn,
+            spawn_fn=spawn,
+            max_in_progress=4,
+            max_in_progress_per_profile=2,
+            reconcile_orphans=False,
+        )
+        assert again.spawned == []
+        assert captured == [
+            (task_id, str(existing_workspace), "fix/existing-candidate")
+        ]
+
+
+def test_active_pr_bypass_requires_authenticated_same_task_reviewer_rework(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Forged/non-review signals and newer PR comments stay guarded."""
+    fixed_now = 1_800_000_000
+    pr_url = "https://github.com/example/repo/pull/789"
+    monkeypatch.setattr(kb.time, "time", lambda: fixed_now)
+
+    def commented_task(conn, title: str) -> str:
+        task_id = kb.create_task(conn, title=title, assignee="coder")
+        kb.add_comment(conn, task_id, author="coder", body=f"PR: {pr_url}")
+        return task_id
+
+    def request_valid_rework(conn, task_id: str) -> None:
+        claimed = kb.claim_task(conn, task_id, claimer="coder:implementation")
+        assert claimed is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            summary="ready",
+            reviewer="reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        review = kb.claim_review_task(conn, task_id, claimer="reviewer:independent")
+        assert review is not None
+        assert kb.request_changes(
+            conn,
+            task_id,
+            reason="fix it",
+            expected_run_id=review.current_run_id,
+        )[0]
+
+    with kbc.connect() as conn:
+        unchanged = commented_task(conn, "ordinary duplicate")
+        assert kbd.check_respawn_guard(conn, unchanged) == "active_pr"
+
+        failed = commented_task(conn, "failed transition")
+        assert kb.request_changes(conn, failed, reason="not a reviewer")[0] is False
+        assert kbd.check_respawn_guard(conn, failed) == "active_pr"
+
+        forged = commented_task(conn, "forged event")
+        with kb.write_txn(conn):
+            kb._append_event(
+                conn,
+                forged,
+                "changes_requested",
+                {"reviewer": "reviewer", "implementer": "coder", "status": "ready"},
+            )
+        assert kbd.check_respawn_guard(conn, forged) == "active_pr"
+
+        non_review = commented_task(conn, "non-review run")
+        run = kb.claim_task(conn, non_review, claimer="coder:ordinary")
+        assert run is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET status = 'changes_requested', "
+                "outcome = 'changes_requested', ended_at = ? WHERE id = ?",
+                (fixed_now, run.current_run_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', current_run_id = NULL, "
+                "claim_lock = NULL, claim_expires = NULL WHERE id = ?",
+                (non_review,),
+            )
+            kb._append_event(
+                conn,
+                non_review,
+                "changes_requested",
+                {"reviewer": "reviewer", "implementer": "coder", "status": "ready"},
+                run_id=run.current_run_id,
+            )
+        assert kbd.check_respawn_guard(conn, non_review) == "active_pr"
+
+        stale = commented_task(conn, "stale claim")
+        assert kb.claim_task(conn, stale, claimer="dead") is not None
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+                (fixed_now - 1, stale),
+            )
+        assert kb.release_stale_claims(conn) == 1
+        assert kbd.check_respawn_guard(conn, stale) == "active_pr"
+
+        sibling = commented_task(conn, "reviewer card isolation")
+        reviewed_elsewhere = commented_task(conn, "different task")
+        request_valid_rework(conn, reviewed_elsewhere)
+        assert kbd.check_respawn_guard(conn, sibling) == "active_pr"
+
+        newest_pr = commented_task(conn, "newest PR wins")
+        request_valid_rework(conn, newest_pr)
+        assert kbd.check_respawn_guard(conn, newest_pr) is None
+        kb.add_comment(conn, newest_pr, author="reviewer", body="rework acknowledged")
+        assert kbd.check_respawn_guard(conn, newest_pr) is None
+        kb.add_comment(conn, newest_pr, author="coder", body=f"replacement {pr_url}")
+        assert kbd.check_respawn_guard(conn, newest_pr) == "active_pr"
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

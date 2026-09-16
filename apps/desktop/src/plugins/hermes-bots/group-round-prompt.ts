@@ -110,6 +110,7 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
     '',
     'Rules for this room:',
     '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
+    '- MAX 3 tool calls per room turn. If answering needs more than that, post a one-line status (e.g. "checking X, will report back") and do the deep work in your own session — the room waits for the slowest turn.',
     '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
     '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
     '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'

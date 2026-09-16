@@ -1570,42 +1570,42 @@ class TestRuntimeKindDeclaration:
         """The file outlives its creator: a native gateway inheriting a container's state file
         must correct the field, not leave the stale claim standing."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("prior", "in_container", "expected"),
+    [
+        ("none", True, "container"),
+        ("none", False, "native"),
+        ("container-write", False, "native"),  # the file outlives its creator: re-stamped, not left stale
+        ("pre-field-file", True, "container"),  # a file from a gateway that predates the field gains it
+        ("none", RuntimeError("unreadable /proc"), None),  # detection raised: absent, never guessed
+    ],
+    ids=["container", "native", "restamped-after-runtime-change", "added-on-upgrade", "absent-when-detection-raises"],
+)
+def test_runtime_kind_is_stamped_on_every_write_or_left_absent(tmp_path, monkeypatch, prior, in_container, expected):
+    """``runtime_kind`` in gateway_state.json lets a reader across a bind mount tell which supervisor
+    owns a profile's gateway without guessing from argv. Same never-raises contract as the
+    code-identity fields: an unresolvable runtime is an absent key, never a wrong one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    if prior == "container-write":
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
         status.write_runtime_status(gateway_state="running")
-        assert self._payload(tmp_path)["runtime_kind"] == "container"
-
-        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
-        status.write_runtime_status(gateway_state="running")
-
-        assert self._payload(tmp_path)["runtime_kind"] == "native"
-
-    def test_restamp_adds_the_field_to_a_file_written_before_it_existed(self, tmp_path, monkeypatch):
-        """Upgrade path: files written by a gateway that predates the field carry no
-        runtime_kind. The first write by a new gateway must ADD it, not merely maintain an
-        existing key — otherwise every already-deployed home stays blank forever."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    elif prior == "pre-field-file":
         (tmp_path / "gateway_state.json").write_text(json.dumps({
             "kind": "hermes-gateway", "pid": 1, "argv": ["old"], "start_time": 0.0,
             "gateway_state": "running", "platforms": {},
         }))
-        monkeypatch.setattr("hermes_constants.is_container", lambda: True)
 
-        status.write_runtime_status(gateway_state="running")
+    def detect():
+        if isinstance(in_container, Exception):
+            raise in_container
+        return in_container
 
-        assert self._payload(tmp_path)["runtime_kind"] == "container"
+    # is_container() memoises into a module global, so patch the function itself.
+    monkeypatch.setattr("hermes_constants.is_container", detect)
+    status.write_runtime_status(gateway_state="running")
 
-    def test_absent_rather_than_wrong_when_detection_raises(self, tmp_path, monkeypatch):
-        """Same never-raises contract as the code-identity fields: a reader must be able to
-        treat an absent key as "unknown". A field that could be wrong is worse than no field."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        def _boom():
-            raise RuntimeError("unreadable /proc")
-
-        monkeypatch.setattr("hermes_constants.is_container", _boom)
-
-        status.write_runtime_status(gateway_state="running")
-
-        payload = self._payload(tmp_path)
-        assert "runtime_kind" not in payload
-        assert payload["gateway_state"] == "running"
+    payload = json.loads((tmp_path / "gateway_state.json").read_text())
+    assert payload.get("runtime_kind") == expected
+    assert payload["gateway_state"] == "running"

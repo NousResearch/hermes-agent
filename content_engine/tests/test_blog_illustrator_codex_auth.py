@@ -20,7 +20,11 @@ def _entry(**overrides):
     return SimpleNamespace(**base)
 
 
-def test_payload_uses_entry_fields_when_complete():
+def test_payload_uses_entry_fields_when_complete(monkeypatch):
+    import hermes_cli.auth as A
+
+    monkeypatch.setattr(A, "_codex_access_token_is_expiring",
+                        lambda token, skew=0: False)
     entry = _entry(id_token="id-xyz", account_id="acct-1")
     calls = []
 
@@ -38,6 +42,33 @@ def test_payload_uses_entry_fields_when_complete():
         }
     }
     assert calls == []
+
+
+def test_payload_refreshes_when_access_token_expiring(monkeypatch):
+    """id_token present but access token expired must still refresh.
+
+    Regression: handing the CLI an expired access token made it attempt its
+    own refresh with an already-consumed rotation -> 401 'refresh token was
+    already used'.
+    """
+    import hermes_cli.auth as A
+
+    monkeypatch.setattr(A, "_codex_access_token_is_expiring",
+                        lambda token, skew=0: True)
+    entry = _entry(id_token="stale-id", account_id="acct-1")
+
+    def refresher(_entry):
+        return {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "id_token": "fresh-id",
+            "account_id": "acct-1",
+        }
+
+    payload = _codex_auth_payload(entry, refresher=refresher)
+    assert payload["tokens"]["access_token"] == "fresh-access"
+    assert payload["tokens"]["refresh_token"] == "fresh-refresh"
+    assert payload["tokens"]["id_token"] == "fresh-id"
 
 
 def test_payload_refreshes_when_id_token_missing():

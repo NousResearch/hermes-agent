@@ -106,10 +106,14 @@ def _codex_auth_payload(entry, *, refresher=None) -> dict:
 
     Recent Codex CLI versions refuse an auth file that lacks ``id_token`` at
     parse time ("missing field id_token"). Pool entries only carry
-    access/refresh, so when no id_token is present we obtain a full token set
-    via ``refresher`` (the shared refresh path rotates and persists the grant,
-    and keeps a short-lived local cache so hero + section images share one
-    rotation).
+    access/refresh, so when no id_token is present — or the stored access
+    token is expiring — we obtain a full token set via ``refresher`` (the
+    shared refresh path rotates and persists the grant, and keeps a
+    short-lived local cache so hero + section images share one rotation).
+
+    Handing the CLI an expired access token without refreshing first is what
+    produces "refresh token was already used" 401s: the CLI attempts its own
+    refresh with a rotation that another process may already have consumed.
     """
     tokens = {
         "access_token": entry.access_token,
@@ -119,7 +123,17 @@ def _codex_auth_payload(entry, *, refresher=None) -> dict:
         value = getattr(entry, key, None)
         if value:
             tokens[key] = value
-    if "id_token" not in tokens and refresher is not None:
+    needs_refresh = "id_token" not in tokens
+    if not needs_refresh and tokens.get("access_token"):
+        try:
+            from hermes_cli.auth import _codex_access_token_is_expiring
+
+            needs_refresh = _codex_access_token_is_expiring(
+                tokens["access_token"], 120
+            )
+        except Exception:
+            needs_refresh = False
+    if needs_refresh and refresher is not None:
         fresh = refresher(entry)
         if fresh:
             for key in ("access_token", "refresh_token", "id_token", "account_id"):

@@ -24,6 +24,8 @@ B_VAL = "b-only-secret-0002"
 ENV_VAL = "systemd-injected-0003"
 A_API_KEY = "launch-api-key-0004"
 B_API_KEY = "secondary-api-key-0005"
+A_BASE_URL = "https://launch.example.invalid/v1"
+B_BASE_URL = "https://secondary.example.invalid/v1"
 
 
 @pytest.fixture
@@ -33,9 +35,11 @@ def two_homes(tmp_path, monkeypatch):
     b = root / "profiles" / "b"
     b.mkdir(parents=True)
     (root / ".env").write_text(
-        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\n", encoding="utf-8")
+        f"A_ONLY_TOKEN={A_VAL}\nHERMES_API_KEY={A_API_KEY}\nHERMES_BASE_URL={A_BASE_URL}\n",
+        encoding="utf-8")
     (b / ".env").write_text(
-        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\n", encoding="utf-8")
+        f"B_ONLY_TOKEN={B_VAL}\nHERMES_API_KEY={B_API_KEY}\nHERMES_BASE_URL={B_BASE_URL}\n",
+        encoding="utf-8")
     for home in (root, b):
         (home / "config.yaml").write_text(
             "probe:\n  a_ref: ${A_ONLY_TOKEN}\n  b_ref: ${B_ONLY_TOKEN}\n  env_ref: ${INJECTED_TOKEN}\n",
@@ -43,6 +47,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setenv("A_ONLY_TOKEN", A_VAL)  # the launch process loaded its own .env
     monkeypatch.setenv("HERMES_API_KEY", A_API_KEY)
+    monkeypatch.setenv("HERMES_BASE_URL", A_BASE_URL)
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
@@ -128,22 +133,29 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     assert seen["options"] == (b, B_VAL, None)
 
 
-def test_config_show_keeps_each_profiles_api_key_after_multiplex_activation(two_homes):
+def test_config_show_keeps_each_profiles_values_after_multiplex_activation(two_homes):
     """A→B→A config.show calls resolve the requested profile instead of running unscoped."""
-    _root, _b = two_homes
+    root, b = two_homes
 
-    def masked_key(profile=None):
+    def displayed_values(profile=None):
         params = {"profile": profile} if profile else {}
         response = server._methods["config.show"]("rid", params)
         assert "error" not in response, response
-        model_rows = next(
-            section["rows"] for section in response["result"]["sections"]
-            if section["title"] == "Model")
-        return dict(model_rows)["API Key"]
+        sections = {
+            section["title"]: dict(section["rows"])
+            for section in response["result"]["sections"]
+        }
+        return sections["Model"], sections["Environment"]
 
-    assert masked_key() == f"****{A_API_KEY[-4:]}"
-    assert masked_key("b") == f"****{B_API_KEY[-4:]}"
-    assert masked_key() == f"****{A_API_KEY[-4:]}"
+    for profile, home, api_key, base_url in (
+        (None, root, A_API_KEY, A_BASE_URL),
+        ("b", b, B_API_KEY, B_BASE_URL),
+        (None, root, A_API_KEY, A_BASE_URL),
+    ):
+        model, environment = displayed_values(profile)
+        assert model["API Key"] == f"****{api_key[-4:]}"
+        assert model["Base URL"] == base_url
+        assert environment["Config File"] == str(home / "config.yaml")
 
 
 def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monkeypatch):

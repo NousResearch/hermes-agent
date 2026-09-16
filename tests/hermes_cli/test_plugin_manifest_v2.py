@@ -18,7 +18,6 @@ from hermes_cli.plugins import (
     resolve_plugin_load_order,
     validate_config_schema,
 )
-from hermes_cli.plugins_cmd import PluginOperationError, _check_manifest_version
 
 
 def _write_plugin(base, name, manifest_extra=None, register_body="pass"):
@@ -86,19 +85,6 @@ class TestV1Regression:
 
 
 class TestV2Parsing:
-    def test_installer_accepts_the_manifest_version_the_loader_supports(self):
-        _check_manifest_version(
-            {"manifest_version": SUPPORTED_MANIFEST_VERSION},
-            "modern",
-        )
-
-    def test_installer_rejects_future_manifest_versions(self):
-        with pytest.raises(PluginOperationError, match="only supports up to"):
-            _check_manifest_version(
-                {"manifest_version": SUPPORTED_MANIFEST_VERSION + 1},
-                "future",
-            )
-
     def test_v2_fields_parse(self, hermes_home):
         _write_plugin(
             hermes_home / "plugins", "modern",

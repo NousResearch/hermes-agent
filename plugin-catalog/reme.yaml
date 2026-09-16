@@ -1,6 +1,6 @@
 name: reme
 repo: https://github.com/agentscope-ai/ReMe
-sha: 9ebe17a89d41c599a1c0cef6a67810ba2711717c
+sha: 5231f3970c550bb0bc5d1bc7fbc85534274ca530
 subdir: integrations/hermes_agent
 description: Local-first, file-native long-term memory with HTTP and embedded ReMe backends.
 maintainer: agentscope-ai

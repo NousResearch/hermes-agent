@@ -402,19 +402,23 @@ def _profile_alias(args):
     name = args.profile_name
     remove = getattr(args, "remove", False)
     custom_name = getattr(args, "alias_name", None)
-    if not profile_exists(name):
-        _die(f"Error: Profile '{name}' does not exist.")
     alias_name = custom_name or name
     try:
         validate_alias_name(alias_name)
     except ValueError as exc:
         _die(f"Error: {exc}")
     if remove:
+        # Removal touches only the wrapper file, never the profile: the alias names
+        # a profile that may already be gone -- which is exactly the "orphan alias"
+        # the doctor reports, and this is the only command that can clean it up.
+        # Behind profile_exists() that case was unremovable.
         if remove_wrapper_script(alias_name):
             print(f"✓ Removed alias '{alias_name}'")
         else:
             print(f"No alias '{alias_name}' found to remove.")
         return
+    if not profile_exists(name):
+        _die(f"Error: Profile '{name}' does not exist.")
     collision = check_alias_collision(alias_name)
     if collision:
         _die(f"Error: {collision}")

@@ -146,6 +146,7 @@ interface SlashCommandDeps {
     platform: string,
     options?: { onProgress?: (state: string) => void; sessionId?: string }
   ) => Promise<{ ok: boolean; error?: string }>
+  openAgents: () => void
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
@@ -173,6 +174,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
+    openAgents,
     openMemoryGraph,
     refreshSessions,
     requestGateway,
@@ -1000,6 +1002,13 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         journey: async () => {
           openMemoryGraph()
         },
+        // /agents (aliases /tasks) opens the Agents overlay pane — the desktop's
+        // authoritative spawn-tree view fed by the backend's subagent.list
+        // snapshot. Never route this through the slash worker: that subprocess
+        // cannot see this session's live workers.
+        agents: async () => {
+          openAgents()
+        },
         // /hatch opens the pet generator overlay (the desktop's rich, multi-step
         // generate→pick→hatch→adopt flow). A typed description seeds the prompt
         // so `/hatch a cyber fox` lands on the composer step prefilled.
@@ -1229,6 +1238,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       getRuntimeIdForStoredSession,
       handleSkinCommand,
       handoffSession,
+      openAgents,
       openMemoryGraph,
       refreshSessions,
       requestGateway,

@@ -785,6 +785,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     getRuntimeIdForStoredSession,
     getRouteToken,
     handleSkinCommand,
+    openAgents,
     openMemoryGraph: openStarmap,
     refreshSessions,
     requestGateway,

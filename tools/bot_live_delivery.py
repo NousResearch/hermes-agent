@@ -15,7 +15,7 @@ import time
 import uuid
 from contextlib import contextmanager
 
-from utils import atomic_json_write, fsync_directory
+from utils import atomic_json_write, atomic_write_text, fsync_directory
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ from hermes_cli.active_sessions import _FileLock
 log = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
+_SEQUENCE_FILE = ".sequence"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
 
@@ -108,21 +109,51 @@ def _read(path: Path) -> dict[str, Any] | None:
         return None
 
 
+# Tickets already reported unreadable by this process. The live poller rescans the
+# dir twice a second, so a persistent bad ticket is WARNING once and DEBUG after.
+_warned_unreadable: set[Path] = set()
+
+
 def _scan_read(path: Path) -> dict[str, Any] | None:
     """Bulk-scan variant: one unreadable ticket must not wedge the whole dir.
 
     Directory scans (sequence high-water mark, queued-claim sweep) may only
     treat a file as absent when it is provably absent; an unreadable ticket
-    degrades to "that one delivery is uninspectable" with a loud warning.
+    degrades to "that one delivery is uninspectable" with a warning.
     Exact-id reads (admission idempotency, completion, result lookup) keep
     using _read so a permission error still fails closed instead of
     licensing an overwrite of a possibly-live receipt.
     """
     try:
-        return _read(path)
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, exc)
+        record = _read(path)
+    except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
+        level = logging.DEBUG if path in _warned_unreadable else logging.WARNING
+        _warned_unreadable.add(path)
+        log.log(level, "bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, exc)
         return None
+    _warned_unreadable.discard(path)
+    return record
+
+
+def _next_sequence(root: Path) -> int:
+    """Allocate the next admission sequence under the dir lock.
+
+    The high-water mark lives in a counter file beside the tickets, so a ticket
+    the scan cannot read does not drop its sequence and hand a later admission
+    a duplicate or lower one. Readable tickets still bootstrap dirs written
+    before the counter existed. Wall time can roll back; sequences never do.
+    """
+    counter = root / _SEQUENCE_FILE
+    try:
+        persisted = int(counter.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        persisted = 0
+    scanned = max((record.get("sequence", record["created_at"])
+                   for candidate in root.glob("*.json")
+                   if (record := _scan_read(candidate)) is not None), default=0)
+    sequence = max(persisted, scanned) + 1
+    atomic_write_text(counter, str(sequence), mode=0o600, fsync_dir=True)
+    return sequence
 
 
 def _write(path: Path, record: dict[str, Any]) -> None:
@@ -149,14 +180,9 @@ def deliver_to_live_owner(
             if existing["owner"] != pinned or existing["message"] != message or existing.get("author") != author:
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
-        # Wall time can roll back. Permanent receipts retain the admission
-        # high-water mark, allocated while holding the cross-process lock.
-        sequence = max((record.get("sequence", record["created_at"])
-                        for candidate in root.glob("*.json")
-                        if (record := _scan_read(candidate)) is not None), default=0) + 1
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
-                      sequence=sequence, **({"author": dict(author)} if author else {}))
+                      sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))
         _write(path, record)
         return record
 

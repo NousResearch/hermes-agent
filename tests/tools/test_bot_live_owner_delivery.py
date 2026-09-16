@@ -119,22 +119,26 @@ def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
                  lease_id="lease", live_session_id="live")
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
     root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
-    unreadable = root / f"{'e' * 32}.json"
-    unreadable.write_text('{"status": "queued"}', encoding="utf-8")
-    unreadable.chmod(0)
+    # A real admission that later turns unreadable: its sequence must survive the skip.
+    hidden = mailbox.deliver_to_live_owner(tmp_path, owner, "hidden", delivery_id="e" * 32)
+    (root / f"{'e' * 32}.json").chmod(0)
     corrupt = root / f"{'1' * 32}.json"
     corrupt.write_text("{not json", encoding="utf-8")
+    (root / f"{'2' * 32}.json").write_bytes(b"\xff\xfe\x00garbage")  # invalid UTF-8, not just bad JSON
     with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
         # Sender side: admission of a fresh id must survive the sequence sweep.
         admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
         # Receiver side: every readable queued ticket must still be claimed, in order.
         assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
         assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
-        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+        for _ in range(10):  # the idle poller rescans twice a second
+            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
     assert admitted["status"] == "queued"
-    assert any(record.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
-               and "Permission denied" in record.message
-               for record in caplog.records)
+    assert admitted["sequence"] > hidden["sequence"] > queued["sequence"]
+    denied = [record for record in caplog.records
+              if record.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+              and "Permission denied" in record.message]
+    assert len(denied) == 1, "one persistent bad ticket must warn once per process, not per scan"
 
 
 @pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,

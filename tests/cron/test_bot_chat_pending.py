@@ -120,6 +120,8 @@ def test_unreadable_deferred_receipt_does_not_block_siblings(tmp_path, monkeypat
     monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
     with caplog.at_level("ERROR", logger=queue.logger.name):
         queue.drain()
+        queue.drain()  # every scheduler tick drains; the same bad receipt must not re-log
     assert seen == ["healthy"]
-    assert any("Unreadable deferred Bot Chat receipt" in r.message and "Permission denied" in r.message
-               for r in caplog.records)
+    assert [r for r in caplog.records
+            if "Unreadable deferred Bot Chat receipt" in r.message and "Permission denied" in r.message] and \
+        sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1

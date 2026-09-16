@@ -700,9 +700,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._send_chunk_retries = int(_extra_or_secret(extra, "send_chunk_retries", "4"))
         self._send_chunk_retry_delay_seconds = float(_extra_or_secret(extra, "send_chunk_retry_delay_seconds", "1.0"))
         self._send_text_gate = asyncio.Lock()
-        self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "1")))
+        # One opaque ``ret=-2`` (no errcode, no errmsg) has no business tripping a hard send outage: require a
+        # short burst inside the window before opening the breaker.
+        self._rate_limit_circuit_threshold = max(1, int(_extra_or_secret(extra, "rate_limit_circuit_threshold", "3")))
         self._rate_limit_circuit_window_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_window_seconds", "30.0"))
         self._rate_limit_circuit_open_seconds = float(_extra_or_secret(extra, "rate_limit_circuit_open_seconds", "30.0"))
+        # Upper bound for one retry wait, so retrying stays inside a cron delivery's budget.
+        self._rate_limit_max_backoff_seconds = max(0.0, float(_extra_or_secret(extra, "rate_limit_max_backoff_seconds", "20.0")))
         self._rate_limit_circuit_until, self._rate_limit_events = 0.0, []  # type: float, List[float]
         self._dm_policy = _extra_or_secret(extra, "dm_policy", "pairing").lower()
         self._group_policy = _extra_or_secret(extra, "group_policy", "disabled").lower()
@@ -964,6 +968,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._rate_limit_circuit_until = max(self._rate_limit_circuit_until, time.monotonic() + self._rate_limit_circuit_open_seconds)
         return self._rate_limit_cooldown_remaining() > 0
 
+    def _backoff_seconds(self, streak: int) -> float:
+        """Exponential backoff with ±25% jitter for the *n*-th consecutive rate-limit response, capped by
+        ``rate_limit_max_backoff_seconds`` (base*3, base*9, base*27, ...). The old flat ``base*3`` wait was logged
+        1858 times on this install and never once rescued a send."""
+        base = self._send_chunk_retry_delay_seconds
+        wait = base * (3 ** max(1, streak))
+        return min(wait + wait * 0.25 * (secrets.randbelow(1000) / 1000.0), self._rate_limit_max_backoff_seconds)
+
     async def _send_text_chunk(self, *, chat_id: str, chunk: str, context_token: Optional[str], client_id: str) -> None:
         """Send one text chunk with retry/backoff under the adapter-wide text gate. On session-expired (errcode -14)
         retry once *without* ``context_token`` — iLink accepts tokenless sends as a degraded fallback, which keeps cron
@@ -971,6 +983,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         async with self._send_text_gate:
             last_error: Optional[Exception] = None
             retried_without_token = False
+            rate_limit_streak = 0
             for attempt in range(self._send_chunk_retries + 1):
                 if self._rate_limit_cooldown_remaining() > 0:
                     raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
@@ -986,18 +999,27 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                             logger.warning("[%s] session expired for %s; retrying without context_token", self.name, _safe_id(chat_id))
                             continue
                         errmsg = resp.get("errmsg") or resp.get("msg")
+                        # The server's own rejection must survive into the log: ``ret=-2`` arrives with no
+                        # ``errmsg``, so the "rate limited" wording below is Hermes' guess, not the server's.
+                        logger.warning(
+                            "[%s] iLink sendmessage rejected for %s: ret=%s errcode=%s errmsg=%r resp=%s",
+                            self.name, _safe_id(chat_id), ret, errcode, errmsg,
+                            json.dumps({k: v for k, v in resp.items() if k != "context_token"}, ensure_ascii=False)[:300])
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
                         # Keep a descriptive error for when the loop exhausts while still limited.
-                        last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'rate limited'}")
+                        rate_limit_streak += 1
+                        last_error = RuntimeError(f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg or 'none'}")
                         if self._record_rate_limit_event():
                             last_error = RuntimeError(
-                                f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
+                                f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s "
+                                f"(ret={ret} errcode={errcode} errmsg={errmsg or 'none'})")
                             break
                         if attempt >= self._send_chunk_retries:
                             break
-                        wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
-                        logger.warning("[%s] rate limited for %s; backing off %.1fs before retry", self.name, _safe_id(chat_id), wait)
+                        wait = self._backoff_seconds(rate_limit_streak)
+                        logger.warning("[%s] rate limited for %s; backing off %.1fs before retry (%d/%d)",
+                                       self.name, _safe_id(chat_id), wait, attempt + 1, self._send_chunk_retries)
                         await asyncio.sleep(wait)
                         continue
                     self._rate_limit_events.clear()

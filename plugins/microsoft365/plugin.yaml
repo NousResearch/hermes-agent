@@ -1,6 +1,6 @@
 name: microsoft365
 version: 0.1.0
-description: "Microsoft 365 Plugin — connects Hermes to the broader Microsoft 365 ecosystem: Outlook mail, SharePoint, OneDrive, Calendar, Teams and Planner/To Do, with per-capability flags."
+description: "Microsoft 365 Plugin — one bundled connection for Outlook, SharePoint, OneDrive, Calendar, Teams, Planner and To Do."
 author: NousResearch
 kind: backend
 python_dependencies:
@@ -8,11 +8,6 @@ python_dependencies:
   - "azure-identity>=1.17.0,<2"
 provides_tools:
   - microsoft365_preflight
-  - microsoft365_outlook
-  - microsoft365_sharepoint
-  - microsoft365_calendar
-  - microsoft365_teams
-  - microsoft365_planner
 config_schema:
   tenant_id:
     type: str
@@ -30,7 +25,26 @@ config_schema:
   user_id:
     type: str
     default: me
-    description: "Graph user ID for delegated-style user resources"
+    description: "Graph user ID for user resources"
   capabilities:
     type: dict
-    description: "Flags: outlook, sharepoint, calendar, teams, planner"
+    description: "Operation flags. Each service maps operation names to booleans; service=true enables all operations for backward compatibility."
+    properties:
+      outlook:
+        type: dict
+        description: "search, read, create_draft, send"
+      sharepoint:
+        type: dict
+        description: "search, read, download_files, upload_files"
+      onedrive:
+        type: dict
+        description: "search, read, download_files, upload_files"
+      calendar:
+        type: dict
+        description: "search, create_events"
+      teams:
+        type: dict
+        description: "list_teams, list_channels, search_messages, send_messages"
+      planner:
+        type: dict
+        description: "search, read, create_tasks, update_tasks (also covers To Do)"

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from . import tools
-from .backend import CAPABILITIES
+from .backend import CAPABILITIES, Microsoft365Settings
 
 
 def _sdk_available() -> bool:
@@ -23,13 +23,12 @@ def register(ctx) -> None:
         check_fn=lambda: True, is_async=True, emoji="🧩",
     )
     enabled = ctx.get_config("capabilities", {}) or {}
-    if not isinstance(enabled, dict):
-        enabled = {}
+    settings = Microsoft365Settings.from_mapping({"capabilities": enabled})
     for capability in CAPABILITIES:
-        if not bool(enabled.get(capability, False)):
+        if not settings.enabled(capability):
             continue
         ctx.register_tool(
             name=f"microsoft365_{capability}", toolset="microsoft365",
-            schema=tools.schema(capability), handler=lambda args, c=capability: tools._run(c, args, ctx),
+            schema=tools.schema(capability), handler=tools.capability_handler(capability),
             check_fn=_sdk_available, is_async=True, emoji="📎",
         )

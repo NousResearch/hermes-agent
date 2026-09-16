@@ -975,6 +975,7 @@ export function migrateSessionTilesProfile(oldName: string, newName: string, con
     (tile.ownerProfile === oldProfile ||
       tile.ownerRoute.profile === oldProfile ||
       tile.ownerRoute.targetProfile === oldProfile)
+
   const migrateTile = (tile: StoredTile): StoredTile => {
     const route = tile.ownerRoute
 
@@ -992,6 +993,7 @@ export function migrateSessionTilesProfile(oldName: string, newName: string, con
       }
     }
   }
+
   const oldTiles = tilesByProfile[oldProfile] ?? []
   const staying = oldTiles.filter(tile => !belongsToRenamedProfile(tile))
   const moved = [...(tilesByProfile[newProfile] ?? []), ...oldTiles.filter(belongsToRenamedProfile).map(migrateTile)]

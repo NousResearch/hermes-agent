@@ -94,9 +94,12 @@ export function RenameProfileDialog({
 
     try {
       const connection = $connection.get()
+
       const connectionId =
         (scope && typeof scope === 'object' ? scope.connectionId : connection?.connectionId)?.trim() || 'local'
+
       const ownsActiveNavigation = (connection?.connectionId?.trim() || 'local') === connectionId
+
       const renameStateScope = {
         connectionId,
         oldNavigationSuffix: ownsActiveNavigation ? activeConnectionScopeSuffix() : null,

@@ -43,8 +43,10 @@
 //     partition, so signing out of the portal must drop the agent's entry
 //     too), and the partition a url resolves to is read from the live registry
 //     and can change while an entry is live, so the base url is what follows
-//     the gateway. A sign-out with no base url clears the whole jar and so
-//     revokes everything.
+//     the gateway. A sign-out with no base url empties one partition's entire
+//     jar, and the store answers it by revoking EVERY entry: deliberately
+//     wider than the clear it mirrors, because an unscoped clear names no
+//     gateway to be narrower about.
 //
 // Registration reads the jar asynchronously, so both of its exits are fenced
 // against work that overtook them: a logout epoch per SCOPE — partition, base
@@ -88,16 +90,24 @@ export interface GatewayCookie {
 // cookie, any path -- never a sibling or a subdomain, which in the shared
 // legacy jar belong to other connections.
 export function cookieAppliesToHost(cookie: { domain?: string } | null, host: string) {
-  const domain = String(cookie?.domain || '')
-    .replace(/^\./, '')
-    .toLowerCase()
+  const stored = String(cookie?.domain || '').toLowerCase()
   const target = String(host || '').toLowerCase()
 
-  if (!domain || !target) {
+  if (!stored || !target) {
     return false
   }
 
-  return target === domain || target.endsWith(`.${domain}`)
+  // The leading dot is the difference between a Domain cookie, which a parent
+  // shares with its subdomains, and a host-only cookie, which belongs to that
+  // host alone. Measured on the pinned Electron: a cookie set with an explicit
+  // `domain` is stored as '.hermes.example' and IS sent to gw.hermes.example;
+  // one set without is stored as 'hermes.example' and is NOT. Ignoring the dot
+  // would delete a parent host's own cookie when signing out a subdomain --
+  // signing another gateway out of the shared jar.
+  const isDomainCookie = stored.startsWith('.')
+  const domain = stored.replace(/^\./, '')
+
+  return target === domain || (isDomainCookie && target.endsWith(`.${domain}`))
 }
 
 export interface GatewayWsCookieStoreDependencies {
@@ -157,11 +167,21 @@ function cookieUrlForUpgrade(wsUrl: string, baseUrl: string) {
 }
 
 interface GatewayWsCookieEntry {
+  consumedAt: null | number
   expiresAt: number
   header: string
   owner: string
   partition: string
 }
+
+// How long a consumed authorization still answers for the SAME url. Chromium
+// re-runs the before-send-headers hook when a transaction restarts under the
+// renderer (connection reuse failing, protocol fallback, an auth restart), and
+// a strictly single-use entry would send that retry without the cookie: an
+// intermittent, invisible version of the failure this exists to fix. The
+// window is short enough that it cannot outlive the upgrade it belongs to, and
+// the entry is still retired by its owner's next mint and by the TTL.
+const CONSUMED_GRACE_MS = 2_000
 
 export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDependencies) {
   const entries = new Map<string, GatewayWsCookieEntry>()
@@ -285,7 +305,7 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     dropWhere(entry => entry.owner === owner)
 
     if (header) {
-      entries.set(wsUrl, { expiresAt: now() + ttlMs, header, owner, partition })
+      entries.set(wsUrl, { consumedAt: null, expiresAt: now() + ttlMs, header, owner, partition })
       prune()
     }
   }
@@ -297,10 +317,11 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   // then the partition stays closed to new authority, because a registration
   // racing the cleanup would read cookies that are already being deleted.
   const forget = (baseUrl: string) => {
-    // No base url means the caller is clearing the ENTIRE jar --
-    // clearOauthSession passes its filter straight through -- so nothing may
-    // outlive it. Returning a no-op left the widest clear as the only
-    // unfenced one.
+    // No base url means the caller is clearing a whole jar without naming a
+    // gateway (clearOauthSession resolves a session and removes every cookie
+    // in it). With no host to be narrower about, revoke everything: wider than
+    // the clear it mirrors, which is the safe direction. Returning a no-op
+    // here left the widest clear as the only unfenced one.
     if (!baseUrl) {
       const revokeEverything = () => {
         epochs.set(EVERY_SCOPE, (epochs.get(EVERY_SCOPE) ?? 0) + 1)
@@ -386,12 +407,13 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   // rather than used.
   //
   // CONSUMED on use: the authority lasts one upgrade, mirroring the single-use
-  // ticket already in the url. Nothing re-attempts an upgrade with the same
-  // url — every OAuth connect re-mints through freshGatewayWsUrl /
-  // ws-url-for before dialing, and a ticket that has been presented is spent
-  // anyway — so an unconsumed entry could only ever serve a request this
-  // authorization was not granted for. A refusal (wrong resource type,
-  // expired) does not consume.
+  // ticket already in the url. Nothing re-dials a spent url — every OAuth
+  // connect re-mints through freshGatewayWsUrl / ws-url-for before dialing,
+  // and a presented ticket is spent anyway — so an unconsumed entry could only
+  // ever serve a request this authorization was not granted for. What DOES
+  // recur is the hook itself for one upgrade, so a consumed entry answers the
+  // same url for CONSUMED_GRACE_MS and then stops. A refusal (wrong resource
+  // type, expired, wrong url) does not consume.
   const headerFor = (details: RemoteRequestDetails) => {
     const url = details?.url
 
@@ -418,7 +440,17 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
       return null
     }
 
-    entries.delete(url)
+    // Consumed: this url has had its upgrade. It answers a restart of that same
+    // upgrade for a moment, then nothing.
+    if (entry.consumedAt !== null && now() - entry.consumedAt > CONSUMED_GRACE_MS) {
+      entries.delete(url)
+
+      return null
+    }
+
+    if (entry.consumedAt === null) {
+      entry.consumedAt = now()
+    }
 
     return entry.header
   }

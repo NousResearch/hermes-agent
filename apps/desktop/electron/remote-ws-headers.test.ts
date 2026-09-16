@@ -95,10 +95,11 @@ describe('gateway WebSocket consumer identity', () => {
     expect(gatewayWsConsumerTag({ sender: { id: 3 } }, '   ')).toBe('w3:default')
     expect(gatewayWsConsumerTag({ sender: { id: 3 } }, ' speech ')).toBe('w3:speech')
 
-    // Renderer-supplied, so it cannot grow a map key without bound.
-    const long = gatewayWsConsumerTag({ sender: { id: 3 } }, 'x'.repeat(500))
-
-    expect(long).toBe(`w3:${'x'.repeat(32)}`)
+    // Renderer-supplied, so an unknown purpose cannot invent a new identity:
+    // it collapses to the default consumer rather than growing the key space.
+    expect(gatewayWsConsumerTag({ sender: { id: 3 } }, 'x'.repeat(500))).toBe('w3:default')
+    expect(gatewayWsConsumerTag({ sender: { id: 3 } }, 'not-a-known-purpose')).toBe('w3:default')
+    expect(gatewayWsConsumerTag({ sender: { id: 3 } }, 'secondary')).toBe('w3:secondary')
   })
 
   it('falls back to a single window id when the sender is unknown', () => {
@@ -112,6 +113,8 @@ describe('gateway WebSocket consumer identity', () => {
     expect(gatewayWsAuthorizesItsMintedUrl('secondary')).toBe(true)
     expect(gatewayWsAuthorizesItsMintedUrl('speech')).toBe(false)
     expect(gatewayWsAuthorizesItsMintedUrl('  speech  ')).toBe(false)
+    // An unknown purpose is not a licence to skip authorization either.
+    expect(gatewayWsAuthorizesItsMintedUrl('speechy')).toBe(true)
   })
 })
 

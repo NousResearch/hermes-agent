@@ -66,12 +66,21 @@ function cookieOn(store: ReturnType<typeof createGatewayWsCookieStore>, url: str
 // Sign-out deletes what this feature is willing to forward, so the two have to
 // agree on which cookies belong to a gateway.
 describe('cookie ownership for sign-out', () => {
-  it('matches the exact host and a cookie set on a parent domain', () => {
+  it('matches the exact host and a Domain cookie set on a parent', () => {
     expect(cookieAppliesToHost({ domain: 'gateway.example' }, 'gateway.example')).toBe(true)
+    expect(cookieAppliesToHost({ domain: '.gateway.example' }, 'gateway.example')).toBe(true)
     // A forward-auth proxy commonly sets its session on the parent domain, and
     // sign-out has to reach it or the session outlives the logout.
     expect(cookieAppliesToHost({ domain: '.example' }, 'gateway.example')).toBe(true)
-    expect(cookieAppliesToHost({ domain: 'example' }, 'gateway.example')).toBe(true)
+  })
+
+  // Measured on the pinned Electron: a cookie set with an explicit `domain` is
+  // stored dot-prefixed and IS sent to a subdomain; one set without a domain is
+  // stored bare and is NOT. Deleting the bare one would sign a parent-host
+  // gateway out of the jar it shares with this one.
+  it('leaves a parent host-only cookie alone when signing out a subdomain', () => {
+    expect(cookieAppliesToHost({ domain: 'hermes.example' }, 'gw.hermes.example')).toBe(false)
+    expect(cookieAppliesToHost({ domain: '.hermes.example' }, 'gw.hermes.example')).toBe(true)
   })
 
   it('does not match siblings, subdomains, or lookalike suffixes', () => {
@@ -232,12 +241,51 @@ describe('gateway WebSocket cookie forwarding', () => {
   // The url carries a single-use ticket, so the authority it needed is spent
   // once the upgrade has taken it.
   it('consumes the authorization with the upgrade that uses it', async () => {
-    const { store } = createStore()
+    const { advance, store } = createStore()
 
     await store.register(WS_URL, GATEWAY, CONSUMER)
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+
+    advance(2_001)
+
     expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  // Chromium re-runs the header hook when a transaction restarts under the
+  // renderer, and that restart is the SAME upgrade. Dropping the entry on the
+  // first read would send the retry uncredentialed -- an intermittent,
+  // invisible version of the failure this exists to fix.
+  it('still answers a restart of the same upgrade, briefly', async () => {
+    const { advance, store } = createStore()
+
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+
+    advance(1_999)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+
+    // The grace runs from the first use, not from the last, so it cannot be
+    // extended indefinitely by re-reading.
+    advance(2)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  it('still lets the owner retire a consumed url immediately', async () => {
+    const { store } = createStore()
+    const next = 'wss://gateway.example/api/ws?ticket=next'
+
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+
+    await store.register(next, GATEWAY, CONSUMER)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+    expect(cookieOn(store, next)).toBe(EXPECTED)
   })
 
   it('does not consume the authorization on a refused request', async () => {

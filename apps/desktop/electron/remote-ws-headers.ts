@@ -114,12 +114,20 @@ export function applyRemoteRequestHeaders(
 // nothing.
 const WS_PURPOSES_THAT_REWRITE_THE_URL = new Set(['speech'])
 
-// Renderer-supplied, so normalized once, here, before it can reach a map key
-// or a scope decision.
+// The purposes a renderer may name. Renderer-supplied input becomes part of a
+// consumer key, and keys are what the store's bounded entry map is keyed by, so
+// an open vocabulary would let one window mint under arbitrarily many
+// identities and evict another window's pending authorization. Anything else
+// collapses to the default consumer, which is the safe direction: it shares an
+// identity rather than inventing one.
+const WS_PURPOSES = new Set(['secondary', 'speech'])
+
 function normalizeWsPurpose(purpose: unknown) {
-  return String(purpose ?? '')
+  const named = String(purpose ?? '')
     .trim()
     .slice(0, 32)
+
+  return WS_PURPOSES.has(named) ? named : ''
 }
 
 export function gatewayWsAuthorizesItsMintedUrl(purpose?: unknown) {

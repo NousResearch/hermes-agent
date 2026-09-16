@@ -2987,9 +2987,33 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             nonconversational = _metadata_marks_nonconversational(metadata)
             final_delivery = bool(metadata and metadata.get("notify"))
             if thread_id:
-                channel = await self._resolve_channel(thread_id)
+                _original_thread_id = thread_id
+                try:
+                    channel = await self._resolve_channel(thread_id)
+                except (discord.errors.NotFound, discord.errors.Forbidden):
+                    channel = None
                 if not channel:
-                    return SendResult(success=False, error=f"Thread {thread_id} not found")
+                    # The thread is gone — archived, deleted, or just stale after a long
+                    # gap since the session was last active — so fall back to the parent
+                    # channel rather than silently dropping the reply. A message that shows
+                    # up in the wrong place beats one that never shows up at all.
+                    logger.warning(
+                        "[%s] Thread %s not found; falling back to parent channel %s",
+                        self.name, thread_id, chat_id,
+                    )
+                    thread_id = None
+                    try:
+                        channel = await self._resolve_channel(chat_id)
+                    except (discord.errors.NotFound, discord.errors.Forbidden):
+                        channel = None
+                    if not channel:
+                        return SendResult(
+                            success=False,
+                            error=(
+                                f"Thread {_original_thread_id} not found and parent "
+                                f"channel {chat_id} also not found"
+                            ),
+                        )
             else:
                 channel = await self._resolve_channel(chat_id)
                 if not channel:

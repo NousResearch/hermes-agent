@@ -64,3 +64,23 @@ def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(
     assert payload["gateway_running"] is True
     assert payload["state"] == "connected", payload
     assert payload["ingress_url"] == "http://127.0.0.1:45719/p/alpha/v1"
+
+
+def test_messaging_card_for_a_served_profile_ignores_a_stale_own_runtime_file(served_root, monkeypatch):
+    """#112765: a served profile's own ``gateway_state.json`` is a stale leftover (``stopped``);
+    the card must resolve ``<profile>:<platform>`` from the multiplexer's shared record, not
+    the profile's dead file — otherwise a connected channel reads \"Restart needed\" forever."""
+    from hermes_cli.web_routers import messaging
+    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
+    entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    alpha = served_root / "profiles" / "alpha"
+    (alpha / "gateway_state.json").write_text(json.dumps({"gateway_state": "stopped", "platforms": {}}))
+    [payload] = messaging._platform_payloads(alpha, [entry])
+    assert payload["gateway_running"] is True
+    assert payload["state"] == "connected", payload
+    # No cross-profile leakage: beta has no telegram entry in the shared record.
+    beta = served_root / "profiles" / "beta"
+    beta.mkdir()
+    [beta_payload] = messaging._platform_payloads(beta, [entry])
+    assert beta_payload["state"] == "pending_restart", beta_payload

@@ -12,7 +12,7 @@ const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
-const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
+const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~|$))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 // Math spans as remark-math will see them: a `$$…$$` block, which may span
 // lines, or a same-line `$…$`. A delimiter escaped as `\$` is prose — that is
@@ -55,6 +55,15 @@ const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*
 // image syntax (`![alt](path)`) on its existing inline pipeline. The target
 // char class excludes `)`/whitespace, matching how LLMs actually emit these.
 const FILE_LINK_RE = /(?<!!)\[(?<label>[^\]\n]+)\]\((?<target><?(?:file:\/\/|\/|~\/|[a-z]:[\\/])[^)\s]*>?)\)/gi
+
+// A transcript directive on its own line: `::name{...}`. Attribute values are
+// prose the model wrote (a task brief, a question) and read as markdown to the
+// parser — `*by week*` becomes <em>, `a_b c_d` becomes <em>, `~/x` opens
+// strikethrough. Any of those splits the paragraph into element children, the
+// directive stops being text-only, and the raw line paints as the user's
+// message. Same shape as lib/transcript-directives.ts DIRECTIVE_RE.
+const DIRECTIVE_LINE_RE = /^([ \t]*)(::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\})[ \t]*$/gm
+const MARKDOWN_INLINE_META_RE = /[\\`*_~[\]<>]/g
 
 /**
  * Returns true when `body` contains a line that's exactly `marker` (modulo
@@ -200,6 +209,22 @@ function rewriteProseSegment(segment: string): string {
         segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
       )
     )
+  )
+}
+
+/**
+ * Backslash-escape markdown inline syntax inside directive lines so the parser
+ * yields one text node. The escapes are consumed by the parser, so the
+ * directive the renderer sees is byte-for-byte what the model wrote.
+ */
+export function shieldDirectiveLines(text: string): string {
+  if (!text.includes('::')) {
+    return text
+  }
+
+  return text.replace(
+    DIRECTIVE_LINE_RE,
+    (_match, indent: string, directive: string) => indent + directive.replace(MARKDOWN_INLINE_META_RE, '\\$&')
   )
 }
 
@@ -637,34 +662,17 @@ export function preprocessMarkdown(text: string): string {
         return part
       }
 
-      // Whitespace-only segments (e.g. the `\n\n` between two adjacent
-      // fences) must NOT go through stripPreviewTargets — its internal
-      // .trim() would collapse them to '' and glue the surrounding
-      // fences together, producing things like ``````math which the
-      // markdown parser then reads as a single 6-backtick block.
-      if (!part.trim()) {
-        return part
-      }
-
-      // Preserve leading/trailing whitespace around the prose body so
-      // that fence-prose-fence sequences keep their blank-line gaps.
-      // stripPreviewTargets internally calls .trim() on its result for
-      // the benefit of its other (single-segment) callers; here we're
-      // operating on a SEGMENT of a larger document where outer
-      // whitespace is structural and must survive.
-      const leading = part.match(/^\s*/)?.[0] ?? ''
-      const trailing = part.match(/\s*$/)?.[0] ?? ''
-
       // Run only on prose segments so `$5` literals and `\(` inside code
       // blocks stay intact. The HTML-depth clamp belongs here for the same
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
-      const transformed = clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
-
-      return leading + transformed + trailing
+      // Directive lines are shielded last, after the prose rewrites have had
+      // their look, so nothing re-introduces markdown into them.
+      return shieldDirectiveLines(
+        clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+      )
     })
     .join('')
-    .replace(/[ \t]+\n/g, '\n')
 }
 
 /**

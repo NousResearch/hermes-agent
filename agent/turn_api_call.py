@@ -14,7 +14,9 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
+from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
+from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -219,15 +221,27 @@ def nous_rate_limit_guard(
         )
 
     if agent.provider == "nous":
+        # A gateway ``x-nous-model-switch`` recorded on the previous response moves this session
+        # (and the config default, when it still names the free tier's model) before the next call.
+        try:
+            from hermes_cli.anon_auth import apply_model_switch
+            apply_model_switch(agent)
+        except Exception:
+            pass
         try:
             from agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
             _nous_remaining = nous_rate_limit_remaining()
             if _nous_remaining is not None and _nous_remaining > 0:
-                _nous_msg = (
-                    f"Nous Portal rate limit active — resets in {_fmt_nous_remaining(_nous_remaining)}."
-                )
+                from hermes_cli import anon_auth
+                reset = _fmt_nous_remaining(_nous_remaining)
+                _welcome = anon_auth.route_is_welcome_host(getattr(agent, "base_url", ""))
+                if _welcome:
+                    _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
+                        reset=anon_auth.friendly_wait(_nous_remaining))
+                else:
+                    _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
                 agent._buffer_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
@@ -239,18 +253,20 @@ def nous_rate_limit_guard(
                 # No fallback — surface the buffered rate-limit context that led here.
                 agent._flush_status_buffer()
                 agent._persist_session(messages, conversation_history)
-                return _verdict("return", {
-                    "final_response": (
-                        f"⏳ {_nous_msg}\n\n"
-                        "No fallback provider available. Try again after the reset, or add a "
-                        "fallback provider in config.yaml."
-                    ),
+                # The free tier's sentence already says what to do (wait, or sign in); the
+                # fallback-provider advice is for an install that runs its own providers.
+                return _verdict("return", stamp_failure({
+                    "final_response": (f"⏳ {_nous_msg}" if _welcome
+                                       else f"⏳ {_nous_msg}\n\n{site_copy('nous_rate_limit')}"),
                     "messages": messages,
                     "api_calls": api_call_count,
                     "completed": False,
                     "failed": True,
                     "error": _nous_msg,
-                })
+                    # The free tier's card body and its sign-in door (agent/error_surface.py).
+                    **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
+                        reset=anon_auth.friendly_wait(_nous_remaining))}} if _welcome else {}),
+                }, FailoverReason.rate_limit.value, True))
         except Exception:
             pass  # Never let rate guard break the agent loop
     return _verdict("fallthrough")

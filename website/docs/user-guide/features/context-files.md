@@ -139,7 +139,7 @@ Context files are loaded by `build_context_files_prompt()` in `agent/prompt_buil
 2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)
 3. **Hint loading** — if an `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
 4. **Security scan** — same prompt injection scan as startup files
-5. **Truncation** — capped at 8,000 characters per file
+5. **Truncation** — capped at 32,000 characters per file (a fixed preview cap; `context_file_max_chars` and the model's context window do not change it). An oversized hint keeps its head/tail marker pointing at the full file and is logged, but does not raise the chat truncation warning that startup context files do
 6. **Injection** — appended to the tool result, so the model sees it in context naturally
 
 The final prompt section looks roughly like:

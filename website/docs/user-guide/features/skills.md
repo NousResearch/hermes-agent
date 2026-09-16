@@ -17,6 +17,52 @@ See also:
 - [Bundled Skills Catalog](/reference/skills-catalog)
 - [Official Optional Skills Catalog](/reference/optional-skills-catalog)
 
+## Browse and install in Desktop
+
+Open **Capabilities → Skills** and switch between **Installed** and **Browse**.
+Search stays at the top; the tab switch and actions share one row.
+**Installed** reads the selected profile's actual skills and enabled state;
+it is not inferred from the public catalog. **Browse** is a native catalog UI,
+not an embedded website or a second, smaller catalog.
+
+Desktop and the public [Skills Hub](/skills) read the same published CDN
+snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).
+The public docs alias serves the same snapshot as Desktop's fetch URL,
+`https://nousresearch.github.io/hermes-agent/docs/api/skills.json`. The docs
+build generates it from bundled `skills/`, `optional-skills/`, and the
+centralized skills index. Browsing does not crawl GitHub or query upstream
+marketplaces live; installation still retrieves the selected skill through
+its source's installer.
+
+### Install from the website
+
+The Skills Hub has an **Install in Hermes** button on each installable card. It opens the
+installed Hermes Desktop app with a URL-encoded, source-qualified skill target:
+for example, `official/...` for optional skills or `clawhub/...` for ClawHub.
+Bundled skills use an explicit repository path rather than an ambiguous bare
+name. When an older snapshot lacks that explicit bundled target, the website
+omits its install link and native Browse disables installation rather than
+resolving an ambiguous name. The next docs publish supplies those targets.
+The same target is used by native Browse and the card's CLI fallback:
+
+```text
+hermes://skill/install?identifier=official%2Fsecurity%2F1password
+```
+
+Hermes shows **Install “skill-name”?** with separate **Source** and **Install to**
+rows. Cancel makes no changes. After confirmation, the same dialog shows
+**Installing…**, then **Installed** and a completion notification. Errors stay
+in the dialog so you can read them and retry. Installation uses the existing
+Skills Hub pipeline, including security scanning, action logs, and installed-list
+refresh. If you switch profile or connection while the confirmation is open,
+reopen the link for the new destination. Changes apply to
+new sessions; a link cannot bypass scanning or select a different profile.
+
+The public links use `hermes://`, not the development-only `hermes-dev://`
+scheme. The `skill/install` route requires an updated Desktop build. If the
+app is missing or the link is not recognized, update Desktop or expand the
+card to copy its CLI install command instead.
+
 ## Starting with a blank slate
 
 By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:
@@ -747,6 +793,7 @@ Default taps (browsable without any setup):
 - [huggingface/skills](https://github.com/huggingface/skills)
 - [NVIDIA/skills](https://github.com/NVIDIA/skills) — NVIDIA-verified skills (signed `skill.oms.sig` + governance `skill-card.md`)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
+- [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) and [synthetic-sciences/openscience](https://github.com/synthetic-sciences/openscience) — ~480 scientific research skills (bioinformatics, chemistry, physics, ML training, scholarly tooling), grouped under one `science` category. Community trust: every install is security-scanned. Many wrap third-party tools with their own licenses (some GPL; KEGG requires a commercial license for non-academic use) — check each skill's prerequisites.
 
 - Example:
 
@@ -881,6 +928,10 @@ hermes skills update react --force   # Overwrite a skill you've edited locally
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+Checks skip network requests for missing or non-directory installs (`orphaned`) and unsafe or unresolvable recorded paths (`invalid_install`). Missing-directory entries can be removed with `hermes skills uninstall <name>`; invalid paths require inspecting and repairing the active profile's `skills/.hub/lock.json` before retrying. No entries are removed automatically.
+
+Valid installs continue to use their source adapter’s existing synchronous fetch and transport timeouts. There is no strict total deadline for an update check: an unreachable or slow source for an existing install can still delay later entries.
+
 Skills you have edited locally (the on-disk content no longer matches the hash recorded at install time) are **skipped** by `hermes skills update` so your changes are never silently overwritten. Pass `--force` to replace them with the upstream version anyway.
 
 :::tip GitHub rate limits
@@ -1008,6 +1059,8 @@ On each sync, Hermes recomputes the hash of your local copy and compares it to t
 
 - **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
 - **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
+
+Generated runtime caches inside a skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and a `.pyc` sitting next to its `.py`) are not part of the hash, so running a skill's helper script never marks it user-modified or hides it from `hermes skills list-modified` / `diff`.
 
 The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
 

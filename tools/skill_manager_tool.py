@@ -8,8 +8,9 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+import hashlib
 import json
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 import logging
 import re
 import shutil
@@ -78,6 +79,30 @@ def _skills_dir() -> Path:
     """
     configured = Path(SKILLS_DIR)
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
+
+
+def _skill_lock_path(name: str) -> Path:
+    """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
+    ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
+    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
+    lock and no name can hit a filesystem limit (callers validate the basename first)."""
+    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
+    return _skills_dir() / ".locks" / f"{digest}.lock"
+
+
+def _skill_mutation_lock(name: str):
+    """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_skill_lock_path(name))
+
+
+def _skill_mutation_locks(names):
+    """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
+    from tools.skill_usage import skill_file_lock
+    stack = ExitStack()
+    for lock_path in sorted({_skill_lock_path(n) for n in names}):
+        stack.enter_context(skill_file_lock(lock_path))
+    return stack
 
 
 MAX_NAME_LENGTH = 64
@@ -339,7 +364,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
@@ -396,7 +422,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
@@ -632,7 +659,8 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
 
 
 # Sync push debounce: a burst of skill_manage writes collapses into one push on a daemon timer.
-_sync_push_timer = None
+# One timer per profile home: in a multiplexed process B's write must not cancel A's pending push.
+_sync_push_timers: Dict[str, threading.Timer] = {}
 _sync_push_lock = threading.Lock()
 _SYNC_PUSH_DEBOUNCE_S = 5.0
 
@@ -640,23 +668,29 @@ _SYNC_PUSH_DEBOUNCE_S = 5.0
 def _maybe_debounced_sync_push(skill_name: str) -> None:
     """Debounced best-effort sync push after a skill write; never blocks the caller. Skills not
     opted into sync do nothing (no auth/network); ``maybe_push_skills`` enforces the access gate."""
-    global _sync_push_timer
     try:
         from tools.skill_usage import is_sync_enabled
         if not is_sync_enabled(skill_name):
             return
     except Exception:
         return
+    from hermes_constants import hermes_home_key
+    home_key = hermes_home_key()
+    # Timer threads start with empty ContextVars; without the scheduling turn's context the push would
+    # resolve the launch profile's home and credentials instead of the writing profile's.
+    ctx = _ctxvars.copy_context()
     def _fire():
         with suppress(Exception):
             from tools.skills_sync_client import maybe_push_skills
             maybe_push_skills(message=f"sync: {skill_name}")
     with _sync_push_lock:
-        if _sync_push_timer is not None:
-            _sync_push_timer.cancel()  # only sets an Event; never raises
-        _sync_push_timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, _fire)
-        _sync_push_timer.daemon = True
-        _sync_push_timer.start()
+        pending = _sync_push_timers.get(home_key)
+        if pending is not None:
+            pending.cancel()  # only sets an Event; never raises
+        timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, ctx.run, args=(_fire,))
+        timer.daemon = True
+        _sync_push_timers[home_key] = timer
+        timer.start()
 
 
 def _act_patch(a):
@@ -751,45 +785,49 @@ def skill_manage(
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
-    # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
-    # destroys the whole package (consolidation may have re-homed support files first), so
-    # complete it from the newest curator backup or a restore is hollow.
-    # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
-    # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
-    _ledger_before = None
-    with suppress(Exception):
-        from tools import skill_ledger as _ledger
-        _pre = _find_skill(name)
-        _ledger_before = _ledger.capture_before(
-            _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
             return tool_error(message, success=False)
-    handler = _ACTION_HANDLERS.get(action, lambda a: _err(
-        f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-    result = handler({"name": name, **args})
-    if isinstance(result, str):
-        return result  # tool_error JSON for argument-shape problems (patch)
-    if result.get("success"):
-        _record_success(
-            action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-            task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+    # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
+    # (create takes a bare name; the other actions also accept ``category/name``).
+    if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
+        return json.dumps(_err(name_err), ensure_ascii=False)
+    # A mutation is read-modify-write even when its action eventually delegates
+    # to a helper: guards, ledger capture, patch matching, validation, rollback,
+    # and the atomic replacement all belong to the same ownership window.
+    with _skill_mutation_lock(name):
+        # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
+        # destroys the whole package (consolidation may have re-homed support files first), so
+        # complete it from the newest curator backup or a restore is hollow.
+        # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
+        # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
+        _ledger_before = None
+        with suppress(Exception):
+            from tools import skill_ledger as _ledger
+            _pre = _find_skill(name)
+            _ledger_before = _ledger.capture_before(
+                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+        handler = _ACTION_HANDLERS.get(action, lambda a: _err(
+            f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
+        result = handler({"name": name, **args})
+        if isinstance(result, str):
+            return result  # tool_error JSON for argument-shape problems (patch)
+        if result.get("success"):
+            _record_success(
+                action, name, result, file_path=file_path, absorbed_into=absorbed_into,
+                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
     return json.dumps(result, ensure_ascii=False)
 
 
 # --- OpenAI Function-Calling Schema -------------------------------------------
 
-SKILL_MANAGE_SCHEMA = {
-    "name": "skill_manage",
-    # ONE advertised call shape (memory-tool pattern): the call IS an operations
-    # array. The legacy flat shape (top-level action/name/content/...) is still
-    # ACCEPTED for old transcripts and staged-write replay, but not advertised.
-    "description": (
+def _skill_manage_description(create_dir: str) -> str:
+    return (
         "Create, update, or delete skills — your procedural memory for "
         "recurring task types. The call is an operations array (a single "
         "edit is a list of one); it applies atomically — any failure rolls "
         "every touched skill back. Ops: create (full SKILL.md; lands in "
-        f"{_display_create_dir()}; must precede that skill's other "
+        f"{create_dir}; must precede that skill's other "
         "ops), patch (targeted old_string/new_string fix — preferred; "
         "content alone REPLACES the whole file, read it via skill_view() "
         "first), write_file/remove_file (supporting files), delete (sole "
@@ -799,7 +837,22 @@ SKILL_MANAGE_SCHEMA = {
         "imperative rule + why, no PR numbers/dates/incident narration, one "
         "rule per lesson, references/ named by topic (extend before adding). "
         "skill_view() shows format conventions."
-    ),
+    )
+
+
+def _skill_manage_schema_overrides() -> dict:
+    """Rebuild the create-dir hint from the ACTIVE profile at every get_definitions(): the
+    multiplexed gateway serves every profile from one process, so a path baked in at import
+    would name the launch profile's skills dir for everyone else (#95685)."""
+    return {"description": _skill_manage_description(_display_create_dir())}
+
+
+SKILL_MANAGE_SCHEMA = {
+    "name": "skill_manage",
+    # ONE advertised call shape (memory-tool pattern): the call IS an operations
+    # array. The legacy flat shape (top-level action/name/content/...) is still
+    # ACCEPTED for old transcripts and staged-write replay, but not advertised.
+    "description": _skill_manage_description("the profile's skills.create_dir"),
     "parameters": {
         "type": "object",
         "properties": {
@@ -881,7 +934,8 @@ from tools.registry import registry, tool_error
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",
     handler=lambda args, **kw: _skill_manage_from(
-        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")))
+        args, task_id=kw.get("task_id"), session_id=kw.get("session_id")),
+    dynamic_schema_overrides=_skill_manage_schema_overrides)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

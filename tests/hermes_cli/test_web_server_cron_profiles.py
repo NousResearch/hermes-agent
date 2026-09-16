@@ -538,12 +538,13 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
     fired = []
 
     class RecordingProvider:
-        def fire_due(self, job_id, *, adapters=None, loop=None, force=False):
+        def fire_due(self, job_id, *, adapters=None, loop=None, force=False, manual=False):
             fired.append(
                 {
                     "job_id": job_id,
                     "jobs_file": cron_jobs._current_cron_store().jobs_file,
                     "force": force,
+                    "manual": manual,
                 }
             )
             cron_jobs.mark_job_run(job_id, success=True)
@@ -571,6 +572,8 @@ async def test_trigger_cron_job_fires_only_selected_job_and_returns_refreshed_st
             "job_id": selected["id"],
             "jobs_file": isolated_profiles["worker_alpha"] / "cron" / "jobs.json",
             "force": False,
+            # Off-tick run-now: the claim must not stamp next_run_at as the occurrence (#104790).
+            "manual": True,
         }
     ]
     assert triggered["last_status"] == "ok"

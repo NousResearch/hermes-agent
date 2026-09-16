@@ -153,18 +153,18 @@ class TestResolveGitExecutable:
             return_value="/resolved/git",
         ):
             with patch.object(pc.subprocess, "run") as run:
-                # First call is `git status --porcelain` (clean tree),
-                # second is the pull itself.
+                # `git status --porcelain` (clean tree), `remote get-url origin`, then the pull.
                 run.side_effect = [
                     MagicMock(returncode=0, stdout="", stderr=""),
+                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),
                     MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
         assert ok is True
-        assert run.call_count == 2
+        assert run.call_count == 3
         for call in run.call_args_list:
             assert call.args[0][0] == "/resolved/git"
-        assert run.call_args_list[1].args[0][1:] == ["pull", "--ff-only"]
+        assert run.call_args_list[2].args[0][1:] == ["pull", "--ff-only"]
 
     def test_git_pull_clean_tree_never_stashes(self, tmp_path):
         import hermes_cli.plugins_cmd as pc
@@ -174,6 +174,7 @@ class TestResolveGitExecutable:
             with patch.object(pc.subprocess, "run") as run:
                 run.side_effect = [
                     MagicMock(returncode=0, stdout="", stderr=""),      # status
+                    MagicMock(returncode=0, stdout="git@example.com:x.git\n", stderr=""),  # remote get-url
                     MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
                 ]
                 ok, msg = pc._git_pull_plugin_dir(tmp_path)
@@ -414,12 +415,13 @@ class TestCmdUpdate:
 
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="", stderr=""),        # status: clean
+            MagicMock(returncode=0, stdout="git@example.com:x.git", stderr=""),  # remote get-url
             MagicMock(returncode=0, stdout="Updated", stderr=""),  # pull
         ]
 
         cmd_update("test-plugin")
 
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
@@ -794,6 +796,51 @@ class TestSubdirInstallE2E:
         assert manifest["name"] == "portable.test"
         assert target == (plugins_dir / "portable.test").resolve()
         assert pc._resolve_plugin_key("portable.test") == "portable.test"
+
+
+class TestInstallReadabilityGate:
+    """A clone that lands unreadable is repaired or rolled back, never shipped (#111804)."""
+
+    def _clone_with_unreadable_manifest(self, monkeypatch, pc):
+        real_chmod = os.chmod  # the rollback test replaces os.chmod after this fixture runs
+
+        def fake_clone(tmp_clone, git_url, revision):
+            tmp_clone.mkdir()
+            (tmp_clone / "plugin.yaml").write_text("name: badperm\nmanifest_version: 1\n", encoding="utf-8")
+            real_chmod(tmp_clone / "plugin.yaml", 0)
+            return "0" * 40
+
+        monkeypatch.setattr(pc, "_clone_plugin_repo", fake_clone)
+        monkeypatch.setattr(pc, "_scan_plugin_tree", lambda *a, **k: None)
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unreadable_file_is_repaired_before_install(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+
+        target, manifest, name = pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert name == "badperm"  # manifest read after repair, not the URL fallback
+        assert (target / "plugin.yaml").read_text(encoding="utf-8").startswith("name: badperm")
+
+    @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX mode bits, non-root")
+    def test_unrepairable_tree_rolls_back_and_names_the_fix(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins_cmd as pc
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        self._clone_with_unreadable_manifest(monkeypatch, pc)
+        monkeypatch.setattr(pc.os, "chmod", lambda *a, **k: (_ for _ in ()).throw(PermissionError(1, "nope")))
+
+        with pytest.raises(PluginOperationError, match=r"plugin.yaml is not readable.*chmod -R u\+rX"):
+            pc._install_plugin_core("file:///tmp/x", force=False)
+
+        assert list(plugins_dir.iterdir()) == []  # no half-installed dir, no staging leftovers
 
 
 def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):

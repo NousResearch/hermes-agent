@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from cron.env_settings import cron_env_setting
 from cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
@@ -41,7 +42,7 @@ def _timeout_from_env_or_config(
     env_var: str, config_key: str, parse: Callable[[Any], Any], label: str):
     """Shared env → ``cron.<config_key>`` resolution. ``parse`` returns the value or None to keep
     looking; a parse error on the env var WARNs, on config DEBUGs. None when neither yields."""
-    env_value = os.getenv(env_var, "").strip()
+    env_value = cron_env_setting(env_var).strip()
     if env_value:
         try:
             value = parse(env_value)
@@ -287,7 +288,13 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
             f"({scripts_dir_resolved}): {script_path!r}"
         )
     if not path.exists():
-        return None, f"Script not found: {path}"
+        # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
+        # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
+        return None, (
+            f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
+            f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
+            f"there too, or edit the job with `hermes cron edit`."
+        )
     if not path.is_file():
         return None, f"Script path is not a file: {path}"
     return path, None
@@ -326,7 +333,8 @@ def _run_job_script(
     Args: script_path: Path to the script. Relative paths are resolved against HERMES_HOME/scripts/.
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
     Optional absolute path to use as the script's cwd. When set, the subprocess runs in this directory
-    instead of the scripts-dir parent. See #69396.
+    instead of the scripts-dir parent. See #69396. ``job_env`` is an explicit scheduler-owned overlay
+    applied only to the child process after interpreter-specific environment adjustments.
     """
     path, err = _resolve_script_path(script_path)
     if path is None:
@@ -426,12 +434,18 @@ def _start_heartbeat_thread(loop_fn, name: str, fail_log) -> Optional[threading.
 def _run_job_script_with_claim_heartbeat(
     job: dict, script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
-    job_env: Optional[dict[str, str]] = None,
 ) -> tuple[bool, str]:
     """Run a cron script while heartbeating its owned one-shot claim. A long script can outlive
     the stale-claim TTL; without a heartbeat another scheduler would re-dispatch the one-shot.
     Recurring/unclaimed runs have no durable claim → no thread. The owner is captured from the
     dispatched job, never re-read, so a stale runner cannot extend a replacement owner's claim."""
+    job_env = None
+    if bool(job.get("no_agent")):
+        job_env = {
+            "HERMES_CRON_JOB_ID": str(job.get("id") or ""),
+            "HERMES_CRON_OCCURRENCE_AT": str(job.get("next_run_at") or ""),
+        }
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""

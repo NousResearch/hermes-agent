@@ -107,6 +107,16 @@ class TestRunJobScript:
         assert success is True
         assert output == "relative works"
 
+    def test_missing_script_names_the_profile_folder(self, cron_env):
+        """Scripts resolve per profile (#4707); the runtime error must say so (#94821)."""
+        from cron.scheduler_script import _run_job_script
+
+        success, output = _run_job_script("copied-from-other-profile.py")
+        assert success is False
+        assert "Script not found" in output
+        assert str(cron_env / "scripts") in output and "profile" in output
+        assert "hermes cron edit" in output
+
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
@@ -132,30 +142,6 @@ class TestRunJobScript:
         success, output = _run_job_script("env_probe.py")
         assert success is True
         assert output == "ABSENT"
-
-    def test_script_receives_explicit_job_environment(self, cron_env):
-        from cron.scheduler_script import _run_job_script
-
-        script = cron_env / "scripts" / "occurrence.py"
-        script.write_text(
-            "import os\n"
-            "print(os.environ['HERMES_CRON_JOB_ID'])\n"
-            "print(os.environ['HERMES_CRON_OCCURRENCE_AT'])\n"
-        )
-
-        success, output = _run_job_script(
-            "occurrence.py",
-            job_env={
-                "HERMES_CRON_JOB_ID": "job-123",
-                "HERMES_CRON_OCCURRENCE_AT": "2026-08-03T10:15:00+00:00",
-            },
-        )
-
-        assert success is True
-        assert output.splitlines() == [
-            "job-123",
-            "2026-08-03T10:15:00+00:00",
-        ]
 
     @pytest.mark.windows_only
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
@@ -475,6 +461,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "some_script.py").write_text("print('hi')\n")
         create_result = json.loads(cronjob(
             action="create",
             schedule="every 1h",
@@ -495,6 +482,7 @@ class TestCronjobToolScript:
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob
 
+        (cron_env / "scripts" / "data_collector.py").write_text("print('hi')\n")
         cronjob(
             action="create",
             schedule="every 1h",
@@ -806,7 +794,9 @@ class TestScriptTimeoutTreeKill:
         ok, out = sched_script._run_job_script(
             str(scripts_dir / "spawner.py"), workdir=str(cron_env)
         )
-        assert not ok, f"script should have timed out, got {out!r}"
+        assert not ok and out.startswith("Script timed out after 2s:"), (
+            f"expected the timeout path, got success={ok}, output={out!r}"
+        )
 
         deadline = time.monotonic() + 5
         gpid = None

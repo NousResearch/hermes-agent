@@ -196,6 +196,15 @@ def start_nous_auth_keepalive(
     interval_seconds = _interval_seconds(interval_seconds)
     if interval_seconds <= 0:
         return None
+    # The free tier has no refresh token to keep alive: its access token is re-minted from the
+    # anon credential on demand by the request path, so a background refresher has nothing to do.
+    from hermes_cli.anon_auth import is_guest_state
+    try:
+        if is_guest_state(get_provider_auth_state("nous")):
+            logger.debug("Nous auth keepalive skipped: free tier has no refresh token")
+            return None
+    except Exception:
+        pass
     global _keepalive_thread
     with _keepalive_lock:
         if _keepalive_thread is not None and _keepalive_thread.is_alive():

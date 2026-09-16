@@ -7,6 +7,7 @@ and the delivery-targets listing used by UI pickers.
 """
 
 import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -134,8 +135,9 @@ def test_deliver_runs_canonical_bot_chat_lane():
 
     assert err is None
     argv = calls["argv"]
-    assert argv[0] == "/usr/bin/hermes"
-    assert "-p" not in argv  # own profile: subprocess inherits HERMES_HOME
+    # The running install's interpreter, not whatever `hermes` PATH names (same order as /update).
+    assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
+    assert argv[3:5] == ["-p", "default"]  # do not follow active_profile
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv
@@ -143,26 +145,6 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert "--query-file" in argv
     # Message rides a temp file, never inline argv (quote/expansion safety).
     assert not any("the output" in str(a) for a in argv)
-
-
-def test_deliver_named_profile_uses_p_flag_and_clears_home():
-    calls = {}
-
-    def fake_run(argv, **kwargs):
-        calls["argv"] = argv
-        calls["kwargs"] = kwargs
-        return _completed()
-
-    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
-         mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
-
-    assert err is None
-    argv = calls["argv"]
-    assert argv[1:3] == ["-p", "research"]
-    # -p owns resolution; the scheduler's own HERMES_HOME must not leak in.
-    assert "HERMES_HOME" not in calls["kwargs"]["env"]
 
 
 def test_deliver_failure_returns_error_string():

@@ -23,6 +23,10 @@ The security model has eight layers:
 
 ## Dangerous Command Approval
 
+Terminal calls may include optional Purpose, Effect, and Risk context for a human approval prompt. This is **unverified model-written text**, not a security assessment or permission. Built-in CLI and gateway prompts display sanitized context alongside the scanner warning. The smart guardian, plugin approval transports, lifecycle-hook descriptions, and decision-result descriptions retain the scanner warning only; model context cannot replace that authority. Pending requests retain context separately as explanation metadata.
+
+Context is redacted and bounded, and forged context delimiters or formatted approval-command lines are removed. It is still untrusted: approve the actual command, not its claimed purpose. A delivered or possibly-delivered text prompt retains its pending decision even if expiry-notice registration fails; a definitive delivery failure or destination refusal remains fail-closed.
+
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
 
 ### Approval Modes

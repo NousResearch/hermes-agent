@@ -233,7 +233,7 @@ export function useComposerVoice({
       setLiveEngineActive(mode === 'gpt-live')
       setVoiceConversationActive(true)
     } catch (error) {
-      notifyError(error)
+      notifyError(error, t.notifications.voice.couldNotStartSession)
     }
   }, [t])
 

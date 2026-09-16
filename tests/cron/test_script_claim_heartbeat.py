@@ -643,21 +643,29 @@ def test_heartbeat_thread_start_failure_does_not_start_execution(monkeypatch):
 
 
 def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
-    """Store uncertainty cannot let a run outlive its last confirmed lease forever."""
+    """Store uncertainty cannot let a run outlive its last confirmed lease forever.
+
+    The contract is elapsed-time based (grace since the last confirmed renewal), not a renewal
+    count: on a slow host the first wake can land after the grace, so cancellation after a single
+    failed renewal is correct (#111471). Assert the contract, never a minimum attempt count."""
     import cron.scheduler as scheduler
     from cron import scheduler_script as sched_script
 
+    last_confirmed_at = []
+    cancellation_after = []
     calls = 0
 
     def heartbeat(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
+            last_confirmed_at.append(time.monotonic())
             return True
         raise OSError("store unavailable")
 
     def run_body(_job, **kwargs):
         assert kwargs["fire_claim_lost"].wait(timeout=0.5)
+        cancellation_after.append(time.monotonic() - last_confirmed_at[0])
         return True
 
     job = {
@@ -670,7 +678,8 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
 
     assert scheduler.run_one_job(job) is True
-    assert calls >= 3
+    assert calls >= 2, "cancellation must follow at least one failed renewal"
+    assert cancellation_after[0] >= scheduler._FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
 
 
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):

@@ -627,6 +627,18 @@ def test_fd_headroom_guard_fails_open_where_it_cannot_measure(monkeypatch):
     assert readpool._fd_headroom_ok() is False
 
 
+def test_fd_soft_limit_fails_open_for_importable_resource_stub(monkeypatch):
+    """An importable ``resource`` without ``getrlimit`` (third-party Windows stub,
+    #111877) must read as "unmeasurable", not abort every session read."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "resource", types.ModuleType("resource"))
+
+    assert hermes_state_readpool._fd_soft_limit() is None
+    assert hermes_state_readpool._fd_headroom_ok() is True
+
+
 @pytest.mark.requires_wal
 def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     """Writer connections cannot be capped, so duplicates must be visible."""

@@ -3760,7 +3760,7 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(
@@ -3821,7 +3821,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
@@ -3906,6 +3906,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
         captured["agent_db"] = session_db
+        captured["agent_cwd"] = kwargs.get("cwd_override")
         return types.SimpleNamespace(model="test/model")
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
@@ -3913,7 +3914,11 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(
+        server,
+        "_set_session_context",
+        lambda target, cwd=None: captured.setdefault("context_cwd", cwd) or [],
+    )
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
@@ -3944,6 +3949,8 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         assert "error" not in resp
         sid = resp["result"]["session_id"]
         assert captured["agent_db"] is profile_db
+        assert captured["context_cwd"] == str(profile_cwd)
+        assert captured["agent_cwd"] == str(profile_cwd)
         assert server._sessions[sid]["cwd"] == str(profile_cwd)
         assert resp["result"]["info"]["cwd"] == str(profile_cwd)
         assert "launch_update" not in captured
@@ -4612,7 +4619,7 @@ def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
     def fake_init_session(sid, key, agent, history, **kwargs):
         monkeypatch.setitem(server._sessions, sid, {"session_key": key, "transport": server._stdio_transport})
 
-    monkeypatch.setattr(server, "_set_session_context", lambda key: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda key, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_init_session", fake_init_session)
     monkeypatch.setattr(server, "_transfer_db_to_agent", lambda *args: False)
@@ -9158,9 +9165,10 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("openrouter/test-model", None))
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "openrouter",
             "api_key": "",
             "source": "env/config",
@@ -9172,7 +9180,7 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     assert resp["result"] == {
         "ok": False,
         "provider": "openrouter",
-        "model": None,
+        "model": "openrouter/test-model",
         "source": "env/config",
         "error": "No usable credentials found for openrouter.",
     }
@@ -9182,7 +9190,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "custom",
             "api_key": "no-key-required",
             "source": "env/config",
@@ -9199,7 +9207,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "bedrock",
             "api_key": "aws-sdk",
             "source": "iam-role",
@@ -9243,6 +9251,89 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
     assert default["result"]["ok"] is False
     assert default["result"]["provider"] == "anthropic"
+
+
+def test_setup_runtime_check_agrees_with_session_fallback_chain(monkeypatch):
+    """#111775: with the primary blocked and a complete fallback entry, the probe answers what
+    ``_make_agent`` would build (fallback provider + model); an explicit ``provider`` stays strict
+    so another provider's fallback cannot mask a failed connection."""
+    from hermes_cli.auth import AuthError
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("claude-sonnet-4-5", None))
+    monkeypatch.setattr(server, "_load_fallback_model",
+                        lambda: [{"provider": "openrouter", "model": "openai/gpt-4.1-mini", "api_key": "sk-or-fb"}])
+
+    def fake_resolve(*, requested=None, target_model=None, explicit_api_key=None, **_kw):
+        if requested == "openrouter":
+            return {"provider": "openrouter", "api_key": explicit_api_key, "source": "explicit"}
+        raise AuthError("No Anthropic credentials found.", provider="anthropic")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    assert default["result"]["ok"] is True
+    assert (default["result"]["provider"], default["result"]["model"]) == ("openrouter", "openai/gpt-4.1-mini")
+
+    strict = server.handle_request(
+        {"id": "2", "method": "setup.runtime_check", "params": {"provider": "anthropic"}})
+    assert strict["result"]["ok"] is False
+    assert "Anthropic" in strict["result"]["error"]
+
+
+def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypatch):
+    """#111775: the probe names the model session creation would use, never ``model: null``."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("z-ai/glm-5.2", None))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda *, requested=None, target_model=None: {
+            "provider": "zai", "api_key": "", "source": "env/config"
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["model"] == "z-ai/glm-5.2"
+
+def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypatch, tmp_path):
+    """The launch profile needs a scope too when its Codex route reads an override."""
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex.launch.test/v1")
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-5.3-codex", None))
+
+    def resolve_codex(requested=None, **_kwargs):
+        assert requested == "openai-codex"
+        return {
+            "provider": "openai-codex",
+            "api_key": "codex-oauth-token",
+            "base_url": secret_scope.get_secret("HERMES_CODEX_BASE_URL"),
+            "source": "credential-pool",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve_codex)
+    secret_scope.set_multiplex_active(True)
+    try:
+        response = server.handle_request(
+            {"id": "1", "method": "setup.runtime_check", "params": {"provider": "openai-codex"}}
+        )
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert response["result"] == {
+        "ok": True,
+        "provider": "openai-codex",
+        "model": "gpt-5.3-codex",
+        "source": "credential-pool",
+        "free_tier": False,
+    }
 
 
 def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):
@@ -15810,6 +15901,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
     def _fake_make_agent(*a, **k):
         seen["agent_session_db"] = k.get("session_db")
+        seen["agent_cwd"] = k.get("cwd_override")
         return FakeAgent()
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
@@ -15843,6 +15935,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # not just the row. Otherwise its own flushes (and a later compression
         # rotation) land on the launch db, splitting the lineage again.
         assert isinstance(seen.get("agent_session_db"), ProfileDB)
+        assert seen.get("agent_cwd") == str(tmp_path)
     finally:
         for k in list(server._sessions):
             server._sessions.pop(k, None)
@@ -15880,8 +15973,9 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             seen["messages"] = list(messages)
 
-        def set_session_title(self, key, title):
+        def set_auto_title(self, key, title, *, source):
             seen["title"] = title
+            seen["title_source"] = source
             return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -15924,6 +16018,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("parent") == "20260823_084113_6de211"
     assert seen.get("branched_from") == "20260823_084113_6de211"
     assert seen.get("title") == "My Parent Session #2"
+    assert seen.get("title_source") == "derived"
 
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
@@ -16312,6 +16407,10 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         def set_session_title(self, _key, _title):
             return True
 
+        def set_auto_title(self, _key, _title, *, source="llm"):
+            seen["title_source"] = source
+            return True
+
         def get_session(self, key):
             return {"id": key, "cwd": str(tmp_path)}
 
@@ -16366,6 +16465,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         )
 
         assert "result" in response, response
+        assert seen.get("title_source") == "derived"
         assert [message["content"] for message in seen["msgs"]] == [
             "first question",
             "first answer",
@@ -19584,7 +19684,9 @@ def test_start_agent_build_passes_session_model_override(
         captured.update(kwargs)
         return types.SimpleNamespace(model="claude-sonnet-4.6")
 
-    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(
+        server, "_set_session_context", lambda target, cwd=None: []
+    )
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
@@ -21117,6 +21219,7 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         )
 
         assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert db.get_session_title_source("branch-key") == SessionDB.TITLE_SOURCE_DERIVED
         assistant = _branched_assistant(db, "branch-key")
         assert assistant["reasoning"] == BRANCH_REASONING
         assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT

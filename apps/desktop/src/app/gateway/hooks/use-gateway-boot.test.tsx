@@ -377,6 +377,45 @@ async function advanceBackoff() {
   })
 }
 
+describe('default-route profile adoption', () => {
+  it.each([null, 'coder-remote'])(
+    'dials the saved startup route before an ambient sender can replace it (%s)',
+    async connectionId => {
+      const base = fakeDesktop()
+      const route = { connectionId, profile: 'coder' }
+      const desktop = {
+        ...base,
+        getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+        profile: { ...base.profile, getDefault: vi.fn(async () => route) }
+      }
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+
+      if (connectionId) {
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith(route)
+      } else {
+        expect(desktop.getConnection).toHaveBeenCalledWith('coder')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+      }
+      expect($connection.get()?.profile).toBe('coder')
+      expect($desktopBoot.get().running).toBe(false)
+    }
+  )
+
+  it('adopts the resolved backend profile rather than the old last-used preference', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'research' })
+    desktop.profile.get.mockResolvedValue({ profile: 'old-last-used' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()?.profile).toBe('research')
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($desktopBoot.get().running).toBe(false)
+  })
+})
+
 describe('primary failure foreground isolation', () => {
   it('ignores a boot snapshot superseded by a successful connection', async () => {
     const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()

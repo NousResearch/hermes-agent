@@ -159,6 +159,16 @@ class SessionSource:
         )
 
 
+_PRIVATE_CHAT_TYPES = frozenset({"dm", "direct", "private", "c2c", "p2p"})
+
+
+def is_shared_audience(source: Optional[SessionSource]) -> bool:
+    """Whether a gateway reply is visible beyond the requester; unknown types are shared."""
+    if source is None or source.platform == Platform.LOCAL:
+        return False
+    return str(source.chat_type or "").strip().lower() not in _PRIVATE_CHAT_TYPES
+
+
 @dataclass
 class SessionContext:
     """Full session context for dynamic system prompt injection."""

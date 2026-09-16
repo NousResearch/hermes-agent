@@ -220,7 +220,7 @@ function SidebarSessionRowImpl({
     trailing.push({
       key: 'figures',
       node: (
-        <span className="pointer-events-none whitespace-nowrap text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+        <span className="pointer-events-none whitespace-nowrap text-[0.625rem] leading-[13px] text-(--ui-text-tertiary)">
           {head}
           {/* The figures own their tail: the separator goes with it. */}
           <span className={cn('inline-block text-right', TAIL_HIDES)}>
@@ -295,8 +295,9 @@ function SidebarSessionRowImpl({
   // against it. In the card it renders INSIDE the header row instead — the
   // shell column would span the card's full height and shave every line,
   // when only the header shares its line with the age and kebab.
+  // Trailing padding mirrors the leading inset so timestamps do not sit on the row edge. Refs #89112.
   const actionsNode = (
-    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
+    <div className="relative z-2 flex shrink-0 items-center justify-end gap-1 pe-2" data-row-actions>
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -494,8 +495,9 @@ function SidebarSessionRowImpl({
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
                     <OverflowTip label={title}>
+                      {/* The shared leading-none label clips g/y/p/q descenders; this line height keeps them visible. Refs #89112. */}
                       <SidebarRowLabel
-                        className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                        className="hover-marquee block leading-[17px] font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                         onPointerEnter={armMarquee}
                         onPointerLeave={disarmMarquee}
                       >

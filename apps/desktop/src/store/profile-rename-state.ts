@@ -201,6 +201,7 @@ function removePending(pending: PendingProfileRename, attemptId?: string): void 
         entry.pending.connectionId === pending.connectionId &&
         entry.pending.oldName === pending.oldName &&
         entry.pending.newName === pending.newName
+
       const sameAttempt = attemptId ? entry.pending.attemptId === attemptId : sameIdentity
 
       if (sameIdentity && sameAttempt) {

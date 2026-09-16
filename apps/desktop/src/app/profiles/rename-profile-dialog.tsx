@@ -122,6 +122,7 @@ export function RenameProfileDialog({
       oldNavigationSuffix,
       newNavigationSuffix
     }
+
     let renameAttemptId: string | undefined
 
     try {

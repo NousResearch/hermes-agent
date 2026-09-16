@@ -181,8 +181,9 @@ stdio) the process exit code reports the turn's outcome, on both the quiet and
 the non-quiet path: `0` the turn completed; `1` it failed, stopped partway
 (`partial`), hit the iteration budget, or never ran (credentials / agent init
 failed); `130` it was interrupted. A Kanban dispatcher-spawned worker
-(`HERMES_KANBAN_TASK` set) whose turn failed only because the provider
-rate-limited or overloaded it, or the account hit a billing/quota wall, exits
+(`HERMES_KANBAN_TASK` set) whose turn failed only because the provider was
+rate-limited, overloaded, returning 5xx, timing out, or the account hit a
+billing/quota wall, exits
 `75` (`EX_TEMPFAIL`) so the dispatcher requeues the task without counting a
 failure. With `--format stream-json` the terminal `result` record carries the
 same `exit_code`.

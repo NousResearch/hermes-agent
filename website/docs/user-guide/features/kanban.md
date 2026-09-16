@@ -505,8 +505,8 @@ protocol. If the worker process exits with status 0 while the task is still
 `running`, the dispatcher treats that as a protocol violation and emits a
 `protocol_violation` event. A dispatcher-spawned worker whose turn failed
 therefore exits non-zero: `1` for an ordinary failure, and `75`
-(`EX_TEMPFAIL`) when the provider rate-limited or overloaded it, or the
-account hit a billing/quota wall — the dispatcher records that run as `rate_limited` and
+(`EX_TEMPFAIL`) when the provider was rate-limited, overloaded, returning
+5xx or timing out, or the account hit a billing/quota wall — the dispatcher records that run as `rate_limited` and
 requeues the task without counting a failure, so a quota window is never
 booked as a protocol violation.
 

@@ -44,8 +44,10 @@ def _run_non_quiet(monkeypatch, turn_result):
     return None
 
 
-@pytest.mark.parametrize("reason", ["rate_limit", "upstream_rate_limit", "billing", "overloaded"])
-def test_dispatcher_spawned_worker_signals_a_quota_wall_not_a_protocol_violation(monkeypatch, reason):
+@pytest.mark.parametrize(
+    "reason", ["rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout"]
+)
+def test_dispatcher_spawned_worker_signals_a_provider_outage_not_a_protocol_violation(monkeypatch, reason):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
     code = _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason})
     assert code == KANBAN_RATE_LIMIT_EXIT_CODE

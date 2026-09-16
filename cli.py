@@ -4089,9 +4089,12 @@ def _sync_cli_session_id_from_agent(cli) -> None:
         cli.session_id = cli.agent.session_id
 
 
-# ``failure_reason`` values that say nothing about the task itself: the provider or the
-# account is walled, so a Kanban worker signals "try later" instead of "I failed".
-_QUOTA_WALL_REASONS = frozenset({"rate_limit", "upstream_rate_limit", "billing", "overloaded"})
+# ``failure_reason`` values that say nothing about the task itself: the provider is walled,
+# down or unreachable, or the account is out of credit, so a Kanban worker signals "try
+# later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
+_TRANSIENT_PROVIDER_REASONS = frozenset({
+    "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
+})
 
 
 def _single_query_exit_code(result) -> int:
@@ -4102,7 +4105,7 @@ def _single_query_exit_code(result) -> int:
     failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
     (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
-    WITHOUT counting a failure, so a quota window cannot trip the circuit breaker.
+    WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
     """
     if not isinstance(result, dict):
         return 1
@@ -4110,7 +4113,7 @@ def _single_query_exit_code(result) -> int:
         return 130
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in _QUOTA_WALL_REASONS:
+    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in _TRANSIENT_PROVIDER_REASONS:
         from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
         return KANBAN_RATE_LIMIT_EXIT_CODE
     return 1

@@ -1,5 +1,6 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -373,3 +374,48 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     record.assert_not_called()
 
 
+
+
+
+@pytest.mark.parametrize("context", ["delegated-child", "cron-context", "child-env-marker"])
+def test_child_context_budget_exhaustion_records_no_kanban_outcome(monkeypatch, context):
+    """A delegated child that exhausts its own budget must NOT record a
+    timed_out outcome against the parent's kanban task (#112817)."""
+    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    if context == "delegated-child":
+        scope = delegated_child_context()
+    elif context == "cron-context":
+        scope = non_dispatcher_owned_context()
+    else:
+        monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+        scope = nullcontext()
+    with scope:
+        result = _finalize(agent, final_response=None, exit_reason="unknown")
+
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    record.assert_not_called()
+
+
+def test_dispatcher_owned_worker_still_records_kanban_timeout(monkeypatch):
+    """Control: a dispatcher-owned worker keeps recording the outcome (#112817)."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    result = _finalize(agent, final_response=None, exit_reason="unknown")
+
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    record.assert_called_once()

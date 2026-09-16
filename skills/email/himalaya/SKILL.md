@@ -30,7 +30,9 @@ requires the external `himalaya` CLI.
 ## Prerequisites
 
 1. Himalaya CLI installed (`himalaya --version` to verify)
-2. A configuration file at `~/.config/himalaya/config.toml`
+2. A configuration file at the platform config path:
+   - Linux/macOS: `~/.config/himalaya/config.toml`
+   - Windows: `%USERPROFILE%\.config\himalaya\config.toml` — also check `%APPDATA%\himalaya\config.toml` if the XDG path is absent
 3. IMAP/SMTP credentials configured (password stored securely)
 
 ### Installation
@@ -42,9 +44,16 @@ curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh 
 # macOS via Homebrew
 brew install himalaya
 
+# Windows: prefer a release binary or `cargo install himalaya --locked`
 # Or via cargo (any platform with Rust)
 cargo install himalaya --locked
 ```
+
+## Remote desktop setup precautions
+
+- Determine whether the desktop client and backend are on different computers before requesting terminal input or using localhost URLs. Backend PTY prompts/windows are not necessarily visible to a remote client; client-side localhost does not reach the backend.
+- Do not collect credentials through ad hoc HTML file previews. Remote file previews may use an empty iframe sandbox that disables scripts and form submission; a rendered password field or successful health check does not verify credential delivery. Prefer supported vault prompts or a user-controlled secure host terminal.
+- Check `himalaya --version` and `--help` before configuring. Version 2 uses `himalaya configure`, `--json`, `imap.server`, and `imap.sasl.plain.password.command`; v1 configuration examples below are not compatible. Consult the installed version's upstream configuration reference.
 
 ## Configuration Setup
 
@@ -54,7 +63,7 @@ Run the interactive wizard to set up an account:
 himalaya account configure
 ```
 
-Or create `~/.config/himalaya/config.toml` manually:
+Or create the config file manually (Linux/macOS: `~/.config/himalaya/config.toml`; Windows: `%USERPROFILE%\.config\himalaya\config.toml`, with `%APPDATA%\himalaya\config.toml` as the alternate):
 
 ```toml
 [accounts.personal]

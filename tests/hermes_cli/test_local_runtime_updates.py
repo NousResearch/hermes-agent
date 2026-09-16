@@ -23,10 +23,13 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 def _install_fake_tag(home, tag: str, backend: str = "cuda") -> None:
+    from hermes_cli.local_runtime.binaries import resolve_assets
+
     d = home / "runtimes" / "llamacpp" / tag / backend
     d.mkdir(parents=True)
     (d / "manifest.json").write_text(json.dumps({
-        "tag": tag, "backend": backend, "assets": {},
+        "tag": tag, "backend": backend,
+        "assets": {asset: "hash" for asset in resolve_assets(tag, backend).assets},
         "verified_version": f"version: {tag.lstrip('b')}",
     }), encoding="utf-8")
     # server_binary() looks for the executable name per-OS; give it both.

@@ -535,6 +535,19 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
   })
 
+  it('never resurrects a HIDDEN session even when the keep set names it (#113273)', () => {
+    // Bot Mode canonical chats are born hidden and are live almost constantly
+    // (routines, bot-to-bot turns), so $workingSessionIds nearly always holds
+    // them — and an open Bot Chat tab pins the id via the tile keep too. The
+    // server page never lists hidden rows; the merge must not let the
+    // keep-list re-insert what the backend excludes by design, or "Bot Chat"
+    // rows become permanent residents of the Sessions sidebar.
+    const previous = [session({ hidden: true, id: 'bot-chat', title: 'Bot Chat' }), session({ id: 'mine' })]
+    const incoming = [session({ id: 'mine', message_count: 3 })]
+
+    expect(mergeSessionPage(previous, incoming, ['bot-chat']).map(s => s.id)).toEqual(['mine'])
+  })
+
   it('keeps a pinned session that has aged off the recent page', () => {
     // Repro of "loses pins until you refresh": a pinned chat falls off the
     // most-recent page, so the server stops returning it. A hard replace would

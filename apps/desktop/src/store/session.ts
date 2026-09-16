@@ -607,6 +607,10 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      // The keep-list answers "live, not listed yet" — a hidden row (canonical
+      // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
+      // open tab must not resurrect it into the sidebar (#113273).
+      !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))

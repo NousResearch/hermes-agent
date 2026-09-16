@@ -30,6 +30,7 @@ import {
 } from '@/store/session-request-router'
 import {
   $sessionStates,
+  $sessionTiles,
   isSessionRemote,
   patchSessionTile,
   sessionTileDelegate,
@@ -40,6 +41,8 @@ import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { SessionInfo } from '@/types/hermes'
+
+import type { WorkspaceMode } from '@/contrib/types'
 
 import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
@@ -89,7 +92,16 @@ export function listTileSessionRow(deps: {
   runtimeId: string
   sessions: readonly SessionInfo[]
   storedSessionId: string
+  workspaceMode?: WorkspaceMode
 }): boolean {
+  // Bot Mode tabs mirror hidden relationship chats (canonical Bot Chats stay
+  // off the Sessions list by design — the bot row is the only door), so a
+  // first send must not seed a flagless row the refresh keep-list would then
+  // hold forever (#113273).
+  if (deps.workspaceMode === 'bots') {
+    return false
+  }
+
   const preview = deps.preview.trim()
 
   if (!preview || deps.sessions.some(session => sessionMatchesStoredId(session, deps.storedSessionId))) {
@@ -203,7 +215,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       preview,
       runtimeId,
       sessions: $sessions.get(),
-      storedSessionId: storedIdRef.current
+      storedSessionId: storedIdRef.current,
+      workspaceMode: $sessionTiles.get().find(tile => tile.storedSessionId === storedIdRef.current)?.workspaceMode
     })
   }, [])
 

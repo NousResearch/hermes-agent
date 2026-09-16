@@ -178,6 +178,7 @@ export const ko: Translations = {
   analytics: {
     period: "기간:",
     totalTokens: "총 토큰",
+    inclCacheRead: "캐시 읽기 포함",
     totalSessions: "총 세션",
     apiCalls: "API 호출",
     dailyTokenUsage: "일일 토큰 사용량",
@@ -189,6 +190,7 @@ export const ko: Translations = {
     edits: "에이전트 관리",
     lastUsed: "마지막 사용",
     input: "입력",
+    cacheRead: "캐시 읽기",
     output: "출력",
     total: "합계",
     noUsageData: "이 기간에 대한 사용 데이터가 없습니다",

@@ -178,6 +178,7 @@ export const uk: Translations = {
   analytics: {
     period: "Період:",
     totalTokens: "Усього токенів",
+    inclCacheRead: "вкл. читання кешу",
     totalSessions: "Усього сесій",
     apiCalls: "Виклики API",
     dailyTokenUsage: "Щоденне використання токенів",
@@ -189,6 +190,7 @@ export const uk: Translations = {
     edits: "Агент керує",
     lastUsed: "Останнє використання",
     input: "Вхід",
+    cacheRead: "Читання кешу",
     output: "Вихід",
     total: "Усього",
     noUsageData: "Немає даних про використання за цей період",

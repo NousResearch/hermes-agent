@@ -178,6 +178,7 @@ export const ga: Translations = {
   analytics: {
     period: "Tréimhse:",
     totalTokens: "Tokens iomlána",
+    inclCacheRead: "taisce san áireamh",
     totalSessions: "Seisiúin iomlána",
     apiCalls: "Glaonna API",
     dailyTokenUsage: "Úsáid laethúil tokens",
@@ -189,6 +190,7 @@ export const ga: Translations = {
     edits: "Bainistithe ag an Agent",
     lastUsed: "Úsáidte go deireanach",
     input: "Ionchur",
+    cacheRead: "Léamh Taisce",
     output: "Aschur",
     total: "Iomlán",
     noUsageData: "Gan sonraí úsáide don tréimhse seo",

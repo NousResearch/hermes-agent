@@ -176,6 +176,7 @@ export const zh: Translations = {
   analytics: {
     period: "时间范围：",
     totalTokens: "总 Token 数",
+    inclCacheRead: "含缓存读取",
     totalSessions: "总会话数",
     apiCalls: "API 调用",
     dailyTokenUsage: "每日 Token 用量",
@@ -187,6 +188,7 @@ export const zh: Translations = {
     edits: "代理管理",
     lastUsed: "最近使用",
     input: "输入",
+    cacheRead: "缓存读取",
     output: "输出",
     total: "总计",
     noUsageData: "该时间段暂无使用数据",

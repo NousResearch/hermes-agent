@@ -217,6 +217,7 @@ export interface Translations {
   analytics: {
     period: string;
     totalTokens: string;
+    inclCacheRead: string;
     totalSessions: string;
     apiCalls: string;
     dailyTokenUsage: string;
@@ -228,6 +229,7 @@ export interface Translations {
     edits: string;
     lastUsed: string;
     input: string;
+    cacheRead: string;
     output: string;
     total: string;
     noUsageData: string;

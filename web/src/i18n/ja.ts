@@ -178,6 +178,7 @@ export const ja: Translations = {
   analytics: {
     period: "期間:",
     totalTokens: "合計トークン数",
+    inclCacheRead: "キャッシュ読み取りを含む",
     totalSessions: "合計セッション数",
     apiCalls: "API 呼び出し",
     dailyTokenUsage: "日次トークン使用量",
@@ -189,6 +190,7 @@ export const ja: Translations = {
     edits: "エージェント管理",
     lastUsed: "最終使用",
     input: "入力",
+    cacheRead: "キャッシュ読み取り",
     output: "出力",
     total: "合計",
     noUsageData: "この期間の使用データはありません",

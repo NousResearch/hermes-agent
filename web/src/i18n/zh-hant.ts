@@ -178,6 +178,7 @@ export const zhHant: Translations = {
   analytics: {
     period: "時間範圍：",
     totalTokens: "Token 總數",
+    inclCacheRead: "含快取讀取",
     totalSessions: "工作階段總數",
     apiCalls: "API 呼叫",
     dailyTokenUsage: "每日 Token 用量",
@@ -189,6 +190,7 @@ export const zhHant: Translations = {
     edits: "代理管理",
     lastUsed: "最近使用",
     input: "輸入",
+    cacheRead: "快取讀取",
     output: "輸出",
     total: "總計",
     noUsageData: "此時間範圍內無使用資料",

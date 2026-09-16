@@ -116,6 +116,9 @@ declare global {
         // clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
+      sidebarPortrait: {
+        get: () => Promise<SidebarPortraitData | null>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -504,6 +507,15 @@ export interface DesktopActiveProfile {
   // The desktop's stored profile preference, or null when unset (legacy launch
   // that defers to the sticky active_profile / default).
   profile: string | null
+}
+
+// Mirrors gentle-pi's private ~/.pi/gentle-ai/sidebar-portrait.json contract:
+// a normalized grayscale grid, no pixel colors.
+export interface SidebarPortraitData {
+  version: 1
+  width: number
+  height: number
+  luminance: number[]
 }
 
 export interface DesktopConnectionConfig {

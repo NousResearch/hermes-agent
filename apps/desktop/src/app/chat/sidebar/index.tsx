@@ -132,6 +132,7 @@ import {
 } from './projects'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
 import { buildSessionByAnyId } from './session-index'
+import { SidebarPortrait } from './sidebar-portrait'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
 
@@ -1512,6 +1513,8 @@ export function ChatSidebar({
         )}
 
         {!showSessionSections && <SidebarBlankState onNewProject={openProjectCreate} />}
+
+        <SidebarPortrait />
 
         <div className="shrink-0 px-0.5 pb-1 pt-0.5">
           <ProfileRail />

@@ -12491,6 +12491,16 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
       }
 
       releaseBackendChild(child)
+    },
+    // The bounded wait gave up, but the invariant is "held until the child has
+    // actually exited": arm a late-exit watcher so a child that exits after the
+    // SIGKILL escalation frees the slot instead of leaking it for the app's
+    // lifetime. `releaseLocalBackendSlot` is idempotent and the entry is already
+    // detached from backendPool, so a late fire cannot double-free a live entry.
+    fire => {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.once('exit', fire)
+      }
     }
   )
 

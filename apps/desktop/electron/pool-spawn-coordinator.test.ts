@@ -234,6 +234,54 @@ test('a rejected wait keeps the slot occupied', async () => {
   assert.equal(coordinator.queuedCount, 0)
 })
 
+test('a late child exit releases a slot the bounded wait gave up on', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(1)
+  const releaseFailed = await coordinator.acquire('failed')
+  let successorEntered = false
+
+  const successor = coordinator.acquire('successor').then(release => {
+    successorEntered = true
+
+    return release
+  })
+
+  // The teardown's bounded wait gave up (the child ignored the first SIGKILL),
+  // but the child can still exit later. The invariant is "held until the child
+  // has ACTUALLY exited", so the failure path must arm a late-exit watcher that
+  // releases the slot when the real exit lands — a slow kill must not leak the
+  // slot forever, and a child that never exits keeps holding it by design.
+  const childExit = deferred()
+  const cleanup = releaseLocalBackendSlotAfterExit(
+    releaseFailed,
+    async () => {
+      throw new Error('did not exit within the teardown window')
+    },
+    fire => {
+      void childExit.promise.then(fire)
+    }
+  )
+
+  await assert.rejects(cleanup, /did not exit within the teardown window/)
+  await flush()
+
+  // Still held while the child is alive: no successor yet.
+  assert.equal(successorEntered, false)
+  assert.equal(coordinator.activeCount, 1)
+  assert.equal(coordinator.queuedCount, 1)
+
+  // The child finally exits — the slot must free itself.
+  childExit.resolve()
+  await flush()
+
+  assert.equal(successorEntered, true)
+  const releaseSuccessor = await successor
+  assert.equal(coordinator.activeCount, 1)
+  assert.equal(coordinator.queuedCount, 0)
+
+  releaseSuccessor()
+  assert.equal(coordinator.activeCount, 0)
+})
+
 test('an invalid timeout never enqueues a waiter', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(1)
   const releaseFirst = await coordinator.acquire('first')

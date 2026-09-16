@@ -96,9 +96,21 @@ export class BackgroundSlotRetryBackoff {
 
 export async function releaseLocalBackendSlotAfterExit(
   release: ReleaseLocalBackendSlot,
-  waitForExit: () => Promise<void>
+  waitForExit: () => Promise<void>,
+  /** Armed only when the bounded wait gives up: fires `release` when the child's
+   *  real exit eventually lands. A slow kill must not leak the slot forever; a
+   *  child that never exits keeps holding it by design (no successor spawn while
+   *  it may still be alive). */
+  attachLateExitWatcher: (fire: ReleaseLocalBackendSlot) => void = () => {}
 ): Promise<void> {
-  await waitForExit()
+  try {
+    await waitForExit()
+  } catch (error) {
+    attachLateExitWatcher(release)
+
+    throw error
+  }
+
   release()
 }
 

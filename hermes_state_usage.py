@@ -209,7 +209,7 @@ class SessionUsageMixin:
                 self.update_token_counts(session_id, **kwargs)
             except Exception as exc:
                 # Accounting loss is logged, never raised into a turn.
-                logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
+                logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc, exc_info=True)
 
     def _coalesce_token_deltas(self, batch: List[Tuple[str, Dict[str, Any]]]) -> List[Tuple[str, Dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across

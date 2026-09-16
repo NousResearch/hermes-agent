@@ -919,6 +919,51 @@ class SessionDB(
         if self._wal_active:  # a reopened writer is a live generation holder like the first open
             self._wal_lock_guard = _lockguard.hold(self.db_path)
 
+    def _reopen_writer_after_cantopen(self) -> None:
+        """Replace a writer connection whose live handle raised SQLITE_CANTOPEN.
+
+        The caller has already rolled the transaction back, so this connection is only a
+        poisoned handle: dropping it discards nothing durable and a fresh open adopts the
+        current on-disk WAL/SHM generation. A genuinely replaced main file must refuse
+        instead of reconnecting through stale assumptions. Caller does NOT hold
+        ``self._lock``.
+        """
+        if self.read_only:
+            return
+        with self._lock:
+            if self._conn is None:
+                return
+            if self._db_replaced or self._db_file_was_replaced():
+                self._db_replaced = True
+                self._disable_close_time_checkpoint()
+                raise StateDbReplacedError(_STATE_DB_REPLACED_MSG)
+            old = self._conn
+            self._conn = None
+            self._db_sidecar_identity = {}
+            # Never let a poisoned handle's close-time checkpoint write pages.
+            with contextlib.suppress(Exception):
+                flag = getattr(sqlite3, "SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE", None)
+                if flag is not None and hasattr(old, "setconfig"):
+                    old.setconfig(flag, True)
+            # Release the live handle's OFD guard before its descriptor closes, then re-hold
+            # for the replacement (close() and _reopen_after_close_locked do the same).
+            if self._wal_lock_guard:
+                with contextlib.suppress(Exception):
+                    _lockguard.release(self._wal_lock_guard)
+                self._wal_lock_guard = {}
+            self._close_connection_quietly(old)
+            try:
+                self._conn = self._open_writer_conn()
+            except Exception as exc:
+                raise sqlite3.OperationalError(
+                    "state.db write hit SQLITE_CANTOPEN and the automatic writer reopen "
+                    f"failed: {exc}"
+                ) from exc
+            self._db_file_identity = _stat_db_file_identity(self.db_path)
+            self._db_sidecar_identity = _stat_sqlite_sidecar_identity(self.db_path)
+            if self._wal_active:  # a reopened writer is a live generation holder like the first open
+                self._wal_lock_guard = _lockguard.hold(self.db_path)
+
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
     ) -> T:
@@ -938,6 +983,8 @@ class SessionDB(
         # settlement unknown and must propagate — this helper owns non-idempotent transcript/counter
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
+        # One writer reopen for SQLITE_CANTOPEN on a live connection (handler below).
+        cantopen_reopen_retried = False
         while True:
             self._raise_if_db_corrupt()
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
@@ -1008,6 +1055,28 @@ class SessionDB(
                             "a large WAL checkpoint, or an older pre-update "
                             "process; the database itself is healthy)"
                         ) from exc
+                    if "unable to open database file" in err_msg:
+                        # A live connection can fail to open a sidecar it believes it owns
+                        # (a lost/stale WAL generation, or a transient inability to open a
+                        # temp file). The callback was rolled back above, so dropping the
+                        # poisoned handle and retrying on a freshly opened one is exactly-once
+                        # for an idempotent *fn*. Bounded to one reopen so a genuinely broken
+                        # store still surfaces.
+                        err_name = getattr(exc, "sqlite_errorname", None)
+                        err_code = getattr(exc, "sqlite_errorcode", None)
+                        if not cantopen_reopen_retried:
+                            logger.warning(
+                                "state.db write hit SQLITE_CANTOPEN (%s/%s, fn_started=%s); "
+                                "reopening the writer once and retrying: %s",
+                                err_name, err_code, fn_started, exc, exc_info=True,
+                            )
+                            cantopen_reopen_retried = True
+                            self._reopen_writer_after_cantopen()
+                            continue
+                        logger.error(
+                            "state.db write still failing with SQLITE_CANTOPEN (%s/%s) after a "
+                            "writer reopen: %s", err_name, err_code, exc, exc_info=True,
+                        )
                     if (
                         _DISK_IO_ERROR_MARKER in err_msg and not fn_started and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)

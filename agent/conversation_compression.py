@@ -3367,7 +3367,7 @@ def _commit_compaction(
                     agent.session_id or "?", e,
                 )
             else:
-                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e, exc_info=True)
             # Arm the failure cooldown so the next turn can't rerun the doomed compression;
             # try/except so a stub compressor can't mask the original error in this handler.
             with _swallow('could not record split-failure cooldown', exc_info=True):

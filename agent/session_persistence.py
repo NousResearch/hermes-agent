@@ -269,7 +269,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         if adoption_budget > 0 and _db_flush_adopt_compression_tip(agent):
             return True
         agent._compression_adoption_failed = True  # lets the turn explanation name rotation, not full-disk advice
-    logger.warning("Session DB append_message failed: %s", e)
+    logger.warning("Session DB append_message failed: %s", e, exc_info=True)
     return False
 
 

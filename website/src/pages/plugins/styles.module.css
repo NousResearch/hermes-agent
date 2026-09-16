@@ -882,19 +882,11 @@
   color: var(--ifm-color-primary);
   font-size: 0.85rem;
   font-weight: 600;
-  text-align: center;
-  text-decoration: none;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
 .pickBtn:hover {
   background: var(--ifm-color-primary);
-  color: var(--ifm-color-emphasis-0);
-  text-decoration: none;
-}
-
-.pickBtn:focus-visible {
-  outline: 2px solid var(--ifm-color-primary);
-  outline-offset: 2px;
+  color: #fff;
 }

@@ -1,12 +1,8 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $confirmRequest, settleConfirm } from '@/store/confirm'
-import { $hubInstalledOverride } from '@/store/hub-actions'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
-import { $pluginInstallRequest } from '@/store/plugin-install-request'
 import { _resetLegacyDiscardForTests } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
@@ -571,81 +567,6 @@ describe('useDesktopIntegrations', () => {
       render({ profileReady: true, sessions: [] })
       deepLink?.({ kind: 'mcp', name: 'install', params: { name: 'context7' } })
       expect(requestMcpInstallFromDeepLink).toHaveBeenCalledWith({ name: 'context7' })
-      expect(navigate).not.toHaveBeenCalled()
-    })
-  })
-
-  describe('catalog install deep links', () => {
-    function listen() {
-      render({ profileReady: true, resumeLastSession: false })
-
-      return vi.mocked(window.hermesDesktop.onDeepLink).mock.calls[0]![0]
-    }
-
-    afterEach(() => {
-      settleConfirm(false)
-      $pluginInstallRequest.set(null)
-      $hubInstalledOverride.set({})
-      setApiRequestConnection(null)
-      setApiRequestProfile(null)
-    })
-
-    it('opens the existing plugin confirmation with catalog metadata intact', () => {
-      const deepLink = listen()
-      const params = { repo: 'owner/repo#plugin', catalog_name: 'catalog-plugin', sha: 'display-pin' }
-      deepLink({ kind: 'plugin', name: 'install', params })
-
-      expect($pluginInstallRequest.get()).toMatchObject({
-        repo: params.repo, catalogName: params.catalog_name, sha: params.sha, enable: true, force: false
-      })
-      expect(navigate).not.toHaveBeenCalled()
-    })
-
-    it('requires skill confirmation, preserves the request scope, and uses the hub pipeline', async () => {
-      const api = vi.fn(async (request: { path: string }) => {
-        if (request.path === '/api/skills/hub/install') return { name: 'skill-link-test' }
-        if (request.path.startsWith('/api/actions/skill-link-test/')) {
-          return { name: 'skill-link-test', running: false, exit_code: 0, lines: ['Installed'], pid: 123 }
-        }
-        return {}
-      })
-      desktopWindow.hermesDesktop = { ...desktopWindow.hermesDesktop, api } as unknown as Window['hermesDesktop']
-      const deepLink = listen()
-      const installs = () => api.mock.calls.filter(([r]) => r.path === '/api/skills/hub/install')
-      const identifier = 'skills-sh/owner/repo/skill'
-      const payload = { kind: 'skill', name: 'install', params: { identifier } }
-
-      for (const [connection, profile] of [['server-a', 'research'], ['server-b', 'work'], ['server-a', 'research']]) {
-        setApiRequestConnection(connection)
-        setApiRequestProfile(profile)
-        api.mockClear()
-        $hubInstalledOverride.set({})
-        act(() => deepLink(payload))
-        expect($confirmRequest.get()?.description).toContain(identifier)
-        expect($confirmRequest.get()?.description).toContain(profile)
-        expect(installs()).toHaveLength(0)
-        await act(async () => settleConfirm(false))
-        expect(installs()).toHaveLength(0)
-
-        act(() => deepLink(payload))
-        await act(async () => settleConfirm(true))
-        await waitFor(() => expect($hubInstalledOverride.get()[identifier]).toBe(true))
-        expect(installs()).toEqual([[{
-          connectionId: connection, profile, path: '/api/skills/hub/install', method: 'POST', body: { identifier }
-        }]])
-        expect(api).toHaveBeenCalledWith({
-          connectionId: connection, profile, path: '/api/actions/skill-link-test/status?lines=200'
-        })
-      }
-
-      api.mockClear()
-      act(() => deepLink(payload))
-      setApiRequestConnection('server-b')
-      setApiRequestProfile('work')
-      await act(async () => settleConfirm(true))
-      expect(installs()).toHaveLength(0)
-      act(() => deepLink({ kind: 'skill', name: 'install', params: {} }))
-      expect($confirmRequest.get()).toBeNull()
       expect(navigate).not.toHaveBeenCalled()
     })
   })

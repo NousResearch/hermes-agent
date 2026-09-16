@@ -2,7 +2,6 @@ import React, { useState, useMemo, useCallback, useRef, useEffect } from "react"
 import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
-import { pluginCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface PluginCapabilities {
   providesTools?: string[];
@@ -187,7 +186,6 @@ function PluginCard({
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
   const pinUrl = `${plugin.repo.replace(/\.git$/, "").replace(/\/$/, "")}/tree/${plugin.sha}`;
-  const installUrl = pluginCatalogInstallUrl(plugin);
 
   return (
     <div
@@ -269,7 +267,7 @@ function PluginCard({
           ))}
         </div>
 
-        {onPick ? (
+        {onPick && (
           <button
             className={styles.pickBtn}
             onClick={(e) => {
@@ -279,14 +277,6 @@ function PluginCard({
           >
             + Add to this Agent
           </button>
-        ) : (
-          <a
-            className={styles.pickBtn}
-            href={installUrl}
-            onClick={(e) => e.stopPropagation()}
-          >
-            Install in Hermes
-          </a>
         )}
 
         {expanded && (
@@ -563,7 +553,7 @@ export default function PluginCatalogPage() {
               </span>
             </nav>
             <p className={styles.heroSub}>
-              Reviewed, SHA-pinned plugins. Open in Hermes Desktop to review and install, or copy the CLI command.
+              Reviewed, SHA-pinned plugins you can install with one command.
               {loadError && (
                 <span style={{ color: "#f87171", marginLeft: 8 }}>
                   · failed to load catalog ({loadError})

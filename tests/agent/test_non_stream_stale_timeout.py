@@ -110,6 +110,27 @@ providers:
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1800.0
 
 
+def test_high_effort_request_raises_implicit_stale_floor(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(tmp_path)
+
+    assert agent._compute_non_stream_stale_timeout(
+        {"input": "hi", "reasoning": {"effort": "high"}}
+    ) == 300.0
+    assert agent._compute_non_stream_stale_timeout(
+        {"input": "hi", "reasoning": {"effort": "low"}}
+    ) == 90.0
+
+    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "45")
+    assert agent._compute_non_stream_stale_timeout(
+        {"input": "hi", "reasoning": {"effort": "high"}}
+    ) == 45.0
+
+
 # ── openai-codex gateway-scale stale floor ────────────────────────────────
 
 

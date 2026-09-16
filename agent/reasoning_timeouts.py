@@ -14,6 +14,9 @@ import re
 from typing import Optional
 
 
+_HIGH_EFFORT_STALE_TIMEOUT_FLOOR = 300.0
+
+
 # floor_seconds -> slugs. Order irrelevant — longest slug wins at match time.
 _REASONING_STALE_TIMEOUT_FLOORS: dict[int, tuple[str, ...]] = {
     600: (
@@ -71,4 +74,22 @@ def get_reasoning_stale_timeout_floor(model: object) -> Optional[float]:
     for _slug, floor, pattern in _SORTED_REASONING_FLOORS:
         if pattern.search(name):
             return float(floor)
+    return None
+
+
+def get_reasoning_effort_timeout_floor(api_payload: object) -> Optional[float]:
+    """Request-level stale floor for wire-bound high-effort reasoning.
+
+    Responses API requests carry effort under ``reasoning.effort`` while Chat
+    Completions uses ``reasoning_effort``. The payload is authoritative: an
+    agent-level setting may be stale or may have been normalized before send.
+    """
+    if not isinstance(api_payload, dict):
+        return None
+    reasoning = api_payload.get("reasoning")
+    effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
+    if effort is None:
+        effort = api_payload.get("reasoning_effort")
+    if isinstance(effort, str) and effort.strip().lower() in {"high", "xhigh"}:
+        return _HIGH_EFFORT_STALE_TIMEOUT_FLOOR
     return None

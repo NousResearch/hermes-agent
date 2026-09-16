@@ -564,8 +564,12 @@ class AIAgent(
             return float("inf")
 
         from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.reasoning_timeouts import get_reasoning_effort_timeout_floor
         est_tokens = estimate_request_context_tokens(api_payload)
         timeout = max(stale_base, 240.0) if est_tokens > 100_000 else max(stale_base, 150.0) if est_tokens > 50_000 else stale_base
+        effort_floor = get_reasoning_effort_timeout_floor(api_payload)
+        if effort_floor is not None and not self._stale_timeout_is_explicit():
+            timeout = max(timeout, effort_floor)
         # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
         # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
         run_budget = getattr(self, "run_budget_seconds", None)

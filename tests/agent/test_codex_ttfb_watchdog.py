@@ -314,6 +314,53 @@ def test_idle_phase_policy_is_narrow_and_preserves_operator_overrides(
     assert watchdogs.idle_requires_progress is requires_progress
 
 
+@pytest.mark.parametrize("effort", ["high", "xhigh"])
+def test_high_effort_small_prompt_extends_implicit_codex_watchdogs(
+    tmp_path, monkeypatch, effort
+):
+    """Silent reasoning must outlive all three small-prompt watchdogs."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda _payload: 300.0
+    )
+    for name in (
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+        "HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS",
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    watchdogs = h._resolve_nonstream_watchdogs(
+        agent,
+        {"model": "gpt-5.6-sol", "input": "hi", "reasoning": {"effort": effort}},
+    )
+
+    assert watchdogs.stale_timeout >= 300.0
+    assert watchdogs.ttfb_timeout >= 300.0
+    assert watchdogs.idle_timeout >= 300.0
+
+
+def test_high_effort_preserves_explicit_codex_watchdog_timeouts(
+    tmp_path, monkeypatch
+):
+    """Operator-set TTFB and idle thresholds remain authoritative."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "30")
+
+    watchdogs = h._resolve_nonstream_watchdogs(
+        agent,
+        {"model": "gpt-5.6-sol", "input": "hi", "reasoning": {"effort": "high"}},
+    )
+
+    assert watchdogs.ttfb_timeout == 45.0
+    assert watchdogs.idle_timeout == 30.0
+
+
 @pytest.mark.parametrize(
     "mode", ["initial_gap", "stall", "retry_gap", "retry_no_event"]
 )

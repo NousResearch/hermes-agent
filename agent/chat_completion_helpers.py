@@ -1082,6 +1082,8 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     codex = agent.api_mode == "codex_responses"
     openai_codex_backend = _is_openai_codex_backend(agent)
     est_tokens = estimate_request_context_tokens(api_kwargs)
+    from agent.reasoning_timeouts import get_reasoning_effort_timeout_floor
+    effort_floor = get_reasoning_effort_timeout_floor(api_kwargs) if codex else None
     codex_floor = 0.0
     if codex and openai_codex_backend:
         # Raise the stale floor for large payloads so healthy gateway-scale
@@ -1098,11 +1100,16 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     idle_default = next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
         12.0)
+    if effort_floor is not None:
+        idle_default = max(idle_default, effort_floor)
 
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.
     ttfb_enabled = codex
+    ttfb_explicit = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", -1.0) != -1.0
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
+    if effort_floor is not None and not ttfb_explicit:
+        ttfb_timeout = max(ttfb_timeout, effort_floor)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
     elif openai_codex_backend:
@@ -1116,7 +1123,8 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
                 "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
             ttfb_timeout = idle_default
-        ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
+        implicit_cap = max(120.0, effort_floor or 0.0)
+        ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", implicit_cap)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
             logger.info("Capping openai-codex no-event TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,

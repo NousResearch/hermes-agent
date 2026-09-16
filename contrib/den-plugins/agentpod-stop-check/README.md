@@ -158,7 +158,7 @@ apply, never this plugin:
   uses, with the audited operator verb:
 
   ```bash
-  hermes kanban set-workspace <card-id> --kind worktree --path <ABS per-card worktree>
+  hermes kanban set-workspace <card-id> --kind dir --path <ABS per-card worktree>
   hermes kanban show <card-id>        # read it back before relying on it
   ```
 

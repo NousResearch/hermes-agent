@@ -144,7 +144,7 @@ function SidebarSessionRowImpl({
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
@@ -395,9 +395,12 @@ function SidebarSessionRowImpl({
         // Hovering a row from another profile (the all-profiles view) telegraphs
         // a cross-profile resume — start that backend's spawn now so the click
         // doesn't pay the full cold boot. Same-profile rows no-op inside
-        // prewarmProfileBackend.
+        // prewarmProfileBackend. Layout-only pointerenter (stationary cursor,
+        // row identity changing underneath) must not arm the spawn — dwell
+        // starts on a real pointermove for this visit (#100548).
         onPointerEnter={startPrewarm}
         onPointerLeave={cancelPrewarm}
+        onPointerMove={notePointerMove}
         ref={ref}
         style={style}
         {...rest}

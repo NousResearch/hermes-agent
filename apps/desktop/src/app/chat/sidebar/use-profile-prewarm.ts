@@ -8,16 +8,23 @@ import { prewarmProfileBackend } from '@/store/profile'
 const PREWARM_DWELL_MS = 120
 
 /**
- * pointerenter/pointerleave handlers that pre-warm `profile`'s pool backend
- * after a short hover dwell (see prewarmProfileBackend in store/profile).
+ * pointerenter/pointerleave/pointermove handlers that pre-warm `profile`'s
+ * pool backend after a short hover dwell (see prewarmProfileBackend).
+ *
+ * `pointerenter` alone is not intent: virtualized session lists and running-arc
+ * re-renders fire it when a *stationary* cursor sits over the sidebar and a
+ * different profile's row slides under the pointer (#100548). Arm on enter,
+ * start the dwell only after a real pointermove on that visit, cancel on leave.
  * Consumers merge these with their own pointer handlers.
  */
 export function useProfilePrewarm(profile: string | null | undefined) {
   const timer = useRef<null | number>(null)
+  const armed = useRef(false)
   const profileRef = useRef(profile)
   profileRef.current = profile
 
   const cancelPrewarm = useCallback(() => {
+    armed.current = false
     if (timer.current != null) {
       clearTimeout(timer.current)
       timer.current = null
@@ -28,11 +35,20 @@ export function useProfilePrewarm(profile: string | null | undefined) {
 
   const startPrewarm = useCallback(() => {
     cancelPrewarm()
-    timer.current = window.setTimeout(() => {
-      timer.current = null
-      prewarmProfileBackend(profileRef.current || 'default')
-    }, PREWARM_DWELL_MS)
+    armed.current = true
   }, [cancelPrewarm])
 
-  return { cancelPrewarm, startPrewarm }
+  const notePointerMove = useCallback(() => {
+    if (!armed.current || timer.current != null) {
+      return
+    }
+
+    timer.current = window.setTimeout(() => {
+      timer.current = null
+      armed.current = false
+      prewarmProfileBackend(profileRef.current || 'default')
+    }, PREWARM_DWELL_MS)
+  }, [])
+
+  return { cancelPrewarm, notePointerMove, startPrewarm }
 }

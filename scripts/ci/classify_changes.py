@@ -66,9 +66,13 @@ import os
 import subprocess
 import sys
 
-_FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
+_FRONTEND = ("ui-tui/", "web/", "apps/", "tests-js/")  # TS typecheck-matrix packages
 # Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
+_FRONTEND_FILES = {
+    "scripts/desktop-update/ui.html",
+    "scripts/whatsapp-bridge/package.json",
+    "scripts/whatsapp-bridge/package-lock.json",
+}
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _NIX_PATHS = ("nix/",) # nix files

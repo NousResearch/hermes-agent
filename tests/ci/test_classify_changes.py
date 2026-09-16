@@ -86,9 +86,17 @@ CASES = {
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
+    "root JS contract → frontend": (
+        ["tests-js/whatsapp-bridge-dependencies.test.ts"],
+        _lanes(frontend=True),
+    ),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.
     "root lockfile → frontend, not python": (["package-lock.json"], _lanes(frontend=True, npm_lock=True)),
     "nested lockfile → npm_lock": (["website/package-lock.json"], _lanes(site=True, npm_lock=True)),
+    "WhatsApp bridge graph → python + frontend": (
+        ["scripts/whatsapp-bridge/package.json", "scripts/whatsapp-bridge/package-lock.json"],
+        _lanes(python=True, frontend=True, npm_lock=True),
+    ),
     # A website file the Python suite cannot read stays site-only.
     "website config → site": (["website/docusaurus.config.ts"], _lanes(site=True)),
     # uv lock --check re-resolves against PyPI, so it must stay off for any

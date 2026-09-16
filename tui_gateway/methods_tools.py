@@ -989,9 +989,11 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4015, f"unknown action: {action}")
 
 
-@_rpc("config.show", 5030)
+@_scoped_rpc("config.show", 5030)
 def _(rid, params: dict) -> dict:
     cfg = _load_cfg()
+    # Scoped like the rest of this section (insights.get): the masked key row must resolve the
+    # REQUESTED profile's credential, and under multiplexing an unscoped get_secret raises (#112927).
     api_key = _tools_mod("agent.secret_scope").get_secret("HERMES_API_KEY", "") or cfg.get("api_key", "")
     masked = f"****{api_key[-4:]}" if len(api_key) > 4 else "(not set)"
     base_url = os.environ.get("HERMES_BASE_URL", "") or cfg.get("base_url", "")

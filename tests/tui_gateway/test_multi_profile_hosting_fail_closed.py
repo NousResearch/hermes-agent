@@ -140,3 +140,28 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
     finally:
         server._release_build_profile_scopes(scopes)
     assert current_secret_scope() is None
+
+
+def _config_show_api_key(params):
+    resp = server._methods["config.show"]("rid", params)
+    assert "error" not in resp, resp
+    sections = {s["title"]: s for s in resp["result"]["sections"]}
+    return dict(sections["Model"]["rows"])["API Key"]
+
+
+def test_config_show_resolves_requested_profiles_api_key(two_homes):
+    """Regression for #112927: ``config.show`` ran under ``@_rpc`` and read
+    ``get_secret("HERMES_API_KEY")`` unscoped — once the process hosted a second profile the
+    read died with ``UnscopedSecretError`` instead of resolving the requested profile's key."""
+    from agent.secret_scope import is_multiplex_active
+
+    root, b = two_homes
+    (root / ".env").write_text((root / ".env").read_text() + "HERMES_API_KEY=a-key-1111\n")
+    (b / ".env").write_text((b / ".env").read_text() + "HERMES_API_KEY=b-key-2222\n")
+    # Flip the process to fail-closed multi-profile hosting the way any hosted secondary does.
+    assert _probe("b")["b_ref"] == B_VAL
+    assert is_multiplex_active()
+
+    assert _config_show_api_key({"profile": "b"}) == "****2222"
+    assert _config_show_api_key({}) == "****1111"
+    assert os.environ.get("HERMES_API_KEY") is None  # never bridged into ambient env

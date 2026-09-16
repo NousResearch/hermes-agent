@@ -140,6 +140,96 @@ class TestGuessCategory:
         p.write_text("x")
         assert dg.guess_category(p) is None
 
+    def test_workspace_project_tree_never_tracked(self, _isolate_env):
+        """``workspace/`` is a user project tree: nothing inside is disposable.
+
+        Regression for the 2026-09-16 data loss: a pytest file written into
+        ``workspace/<project>/tests/test_parse.py`` was classified "test" on write and
+        unlinked by ``quick()`` at session end, so the next ``git add -A`` in that
+        project committed the deletion.
+        """
+        dg = _load_lib()
+        tests_dir = _isolate_env / "workspace" / "proj" / "tests"
+        tests_dir.mkdir(parents=True)
+        for name in ("test_parse.py", "tmp_probe.py", "thing.test.js"):
+            p = tests_dir / name
+            p.write_text("x")
+            assert dg.guess_category(p) is None, f"{name} must not be classified disposable"
+        artifact = _isolate_env / "workspace" / "proj" / ".artifacts" / "test_role_gate.py"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("x")
+        assert dg.guess_category(artifact) is None
+
+
+class TestWorkspaceProjectTreeGuard:
+    """``workspace/`` must be in both protected top-level sets.
+
+    Without the entry the plugin is a silent data-loss path: ``post_tool_call``
+    tracks ``workspace/<project>/tests/test_*.py`` as "test",
+    ``_is_auto_delete("test", age)`` accepts it at any age, and ``on_session_end``
+    unlinks it. Every profile gets a ``workspace/`` directory
+    (``profiles.py::_PROFILE_DIRS``) and bundled plugins keep durable state there
+    (``google_meet`` writes ``workspace/meetings/``).
+    """
+
+    def test_quick_keeps_workspace_test_file(self, _isolate_env):
+        """A stale tracked.json "test" entry for a workspace file must be dropped,
+        not honoured (the guess_category re-validation path in quick())."""
+        dg = _load_lib()
+        p = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("def test_x(): pass\n")
+
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked_file.parent.mkdir(parents=True, exist_ok=True)
+        tracked_file.write_text(json.dumps([{
+            "path": str(p.resolve()),
+            "category": "test",
+            "timestamp": "2025-01-01T00:00:00+00:00",  # old, but "test" ignores age
+            "size": 21,
+        }]))
+
+        summary = dg.quick()
+        assert summary["deleted"] == 0, "workspace project file must never be auto-deleted"
+        assert p.exists()
+        assert json.loads(tracked_file.read_text()) == [], "stale entry must be dropped"
+
+    def test_empty_dir_sweep_skips_workspace(self, _isolate_env):
+        """Empty dirs inside a project tree are meaningful (``data/``, ``.artifacts/``,
+        chrome profile dirs) and must survive the empty-dir sweep."""
+        dg = _load_lib()
+        keep = _isolate_env / "workspace" / "watch-battery" / "data"
+        keep.mkdir(parents=True)
+        sweepable = _isolate_env / "pairing"  # unprotected top level, empty
+        sweepable.mkdir()
+
+        dg._sweep_empty_dirs(_isolate_env)
+
+        assert keep.exists(), "empty dir inside workspace/ must survive the sweep"
+        assert not sweepable.exists(), "unprotected empty dirs are still swept"
+
+    def test_root_level_test_file_still_auto_deleted(self, _isolate_env):
+        """The guard must not disable cleanup of genuine ephemeral test files."""
+        dg = _load_lib()
+        p = _isolate_env / "test_ephemeral.py"
+        p.write_text("x")
+        assert dg.guess_category(p) == "test"
+
+    def test_session_end_hook_leaves_workspace_files_alone(self, _isolate_env):
+        """End-to-end: write_file into a project tree, then session end."""
+        pi = _load_plugin_init()
+        p = _isolate_env / "workspace" / "proj" / "tests" / "test_parse.py"
+        p.parent.mkdir(parents=True)
+        p.write_text("x")
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "x"},
+            result="OK",
+            task_id="t_ws", session_id="s_ws",
+        )
+        pi._on_session_end(session_id="s_ws", completed=True, interrupted=False)
+        assert p.exists(), "session-end cleanup must not touch workspace project files"
+
 
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""

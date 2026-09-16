@@ -434,6 +434,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
             if isinstance(body, dict) else (None, None)))
+    try:
+        response_rendering = _api_server._request_response_rendering(body)
+    except ValueError as exc:
+        return _json_error(
+            _openai_error, str(exc), code="invalid_response_rendering", status=400)
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if len(idempotency_key) > 255 or any(ord(ch) < 33 or ord(ch) > 126 for ch in idempotency_key):
         return _json_error(
@@ -531,6 +536,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         conversation_history, session_history_delivery,
         agent_kwargs=dict(
             ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
+            response_rendering=response_rendering,
             route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),

@@ -348,6 +348,25 @@ def _request_agent_overrides(
     return overrides
 
 
+_RESPONSE_RENDERING_MODES = ("plain_text", "markdown")
+
+
+def _request_response_rendering(body: Any) -> str:
+    """Return the bounded response-rendering contract requested by an API client.
+
+    Omission intentionally preserves the historical plain-text behavior. Rendering is
+    presentation guidance only; it does not change tools, model routing, or output encoding.
+    """
+    if not isinstance(body, dict) or "response_rendering" not in body:
+        return "plain_text"
+    raw = body["response_rendering"]
+    if not isinstance(raw, str) or raw not in _RESPONSE_RENDERING_MODES:
+        raise ValueError(
+            "response_rendering must be one of: " + ", ".join(_RESPONSE_RENDERING_MODES)
+        )
+    return raw
+
+
 def _request_relay_metadata(body: Any) -> Dict[str, Any]:
     """Extract Relay metadata from an OpenAI request body."""
     if not isinstance(body, dict):
@@ -2129,7 +2148,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None,
+        response_rendering: str = "plain_text") -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2185,6 +2205,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)
+        # Prompt assembly is lazy, so this request-scoped value is set after construction but
+        # before run_conversation(). Persisted prompt identity migrates continuing sessions once.
+        agent._response_rendering = response_rendering
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override
@@ -2282,6 +2305,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "chat_completions": True, "chat_completions_streaming": True,
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
+                "response_rendering": {
+                    "field": "response_rendering", "modes": list(_RESPONSE_RENDERING_MODES),
+                    "default": "plain_text", "scope": "request"},
                 **_STATIC_FEATURE_FLAGS,
                 "cors": bool(self._cors_origins),
                 # Always advertised for feature-detection; enabled follows config.
@@ -3036,6 +3062,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             turn_author = _request_turn_author(body)
         except ValueError as exc:
             return None, _error_response(str(exc), 400, code="invalid_author")
+        try:
+            response_rendering = _request_response_rendering(body)
+        except ValueError as exc:
+            return None, _error_response(str(exc), 400, code="invalid_response_rendering")
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return None, _error_response("system_message must be a string", 400, code="invalid_system_message")
@@ -3071,6 +3101,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 return None, _error_response(selection_error, 400)
         run_kwargs = dict(
             user_message=user_message, ephemeral_system_prompt=system_prompt, session_id=session_id,
+            response_rendering=response_rendering,
             gateway_session_key=gateway_session_key, route=route, session_model=session_model,
             requested_runtime=runtime_request.get("requested") or {},
             route_source=runtime_request.get("route_source") or "global",
@@ -3692,7 +3723,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
-        relay_metadata: Optional[Dict[str, Any]] = None) -> tuple:
+        relay_metadata: Optional[Dict[str, Any]] = None,
+        response_rendering: str = "plain_text") -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
@@ -3724,7 +3756,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key, requested_model=requested_model,
                         requested_provider=requested_provider, model_options=model_options, route=route,
-                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock)
+                        session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
+                        response_rendering=response_rendering)
                     if agent_ref is not None:
                         agent_ref[0] = agent
                     if active_run_id:

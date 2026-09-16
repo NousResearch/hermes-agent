@@ -444,7 +444,7 @@ Create a new agent run. Returns a `run_id` that can be used to subscribe to prog
 }
 ```
 
-Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, or `previous_response_id`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
+Runs accept a simple `input` string and optional `session_id`, `instructions`, `conversation_history`, `previous_response_id`, or `response_rendering`. When `session_id` is provided, Hermes surfaces it in the run status so external UIs can correlate runs with their own conversation IDs.
 
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 
@@ -635,6 +635,22 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 ```
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
+
+## Response Rendering
+
+Agent-serving endpoints accept an optional top-level `response_rendering` field:
+
+- `"plain_text"` — the backward-compatible default for clients whose renderer is unknown.
+- `"markdown"` — declares that the client renders GitHub-Flavored Markdown. Hermes then permits useful headings, lists, tables, links, emphasis, and fenced code blocks instead of applying the API server's plain-text formatting restriction.
+
+```json
+{
+  "input": "Compare the three deployment options",
+  "response_rendering": "markdown"
+}
+```
+
+The field is request-scoped and supported by `/v1/runs`, `/v1/chat/completions`, `/v1/responses`, and the native session chat endpoints. Clients that want Markdown throughout a continuing session should send `"response_rendering": "markdown"` on every turn; omission means `"plain_text"`. `/v1/capabilities` advertises the accepted modes, default, and scope under `features.response_rendering`. Rendering mode is part of a persisted session's prompt identity, so each mode change rebuilds that prompt once; turns that retain the mode reuse the new byte-stable prompt. Configured `agent.platform_hints.api_server` overrides remain the administrator's final prompt policy.
 
 ## System Prompt Handling
 

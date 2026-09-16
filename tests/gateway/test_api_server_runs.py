@@ -205,6 +205,42 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_start_forwards_markdown_response_rendering_to_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        with patch.object(adapter, "_create_agent") as mock_create:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "done"}
+            mock_agent.session_prompt_tokens = 0
+            mock_agent.session_completion_tokens = 0
+            mock_agent.session_total_tokens = 0
+            mock_create.return_value = mock_agent
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "response_rendering": "markdown"},
+                )
+                assert response.status == 202
+                await self._wait_completed(cli, (await response.json())["run_id"])
+
+        assert mock_create.call_args.kwargs["response_rendering"] == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_invalid_response_rendering_before_admission(self, adapter):
+        app = _create_runs_app(adapter)
+        with patch.object(adapter, "_create_agent") as mock_create:
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "response_rendering": "html"},
+                )
+                body = await response.json()
+
+        assert response.status == 400
+        assert body["error"]["code"] == "invalid_response_rendering"
+        mock_create.assert_not_called()
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
     async def test_start_binds_chat_id_for_delegation_wake_target(self, adapter):
         """/v1/runs must bind the raw session id as the api_server chat_id
         (like every other agent-entry route does via _run_agent): the async

@@ -21,6 +21,9 @@ export interface KanbanTask {
   warnings?: null | { count: number; highest_severity?: null | string }
   /** Worker liveness (present on running cards) — drives the arc + run clock. */
   started_at?: null | number
+  /** Start of the CURRENT run row; null/absent when the task has no active
+   *  run (or the backend predates it) — the clock falls back to started_at. */
+  current_run_started_at?: null | number
   worker_pid?: null | number
   last_heartbeat_at?: null | number
 }

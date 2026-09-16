@@ -1251,11 +1251,11 @@ class TestCommentPreservation:
 
     def test_new_nested_key_created_without_touching_rest(self, _isolated_hermes_home):
         self._seed(_isolated_hermes_home)
-        set_config_value("gateway.port", "8899")
+        set_config_value("custom_section.port", "8899")
         text = _read_config(_isolated_hermes_home)
         import yaml as _yaml
         data = _yaml.safe_load(text)
-        assert data["gateway"]["port"] == 8899
+        assert data["custom_section"]["port"] == 8899
         assert "# dev box" in text
         assert "# pinned for eval reproducibility" in text
 

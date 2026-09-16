@@ -2234,3 +2234,161 @@ Exemplos desta própria auditoria:
 
 Esse procedimento é a defesa principal contra transformar
 `HERMES_WORKSTATION_INTELLIGENCE.md` em arqueologia contraditória.
+
+---
+
+## 35. Execução repetitiva durável: compilação única, dispatch existente e retorno por referência
+
+Esta seção descreve o contrato atual da capability `work_execute`, integrada em
+2026-09-16. Ela trata trabalho homogêneo e quantificado sem criar um executor,
+um browser ou uma store paralela. Seu objetivo é manter o modelo na decisão e
+o runtime na repetição verificável.
+
+### 35.1. Entrada no tool loop e surface de sessão
+
+`tools/workstation_work.py` registra `work_execute` no toolset `desktop_ui`.
+Ele não pertence a `_HERMES_CORE_TOOLS`: clientes sem a superfície Desktop não
+pagam seu schema em cada chamada. O `check_fn` consulta apenas se Workstation
+está habilitado; ele não usa `HERMES_DESKTOP` para inferir que uma GUI está
+observando a sessão. A inclusão do toolset continua sendo resolvida pela origem
+da sessão no Gateway, como os demais recursos de Desktop.
+
+No loop de conversa, `batch_intent()` reconhece pedidos repetitivos
+quantificados e `requires_compilation()` bloqueia mutações isoladas que seriam
+parte daquele lote. O primeiro bloqueio devolve um resultado compacto
+`durable_compile_required`: nenhuma ferramenta subjacente executa. Uma segunda
+tentativa sem plano produz `durable_compile_failed` e aciona o halt do
+guardrail. Isso é uma defesa de custo e de segurança: não deixe o modelo
+alternar “planejar um item, mutar um item” cem vezes e chamar isso de batch.
+
+O plano enviado a `work_execute` usa `operation_key`, `items` **ou**
+`items_ref`, e passos `{tool, args, expect, wait}`. Valores em `args` podem
+usar `$item.campo`; cada mutação requer `expect` que confira um caminho JSON do
+resultado. `items_ref` é preferível quando o conjunto já está no ArtifactStore:
+não rematerialize um dataset grande no transcript para iniciar ou retomar uma
+execução.
+
+### 35.2. Ownership, identidade e retomada
+
+`TaskCompiler` deriva a identidade do trabalho da conversa raiz estável, do
+task id original e de `operation_key`. `run_agent.py` passa
+`_conversation_root_id()` ao contexto de execução; uma compaction que cria uma
+sessão filha não pode assumir a execução da conversa pai. O request
+fingerprint persistido impede reutilizar a mesma `operation_key` para um
+objetivo diferente.
+
+O resultado é materializado nos `WorkPlan`/`WorkItem` canônicos e no
+ArtifactStore existente. Antes do dispatch de uma mutação, o runner persiste a
+intenção; depois de verificar o resultado, persiste evidência/checkpoint e só
+então avança. Em restart, passos concluídos são pulados. Uma mutação cuja
+intenção foi persistida mas não tem checkpoint verificável vira bloqueio para
+raciocínio/handoff: ela não é repetida no escuro apenas para recuperar
+progresso.
+
+`plan_id` permite `status` ou `resume` sem depender do transcript. A retomada
+recarrega objective, constraints e o `browser_task_id` original dos metadados
+duráveis e confirma que a conversa solicitante é a dona. Para browser work,
+isso conserva a `BrowserTask` já bound; controller ausente ou perda dessa
+capacidade falha fechado, sem migrar cookies/estado para um fallback genérico.
+
+### 35.3. Dispatcher, BrowserTask e prompt queues
+
+O compiler não chama handlers arbitrariamente. `execution_context()` recebe do
+agente o dispatcher scoped já existente. Ferramentas deferred passam pela
+resolução e middleware normal; portanto política, validação de schema,
+aprovação, captura de resultado e guardrails não são contornados pelo batch.
+O executor sequencial é chamado com `finalize=False`, para que mensagens
+internas de cem itens não sejam gravadas como cem rodadas de conversa; o
+resultado consolidado externo é o boundary de transcript.
+
+O contexto também carrega callback de progresso, resultados brutos capturados
+antes do spillover e refs operacionais confiáveis. Ao fim, `run_agent.py`
+anexa os refs `KanbanRun` à mensagem externa de tool. O ledger é uma projeção
+derivada da DB canônica: plano, fase, objective ref, constraints, itens
+concluídos/pendentes/falhos, artifact handles, blockers e próxima ação. Ele não
+é transcript, cadeia de raciocínio, nem mais uma fonte de verdade de Kanban.
+
+Browser transactions mantêm uma única BrowserTask. Prompt queues só aceitam
+espera de ferramenta read-only, com deadline, interval e número máximo de
+polls; cada conclusão observada é persistida como evidência antes do próximo
+item. Falha de browser ou queue interrompe o lote no primeiro desvio, porque
+continuar assumindo que o estado visual/assíncrono permaneceu igual é um erro
+de ownership.
+
+### 35.4. Constraints e roteamento sem sondagem lateral
+
+`user_constraints()` aceita apenas constraints estruturadas ou a gramática
+estreita dos pedidos explícitos de rota. `merge_constraints()` pode reduzir o
+conjunto permitido, nunca ampliá-lo: allowed routes são intersectadas e
+forbidden routes são unidas. `require_allowed_route()` valida listas limitadas
+(até 64 strings de até 256 caracteres) e bloqueia por prefixo antes de dispatch,
+descoberta, probe de credencial ou chamada de provider.
+
+`ModelRouter.choose()` aplica o mesmo filtro antes de pontuar candidatos; o
+provider `openai` é comparado à rota `openai_api`. Não tente contornar uma
+constraint consultando primeiro a disponibilidade do provider. A ausência de
+rota válida é um resultado explícito, não justificativa para fallback silencioso.
+
+### 35.5. Reference-first boundary, caches e telemetria honesta
+
+`content_reference()` armazena conteúdo por hash dentro do escopo da task.
+`blob_references()` troca payloads `data:` por descritores MIME/hash/ref e
+preserva bytes recuperáveis; um digest visual só recebe referência quando foi
+fornecido por uma fonte real. Não se inventa digest nem se reintroduz pixels no
+contexto apenas para parecer multimodal.
+
+`ReadCache` reduz contexto repetido, não autorização nem I/O: `read_file`
+ainda faz uma leitura fresca autorizada e calcula o hash do conteúdo. Isso
+detecta a edição de mesmo tamanho com mtime restaurado, caso que uma deduplicação
+por mtime isolado perderia. `schema_projection()` mantém a primeira descrição
+completa de ferramenta e, nas repetições, retorna somente tool/hash/ref/capacidades
+quando o fingerprint do registry e da capability não mudou.
+
+As métricas contam dispatches, transições, bytes de entrada/saída de ferramentas,
+cache hits/misses, checkpoints já concluídos e tamanho físico de artifacts. Uso
+de tokens só é preenchido quando o provider o reporta no request de compilação;
+nesse caso o escopo é literalmente `compile_request`. Sem relatório, o valor é
+desconhecido, não zero e não uma estimativa de economia. O `token_count` da
+mensagem assistant e `provider_usage` chegam ao flush da SessionDB quando
+existem; ausência permanece `null`.
+
+### 35.6. Guardrails e classificação de falhas
+
+O controller de guardrails mantém histórico limitado de chamadas e detecta
+ciclos idênticos de duas a quatro iterações, avisando depois de três voltas e
+parando no limiar configurado. Pollers conhecidos continuam isentos; falhas
+distintas de terminal/processo/browser não recebem halt meramente por terem o
+mesmo nome de ferramenta. Progresso só é resetado por mudança observável ou
+por `mark_verified_progress()`, nunca pelo texto otimista do resultado.
+
+Itens read-only podem usar retry limitado. Falha de mutação, verifier inválido,
+interrupção, estado `waiting`, `blocked`, `cancelled` ou `suspect` não recebe
+replay automático. A saída compacta separa itens concluídos, exceções que
+pedem raciocínio e refs para evidência completa; `verbosity=full` ainda retorna
+registros por referência, não um novo transcript gigante.
+
+### 35.7. Provas de regressão e anti-patterns
+
+`workstation/tests/test_durable_agent_integration.py` executa o dispatcher
+sequencial real do `AIAgent`: 100 operações produzem um único resultado externo
+e o provider fake recebe duas chamadas. `test_task_compiler.py` cobre restart
+após 37 itens, retomada por `plan_id`, isolamento de owner, checkpoint de
+mutação, constraints, queue bounded, cache e métricas de uso conhecido ou
+desconhecido. `test_reference_plane.py` cobre hash de conteúdo, recuperação de
+blob, projeção de schema e invalidação com mtime restaurado.
+
+O benchmark provider-free em `workstation/benchmarks/durable_execution.py`
+modela 100 limites de planner contra dois, mede transporte inline e injeta
+falha transitória, crash e exceção cognitiva. Ele prova propriedades
+estruturais — inclusive zero replay dos itens concluídos — e não mede preço de
+tokens nem comportamento de browser real.
+
+Anti-patterns proibidos nesta fronteira:
+
+- criar `TaskCompiler` como segundo dono de Kanban, BrowserTask, SessionDB ou
+  artifacts;
+- executar itens por handlers diretos e escapar de middleware/policy;
+- tratar sucesso textual como verifier, ou repetir mutação incerta;
+- guardar outputs integrais no histórico de chat para “facilitar resume”;
+- habilitar tool de GUI por env de processo, ou sondar rota proibida;
+- alegar token saving pago a partir de um benchmark sintético.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { buildVerboseToolTrailLine } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey, wrappedLines } from '../lib/virtualHeights.js'
 import type { Msg } from '../types.js'
 
@@ -41,6 +42,21 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBeGreaterThan(
       estimatedMsgHeight(msg, 80, { compact: false, details: false })
     )
+  })
+
+  it('counts wrapped multiline tool details instead of one row per tool', () => {
+    const detail = Array.from({ length: 24 }, (_, index) => `result row ${index}`).join('\n')
+    const msg: Msg = {
+      kind: 'trail',
+      role: 'assistant',
+      text: '',
+      tools: [buildVerboseToolTrailLine('terminal', 'run', false, 1.2, '{"cmd":"run"}', detail)]
+    }
+
+    const hidden = estimatedMsgHeight(msg, 50, { compact: false, details: false })
+    const visible = estimatedMsgHeight(msg, 50, { compact: false, details: true })
+
+    expect(visible - hidden).toBeGreaterThan(24)
   })
 
   it('accounts for the response separator when assistant details are visible', () => {

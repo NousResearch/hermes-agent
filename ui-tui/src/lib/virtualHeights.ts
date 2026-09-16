@@ -2,6 +2,7 @@ import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
 import { transcriptBodyWidth } from './inputMetrics.js'
+import { parseToolTrailResultLine } from './text.js'
 
 const hashText = (text: string) => {
   let h = 5381
@@ -66,6 +67,19 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
   return n
 }
 
+const estimatedToolTrailRows = (tools: readonly string[], bodyWidth: number) => {
+  // Tool headers use one tree lead; detail rows are nested one level deeper.
+  // The estimate only needs to avoid materially undercounting the wrapped
+  // payload before Yoga records the exact mounted height.
+  const detailWidth = Math.max(1, bodyWidth - 5)
+
+  return tools.reduce((rows, line) => {
+    const detail = parseToolTrailResultLine(line)?.detail ?? ''
+
+    return rows + 1 + (detail ? wrappedLines(detail, detailWidth) : 0)
+  }, 0)
+}
+
 export const estimatedMsgHeight = (
   msg: Msg,
   cols: number,
@@ -125,7 +139,7 @@ export const estimatedMsgHeight = (
 
     if (hasVisibleDetails) {
       h +=
-        (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
+        (hasVisibleTools ? estimatedToolTrailRows(msg.tools ?? [], bodyWidth) : 0) +
         (hasVisibleThinking ? (thinkingExpanded ? wrappedLines(msg.thinking ?? '', bodyWidth) : 1) : 0)
 
       if (msg.role === 'assistant' && /\S/.test(msg.text)) {

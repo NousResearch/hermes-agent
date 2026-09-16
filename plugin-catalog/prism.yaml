@@ -1,6 +1,6 @@
 name: prism
 repo: https://github.com/prismhq/hermes-prism-provider
-sha: 5354c0f0382996b3f56c33dc7c2de6a628d2715e
+sha: f68a9bff76a1dba30389f56a671292e48b22887a
 description: Prism OpenAI-compatible inference with long-context DeepSeek models.
 maintainer: Prism
 tier: community

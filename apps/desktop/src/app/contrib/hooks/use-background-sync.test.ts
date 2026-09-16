@@ -7,6 +7,7 @@ import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/
 import {
   $activeSessionId,
   $selectedStoredSessionId,
+  _resetSessionOwnerHintsForTests,
   setBusy,
   setCronSessions,
   setMessagingSessions,
@@ -27,6 +28,7 @@ import {
   type ActiveTranscriptRefreshDeps,
   isTypingBurstActive,
   noteRendererKeyboardActivity,
+  profileScopeForTranscriptSession,
   reconcileActiveTranscript,
   reconcileTileTranscripts as reconcileTileTranscriptsForTest,
   rehydrateLiveSessionStatuses,
@@ -52,7 +54,7 @@ const { refreshProjectTree } = await import('@/store/projects')
 const ACTIVE_RUNTIME_ID = 'runtime-active'
 const ACTIVE_STORED_ID = 'stored-active'
 
-function transcript(answer: string, sessionId = ACTIVE_STORED_ID) {
+function transcript(answer: string, sessionId = ACTIVE_STORED_ID): Awaited<ReturnType<typeof getLatestSessionMessages>> {
   return {
     messages: [
       { content: 'question', role: 'user', timestamp: 1 },
@@ -177,7 +179,50 @@ afterEach(() => {
   vi.restoreAllMocks()
   clearAllSessionStates()
   $sessionTiles.set([])
+  _resetSessionOwnerHintsForTests()
   resetTypingActivityTracking()
+})
+
+describe('resolveActiveTranscriptSession', () => {
+  it('uses a unique hidden owner hint for hydration and refresh scope', async () => {
+    const ownerRoute = {
+      connectionId: 'hidden-remote',
+      profile: 'connection-profile',
+      targetProfile: 'bot-profile',
+      mode: 'remote' as const
+    }
+
+    setSessionOwnerHint(ACTIVE_STORED_ID, ownerRoute)
+    const scope = profileScopeForTranscriptSession(resolveActiveTranscriptSession(ACTIVE_STORED_ID, ACTIVE_RUNTIME_ID))
+
+    expect(scope).toEqual({ connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile })
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('hint-owned answer'))
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, scope)
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.at(-1)?.parts[0]).toMatchObject({
+      text: 'hint-owned answer'
+    })
+  })
+
+  it('does not promote a different runtime tile into the active transcript owner', () => {
+    const ownerRoute = { connectionId: 'local', profile: 'other-profile', mode: 'local' as const }
+    // SAFETY: Ownership resolution reads only identity and profile fields; omitted session metadata is unused.
+    setSessions([{ id: 'shared', profile: 'default', source: 'desktop' } as never])
+    $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'other-runtime', ownerRoute }])
+
+    expect(resolveActiveTranscriptSession('shared', 'active-runtime')).toEqual({ profile: 'default' })
+  })
+
+  it('does not treat an ownerless active tile as corroboration for a stale hint', () => {
+    // SAFETY: Ownership resolution reads only identity and profile fields; omitted session metadata is unused.
+    setSessions([{ id: 'shared', profile: 'default', source: 'desktop' } as never])
+    setSessionOwnerHint('shared', { connectionId: 'stale-connection', profile: 'stale-profile', mode: 'remote' })
+    $sessionTiles.set([{ storedSessionId: 'shared', runtimeId: 'active-runtime' }])
+
+    expect(resolveActiveTranscriptSession('shared', 'active-runtime')).toEqual({ profile: 'default' })
+  })
 })
 
 describe('active transcript refresh', () => {
@@ -276,7 +321,7 @@ describe('active transcript refresh', () => {
 
     // Behavior assertions:
     expect(updaterCallCount).toBeGreaterThan(0)
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(TILE_STORED_ID, undefined, { passive: true })
   })
 
   it('reconciles an idle tile while the main pane is busy', async () => {
@@ -301,7 +346,7 @@ describe('active transcript refresh', () => {
       updateSessionState
     })
 
-    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, undefined)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, undefined, { passive: true })
     expect(updateSessionState).toHaveBeenCalledTimes(1)
   })
 
@@ -394,15 +439,19 @@ describe('active transcript refresh', () => {
       updateSessionState
     })
 
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-a', {
-      connectionId: 'connection-a',
-      profile: 'target-a'
-    })
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-b', {
-      connectionId: 'connection-b',
-      profile: 'shared-profile'
-    })
-    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-local', undefined)
+    // Every tile read is passive: it may serve from a warm owner backend but
+    // must never cold-start one (#103375).
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(
+      'stored-a',
+      { connectionId: 'connection-a', profile: 'target-a' },
+      { passive: true }
+    )
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(
+      'stored-b',
+      { connectionId: 'connection-b', profile: 'shared-profile' },
+      { passive: true }
+    )
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-local', undefined, { passive: true })
     expect(updateSessionState).toHaveBeenCalledWith('runtime-a', expect.any(Function), 'stored-a')
     expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'stored-b')
     expect(updateSessionState).toHaveBeenCalledWith('runtime-local', expect.any(Function), 'stored-local')
@@ -642,6 +691,34 @@ describe('reconcileActiveTranscript', () => {
 
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
     expect(fixture.updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('keeps the active named-profile owner when a visible default duplicate shares the stored id', async () => {
+    const S = ACTIVE_STORED_ID
+    const namedOwner = { connectionId: 'remote', mode: 'remote' as const, profile: 'omar' }
+
+    $activeSessionId.set(ACTIVE_RUNTIME_ID)
+    $selectedStoredSessionId.set(S)
+    setSessionOwnerHint(S, namedOwner)
+    // Bot Chat lives in a workspace tile (often hidden from $sessions) while a
+    // root-DB duplicate of the same stored id remains visible as `default`.
+    $sessionTiles.set([
+      {
+        storedSessionId: S,
+        runtimeId: ACTIVE_RUNTIME_ID,
+        ownerRoute: namedOwner
+      }
+    ])
+    // SAFETY: Ownership resolution reads only identity and profile fields; omitted session metadata is unused.
+    setSessions([{ id: S, profile: 'default', source: 'desktop', connection_id: 'local' } as never])
+    const fixture = makeRefresh(resolveActiveTranscriptSession)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('named-profile answer'))
+
+    await fixture.refresh()
+
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(S, expect.objectContaining({ profile: 'omar' }))
+    expect(getLatestSessionMessages).not.toHaveBeenCalledWith(S, 'default')
+    expect(getLatestSessionMessages).not.toHaveBeenCalledWith(S, expect.objectContaining({ profile: 'default' }))
   })
 
   it('uses the presentation profile when a hidden owner has no target profile', async () => {

@@ -31,7 +31,7 @@ def test_sessions_export_md_writes_single_session(monkeypatch, tmp_path, capsys)
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: FakeDB())
     monkeypatch.setattr(
         sys,
         "argv",
@@ -88,7 +88,7 @@ def test_sessions_export_redact_scrubs_secrets(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: FakeDB())
     monkeypatch.setattr(
         sys,
         "argv",

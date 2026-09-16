@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-04T22:47:22Z",
+  "updated_at": "2026-09-10T16:09:08Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -129,7 +129,7 @@
           "description": "dated snapshot of v4-pro"
         },
         {
-          "id": "deepseek/deepseek-v4-flash",
+          "id": "deepseek/deepseek-v4.1-flash",
           "description": ""
         },
         {
@@ -137,7 +137,7 @@
           "description": "dated snapshot of v4-flash"
         },
         {
-          "id": "qwen/qwen3.8-max",
+          "id": "qwen/qwen3.8-max-0902",
           "description": ""
         },
         {
@@ -250,7 +250,7 @@
     "nous": {
       "metadata": {
         "display_name": "Nous Portal",
-        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
+        "note": "The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
         {
@@ -335,13 +335,13 @@
           "id": "deepseek/deepseek-v4-pro-0813"
         },
         {
-          "id": "deepseek/deepseek-v4-flash"
+          "id": "deepseek/deepseek-v4.1-flash"
         },
         {
           "id": "deepseek/deepseek-v4-flash-0731"
         },
         {
-          "id": "qwen/qwen3.8-max"
+          "id": "qwen/qwen3.8-max-0902"
         },
         {
           "id": "qwen/qwen3.8-flash"

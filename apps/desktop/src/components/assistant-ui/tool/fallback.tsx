@@ -39,11 +39,12 @@ import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
-import { normalize } from '@/lib/text'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
@@ -52,11 +53,12 @@ import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { APPROVAL_TOOLS, PendingToolApproval } from './approval'
+import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
   buildToolView,
   clampForDisplay,
   cleanVisibleText,
+  CONNECTION_CARD_KEY,
   countDiffLineStats,
   inlineDiffFromResult,
   isCardTool,
@@ -67,8 +69,8 @@ import {
   selectMessageRunning,
   stripInlineDiffChrome,
   toolCopyPayload,
+  toolEntryDisclosureId,
   type ToolPart,
-  toolPartDisclosureId,
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
@@ -80,6 +82,7 @@ import { ToolRunTicker } from './run-ticker'
 // false, so every row currently owns its own chrome; kept as a seam for any
 // future embedding surface.
 const ToolEmbedContext = createContext(false)
+const ToolRunDisclosureContext = createContext<string | null>(null)
 
 // A search hit's title is result *content* inside an expanded row, not one of
 // the scaffolding lines, so it keeps the brighter secondary grey.
@@ -255,7 +258,7 @@ function leadingStatus(isPending: boolean, status: ToolStatus): ToolStatus | und
     return 'running'
   }
 
-  return status === 'success' ? undefined : status
+  return status === 'success' || status === 'notice' ? undefined : status
 }
 
 function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
@@ -335,17 +338,6 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   return persistedOpen ?? fallbackOpen
 }
 
-/**
- * A row's disclosure id, scoped to the message it was rendered in.
- *
- * Shared with the run that wraps the row: a live run has to know when one of
- * its own rows has been opened, and both sides have to name it identically or
- * the run never hears about it.
- */
-function toolEntryDisclosureId(messageId: string, part: ToolPart): string {
-  return `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
-}
-
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
@@ -353,26 +345,37 @@ function ToolEntry({ part }: ToolEntryProps) {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
+  const runDisclosureId = useContext(ToolRunDisclosureContext)
   const toolViewMode = useStore($toolViewMode)
 
   // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, completedAt, isError, result, timestamp, toolCallId, toolName } = part
+  const { args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName } = part
 
   const stablePart = useMemo<ToolPart>(
-    () => ({ args, completedAt, isError, result, timestamp, toolCallId, toolName, type: 'tool-call' }),
-    [args, completedAt, isError, result, timestamp, toolCallId, toolName]
+    () => ({
+      args,
+      completedAt,
+      isError,
+      result,
+      toolResultMetadata,
+      timestamp,
+      toolCallId,
+      toolName,
+      type: 'tool-call'
+    }),
+    [args, completedAt, isError, result, toolResultMetadata, timestamp, toolCallId, toolName]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
   const dismissed = useStore($toolRowDismissed(disclosureId))
-  const isPending = messageRunning && result === undefined
+  const isPending = messageRunning && result === undefined && completedAt === undefined
   // Subscribe to this tool's diff only, so a live patch for one tool doesn't
   // re-render every mounted tool row (the factory caches a per-id atom).
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
-  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
+  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
@@ -384,11 +387,11 @@ function ToolEntry({ part }: ToolEntryProps) {
   const enterRef = useEnterAnimation(messageRunning && !embedded, `tool-entry:${disclosureId}`)
   const elapsed = useElapsedSeconds(isPending, `tool:${disclosureId}`)
 
-  // Stale parts (no result, but message stopped running) get a synthetic empty
-  // result so buildToolView treats them as completed-no-output. Keyed on
-  // stablePart so it recomputes only when this tool's data changes.
+  // A stopped turn is not evidence that an unobserved tool succeeded. Use a
+  // presentation-only completion marker, never manufacture a result.
   const view = useMemo(() => {
-    const p = !isPending && result === undefined ? { ...stablePart, result: {} } : stablePart
+    const p =
+      !isPending && result === undefined ? { ...stablePart, completedAt: stablePart.completedAt ?? 0 } : stablePart
 
     return buildToolView(p, inlineDiff)
   }, [inlineDiff, isPending, result, stablePart])
@@ -431,16 +434,11 @@ function ToolEntry({ part }: ToolEntryProps) {
       .map(chunk => chunk.trim())
       .filter(Boolean)
 
+    // The subtitle is not rendered in the header; keep its explanation here.
     const [summary = '', ...rest] = chunks
-    const subtitleNorm = normalize(view.subtitle)
-    const summaryDuplicatesSubtitle = summary && summary.toLowerCase() === subtitleNorm
-
-    if (summaryDuplicatesSubtitle) {
-      return { body: rest.join('\n\n').trim(), summary: '' }
-    }
 
     return { body: rest.join('\n\n').trim(), summary }
-  }, [view.detail, view.status, view.subtitle])
+  }, [view.detail, view.status])
 
   // `looksRedundant` normalizes the FULL (uncapped) detail payload — a
   // read_file / terminal result can be huge. Memoize on the view fields so it
@@ -453,6 +451,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     !view.inlineDiff &&
     (Boolean(view.stdout || view.stderr) ||
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
+      (view.status === 'notice' && Boolean(view.detail)) ||
       (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
   const renderDetailAsCode =
@@ -506,26 +505,24 @@ function ToolEntry({ part }: ToolEntryProps) {
   // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
   // the disclosure caret's hit-target — see the comment above `trailing`.
   const dismissAction = canDismiss ? (
-    <Tip label={statusCopy.dismiss}>
-      <Button
-        aria-label={statusCopy.dismiss}
-        className={cn(
-          'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
-          open
-            ? 'opacity-80'
-            : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
-        )}
-        onClick={event => {
-          event.stopPropagation()
-          dismissToolRow(disclosureId)
-        }}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="close" size="0.75rem" />
-      </Button>
-    </Tip>
+    <Button
+      aria-label={statusCopy.dismiss}
+      className={cn(
+        'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
+        open
+          ? 'opacity-80'
+          : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
+      )}
+      onClick={event => {
+        event.stopPropagation()
+        dismissToolRow(disclosureId)
+      }}
+      size="icon-xs"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name="close" size="0.75rem" />
+    </Button>
   ) : undefined
 
   if (dismissed) {
@@ -557,7 +554,18 @@ function ToolEntry({ part }: ToolEntryProps) {
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
           action={dismissAction}
-          onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
+          onToggle={
+            hasExpandableContent
+              ? () => {
+                  // Opening a row is newer intent than an earlier group collapse.
+                  if (!open && runDisclosureId) {
+                    setToolDisclosureOpen(runDisclosureId, true)
+                  }
+
+                  setToolDisclosureOpen(disclosureId, !open)
+                }
+              : undefined
+          }
           open={open}
           trailing={trailing}
         >
@@ -598,7 +606,6 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
-      {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {copyAction.text && (
@@ -647,7 +654,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                   {detailSections.body && (
                     <pre
                       className={cn(
-                        'max-h-56 overflow-auto whitespace-pre-wrap wrap-anywhere font-mono text-[0.7rem] leading-[1.55] text-destructive/90',
+                        'max-h-56 overflow-auto whitespace-pre-wrap wrap-anywhere font-mono text-[0.7rem] leading-[1.55] text-(--ui-text-secondary)',
                         detailSections.summary && 'mt-1.5'
                       )}
                     >
@@ -798,7 +805,7 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
  */
 // The one grey line that stands in for a run of tool calls — "Explored 3
 // files, ran 5 commands". Live, it narrates in the present tense above the
-// ticker and offers no toggle, since there is nothing settled to unfold yet.
+// ticker by default; its toggle can reveal the activity before it settles.
 function ToolRunHeader({
   completedAt,
   live,
@@ -830,6 +837,7 @@ function ToolRunHeader({
 }
 
 interface ToolRunState {
+  approvalActivity: boolean
   completedAt?: number
   count: number
   /** Disclosure id of each row in the run, so the run can tell when one is open. */
@@ -837,8 +845,6 @@ interface ToolRunState {
   key: string
   live: boolean
   startedAt?: number
-  /** A call still awaiting a result that could be the one blocking on approval. */
-  pendingApprovalTool: boolean
   summary: string
 }
 
@@ -847,7 +853,8 @@ interface ToolRunState {
 // re-render the group on every text delta in the turn. The run only changes
 // when a call arrives or one finishes; cache on exactly that.
 function useToolRun(startIndex: number, endIndex: number): ToolRunState {
-  const cache = useRef<null | { signature: string; value: ToolRunState }>(null)
+  const { locale } = useI18n()
+  const cache = useRef<null | { signature: string; tools: readonly ToolPart[]; value: ToolRunState }>(null)
 
   return useAuiState(state => {
     const parts = state.message.parts
@@ -869,12 +876,28 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
         tool =>
           `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}:${tool.timestamp ?? ''}:${tool.completedAt ?? ''}`
       )
-      .concat(String(live))
+      .concat(String(live), state.message.id, locale)
       .join('|')
 
-    if (cache.current?.signature !== signature) {
+    // The arguments may arrive after tool.start. Compare references rather
+    // than stringify potentially huge args/results on every streaming tick.
+    const sameInputs =
+      cache.current?.tools.length === timelineTools.length &&
+      timelineTools.every((tool, index) => {
+        const previous = cache.current!.tools[index]
+
+        return (
+          tool.args === previous.args &&
+          tool.result === previous.result &&
+          tool.toolName === previous.toolName &&
+          tool.isError === previous.isError
+        )
+      })
+
+    if (cache.current?.signature !== signature || !sameInputs) {
       cache.current = {
         signature,
+        tools: timelineTools,
         value: {
           completedAt: timelineTools.reduce<number | undefined>(
             (latest, tool) =>
@@ -886,8 +909,9 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
             undefined
           ),
           count: tools.length,
+          approvalActivity: tools.length > 0 && tools.every(isApprovalActivity),
           entryIds: tools.map(tool => toolEntryDisclosureId(state.message.id, tool)),
-          key: tools[0]?.toolCallId ?? '',
+          key: `${state.message.id}:${tools[0]?.toolCallId ?? ''}`,
           live,
           startedAt: timelineTools.reduce<number | undefined>(
             (earliest, tool) =>
@@ -898,7 +922,6 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
                   : Math.min(earliest, tool.timestamp),
             undefined
           ),
-          pendingApprovalTool: tools.some(tool => tool.result === undefined && APPROVAL_TOOLS.has(tool.toolName)),
           summary: summarizeToolRun(tools, live)
         }
       }
@@ -920,7 +943,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  *
  * Live, the run is a summary plus the one-line ticker. Settled, the summary is
  * the whole of it until the user opens it. `ToolEmbedContext` is false so each
- * row still owns its own chrome (timer / copy / approval) when shown.
+ * row still owns its own chrome (timer / copy) when shown.
  */
 const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
@@ -928,52 +951,48 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
-
-  const { completedAt, count, entryIds, key, live, pendingApprovalTool, startedAt, summary } = useToolRun(
+  const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
     startIndex,
     endIndex
   )
-
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+  const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
   const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
+  const representedByApproval = !!approval && currentTurn && approvalActivity
+  const expanded = count < 2 || (persistedOpen ?? rowOpen)
 
-  // A lone call is already its own one-line summary; heading it with a second
-  // line would say the same thing twice.
-  if (count < 2) {
-    return <>{children}</>
+  // Pending command activity is summarized by the persistent approval host.
+  // An explicit result disclosure still uses the original tool runtime.
+  if (representedByApproval && !rowOpen && !persistedOpen) {
+    return null
   }
 
-  // Two things a one-line window can't hold. An approval is a question the
-  // user has to answer, and expanded output is one they went looking for —
-  // both would tick straight past, or be sliced to a single line, as the run
-  // keeps going. Either one hands the run back its full height until the run
-  // settles and the row can be reached through the summary instead.
-  const blocked = Boolean(approval) && pendingApprovalTool
-  const unfurled = blocked || rowOpen
-  const expanded = live ? unfurled : (persistedOpen ?? false)
-
   return (
-    <div
-      className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
-      data-slot="tool-block"
-      data-tool-group=""
-      ref={enterRef}
-    >
-      <ToolRunHeader
-        completedAt={completedAt}
-        live={live}
-        onToggle={live ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
-        open={expanded}
-        startedAt={startedAt}
-        summary={summary}
-      />
-      {live && !unfurled && <ToolRunTicker>{children}</ToolRunTicker>}
-      {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
-    </div>
+    <ToolRunDisclosureContext.Provider value={disclosureId}>
+      <div
+        className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
+        data-slot="tool-block"
+        data-tool-group=""
+        ref={enterRef}
+      >
+        {count > 1 && !representedByApproval && (
+          <ToolRunHeader
+            completedAt={completedAt}
+            live={live}
+            onToggle={() => setToolDisclosureOpen(disclosureId, !expanded)}
+            open={expanded}
+            startedAt={startedAt}
+            summary={summary}
+          />
+        )}
+        {count > 1 && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
+        {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
+      </div>
+    </ToolRunDisclosureContext.Provider>
   )
 }
 
@@ -999,7 +1018,14 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .map(part => (part.type === 'tool-call' ? part.toolName : ''))
+      .map(part =>
+        part.type === 'tool-call'
+          ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
+            mcpTargets(part.toolName, part.args).length
+            ? CONNECTION_CARD_KEY
+            : part.toolName
+          : ''
+      )
       .join('\u0000')
   )
 
@@ -1027,7 +1053,8 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * its return type and the underlying ToolEntry stays mounted across
  * group-shape changes.
  */
-type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
+type TimelineToolCallProps = ToolCallMessagePartProps &
+  Pick<ToolPart, 'completedAt' | 'timestamp' | 'toolResultMetadata'>
 
 export const ToolFallback = ({
   toolCallId,
@@ -1036,9 +1063,20 @@ export const ToolFallback = ({
   completedAt,
   isError,
   result,
+  toolResultMetadata,
   timestamp
 }: TimelineToolCallProps) => {
-  const part: ToolPart = { args, completedAt, isError, result, timestamp, toolCallId, toolName, type: 'tool-call' }
+  const part: ToolPart = {
+    args,
+    completedAt,
+    isError,
+    result,
+    toolResultMetadata,
+    timestamp,
+    toolCallId,
+    toolName,
+    type: 'tool-call'
+  }
 
   return <ToolEntry part={part} />
 }

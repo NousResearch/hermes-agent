@@ -33,6 +33,22 @@ class TestReadFileHandler:
 
 
     @patch("tools.file_tools._get_file_ops")
+    def test_dispatch_without_limit_uses_schema_default(self, mock_get):
+        """The model omits ``limit`` on most reads; the dispatch handler must fall
+        back to the SAME default the schema advertises (drifted to 500 vs 2000)."""
+        from tools.file_tools import READ_FILE_SCHEMA, _handle_read_file
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x"
+        result_obj.to_dict.return_value = {"content": "x", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        _handle_read_file({"path": "/tmp/test.txt"}, task_id="t-default")
+        schema_default = READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"]
+        assert mock_ops.read_file.call_args.args[2] == schema_default
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 
@@ -404,8 +420,10 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=0, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=50" in raw
+        # The hint rides inside the payload as a structured field — the tool
+        # result must stay pure JSON (#90322).
+        parsed = json.loads(raw)
+        assert "offset=50" in parsed["_hint"]
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -422,8 +440,8 @@ class TestSearchHints:
 
         from tools.file_tools import search_tool
         raw = search_tool(pattern="foo", offset=50, limit=50)
-        assert "[Hint:" in raw
-        assert "offset=100" in raw
+        parsed = json.loads(raw)
+        assert "offset=100" in parsed["_hint"]
 
 
 # ---------------------------------------------------------------------------
@@ -1037,3 +1055,85 @@ class TestSSHConfigWriteGateSingleQuery:
             f"required kwargs {missing}; it would raise TypeError instead "
             f"of showing an approval prompt"
         )
+
+
+class TestSecretFileReadRedaction:
+    """#110567: read_file / search_files must classify the RESOLVED path and run the
+    assignment passes for a secret-bearing file, instead of returning an opaque
+    prefix-less credential in cleartext. Same classifier the terminal side uses
+    (``_is_secret_file_arg``), so the two surfaces cannot drift."""
+
+    SYNTH = "3JcQ1UqZ8mNp4Rt6vWx2Yb9Ad0Ef7Gh5Ij2kS"  # 40-char opaque, no vendor prefix
+
+    class _Match:
+        def __init__(self, path, content):
+            self.path = path
+            self.content = content
+
+    class _SearchResult:
+        def __init__(self, matches):
+            self.matches = matches
+            self.files = []
+            self.counts = {}
+
+        def to_dict(self, densify=False):
+            return {
+                "total_count": len(self.matches),
+                "matches": [{"path": m.path, "content": m.content} for m in self.matches],
+            }
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
+        import agent.file_safety as file_safety
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
+        monkeypatch.setattr(file_safety, "_hermes_root_path", lambda: home)
+        return home
+
+    @staticmethod
+    def _read_ops(body):
+        ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = body
+        result_obj.to_dict.return_value = {"content": body, "total_lines": body.count("\n")}
+        ops.read_file.return_value = result_obj
+        return ops
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_read_file_of_hermes_config_masks_opaque_token(self, mock_get, hermes_home):
+        # read_file renders line-numbered content ("5|      ADS_API_TOKEN: …"); the gutter is
+        # part of the text the redactor sees, so the fixture must carry it (a gutter-free
+        # fixture would pass even though the real read leaks).
+        body = (f"1|mcp_servers:\n2|  nasa_ads:\n3|    env:\n"
+                f"4|      ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\n")
+        mock_get.return_value = self._read_ops(body)
+
+        from tools.file_tools import read_file_tool
+        out = json.loads(read_file_tool(str(hermes_home / "config.yaml"), task_id="secret-read"))
+
+        assert self.SYNTH not in out["content"]
+        assert "«redacted" in out["content"]
+        assert "5|MAX_TOKENS: 100" in out["content"]  # non-secret scalar and rendered gutter survive
+
+        # A project's own config.yaml is NOT secret-bearing: source dumps are never mangled.
+        mock_get.return_value = self._read_ops(f"4|      ADS_API_TOKEN: {self.SYNTH}\n")
+        out = json.loads(read_file_tool(str(hermes_home.parent / "proj-config.yaml"), task_id="plain-read"))
+        assert self.SYNTH in out["content"]
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_search_in_hermes_home_masks_opaque_token(self, mock_get, hermes_home):
+        config = hermes_home / "config.yaml"
+        ops = MagicMock()
+        ops.search.return_value = self._SearchResult(
+            [self._Match(str(config), f"      ADS_API_TOKEN: {self.SYNTH}")])
+        mock_get.return_value = ops
+
+        from tools.file_tools import search_tool
+        raw = search_tool(pattern="ADS_API_TOKEN", path=str(hermes_home),
+                          task_id="secret-search")
+
+        assert self.SYNTH not in raw
+        assert "«redacted" in raw

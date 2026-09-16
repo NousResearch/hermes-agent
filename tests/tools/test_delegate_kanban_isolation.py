@@ -165,12 +165,13 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
 
     assert os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
     assert env["HERMES_HOME"] == str(home)
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+    assert env["HERMES_DELEGATED_CHILD_CONTEXT"]  # fenced board root (path), not a bare flag
     assert "HERMES_KANBAN_TASK" not in env
     assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_DB" not in env
-    assert "HERMES_KANBAN_WORKSPACE" not in env
     assert "HERMES_KANBAN_CLAIM_LOCK" not in env
+    # Board location and workspace routing ride along with the fence marker.
+    assert env["HERMES_KANBAN_DB"] == str(home / "kanban.db")
+    assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
 
 
 def test_delegate_child_kanban_cli_cannot_delete_parent_board(

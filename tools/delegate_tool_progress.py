@@ -44,24 +44,53 @@ def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
     return line[: max_chars - 3] + "..." if len(line) > max_chars else line
 
+
+def describe_subagent_failure(failure_reason: Any, error: Any, max_chars: int = 200) -> str:
+    """Plain-language reason for a failed child: the classified ``failure_reason`` gloss when there is one,
+    else the child's own error text reduced to one clean line."""
+    # One gloss table for every surface (agent/turn_failure_copy.py); the child is the subject.
+    from agent.turn_failure_copy import failure_cause_gloss
+
+    gloss = failure_cause_gloss(failure_reason, subject="it", possessive="its")
+    return gloss or _clean_error_text(error, max_chars)
+
+
+def _format_duration(seconds: Any) -> str:
+    if not isinstance(seconds, (int, float)) or seconds <= 0:
+        return ""
+    return f"{round(seconds / 60)} min" if seconds >= 120 else f"{round(seconds)}s"
+
+
 def format_subagent_failure_line(
     goal: Optional[str], status: Optional[str], error: Any = None, duration_seconds: Any = None,
+    failure_reason: Any = None,
 ) -> str:
-    """One clean, human-readable line describing a failed subagent, rendered
-    directly to the user (CLI spinner echo, gateway platform notice), e.g.
-    ``⚠️ Subagent failed — "research competitor pricing": Error code: 404 (after 12s)``."""
+    """One clean, human-readable line describing a failed subagent, rendered directly to the user (CLI spinner
+    echo, gateway platform notice). Says what happened and what to do next; never the raw exception when the
+    child loop classified the failure, e.g.
+    ``⚠️ Subagent failed — "research competitor pricing" after 12s: the model it was given was not found at the
+    AI model service. Details: /agents, or ask me to retry with a smaller task.``"""
     goal_label = (goal or "").strip().replace("\n", " ")
     if len(goal_label) > 60:
         goal_label = goal_label[:57] + "..."
-    line = f"⚠️ Subagent {'timed out' if status == 'timeout' else 'failed'}"
-    if goal_label:
-        line += f' — "{goal_label}"'
-    err = _clean_error_text(error)
-    if err:
-        line += f": {err}"
-    if isinstance(duration_seconds, (int, float)) and duration_seconds > 0:
-        line += f" (after {round(duration_seconds)}s)"
-    return line
+    goal_part = f' — "{goal_label}"' if goal_label else ""
+    elapsed = _format_duration(duration_seconds)
+    if status == "timeout":
+        # The child's own timeout text repeats the duration and names mechanisms (API/tool calls); the
+        # user needs the outcome and the knob.
+        after = f" after {elapsed}" if elapsed else ""
+        return (
+            f"⚠️ Subagent timed out{goal_part}{after} without finishing. I will carry on without it; ask me to "
+            "retry it, or raise delegation.child_timeout_seconds in config.yaml if these tasks legitimately "
+            "take longer."
+        )
+    line = f"⚠️ Subagent failed{goal_part}"
+    if elapsed:
+        line += f" after {elapsed}"
+    reason = describe_subagent_failure(failure_reason, error)
+    if reason:
+        line += f": {reason.rstrip('.')}"
+    return line + ". Details: /agents, or ask me to retry with a smaller task."
 
 
 class DelegateEvent(str, enum.Enum):
@@ -187,8 +216,9 @@ def _build_child_system_prompt(
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
     absolute directory is ever injected (never a fake container path)."""
+    from agent.runtime_cwd import scope_terminal_cwd
     candidates = [
-        os.getenv("TERMINAL_CWD"), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
+        scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
         getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]
     for candidate in filter(None, candidates):
@@ -198,25 +228,29 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
                 return text
     return None
 
-_BATCH_ORDINALS: Dict[str, int] = {}
+_BATCH_ORDINALS: Dict[str, Dict[str, int]] = {}
 _BATCH_ORDINALS_LOCK = threading.Lock()
 
-def format_batch_tag(delegation_id: Optional[str]) -> str:
-    """Short human tag for a delegation batch: ``deleg_6a664903`` → ``set 1`` (first batch seen in this process), the
-    next distinct id → ``set 2``. Several batches (a parent's fan-out plus a child's nested fan-out, or two
+def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> str:
+    """Short human tag for a delegation batch: the parent's first fan-out is ``set 1``, its next distinct
+    delegation id ``set 2``. Several batches (a parent's fan-out plus a child's nested fan-out, or two
     concurrent tools) print interleaved ``[n/N]`` lines to one console; without a tag ``✓ [3/3]`` and ``✓ [3/9]``
-    are indistinguishable, and a raw hex slice is unreadable. Empty string when no id is known so callers can
-    concatenate unconditionally."""
+    are indistinguishable, and a raw hex slice is unreadable. Ordinals are scoped per parent conversation
+    (``parent_agent.session_id``): one process hosts many conversations and every child's own fan-out, so a
+    process-wide counter showed a user's second wave as ``set 20``. Empty string when no id is known so callers
+    can concatenate unconditionally."""
     if not isinstance(delegation_id, str) or not delegation_id:
         return ""
+    scope = str(getattr(parent_agent, "session_id", None) or "")
     with _BATCH_ORDINALS_LOCK:
-        n = _BATCH_ORDINALS.setdefault(delegation_id, len(_BATCH_ORDINALS) + 1)
+        ordinals = _BATCH_ORDINALS.setdefault(scope, {})
+        n = ordinals.setdefault(delegation_id, len(ordinals) + 1)
     return f"set {n}"
 
-def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int) -> str:
+def _batch_prefix(delegation_id: Optional[str], task_index: int, task_count: int, parent_agent: Any = None) -> str:
     """``[set 2 · 3/9] `` for batch children, ``[set 2] `` for a lone child,
     ``[3/9] `` / ``""`` when the batch id is unknown."""
-    tag = format_batch_tag(delegation_id)
+    tag = format_batch_tag(delegation_id, parent_agent)
     if task_count > 1:
         inner = f"{tag} · {task_index + 1}/{task_count}" if tag else f"{task_index + 1}/{task_count}"
         return f"[{inner}] "
@@ -268,8 +302,12 @@ class _ChildProgressRelay:
 
     def _prefix(self) -> str:
         # The batch tag is resolved lazily from session_ref: the relay is built
-        # before delegate_task stamps ``_delegation_id`` on the child.
-        return _batch_prefix(self.session_ref.get("delegation_id"), self.task_index, self.task_count)
+        # before delegate_task stamps ``_delegation_id`` on the child. The parent
+        # scope rides in the same ref so ordinals match the parent's own lines.
+        return _batch_prefix(
+            self.session_ref.get("delegation_id"), self.task_index, self.task_count,
+            parent_agent=self.session_ref.get("_parent_scope"),
+        )
 
     def _identity_kwargs(self) -> Dict[str, Any]:
         kw: Dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
@@ -314,7 +352,7 @@ class _ChildProgressRelay:
         if kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
             self._tree_line(format_subagent_failure_line(
                 self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
-                duration_seconds=kwargs.get("duration_seconds"),
+                duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
             ))
         self._relay("subagent.complete", preview=preview, **kwargs)
 
@@ -375,6 +413,9 @@ def _build_child_progress_callback(
     parent_cb = getattr(parent_agent, "tool_progress_callback", None)
     if not spinner and not parent_cb:
         return None
+    if session_ref is not None:
+        # Not an identity kwarg (underscore-prefixed, never relayed); only scopes the batch ordinal.
+        session_ref["_parent_scope"] = parent_agent
     return _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
     )

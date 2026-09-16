@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-WRAPPER = Path(__file__).resolve().parents[2] / "scripts" / "llm_benchmark_preflight_wrapper.py"
+WRAPPER = Path(__file__).resolve().parents[2] / "scripts" / "benchmarks" / "llm_benchmark_preflight_wrapper.py"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -49,7 +49,7 @@ def _make_hermes_home(tmp_path: Path) -> Path:
 # --- import-level tests -----------------------------------------------------
 
 def test_build_provider_routes_derives_non_secret_config(tmp_path: Path) -> None:
-    from scripts.llm_benchmark_preflight_wrapper import build_provider_routes
+    from scripts.benchmarks.llm_benchmark_preflight_wrapper import build_provider_routes
 
     config = {
         "custom_providers": [
@@ -77,7 +77,7 @@ def test_build_provider_routes_derives_non_secret_config(tmp_path: Path) -> None
 
 
 def test_build_provider_routes_dedupes_and_skips_endpointless(tmp_path: Path) -> None:
-    from scripts.llm_benchmark_preflight_wrapper import build_provider_routes
+    from scripts.benchmarks.llm_benchmark_preflight_wrapper import build_provider_routes
 
     config = {
         "custom_providers": [
@@ -94,7 +94,7 @@ def test_build_provider_routes_dedupes_and_skips_endpointless(tmp_path: Path) ->
 # --- atomic write + run integration -----------------------------------------
 
 def test_run_writes_state_atomically_and_returns_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from scripts.llm_benchmark_preflight_wrapper import run, _atomic_write_json
+    from scripts.benchmarks.llm_benchmark_preflight_wrapper import run, _atomic_write_json
 
     home = _make_hermes_home(tmp_path)
     # No credentials in env -> all measurements are credential_unavailable.
@@ -121,7 +121,7 @@ def test_run_writes_state_atomically_and_returns_preflight(tmp_path: Path, monke
 
 
 def test_atomic_write_leaves_no_partial_on_error(tmp_path: Path) -> None:
-    from scripts.llm_benchmark_preflight_wrapper import _atomic_write_json
+    from scripts.benchmarks.llm_benchmark_preflight_wrapper import _atomic_write_json
 
     target = tmp_path / "out.json"
     _atomic_write_json(target, {"v": 1})

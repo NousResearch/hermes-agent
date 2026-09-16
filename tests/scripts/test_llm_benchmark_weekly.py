@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.llm_benchmark_measurements import collect
-from scripts.llm_benchmark_weekly import (
+from scripts.benchmarks.llm_benchmark_measurements import collect
+from scripts.benchmarks.llm_benchmark_weekly import (
     INSUFFICIENT_EVIDENCE,
     apply_evidence_gate,
     build_preflight,

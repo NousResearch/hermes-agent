@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "p12_weight_placement.py"
+    Path(__file__).resolve().parents[2] / "scripts" / "benchmarks" / "p12_weight_placement.py"
 )
 
 # A realistic main-lane fast-path argv (mirrors turbohaul-main.service).

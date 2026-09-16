@@ -9,7 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "llm_benchmark_route_sources.py"
+MODULE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "benchmarks" / "llm_benchmark_route_sources.py"
 
 LEGACY_CONFIG = {
     "providers": [

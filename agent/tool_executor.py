@@ -378,10 +378,19 @@ def _allowed_tool_names_for_agent(agent) -> Optional[frozenset]:
     """Resolve and cache the tool names allowed by the agent's toolset scope."""
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    # Include the registry generation (bumped by mark_ambient / MCP refresh) so a
+    # toolset marked ambient after this agent was first used invalidates the
+    # cache, keeping the fence in step with the schemas. (KENSEI CUSTOM — ambient-toolset tier)
+    try:
+        from tools.registry import registry as _reg
+        _gen = getattr(_reg, "_generation", 0)
+    except Exception:
+        _gen = 0
     key = (
         tuple(enabled) if enabled is not None else None,
         tuple(disabled) if disabled is not None else (),
         bool(os.environ.get("HERMES_KANBAN_TASK")),
+        _gen,
     )
     cached = getattr(agent, "_allowed_tool_names", _UNSET)
     cached_key = getattr(agent, "_allowed_tool_names_key", _UNSET)
@@ -413,9 +422,11 @@ def _tool_scope_decision(agent, function_name: str) -> Optional[str]:
     if allowed is None or function_name in allowed or function_name in _tool_search_scoped_names(agent):
         return None
     try:
-        from tools.skills_tool import _current_profile
+        # Profile seam: canonical accessor (skills_tool._current_profile was
+        # dropped in a refactor; the grant path silently no-opped without it).
+        from hermes_cli.profiles import get_active_profile_name
         from tools import tool_grants
-        if tool_grants.has_active_grant(_current_profile(), function_name):
+        if tool_grants.has_active_grant(get_active_profile_name(), function_name):
             return None
     except Exception:
         pass

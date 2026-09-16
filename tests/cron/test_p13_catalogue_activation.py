@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "p13_catalogue_activation.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "benchmarks" / "p13_catalogue_activation.py"
 
 
 def _module():

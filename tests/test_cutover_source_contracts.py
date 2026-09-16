@@ -8,10 +8,14 @@ behind unrelated optional-dependency errors.
 from __future__ import annotations
 
 
-def test_gateway_stream_consumer_imports_with_memory_filter() -> None:
-    from gateway.stream_consumer import GatewayStreamConsumer
+def test_memory_context_filter_contract_is_importable() -> None:
+    # Was GatewayStreamConsumer._MEMORY_LEAK_RE; the memory-context filter moved to
+    # agent.memory_manager during the 2026-09 refactor chain. Same contract: memory
+    # context never reaches channel output.
+    from agent.memory_manager import StreamingContextScrubber, sanitize_context
 
-    assert GatewayStreamConsumer._MEMORY_LEAK_RE.pattern.startswith("<memory-context>")
+    assert sanitize_context("<memory-context>secret</memory-context>visible") == "visible"
+    assert StreamingContextScrubber().feed("plain") == "plain"
 
 
 def test_runtime_tool_scope_fence_contract_is_importable() -> None:

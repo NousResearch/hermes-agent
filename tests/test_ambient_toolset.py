@@ -75,6 +75,11 @@ def test_ambient_tool_never_deferred():
 
 
 def test_unrestricted_session_unaffected():
-    # enabled_toolsets=None is unchanged: everything is included as before.
-    names = _names(get_tool_definitions(enabled_toolsets=None, quiet_mode=True))
+    # enabled_toolsets=None is unchanged by the ambient tier: everything is
+    # included as before. Assert on the raw selection (skip_tool_search_assembly):
+    # the Tool Search tier layer (added 2026-08-29) defers ordinary plugin tools
+    # from the final collapsed list — orthogonal to the ambient tier, and the
+    # negative control must not be conflated with it.
+    names = _names(get_tool_definitions(enabled_toolsets=None, quiet_mode=True,
+                                        skip_tool_search_assembly=True))
     assert AMBIENT_TOOL in names and PLAIN_TOOL in names

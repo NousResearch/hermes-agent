@@ -18,7 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts.llm_benchmark_weekly import sanitise_measurements
+try:  # repo layout: scripts/benchmarks/...; deployed layout: flat scripts/...
+    from scripts.benchmarks.llm_benchmark_weekly import sanitise_measurements
+except ModuleNotFoundError:
+    from scripts.llm_benchmark_weekly import sanitise_measurements
 
 PROMPTS = {
     "coding": "Write a Python function that returns the two integers summing to a target. Include edge cases.",

@@ -34,7 +34,7 @@ from scripts.p12_launch_main import (  # noqa: E402
     LONG_CONTEXT_MODEL_TAG,
     build_launch_argv,
 )
-from scripts.p12_weight_placement import WeightPlacementError  # noqa: E402
+from scripts.benchmarks.p12_weight_placement import WeightPlacementError  # noqa: E402
 
 # The production main-lane argv shape (mirrors turbohaul-main.service
 # ExecStart, minus the binary).

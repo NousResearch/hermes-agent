@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 WEIGHT_MODULE_PATH = (
-    Path(__file__).resolve().parents[2] / "scripts" / "p12_weight_placement.py"
+    Path(__file__).resolve().parents[2] / "scripts" / "benchmarks" / "p12_weight_placement.py"
 )
 GATE_MODULE_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "p12_offload_gate.py"

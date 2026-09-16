@@ -42,8 +42,12 @@ if str(_REPO_ROOT) not in sys.path:
 
 import yaml  # noqa: E402  (after sys.path bootstrap)
 
-from scripts.llm_benchmark_measurements import collect  # noqa: E402
-from scripts.llm_benchmark_weekly import build_preflight  # noqa: E402
+try:  # repo layout: scripts/benchmarks/...; deployed layout: flat scripts/...
+    from scripts.benchmarks.llm_benchmark_measurements import collect  # noqa: E402
+    from scripts.benchmarks.llm_benchmark_weekly import build_preflight  # noqa: E402
+except ModuleNotFoundError:
+    from scripts.llm_benchmark_measurements import collect  # noqa: E402
+    from scripts.llm_benchmark_weekly import build_preflight  # noqa: E402
 
 STATE_DIR_NAME = "llm-benchmark-weekly"
 MEASUREMENTS_FILE = "measurements.json"

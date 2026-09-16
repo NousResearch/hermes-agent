@@ -144,7 +144,7 @@ def test_tool_grant_unblocks_fenced_tool(tmp_path, monkeypatch):
     db = tmp_path / "ledger.sqlite"
     monkeypatch.setattr(pal, "ledger_db_path", lambda: db)
     monkeypatch.setattr(pal, "_governance_root", lambda: tmp_path)
-    monkeypatch.setattr("tools.skills_tool._current_profile", lambda: "octacon")
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "octacon")
 
     agent = _make_agent(enabled_toolsets=["terminal_tools"])
 

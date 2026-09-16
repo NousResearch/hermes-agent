@@ -51,7 +51,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.p12_offload_gate import decide_offload, ENV_OFFLOAD_FLAG  # noqa: E402
-from scripts.p12_weight_placement import enforce_gpu0_weights  # noqa: E402
+try:  # repo layout: scripts/benchmarks/...; deployed layout: flat scripts/...
+    from scripts.benchmarks.p12_weight_placement import enforce_gpu0_weights  # noqa: E402
+except ModuleNotFoundError:
+    from scripts.p12_weight_placement import enforce_gpu0_weights  # noqa: E402
 
 # The reserved explicit long-context route tag (design doc §3.1).
 LONG_CONTEXT_MODEL_TAG = "darwin-28b-256k"

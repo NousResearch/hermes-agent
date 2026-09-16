@@ -660,10 +660,10 @@ def _dispatch_to_plugin_provider(
     return _provider_result(result, "Provider returned a non-dict result")
 
 
-# Native ``krea-2-*`` ids are served by the Krea managed gateway (managed mode only —
-# direct/BYO users keep their pipeline); ``fal-ai/krea/v2/*`` catalog ids stay on FAL.
+# Native Krea model ids are served by the Krea managed gateway (managed mode only —
+# direct/BYO users keep their pipeline).
 def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
-    """Return the native Krea plugin model id when ``model_id`` is ``krea-2-*``."""
+    """Return ``model_id`` when it is one of the Krea plugin's model ids, else ``None``."""
     from plugins.image_gen.krea import KREA_MODEL_IDS
 
     candidate = model_id.strip() if isinstance(model_id, str) else None
@@ -675,7 +675,7 @@ def _maybe_route_managed_krea(
     reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> Optional[str]:
     """JSON result from the managed Krea gateway, or ``None`` to fall through.
 
-    Fires only for a native ``krea-2-*`` model with no ``image_gen.provider`` other than
+    Fires only for a native Krea model with no ``image_gen.provider`` other than
     ``"nous"`` stored (a picker choice dispatches normally) and a resolvable Krea gateway.
     """
     configured_provider = _read_configured_image_provider()
@@ -763,14 +763,22 @@ _NO_CAPABILITIES = {"modalities": ["text"], "max_reference_images": 0, "supports
 def _active_image_capabilities() -> Dict[str, Any]:
     """Best-effort capabilities of the active backend/model; never raises.
 
-    Mirrors runtime dispatch: a set ``image_gen.provider`` asks that plugin, else the FAL
-    catalog. Fail-closed: an undeclared capability is advertised as absent.
+    Mirrors runtime dispatch: a Krea model id under the managed selection asks the Krea
+    plugin, a set ``image_gen.provider`` asks that plugin, else the FAL catalog.
+    Fail-closed: an undeclared capability is advertised as absent.
     """
     info: Dict[str, Any] = dict(_NO_CAPABILITIES)
     configured_provider = _read_configured_image_provider()
-    if configured_provider and configured_provider != "fal":
+    managed_selection = configured_provider in (None, NOUS_MANAGED_PROVIDER)
+    if managed_selection and _normalize_krea_model(_read_configured_image_model()) is not None:
+        plugin_name = "krea"
+    elif configured_provider and configured_provider != "fal":
+        plugin_name = configured_provider
+    else:
+        plugin_name = None
+    if plugin_name:
         try:
-            provider = _get_plugin_provider(configured_provider)
+            provider = _get_plugin_provider(plugin_name)
             if provider is not None:
                 try:
                     caps = provider.capabilities() or {}

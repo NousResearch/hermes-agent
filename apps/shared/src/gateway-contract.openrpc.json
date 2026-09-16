@@ -4145,6 +4145,18 @@
             "default": null,
             "title": "Catalog Sha"
           },
+          "catalog_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Catalog Version"
+          },
           "update_available": {
             "anyOf": [
               {
@@ -18965,7 +18977,7 @@
       },
       "ProfileMirrored": {
         "additionalProperties": false,
-        "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` under ``share_auth``.",
+        "description": "What was copied from the launch profile.",
         "properties": {
           "env": {
             "default": false,
@@ -18973,17 +18985,9 @@
             "type": "boolean"
           },
           "auth": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "const": "shared",
-                "type": "string"
-              }
-            ],
             "default": false,
-            "title": "Auth"
+            "title": "Auth",
+            "type": "boolean"
           },
           "model_inherited": {
             "default": false,

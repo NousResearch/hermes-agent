@@ -304,3 +304,36 @@ def migrate_profile_identity_verb(runner):
                     logger.debug("Failed to release renamed profile state DB", exc_info=True)
 
     return _handler
+
+
+def purge_profile_identity_verb(runner):
+    """Build the ``purge-profile-identity`` control-verb handler for ``hermes profile delete``
+    (#111926, delete side). The live multiplexer owns the routing index in memory and writes it back
+    periodically, so a CLI-side DELETE of ``agent:<name>:*`` rows would be undone by its next save;
+    the CLI therefore asks this process to drop the durable rows AND ``SessionStore._entries``.
+
+    Deliberately NOT part of ``_unserve_profile()``: that path also unserves names that are still
+    alive elsewhere in the identity story — a rename's old name leaves the served set exactly like a
+    delete does (its directory is gone either way) — and purging there would race the rekey it is
+    supposed to leave intact. Only the delete path invokes this verb. Runs on the control-socket
+    executor thread; ``purge_profile_routing`` takes the store lock."""
+
+    def _handler(params: dict) -> dict:
+        name = str(params.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name required"}
+        store = getattr(runner, "session_store", None)
+        if store is None:
+            return {"ok": False, "error": "live gateway has no session store"}
+        try:
+            db_counts: Dict[str, Dict[str, int]] = {}
+            routing_db = getattr(store, "_routing_db", None)
+            if routing_db is not None and hasattr(routing_db, "purge_profile_state"):
+                db_counts["routing"] = routing_db.purge_profile_state(name)
+            dropped = store.purge_profile_routing(name)
+            return {"ok": True, "dropped": dropped, "db": db_counts}
+        except Exception as exc:
+            logger.warning("Profile identity purge failed for %r: %s", name, exc)
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    return _handler

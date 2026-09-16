@@ -60,6 +60,8 @@ interface AuxTaskCopy {
 
 export interface Translations {
   catalog: {
+    listView: string
+    cardView: string
     installTitle: (name: string) => string
     installDescription: string
     installTo: string
@@ -2110,6 +2112,12 @@ export interface Translations {
     actions: string
     color: string
     colorFor: string
+    openInNewWindow: string
+    setAsDefault: string
+    defaultProfile: string
+    defaultSet: (name: string) => string
+    defaultDescription: string
+    failedSetDefault: string
     setColor: (color: string) => string
     autoColor: string
     noProfiles: string

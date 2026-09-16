@@ -36,6 +36,18 @@ _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,31}$")
+# Catalog images may only come from GitHub: the Desktop catalog browser never fans out to
+# third-party hosts, and a raw URL pinned to the entry's commit is as immutable as the sha.
+IMAGE_HOSTS = ("raw.githubusercontent.com", "github.com")
+IMAGE_HOST_SUFFIX = ".githubusercontent.com"
+
+
+def is_allowed_image_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and bool(host) and (host in IMAGE_HOSTS or host.endswith(IMAGE_HOST_SUFFIX))
 _NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 
 
@@ -67,6 +79,8 @@ class PluginCatalogEntry:
     requires_hermes: str = ""
     subdir: str = ""
     docs_url: str = ""
+    version: str = ""            # human label for the pinned sha ("1.4.0"); cosmetic, never parsed
+    image: str = ""              # https image URL on a GitHub host; shown on catalog cards
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
@@ -81,7 +95,8 @@ class PluginCatalogEntry:
             "name": self.name, "repo": self.repo, "sha": self.sha, "description": self.description,
             "maintainer": self.maintainer, "tier": self.tier, "category": self.category,
             "requires_hermes": self.requires_hermes,
-            "subdir": self.subdir, "docs_url": self.docs_url, "platforms": list(self.platforms),
+            "subdir": self.subdir, "docs_url": self.docs_url, "version": self.version, "image": self.image,
+            "platforms": list(self.platforms),
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -123,12 +138,21 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         return None
     caps_raw = data.get("capabilities")
     caps: Dict[str, Any] = caps_raw if isinstance(caps_raw, dict) else {}
+    version = str(data.get("version") or "").strip()
+    if version and not _VERSION_RE.match(version):
+        logger.warning("Plugin catalog: %s: ignoring version %r (max 32 chars of [A-Za-z0-9._+-])", label, version)
+        version = ""
+    image = str(data.get("image") or "").strip()
+    if image and not is_allowed_image_url(image):
+        logger.warning("Plugin catalog: %s: ignoring image %r (must be https on a GitHub host)", label, image)
+        image = ""
     return PluginCatalogEntry(
         name=name, repo=repo, sha=sha,
         description=str(data.get("description") or "").strip(),
         maintainer=str(data.get("maintainer") or "").strip(), tier=tier, category=category,
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
+        version=version, image=image,
         platforms=_str_list(data.get("platforms")),
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),

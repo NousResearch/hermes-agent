@@ -383,7 +383,7 @@ def _finish_dashboard_update_cleanup(
 
     See #83595.
     """
-    from hermes_cli.update_cmd import _m, _reload_process_scan_modules
+    from hermes_cli.update_cmd import _m, _record_update_step, _reload_process_scan_modules
     if node_failures:
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
@@ -392,9 +392,22 @@ def _finish_dashboard_update_cleanup(
 
     _reload_process_scan_modules()
 
-    stop_result = _m()._kill_stale_dashboard_processes(
-        restart_managed=True, already_restarted_units=already_restarted_units
-    )
+    try:
+        stop_result = _m()._kill_stale_dashboard_processes(
+            restart_managed=True, already_restarted_units=already_restarted_units
+        )
+    except Exception as exc:
+        # Isolated like every sibling post-update step: this runs in the pre-pull interpreter
+        # against pulled code, and a symbol gap here (#112604) used to abort the fleet matrix,
+        # reconciliation and the inner receipt finalize that follow it. A dashboard/serve left
+        # on pre-update code is still caught by the survivor probe → reconciliation (exit 1).
+        logger.warning("Post-update dashboard cleanup failed: %s", exc)
+        _record_update_step("dashboard_cleanup", False, f"{type(exc).__name__}: {exc}")
+        print()
+        print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
+        print("  If one is still running, restart it so it serves the updated code:")
+        print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
+        return
     if not stop_result.get("unrecovered"):
         return
 
@@ -1013,6 +1026,11 @@ def _print_plugin_compat_notice() -> None:
     print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
 
 
+def _print_profiles_without_credentials_notice() -> None:
+    from hermes_cli.profile_credential_audit import print_profiles_without_credentials_notice
+    print_profiles_without_credentials_notice()
+
+
 def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
@@ -1035,6 +1053,9 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
+        # Named profiles stopped inheriting the root auth.json (#111724): name every profile that
+        # now has no provider of its own so nobody finds out from a dead bot.
+        ('Profile credential notice failed: %s', _print_profiles_without_credentials_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),

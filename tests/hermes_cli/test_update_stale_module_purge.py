@@ -145,6 +145,62 @@ def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
         post_purge_receipt._current = None
 
 
+def test_receipt_write_survives_a_mixed_module_graph(tmp_path, monkeypatch, capsys):
+    """#112465 / #112558: the activation run wrote NO receipt while the no-op run did. The
+    receipt is written by the pre-pull interpreter after the purge; resolving the receipt dir
+    through ``hermes_cli.config`` re-executed the pulled config.py against a stale top-level
+    ``utils`` (``from utils import file_signature`` → ImportError) and the whole write was
+    swallowed at debug level. The receipt path must not depend on any purgeable module, and a
+    write failure must be visible."""
+    import hermes_cli
+    import hermes_cli.update_receipt as receipt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Pre-pull world: a `utils` without the symbols the pulled config.py imports, and the
+    # purged (evicted + unbound) hermes_cli.config so any import of it re-executes source.
+    real_utils = sys.modules.get("utils")
+    sys.modules["utils"] = types.ModuleType("utils")
+    evicted = {k: sys.modules.pop(k) for k in list(sys.modules) if k.startswith("hermes_cli.config")}
+    stale_attr = vars(hermes_cli).pop("config", None)
+    receipt._current = None
+    try:
+        receipt.begin_update_receipt()
+        receipt.record_step("git_pull", True)
+        path = receipt.finalize_update_receipt("partial")
+    finally:
+        receipt._current = None
+        sys.modules.pop("utils", None)
+        if real_utils is not None:
+            sys.modules["utils"] = real_utils
+        for k in [k for k in sys.modules if k.startswith("hermes_cli.config")]:
+            del sys.modules[k]
+        sys.modules.update(evicted)
+        if stale_attr is not None:
+            hermes_cli.config = stale_attr
+
+    assert path is not None and path.is_file(), "receipt lost to the mixed sys.modules graph"
+    assert path.parent == tmp_path / "logs" / "update_receipts"
+    assert json.loads(path.read_text(encoding="utf-8"))["outcome"] == "partial"
+
+
+def test_receipt_write_failure_is_visible(tmp_path, monkeypatch, capsys):
+    """A begun-but-unwritten receipt is the run operators must post-mortem; the failure was
+    logged at DEBUG only, indistinguishable from "no receipt expected" (#112465)."""
+    import hermes_cli.update_receipt as receipt
+
+    def _boom():
+        raise OSError("disk says no")
+
+    monkeypatch.setattr(receipt, "_receipt_dir", _boom)
+    receipt._current = None
+    try:
+        receipt.begin_update_receipt()
+        assert receipt.finalize_update_receipt("success") is None
+    finally:
+        receipt._current = None
+    assert "receipt not written: disk says no" in capsys.readouterr().out
+
+
 def test_purge_leaves_prefix_lookalikes_alone():
     # `gateway_foo` starts with the string prefix "gateway" but is NOT the
     # gateway package — the root-segment check must spare it.

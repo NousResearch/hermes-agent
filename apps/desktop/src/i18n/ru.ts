@@ -25,6 +25,8 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ru = defineLocale({
   catalog: {
+    listView: 'Список',
+    cardView: 'Карточки',
     installTitle: (name: string) => `Установить «${name}»?`,
     installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
     installTo: 'Установить в',
@@ -2221,6 +2223,12 @@ export const ru = defineLocale({
     actions: 'Действия',
     color: 'Цвет…',
     colorFor: 'Цвет',
+    openInNewWindow: 'Открыть в новом окне',
+    setAsDefault: 'Сделать по умолчанию',
+    defaultProfile: 'Профиль по умолчанию',
+    defaultSet: name => `${name} теперь используется по умолчанию`,
+    defaultDescription: 'Используется при запуске Hermes и для новых чатов. Профили существующих сессий не меняются.',
+    failedSetDefault: 'Не удалось установить профиль по умолчанию',
     setColor: color => `Установить цвет ${color}`,
     autoColor: 'Авто',
     noProfiles: 'Профилей пока нет.',

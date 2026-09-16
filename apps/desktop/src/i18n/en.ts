@@ -4,6 +4,8 @@ import type { Translations } from './types'
 
 export const en: Translations = {
   catalog: {
+    listView: 'List view',
+    cardView: 'Card view',
     installTitle: (name: string) => `Install “${name}”?`,
     installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
     installTo: 'Install to',
@@ -2437,6 +2439,12 @@ export const en: Translations = {
     actions: 'Actions',
     color: 'Color…',
     colorFor: 'Color',
+    openInNewWindow: 'Open in new window',
+    setAsDefault: 'Set as default',
+    defaultProfile: 'Default profile',
+    defaultSet: name => `${name} is now the default`,
+    defaultDescription: 'Used when Hermes opens and for new chats. Existing sessions stay in their profiles.',
+    failedSetDefault: 'Could not set the default profile',
     setColor: color => `Set color ${color}`,
     autoColor: 'Auto',
     noProfiles: 'No profiles yet.',

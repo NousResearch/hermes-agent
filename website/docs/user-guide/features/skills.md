@@ -23,7 +23,10 @@ Open **Capabilities → Skills** and switch between **Installed** and **Browse**
 Search stays at the top; the tab switch and actions share one row.
 **Installed** reads the selected profile's actual skills and enabled state;
 it is not inferred from the public catalog. **Browse** is a native catalog UI,
-not an embedded website or a second, smaller catalog.
+not an embedded website or a second, smaller catalog. Cards are the default;
+the list and card icons at the right of the filters switch layouts without
+clearing search or filters. The choice is remembered across Skills and Plugins.
+Click a card for details or use its Install button directly.
 
 Desktop and the public [Skills Hub](/skills) read the same published CDN
 snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).

@@ -1317,10 +1317,12 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
             tools_for_api, _ = strip_slash_enum(tools_for_api)
         except Exception as exc:
             logger.warning("%s⚠️ Failed to sanitize tool schemas for xAI: %s", getattr(agent, "log_prefix", ""), exc)
+    ephemeral_out = _consume_ephemeral_max_output(agent)
     return agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
-        cache_scope_id=cache_scope_id, base_url=agent.base_url, max_tokens=agent.max_tokens,
+        cache_scope_id=cache_scope_id, base_url=agent.base_url,
+        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
@@ -1709,6 +1711,14 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     landed on the chat_completions default (never called for an explicit api_mode)."""
     if fb_provider == "openai-codex":
         return "codex_responses"
+    from hermes_cli.models import opencode_model_api_mode
+    from hermes_cli.runtime_provider_custom import _opencode_family_for_custom
+    opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
+    if opencode_family is not None:
+        # OpenCode Zen/Go/free serve Responses-only (muse-spark, gpt-*, grok-*), anthropic_messages
+        # (minimax, qwen) and chat_completions models behind one provider; the primary /model path
+        # already re-derives per model — the fallback wire must agree (#102148).
+        return opencode_model_api_mode(opencode_family, fb_model)
     if fb_provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire: anthropic/* must land on /v1/messages (the swap rebuilds the native client).
         from hermes_cli.providers import nous_api_mode

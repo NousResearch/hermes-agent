@@ -160,6 +160,11 @@ def _capability_counts(entry: PluginCatalogEntry) -> str:
     return ", ".join(parts) or "—"
 
 
+def pin_label(entry: PluginCatalogEntry) -> str:
+    """``1.4.0 @ abcd1234`` when the entry carries a version label, else the short sha."""
+    return f"{entry.version} @ {entry.sha[:8]}" if entry.version else entry.sha[:8]
+
+
 def _render_entries(entries: List[PluginCatalogEntry], console) -> None:
     from hermes_cli.plugins_cmd import _table
     table = _table(((("Name", "bold")), ("Category", None), ("Tier", None), ("Description", None),
@@ -167,7 +172,7 @@ def _render_entries(entries: List[PluginCatalogEntry], console) -> None:
     for e in sorted(entries, key=lambda e: (e.category, e.tier != "official", e.name)):
         tier = "[cyan]official[/cyan]" if e.tier == "official" else "[magenta]community[/magenta]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
-        table.add_row(e.name, e.category, tier, desc, e.sha[:8], _capability_counts(e))
+        table.add_row(e.name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()
     console.print(table)
     console.print()
@@ -203,7 +208,8 @@ def cmd_info(name: str) -> None:
     if entry.description:
         console.print(entry.description)
     console.print()
-    rows = [("Repo", entry.repo), ("Subdir", entry.subdir), ("Pinned SHA", entry.sha),
+    rows = [("Repo", entry.repo), ("Subdir", entry.subdir), ("Version", entry.version), ("Pinned SHA", entry.sha),
+            ("Image", entry.image),
             ("Maintainer", entry.maintainer), ("Requires", f"hermes {entry.requires_hermes}" if entry.requires_hermes else ""),
             ("Platforms", ", ".join(entry.platforms)), ("Docs", entry.docs_url)]
     for label, value in rows:
@@ -274,9 +280,11 @@ def installed_catalog_state(installed: Dict[str, Dict[str, Any]]) -> Dict[str, A
     }
 
 
-def catalog_row_fields(dir_path, pins: Dict[str, str]) -> Dict[str, Any]:
+def catalog_row_fields(dir_path, pins: Dict[str, str], versions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Provenance fields for one installed-plugin row (TUI/desktop ``plugins.manage list``): catalog
-    name/tier/installed SHA and, when *pins* has the entry, the current pin + ``update_available``."""
+    name/tier/installed SHA and, when *pins* has the entry, the current pin (+ its version label from
+    *versions*) and ``update_available``."""
+    versions = versions or {}
     sidecar = read_catalog_sidecar(dir_path)
     if not sidecar:
         return {}
@@ -287,6 +295,7 @@ def catalog_row_fields(dir_path, pins: Dict[str, str]) -> Dict[str, Any]:
     pin = pins.get(str(sidecar["catalog_name"]))
     if pin:
         row["catalog_sha"] = pin
+        row["catalog_version"] = versions.get(str(sidecar["catalog_name"])) or None
         row["update_available"] = bool(installed_sha) and installed_sha != pin
     return row
 
@@ -295,5 +304,13 @@ def catalog_pins() -> Dict[str, str]:
     """``{catalog_name: pinned_sha}`` from the live catalog; empty on failure (best effort)."""
     try:
         return {e.name: e.sha for e in load_catalog_live()}
+    except Exception:
+        return {}
+
+
+def catalog_versions() -> Dict[str, str]:
+    """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
+    try:
+        return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}

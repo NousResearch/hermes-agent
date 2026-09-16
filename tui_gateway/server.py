@@ -1639,22 +1639,19 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     if live is None or not hasattr(live[0], "_build_system_prompt") or not hasattr(live[2], "update_system_prompt"):
         return
     agent, session_key, db = live
-    # Re-bind the session's profile HERMES_HOME (the build's finally reset it → root profile's SOUL.md/skills)
-    # and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would persist).
-    # Without this, _start_agent_build's finally block has already reset the override and the rebuilt prompt
-    # silently uses the root profile's SOUL.md and skills. See issue #50233.
-    profile_home = session.get("profile_home")
-    home_token = set_hermes_home_override(profile_home) if profile_home else None
+    # Re-bind the session's profile runtime scope (the build's finally reset it → root profile's SOUL.md/skills,
+    # #50233) and session context (on the RPC thread _SESSION_CWD is unset → the process TERMINAL_CWD would
+    # persist). The full scope, not HERMES_HOME alone: the external memory provider's system_prompt_block()
+    # reads its credential through get_secret, which fails closed once this process multiplexes (#112927).
     session_tokens = _set_session_context(session_key, cwd=_session_cwd(session))
     try:
-        prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
+        with _session_profile_runtime_scope(session):
+            prompt = agent._cached_system_prompt = agent._build_system_prompt(None)
         db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
     except Exception:
         logger.warning("failed to persist live session system prompt for session %s", session_key, exc_info=True)
     finally:
         _clear_session_context(session_tokens)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
 
 
 # Stable leading text of the model-switch marker (builder + dedup); only the newest marker is meaningful.

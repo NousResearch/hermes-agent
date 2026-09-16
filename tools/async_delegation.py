@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -555,6 +556,9 @@ def _dispatch(
         "slot_key": slot_key or delegation_id,
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
+        # The one stale-monitor thread serves every profile and starts with an empty Context;
+        # a forced finalization runs under the dispatcher's so it settles the same state.db.
+        "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -853,7 +857,9 @@ def _stale_monitor_loop() -> None:
                 fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
             _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
         for delegation_id in expired:
-            _finalize(delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            with _records_lock:
+                ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
+            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
         if not any_monitorable:
             return
 

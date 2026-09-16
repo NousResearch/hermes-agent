@@ -4,6 +4,8 @@ import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
   catalog: {
+    listView: '清單檢視',
+    cardView: '卡片檢視',
     installTitle: (name: string) => `安裝「${name}」？`,
     installDescription: '此技能將於新的工作階段中可用。請僅安裝可信來源的內容。',
     installTo: '安裝至',
@@ -1943,6 +1945,12 @@ export const zhHant = defineLocale({
     actions: '動作',
     color: '顏色…',
     colorFor: '顏色',
+    openInNewWindow: '在新視窗中開啟',
+    setAsDefault: '設為預設',
+    defaultProfile: '預設設定檔',
+    defaultSet: name => `${name} 已設為預設`,
+    defaultDescription: '用於 Hermes 啟動和新建聊天。現有工作階段仍保留在各自的設定檔中。',
+    failedSetDefault: '無法設定預設設定檔',
     setColor: color => `設定顏色 ${color}`,
     autoColor: '自動',
     noProfiles: '找不到設定檔。',

@@ -2,6 +2,8 @@ import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
   catalog: {
+    listView: 'عرض القائمة',
+    cardView: 'عرض البطاقات',
     installTitle: (name: string) => `تثبيت «${name}»؟`,
     installDescription: 'ستتوفر هذه المهارة في الجلسات الجديدة. ثبّت من المصادر التي تثق بها فقط.',
     installTo: 'التثبيت في',
@@ -1668,6 +1670,12 @@ export const ar = defineLocale({
     actions: 'إجراءات',
     color: 'اللون',
     colorFor: 'اللون',
+    openInNewWindow: 'فتح في نافذة جديدة',
+    setAsDefault: 'تعيين كافتراضي',
+    defaultProfile: 'الملف الشخصي الافتراضي',
+    defaultSet: name => `أصبح ${name} الملف الافتراضي`,
+    defaultDescription: 'يُستخدم عند فتح Hermes وللمحادثات الجديدة. تبقى الجلسات الحالية في ملفاتها الشخصية.',
+    failedSetDefault: 'تعذّر تعيين الملف الشخصي الافتراضي',
     setColor: color => `ضبط اللون ${color}`,
     autoColor: 'لون تلقائي',
     noProfiles: 'لا توجد ملفات شخصية',

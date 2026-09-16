@@ -874,9 +874,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             f"was found. Set the {_env_hint} environment "
             f"variable, or switch to a different provider with `hermes model`."
         )
+    from hermes_constants import profile_cli_selector
+    _sel = profile_cli_selector()
     raise RuntimeError(
-        "No LLM provider configured. Run `hermes model` to "
-        "select a provider, or run `hermes setup` for first-time "
+        f"No LLM provider configured. Run `hermes {_sel}model` to "
+        f"select a provider, or run `hermes {_sel}setup` for first-time "
         "configuration."
     )
 

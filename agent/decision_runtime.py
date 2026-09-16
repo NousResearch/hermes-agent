@@ -25,6 +25,12 @@ from agent.decision_provider import (
     validate_provider_decision,
 )
 from agent.decision_registry import resolve_provider
+from agent.secret_scope import (
+    current_secret_scope,
+    reset_secret_scope,
+    set_secret_scope,
+)
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 logger = logging.getLogger(__name__)
 _VALID_MODES = frozenset({"active", "shadow", "replay"})
@@ -87,7 +93,7 @@ class DecisionRuntime:
 
         started = time.perf_counter()
         try:
-            raw = self._invoke(selected, request, timeout)
+            raw = self._invoke(selected, request, timeout, self.scope)
             answers = validate_provider_decision(request, raw)
             status = DecisionStatus.ABSTAINED if raw.abstained or (
                 answers and all(answer.abstained for answer in answers.values())
@@ -149,7 +155,9 @@ class DecisionRuntime:
         )
 
     @staticmethod
-    def _invoke(provider: DecisionProvider, request: DecisionRequest, timeout: float) -> ProviderDecision:
+    def _invoke(
+        provider: DecisionProvider, request: DecisionRequest, timeout: float, scope: str,
+    ) -> ProviderDecision:
         try:
             timeout = float(timeout)
         except (TypeError, ValueError) as exc:
@@ -158,10 +166,20 @@ class DecisionRuntime:
             raise ValueError("decision timeout must be a positive number")
         outcome: queue.Queue[Any] = queue.Queue(maxsize=1)
         context = contextvars.Context()
+        secret_scope = current_secret_scope()
+
+        def evaluate() -> ProviderDecision:
+            home_token = set_hermes_home_override(scope)
+            secret_token = set_secret_scope(secret_scope)
+            try:
+                return provider.evaluate(request)
+            finally:
+                reset_secret_scope(secret_token)
+                reset_hermes_home_override(home_token)
 
         def run() -> None:
             try:
-                outcome.put((True, context.run(provider.evaluate, request)))
+                outcome.put((True, context.run(evaluate)))
             except Exception as exc:  # provider failures are re-raised and normalized at the boundary
                 outcome.put((False, exc))
 

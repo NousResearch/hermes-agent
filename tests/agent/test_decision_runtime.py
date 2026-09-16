@@ -20,7 +20,19 @@ from agent.decision_provider import (
     ProviderDecision,
 )
 from agent.decision_registry import _reset_for_tests
+from agent.secret_scope import (
+    get_secret,
+    is_multiplex_active,
+    reset_secret_scope,
+    set_multiplex_active,
+    set_secret_scope,
+)
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_constants import (
+    get_hermes_home,
+    reset_hermes_home_override,
+    set_hermes_home_override,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +161,44 @@ def test_provider_receives_only_explicit_state_and_typed_questions(tmp_path):
         ctx.decision.evaluate(
             task="isolation", state={}, questions={"gate": LabelsOnly()}, provider="fixture",
         )
+
+
+def test_provider_keeps_owning_profile_capabilities_without_ambient_context(tmp_path):
+    ambient = contextvars.ContextVar("decision_test_profile_ambient", default="default")
+    profile_home = tmp_path / "profiles" / "secondary"
+
+    class ProfileProvider(_FixtureProvider):
+        def evaluate(self, request):
+            self.home = get_hermes_home()
+            self.secret = get_secret("PROBE_KEY")
+            self.ambient = ambient.get()
+            return super().evaluate(request)
+
+    _, ctx = _context(profile_home)
+    provider = ProfileProvider()
+    ctx.register_decision_provider(provider)
+    prior_multiplex = is_multiplex_active()
+    set_multiplex_active(True)
+    home_token = set_hermes_home_override(profile_home)
+    secret_token = set_secret_scope({"PROBE_KEY": "secondary-secret"})
+    ambient_token = ambient.set("session-private")
+    try:
+        result = ctx.decision.evaluate(
+            task="profile-isolation",
+            state={"projected": "visible"},
+            questions={"gate": BinaryQuestion("Continue?")},
+            provider="fixture",
+        )
+    finally:
+        ambient.reset(ambient_token)
+        reset_secret_scope(secret_token)
+        reset_hermes_home_override(home_token)
+        set_multiplex_active(prior_multiplex)
+
+    assert result.status is DecisionStatus.AVAILABLE
+    assert provider.home == profile_home
+    assert provider.secret == "secondary-secret"
+    assert provider.ambient == "default"
 
 
 def test_failures_abstention_staging_and_replay_are_explicit(tmp_path):

@@ -1366,13 +1366,18 @@ class CLICommandsMixin:
 
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy of the
-        full history so a different approach can be explored without losing the original."""
+        full history so a different approach can be explored without losing the original.
+
+        Gateway-only flags (``--here``) are stripped so they never become titles; the CLI has no
+        platform threads, so it always branches in place."""
         from cli import _sync_process_session_id
         if not self.conversation_history:
             return _cp("  No conversation to branch — send a message first.")
         if not self._session_db:
             return _cp(_db_unavailable_line())
-        branch_name = _command_arg(cmd_original)
+        from gateway.slash_commands_session import _parse_branch_command_args
+        # stay_here is a no-op on the CLI — parse only to strip the known flag.
+        _stay_here, branch_name = _parse_branch_command_args(_command_arg(cmd_original))
         now = datetime.now()
         new_session_id = mint_session_id(now)
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(

@@ -86,6 +86,10 @@ gateway:
     switch_failed:         "Ramo creato ma il passaggio ad esso non è riuscito."
     branched_one:          "⑂ Diramato in **{title}** ({count} messaggio copiato)\nOriginale: `{parent}`\nRamo: `{new}`\nUsa `/resume` per tornare all'originale."
     branched_many:         "⑂ Diramato in **{title}** ({count} messaggi copiati)\nOriginale: `{parent}`\nRamo: `{new}`\nUsa `/resume` per tornare all'originale."
+    thread_create_failed:  "Impossibile creare un thread per il ramo: {error}"
+    thread_switch_failed:  "Thread creato e sessione del ramo pronta, ma il collegamento non è riuscito.\nThread: {thread}\nRamo: `{new}` — prova a scrivere nel nuovo thread o usa `/resume {new}`."
+    branched_thread_one:  "⑂ Diramato in **{title}** in un nuovo thread ({count} messaggio copiato)\nThread: {thread}\nOriginale: `{parent}` (questa chat rimane lì)\nRamo: `{new}`\nUsa `/branch --here` per mantenere il prossimo ramo qui."
+    branched_thread_many:  "⑂ Diramato in **{title}** in un nuovo thread ({count} messaggi copiati)\nThread: {thread}\nOriginale: `{parent}` (questa chat rimane lì)\nRamo: `{new}`\nUsa `/branch --here` per mantenere il prossimo ramo qui."
 
   commands:
     usage:                 "Uso: `/commands [page]`"

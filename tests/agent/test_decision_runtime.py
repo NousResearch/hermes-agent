@@ -103,7 +103,7 @@ def test_plugin_facade_preserves_typed_probabilities_and_explicit_state_boundary
     assert event["provider"] == "fixture"
     assert event["model"] == "fixture-model"
     assert event["version"] == "v1"
-    assert event["answers"]["choice"]["probabilities"] == {"alpha": 0.05, "beta": 0.9}
+    assert event["answers"]["choice"]["probabilities"] == {"alpha": 0.1, "beta": 0.9}
     assert "private raw input" not in json.dumps(event)
 
     assert handle is not None

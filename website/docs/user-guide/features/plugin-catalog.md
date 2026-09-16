@@ -17,12 +17,32 @@ hermes plugins install <name>
 Browse it visually at **[/docs/plugins](/plugins)** — entries are shelved by
 category (Memory, Desktop, Platforms, Web & Browser, Tools, Voice, Automation,
 Models), with search, tier filters (Official / Community), capability chips, and
-copyable install commands for every entry.
+**Install in Hermes** buttons and copyable CLI commands for every entry.
+
+In Desktop, open **Capabilities → Plugins → Browse** for the native catalog
+view. It is not an embedded website. **Installed** is a separate tab backed
+by the app's desktop-plugin registry and the selected profile's agent-plugin
+state, rather than catalog metadata. Skills uses the same **Installed / Browse**
+layout; search stays at the top and the tab switch and actions share one row.
 
 The catalog complements — it does not replace — the existing
 [plugin system](plugins.md). Anything you can install from the catalog is a
 normal plugin under the hood; the catalog just adds discovery and a review
 layer on top.
+
+### Published browse data
+
+The website and Desktop read the same generated CDN snapshot:
+[`https://hermes-agent.nousresearch.com/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json).
+Desktop fetches it through
+`https://nousresearch.github.io/hermes-agent/docs/api/plugins.json`; the public
+docs alias serves the same data. The docs build reads `plugin-catalog/*.yaml`
+and adds cached repository star counts. It also publishes the installer's
+removed-entry list. Neither
+Browse view crawls source repositories or queries the GitHub API live.
+
+This browse snapshot is distinct from the installer's
+[`plugin-catalog.json`](#live-refresh), which resolves catalog names and pins.
 
 ## What's in an entry
 
@@ -71,6 +91,24 @@ repository. Review the code of anything you give credentials to.
 :::
 
 ## Installing from the catalog
+
+On the website, **Install in Hermes** opens a protocol link of this form:
+
+```text
+hermes://plugin/install?repo=owner%2Frepo&catalog_name=example-plugin&sha=0123456789abcdef0123456789abcdef01234567
+```
+
+`repo` is URL-encoded, including any `#subdir`. Desktop asks you to review the
+source, destination and components before confirming; the link does not
+auto-install. For the agent-plugin component, the backend resolves
+`catalog_name` to its reviewed pin. The link's `sha` is **display metadata
+only**, not authority to choose or override a commit, and it is not a pin
+guarantee for a standalone desktop plugin.
+
+Use an updated Desktop build for the catalog parameters (and for the public
+Skills Hub's new `hermes://skill/install?identifier=...` route). Older builds
+may only understand repository-only plugin links. The expanded cards retain
+CLI commands, so you can install by catalog name without Desktop:
 
 ```bash
 # Install a reviewed catalog entry by name (checks out the pinned SHA)

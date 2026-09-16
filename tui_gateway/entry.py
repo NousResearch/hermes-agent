@@ -237,6 +237,8 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 
 
 def main():
+    # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
+    server._stdio_is_rpc_channel = True
     _install_sidecar_publisher()
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",

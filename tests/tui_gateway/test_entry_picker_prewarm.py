@@ -39,6 +39,7 @@ def _run_main(monkeypatch, events, *, prewarm=None):
     and ``("prewarm",)`` when the spy fires, in call order.
     """
     monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
+    monkeypatch.setattr(entry.server, "_stdio_is_rpc_channel", False, raising=False)  # main() flips it; restore after
     monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)
     monkeypatch.setattr(entry, "resolve_skin", lambda: "default")
     monkeypatch.setattr(entry.server, "_ensure_skin_watcher", lambda: None)
@@ -101,3 +102,11 @@ def test_main_survives_prewarm_failure(monkeypatch):
 
     assert ("prewarm",) in events
     assert ("write", "gateway.ready") in events
+
+
+def test_main_marks_stdout_as_the_rpc_channel(monkeypatch):
+    """The stdio TUI is the one process whose stdout carries JSON-RPC, so peer-less global
+    broadcasts (skin.changed, sessions.changed) must still reach it there."""
+    _run_main(monkeypatch, [])
+
+    assert entry.server._stdio_is_rpc_channel is True

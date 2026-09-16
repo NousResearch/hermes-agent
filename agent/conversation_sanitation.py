@@ -548,6 +548,69 @@ def _is_externalization_marker(candidate: str, *, role: str) -> bool:
     return _LCM_EXTERNALIZED_PAYLOAD_RE.fullmatch(candidate) is not None
 
 
+def _nested_externalization_markers_verified(
+    original_content: Any,
+    candidate_content: Any,
+    *,
+    role: str,
+    tool_call_id: str | None,
+    loader: Callable[[str], Any] | None,
+) -> bool:
+    """Verify every externalization marker nested under message content.
+
+    Walks the candidate payload tree (content parts, lists, nested dicts),
+    pairing each node with the original node at the same position when the
+    shapes line up. Markers are validated through the same sidecar contract as
+    top-level markers: a missing, malformed, or identity-mismatched sidecar
+    returns False so the sanitation commit fails closed instead of dropping
+    the last recoverable copy of the payload. A marker byte-identical to the
+    original was verified when it committed and passes through without
+    re-verification. Non-marker values pass through for structural validation
+    to judge.
+    """
+    if isinstance(candidate_content, str):
+        if not _is_externalization_marker(candidate_content, role=role):
+            return True
+        if candidate_content == original_content:
+            return True
+        if loader is None:
+            return False
+        return (
+            _verified_externalized_content(
+                candidate_content,
+                role=role,
+                tool_call_id=tool_call_id,
+                loader=loader,
+            )
+            is not None
+        )
+    if isinstance(candidate_content, dict):
+        original_map = original_content if isinstance(original_content, dict) else {}
+        return all(
+            _nested_externalization_markers_verified(
+                original_map.get(key),
+                value,
+                role=role,
+                tool_call_id=tool_call_id,
+                loader=loader,
+            )
+            for key, value in candidate_content.items()
+        )
+    if isinstance(candidate_content, list):
+        original_items = original_content if isinstance(original_content, list) else []
+        return all(
+            _nested_externalization_markers_verified(
+                original_items[index] if index < len(original_items) else None,
+                value,
+                role=role,
+                tool_call_id=tool_call_id,
+                loader=loader,
+            )
+            for index, value in enumerate(candidate_content)
+        )
+    return True
+
+
 def _validation_views(
     original: list,
     candidate: list,
@@ -558,11 +621,32 @@ def _validation_views(
     verified_externalizations = 0
     failed_externalization_verification = False
     if externalized_payload_loader is None:
-        for candidate_message in candidate_view:
+        for original_message, candidate_message in zip(original_view, candidate_view):
+            if not isinstance(candidate_message, dict):
+                continue
+            role = str(candidate_message.get("role", ""))
+            original_content = (
+                original_message.get("content")
+                if isinstance(original_message, dict)
+                else None
+            )
             content = candidate_message.get("content")
             if isinstance(content, str) and _is_externalization_marker(
                 content,
-                role=str(candidate_message.get("role", "")),
+                role=role,
+            ):
+                # An unchanged marker was verified when it committed; only a
+                # new marker is unverifiable without the sidecar contract.
+                if content != original_content:
+                    failed_externalization_verification = True
+                    break
+                continue
+            if not _nested_externalization_markers_verified(
+                original_content,
+                content,
+                role=role,
+                tool_call_id=None,
+                loader=None,
             ):
                 failed_externalization_verification = True
                 break
@@ -585,17 +669,31 @@ def _validation_views(
                 ),
                 loader=externalized_payload_loader,
             )
+            # An unchanged, previously verified marker passes through: expanding
+            # it would rewrite only the candidate view to the sidecar secret
+            # while the original view kept the marker, and structural validation
+            # would then reject the whole candidate — permanently blocking
+            # second-pass sanitation. Re-verification is also not required: the
+            # marker was verified when it committed.
+            unchanged_marker = (
+                candidate_message["content"] == original_message.get("content")
+            )
             if (
                 verified is None
                 and _is_externalization_marker(
                     candidate_message["content"],
                     role=role,
                 )
+                and not unchanged_marker
             ):
                 failed_externalization_verification = True
-            if verified is not None and (
-                not isinstance(original_message.get("content"), str)
-                or verified != _normalized_text(original_message["content"])
+            if (
+                verified is not None
+                and not unchanged_marker
+                and (
+                    not isinstance(original_message.get("content"), str)
+                    or verified != _normalized_text(original_message["content"])
+                )
             ):
                 if not isinstance(original_message.get("content"), str):
                     try:
@@ -605,6 +703,25 @@ def _validation_views(
                 if verified is not None:
                     candidate_message["content"] = verified
                     verified_externalizations += 1
+        elif (
+            externalized_payload_loader is not None
+            and isinstance(original_message, dict)
+            and isinstance(candidate_message, dict)
+            and not isinstance(candidate_message.get("content"), str)
+            and original_message.get("role") == candidate_message.get("role")
+        ):
+            if not _nested_externalization_markers_verified(
+                original_message.get("content"),
+                candidate_message.get("content"),
+                role=str(original_message.get("role", "")),
+                tool_call_id=(
+                    str(original_message.get("tool_call_id"))
+                    if isinstance(original_message.get("tool_call_id"), str)
+                    else None
+                ),
+                loader=externalized_payload_loader,
+            ):
+                failed_externalization_verification = True
         if (
             isinstance(original_message, dict)
             and isinstance(candidate_message, dict)

@@ -432,7 +432,7 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { createWindowOpenHandler } from './window-open-policy'
+import { createGuestWebviewWindowOpenHandler, createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -13480,6 +13480,31 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   })
 }
 
+/**
+ * The preview pane's `<webview>` guests now opt into popups
+ * (`allowpopups`): without it the guest's `window.open` / `target=_blank`
+ * was dropped before any policy could see it, so a page's own links —
+ * Streamlit traceback's "Ask Google" / "Ask ChatGPT" buttons, any
+ * `target=_blank` anchor — read as dead buttons (#112941). The popup never
+ * becomes an Electron window here: the request is denied, and the URL is
+ * handed to the same audited channel (`openExternalUrl`) the guest's
+ * context-menu "open link" and the host's `will-navigate` already use, which
+ * dispatches http(s)/mailto to the OS browser and rejects everything else.
+ */
+function installGuestWebviewPopupPolicy() {
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() !== 'webview') {
+      return
+    }
+
+    contents.setWindowOpenHandler(
+      createGuestWebviewWindowOpenHandler(openExternalUrl, origin =>
+        rememberLog(`[window-open] guest handed off to OS browser: ${origin}`)
+      )
+    )
+  })
+}
+
 // Every window we open starts with `show: false` so the renderer's first themed
 // paint lands before it appears, and `ready-to-show` is what reveals it.
 // Electron 40 can drop that event entirely (electron/electron#51972) on
@@ -18236,6 +18261,7 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
+  installGuestWebviewPopupPolicy()
 
   ensureWslWindowsFonts()
   configureSpellChecker()

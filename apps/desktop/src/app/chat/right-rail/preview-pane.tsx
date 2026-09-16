@@ -1025,6 +1025,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.setAttribute('partition', 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+    // Without this flag the guest's `window.open` / `target=_blank` is
+    // silently dropped before it ever reaches main's popup policy, so links
+    // like Streamlit traceback's "Ask Google" buttons read as dead (#112941).
+    // main.ts routes what this unleashes through the audited open-external
+    // channel to the OS browser; no in-app popup window is ever created.
+    webview.setAttribute('allowpopups', '')
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {

@@ -165,17 +165,18 @@ pub async fn get_bootstrap_status(
 /// (e.g. when Stage-Desktop was skipped) so the frontend can present
 /// actionable failure UI rather than silently doing nothing.
 #[tauri::command]
-pub async fn launch_hermes_desktop(
-    app: AppHandle,
-    install_root: String,
-) -> Result<(), String> {
+pub async fn launch_hermes_desktop(app: AppHandle, install_root: String) -> Result<(), String> {
     let install_root = PathBuf::from(install_root);
     let exe_path = resolve_hermes_desktop_exe(&install_root).ok_or_else(|| {
         format!(
             "Couldn't find a built Hermes desktop at {}. The desktop build step \
              may have been skipped or failed. Run `hermes desktop` from a \
              terminal to build and launch it.",
-            install_root.join("apps").join("desktop").join("release").display()
+            install_root
+                .join("apps")
+                .join("desktop")
+                .join("release")
+                .display()
         )
     })?;
 
@@ -193,12 +194,8 @@ pub async fn launch_hermes_desktop(
         cmd.creation_flags(0x0000_0008);
     }
 
-    cmd.spawn().map_err(|e| {
-        format!(
-            "failed to launch {}: {e}",
-            exe_path.display()
-        )
-    })?;
+    cmd.spawn()
+        .map_err(|e| format!("failed to launch {}: {e}", exe_path.display()))?;
 
     // Give Windows ~150ms to actually start the new process before we exit.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -260,6 +257,95 @@ pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Opti
 pub(crate) fn hermes_is_installed(install_root: &std::path::Path) -> bool {
     install_root.join(".hermes-bootstrap-complete").exists()
         && resolve_hermes_desktop_exe(install_root).is_some()
+}
+
+/// Official upstream over HTTPS. We probe HTTPS (not the checkout's `origin`,
+/// which is often the `git@github.com:` SSH form) deliberately: an SSH origin
+/// backed by a FIDO2/passkey key would block `ls-remote` waiting for a hardware
+/// touch. Mirrors the desktop's `update-remote.cjs` choice.
+const OFFICIAL_REPO_HTTPS_URL: &str = "https://github.com/NousResearch/hermes-agent.git";
+
+/// True only when the selected update branch is a strict descendant of HEAD.
+/// The bounded fetch uses the same branch the updater will apply. Network,
+/// timeout, git, divergent-history, and locally-ahead cases all fail open to
+/// the normal fast launch.
+pub(crate) fn install_is_behind(install_root: &Path, branch: &str) -> bool {
+    let branch_ref = format!("refs/heads/{branch}");
+    if !git_succeeds_with_timeout(
+        install_root,
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            OFFICIAL_REPO_HTTPS_URL,
+            &branch_ref,
+        ],
+        std::time::Duration::from_secs(4),
+    ) {
+        return false;
+    }
+    let local = git_stdout(install_root, &["rev-parse", "HEAD"]);
+    let remote = git_stdout(install_root, &["rev-parse", "FETCH_HEAD"]);
+    match (local, remote) {
+        (Some(local), Some(remote)) => is_strictly_behind(
+            local.trim(),
+            remote.trim(),
+            git_succeeds_with_timeout(
+                install_root,
+                &["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"],
+                std::time::Duration::from_secs(1),
+            ),
+        ),
+        _ => false,
+    }
+}
+
+fn is_strictly_behind(local: &str, remote: &str, local_is_remote_ancestor: bool) -> bool {
+    !local.is_empty() && !remote.is_empty() && local != remote && local_is_remote_ancestor
+}
+
+fn git_succeeds_with_timeout(cwd: &Path, args: &[&str], timeout: std::time::Duration) -> bool {
+    use std::process::Stdio;
+
+    let mut child = match std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+fn git_stdout(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
@@ -451,8 +537,12 @@ async fn run_bootstrap(
     let kind = ScriptKind::for_current_os();
 
     let pin = Pin {
-        commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
-        branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
+        commit: args
+            .commit
+            .or_else(|| option_env_string("BUILD_PIN_COMMIT")),
+        branch: args
+            .branch
+            .or_else(|| option_env_string("BUILD_PIN_BRANCH")),
     };
 
     tracing::info!(
@@ -547,20 +637,21 @@ async fn run_bootstrap(
         return Err(anyhow!(err));
     }
 
-    let manifest: Manifest = powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
-        let err = format!(
-            "install.ps1 -Manifest produced no parseable JSON payload\n{}",
-            truncate(&manifest_result.stdout, 4000)
-        );
-        emit_event(
-            &app,
-            BootstrapEvent::Failed {
-                stage: None,
-                error: err.clone(),
-            },
-        );
-        anyhow!(err)
-    })?;
+    let manifest: Manifest =
+        powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
+            let err = format!(
+                "install.ps1 -Manifest produced no parseable JSON payload\n{}",
+                truncate(&manifest_result.stdout, 4000)
+            );
+            emit_event(
+                &app,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: err.clone(),
+                },
+            );
+            anyhow!(err)
+        })?;
 
     emit_event(
         &app,
@@ -808,7 +899,10 @@ async fn run_bootstrap(
     // we're already running from that path. Best-effort — a failure here must
     // not fail an otherwise-successful install.
     if let Err(err) = crate::paths::copy_self_to_hermes_home() {
-        tracing::warn!(?err, "failed to copy installer into HERMES_HOME (non-fatal)");
+        tracing::warn!(
+            ?err,
+            "failed to copy installer into HERMES_HOME (non-fatal)"
+        );
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
@@ -825,11 +919,7 @@ async fn run_bootstrap(
     Ok(install_root.to_string_lossy().into_owned())
 }
 
-fn should_retry_missing_stage_frame(
-    exit_code: Option<i32>,
-    killed: bool,
-    attempt: usize,
-) -> bool {
+fn should_retry_missing_stage_frame(exit_code: Option<i32>, killed: bool, attempt: usize) -> bool {
     !killed && exit_code == Some(-1) && attempt < MAX_STAGE_ATTEMPTS
 }
 
@@ -1001,8 +1091,30 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::path::Path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn strict_behind_requires_a_distinct_descendant() {
+        let local = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let remote = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert!(is_strictly_behind(local, remote, true));
+        assert!(!is_strictly_behind(local, local, true));
+        assert!(!is_strictly_behind(local, remote, false));
+        assert!(!is_strictly_behind("", remote, true));
+        assert!(!is_strictly_behind(local, "", true));
+    }
+
+    #[test]
+    fn bounded_git_probe_fails_open_on_invalid_command() {
+        let root = unique_tmp_dir("bounded-probe");
+        assert!(!git_succeeds_with_timeout(
+            &root,
+            &["not-a-real-git-subcommand"],
+            std::time::Duration::from_millis(100),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(

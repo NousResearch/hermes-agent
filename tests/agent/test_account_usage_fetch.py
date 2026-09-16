@@ -6,6 +6,21 @@ from agent.account_usage import (
     fetch_account_usage,
     render_account_usage_lines,
 )
+from providers.base import ProviderProfile
+
+
+class _UsageProfile(ProviderProfile):
+    def __init__(self, snapshot=None, error=None):
+        super().__init__(name="plugin-usage")
+        self.snapshot = snapshot
+        self.error = error
+        self.calls = 0
+
+    def fetch_account_usage(self, *, base_url=None, api_key=None):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.snapshot
 
 
 class _Response:
@@ -93,6 +108,38 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_uses_provider_profile_hook(monkeypatch):
+    snapshot = AccountUsageSnapshot(
+        provider="plugin-usage", source="plugin", fetched_at=datetime.now(timezone.utc),
+        details=("Credit: 10/100",),
+    )
+    profile = _UsageProfile(snapshot)
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+
+    assert fetch_account_usage("plugin-usage", base_url="https://plugin.test", api_key="key") is snapshot
+    assert profile.calls == 1
+
+
+def test_fetch_account_usage_profile_hook_fails_open(monkeypatch):
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: _UsageProfile(error=RuntimeError("nope")))
+
+    assert fetch_account_usage("plugin-usage") is None
+
+
+def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
+    builtin = AccountUsageSnapshot(
+        provider="openrouter", source="builtin", fetched_at=datetime.now(timezone.utc),
+    )
+    profile = _UsageProfile(
+        AccountUsageSnapshot(provider="openrouter", source="plugin", fetched_at=datetime.now(timezone.utc))
+    )
+    monkeypatch.setattr("agent.account_usage._USAGE_FETCHERS", {"openrouter": lambda base_url, api_key: builtin})
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+
+    assert fetch_account_usage("openrouter") is builtin
+    assert profile.calls == 0
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

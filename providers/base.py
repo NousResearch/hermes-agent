@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent.account_usage import AccountUsageSnapshot
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -124,6 +128,18 @@ class ProviderProfile:
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def fetch_account_usage(
+        self, *, base_url: str | None = None, api_key: str | None = None
+    ) -> AccountUsageSnapshot | None:
+        """Return an account-usage snapshot for this provider, if available.
+
+        The ``/usage`` command invokes this only when no built-in account
+        usage fetcher owns the provider. Implementations may make their
+        provider-specific request and must return an ``AccountUsageSnapshot``
+        or ``None``; exceptions fail open at the dispatch boundary.
+        """
+        return None
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".

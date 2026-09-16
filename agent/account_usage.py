@@ -640,6 +640,11 @@ def fetch_account_usage(
 ) -> Optional[AccountUsageSnapshot]:
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
-        return fetcher(base_url, api_key) if fetcher else None
+        if fetcher:
+            return fetcher(base_url, api_key)
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(str(provider or "").strip().lower())
+        return profile.fetch_account_usage(base_url=base_url, api_key=api_key) if profile else None
     except Exception:
         return None

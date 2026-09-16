@@ -111,6 +111,20 @@ export const PetPane = memo(function PetPane() {
   )
 })
 
+export function startComposerMouseSelection(
+  inputMouseApi: TextInputMouseApi | null,
+  e: GutterMouseEvent,
+  promptWidth: number,
+  spacer = false
+) {
+  if (e.button !== 0) {
+    return
+  }
+
+  e.stopImmediatePropagation?.()
+  inputMouseApi?.startAt(spacer ? 0 : (e.localRow ?? 0), (e.localCol ?? 0) - promptWidth)
+}
+
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
   color,
@@ -299,12 +313,10 @@ const ComposerPane = memo(function ComposerPane({
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {
-    if (e.button !== 0) {
-      return
-    }
-
-    e.stopImmediatePropagation?.()
-    inputMouseRef.current?.startAtBeginning()
+    // Some terminals hit the outer composer row instead of the nested
+    // TextInput on press. Start at the real pointer position so a plain
+    // click still moves the caret before any drag begins.
+    startComposerMouseSelection(inputMouseRef.current, e, promptWidth)
   }
 
   // Drag origin matches the input box's top-left, so localRow / localCol
@@ -328,6 +340,10 @@ const ComposerPane = memo(function ComposerPane({
 
     e.stopImmediatePropagation?.()
     inputMouseRef.current?.dragAt(0, (e.localCol ?? 0) - promptWidth)
+  }
+
+  const captureFromSpacer = (e: GutterMouseEvent) => {
+    startComposerMouseSelection(inputMouseRef.current, e, promptWidth, true)
   }
 
   const endInputDrag = () => inputMouseRef.current?.end()
@@ -364,7 +380,12 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
+        <Box
+          height={1}
+          onMouseDown={captureFromSpacer}
+          onMouseDrag={dragFromSpacer}
+          onMouseUp={endInputDrag}
+        />
       )}
 
       <LiveAgentsPanel cols={Math.max(1, composer.cols - 2)} />

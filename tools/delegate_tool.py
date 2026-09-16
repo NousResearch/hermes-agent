@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextlib
 import contextvars
 import json
 import logging
@@ -150,6 +151,150 @@ _CIVIC_ASSURE_REVIEW_OUTPUT_SCHEMA = {
         "reviewed_at_utc": {"type": "string"},
     },
 }
+
+_CIVIC_ASSURE_REVIEW_CONTROLLER_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar("civic_assure_review_controller_context", default=None)
+)
+_CIVIC_ASSURE_REVIEW_CONTROLLER_FIELDS = frozenset(
+    {
+        "review_true_source",
+        "review_mode",
+        "review_root",
+        "goal",
+        "context",
+        "repository",
+        "issue",
+        "PR",
+        "base_sha",
+        "candidate_sha",
+        "candidate_tree",
+        "changed_files",
+        "diff_sha256",
+        "acceptance_contract_sha256",
+        "validation_receipt_sha256",
+        "provider",
+        "model",
+        "reasoning_effort",
+        "read_only_tools",
+    }
+)
+
+
+def _validate_controller_review_authorization(
+    parent_agent: Any,
+    authorization: Any,
+) -> dict[str, Any]:
+    """Validate the non-model controller capability for one review dispatch."""
+    if not isinstance(authorization, dict):
+        raise ValueError("independent review requires controller authorization")
+    if set(authorization) != _CIVIC_ASSURE_REVIEW_CONTROLLER_FIELDS:
+        raise ValueError("independent review controller authorization is incomplete")
+    if authorization.get("review_true_source") != "controller":
+        raise ValueError("independent review must be enabled by the controller")
+    if authorization.get("review_mode") is not True:
+        raise ValueError("independent review controller mode is invalid")
+    root = authorization.get("review_root")
+    if not isinstance(root, str) or not os.path.isabs(root):
+        raise ValueError("independent review controller root is invalid")
+    resolved_root = os.path.realpath(root)
+    if resolved_root != root or not os.path.isdir(resolved_root):
+        raise ValueError("independent review controller root is not an exact directory")
+    if authorization.get("read_only_tools") != sorted(_CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS):
+        raise ValueError("independent review controller tool surface is invalid")
+    if not isinstance(authorization.get("goal"), str) or not authorization["goal"].strip():
+        raise ValueError("independent review controller goal is missing")
+    if not isinstance(authorization.get("context"), str) or not authorization["context"].strip():
+        raise ValueError("independent review controller context is missing")
+    if not isinstance(authorization.get("repository"), str) or not authorization["repository"].strip():
+        raise ValueError("independent review candidate repository is missing")
+    for field in ("issue", "PR"):
+        value = authorization.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"independent review candidate {field} is invalid")
+    for field in ("base_sha", "candidate_sha", "candidate_tree"):
+        value = authorization.get(field)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None:
+            raise ValueError(f"independent review candidate {field} is invalid")
+    for field in ("diff_sha256", "acceptance_contract_sha256", "validation_receipt_sha256"):
+        value = authorization.get(field)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError(f"independent review candidate {field} is invalid")
+    changed_files = authorization.get("changed_files")
+    if (
+        not isinstance(changed_files, list)
+        or not changed_files
+        or any(not isinstance(item, str) or not item.strip() for item in changed_files)
+    ):
+        raise ValueError("independent review candidate file inventory is invalid")
+    for field in ("provider", "model", "reasoning_effort"):
+        if not isinstance(authorization.get(field), str) or not authorization[field].strip():
+            raise ValueError(f"independent review route {field} is missing")
+    validated = dict(authorization)
+    validated["review_root"] = resolved_root
+    validated["changed_files"] = list(changed_files)
+    return validated
+
+
+@contextlib.contextmanager
+def controller_review_context(parent_agent: Any, authorization: dict[str, Any]):
+    """Bind one controller-owned review capability around ``delegate_task``.
+
+    This is intentionally not part of the model-facing tool schema. The
+    profile controller supplies the exact candidate evidence and route, then
+    invokes ``delegate_task(review=True, ...)`` inside this context. A parent
+    model that merely emits ``review=true`` has no capability token and is
+    rejected before any child is constructed.
+    """
+    validated = _validate_controller_review_authorization(parent_agent, authorization)
+    token = _CIVIC_ASSURE_REVIEW_CONTROLLER_CONTEXT.set(
+        {"parent_agent": parent_agent, **validated}
+    )
+    try:
+        yield dict(validated)
+    finally:
+        _CIVIC_ASSURE_REVIEW_CONTROLLER_CONTEXT.reset(token)
+
+
+def _controller_review_error(parent_agent: Any, goal: Any, context: Any, review_root: Any) -> str | None:
+    """Return a fail-closed error when review inputs are not controller-bound."""
+    authorization = _CIVIC_ASSURE_REVIEW_CONTROLLER_CONTEXT.get()
+    if not isinstance(authorization, dict) or authorization.get("parent_agent") is not parent_agent:
+        return "independent review is controller-owned; the parent model cannot enable review"
+    if authorization.get("goal") != goal or authorization.get("context") != context:
+        return "independent review content must come from the controller"
+    expected_root = authorization.get("review_root")
+    if not isinstance(review_root, str) or os.path.realpath(review_root) != expected_root:
+        return "independent review_root must match the controller-owned candidate root"
+    return None
+
+def _restrict_review_child_tool_surface(child: Any) -> None:
+    """Reduce a review child to the exact read/search schema surface."""
+    tools = getattr(child, "tools", None)
+    if not isinstance(tools, list):
+        raise ValueError("independent review child tool schemas are unavailable")
+
+    def _schema_name(schema: Any) -> str | None:
+        if not isinstance(schema, dict):
+            return None
+        direct = schema.get("name")
+        if isinstance(direct, str):
+            return direct
+        function = schema.get("function")
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            return function["name"]
+        return None
+
+    filtered = [
+        schema
+        for schema in tools
+        if _schema_name(schema) in _CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS
+    ]
+    names = {_schema_name(schema) for schema in filtered}
+    if names != set(_CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS):
+        raise ValueError("independent review child lacks the canonical read-only tool surface")
+    child.tools = filtered
+    child.valid_tool_names = sorted(_CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS)
+
 
 def _civic_assure_annotate_review_manifest(delegation_id, route):
     if not delegation_id or not isinstance(route, dict):
@@ -2043,10 +2188,7 @@ def _build_child_agent(
                     pass
             raise
     if review_mode:
-        available = set(getattr(child, "valid_tool_names", []) or [])
-        if not _CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS.issubset(available):
-            raise ValueError("independent review child lacks the canonical read-only tool surface")
-        child.valid_tool_names = sorted(available & _CIVIC_ASSURE_REVIEW_READ_ONLY_TOOLS)
+        _restrict_review_child_tool_surface(child)
         child._civic_assure_review_route = {
             "provider": effective_provider,
             "model": effective_model,
@@ -2792,7 +2934,10 @@ def _run_single_child(
         # own git worktree branched from the parent repo's HEAD, and start its
         # terminal there. Git-only and local-backend-only; any failure
         # degrades silently to the shared-workspace behavior above.
-        if _get_worktree_isolation():
+        if (
+            _get_worktree_isolation()
+            and not bool(getattr(child, "_civic_assure_review_mode", False))
+        ):
             try:
                 from tools import subagent_worktree
 
@@ -3795,6 +3940,17 @@ def delegate_task(
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+    if review is not None and not isinstance(review, bool):
+        return tool_error("review must be a boolean when supplied")
+    if review is True:
+        controller_error = _controller_review_error(
+            parent_agent,
+            goal,
+            context,
+            review_root,
+        )
+        if controller_error:
+            return tool_error(controller_error)
 
     # ── Control plane: list/steer/stop run synchronously and return here.
     # They never spawn, so they bypass the pause gate, depth limit, and the
@@ -3846,7 +4002,7 @@ def delegate_task(
     # Load config. Review mode is an explicit phase route and never
     # mutates the primary worker or ordinary delegation defaults.
     cfg = _load_config()
-    if review not in (None, False, True):
+    if review is not None and not isinstance(review, bool):
         return tool_error("review must be a boolean when supplied")
     review_mode = review is True
     if review_mode:
@@ -3861,12 +4017,21 @@ def delegate_task(
         _review_output_schema = None
     route_cfg = cfg
     if review_mode:
+        controller_authorization = _CIVIC_ASSURE_REVIEW_CONTROLLER_CONTEXT.get() or {}
         review_cfg = _load_review_config()
-        if review_cfg.get("enabled") is False:
-            return tool_error("independent review route is disabled")
         for _required_review_key in ("provider", "model", "reasoning_effort"):
             if not str(review_cfg.get(_required_review_key) or "").strip():
-                return tool_error(f"review config is missing {_required_review_key}")
+                review_cfg[_required_review_key] = controller_authorization.get(
+                    _required_review_key
+                )
+            if review_cfg.get(_required_review_key) != controller_authorization.get(
+                _required_review_key
+            ):
+                return tool_error(
+                    f"review route { _required_review_key } does not match canonical controller configuration"
+                )
+        if review_cfg.get("enabled") is False:
+            return tool_error("independent review route is disabled")
         route_cfg = dict(cfg)
         route_cfg.update(review_cfg)
     default_max_iter = route_cfg.get("max_iterations", cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS))
@@ -4756,6 +4921,33 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 def _load_review_config() -> dict:
     """Load the phase-specific reviewer route without mutating delegation defaults."""
+    # Governance-owned maintainer routing is authoritative. Read it before
+    # user config so a parent/model cannot replace the independent selector.
+    profile_root = os.environ.get("HERMES_PROFILE_HOME") or os.environ.get("HERMES_HOME")
+    _is_maintainer_profile = bool(
+        profile_root
+        and os.path.basename(os.path.realpath(profile_root)) == "civic-assure-maintainer"
+    )
+    if _is_maintainer_profile:
+        try:
+            import yaml
+
+            canonical_path = os.path.join(profile_root, "config", "cron.yaml")
+            with open(canonical_path, encoding="utf-8") as handle:
+                cron = yaml.safe_load(handle) or {}
+            jobs = cron.get("jobs") if isinstance(cron, dict) else None
+            maintainer = (
+                jobs.get("civic-assure-maintainer-queue")
+                if isinstance(jobs, dict)
+                else None
+            )
+            value = maintainer.get("review") if isinstance(maintainer, dict) else None
+            return value if isinstance(value, dict) and value else {}
+        except Exception:
+            # A maintainer review route is controller-owned and must not fall
+            # back to a user-configured ordinary delegation route.
+            return {}
+
     try:
         from hermes_cli.config import load_config_readonly
 

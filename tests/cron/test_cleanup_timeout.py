@@ -10,7 +10,9 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import run_job, _teardown_cron_agent
+import pytest
+
+from cron.scheduler import _BoundedCronSessionDB, run_job, _teardown_cron_agent
 
 
 _RUNTIME = {
@@ -36,6 +38,22 @@ class HangingSessionDB:
 
     def close(self):
         return None
+
+
+class EndSessionHangingDB:
+    """Session DB whose finalizer blocks until the test releases it."""
+
+    def __init__(self, release: threading.Event):
+        self.release = release
+        self.end_entered = threading.Event()
+        self.close_called = threading.Event()
+
+    def end_session(self, *_args, **_kwargs):
+        self.end_entered.set()
+        self.release.wait()
+
+    def close(self):
+        self.close_called.set()
 
 
 class HangingAgent:
@@ -90,6 +108,27 @@ def test_agent_teardown_is_bounded():
 
         assert agent.entered.wait(timeout=0.5)
         assert elapsed < 0.5
+    finally:
+        release.set()
+
+
+def test_session_close_waits_for_timed_out_end_session():
+    """A timed-out finalizer must not close SQLite while it still runs."""
+    release = threading.Event()
+    fake_db = EndSessionHangingDB(release)
+    bounded = _BoundedCronSessionDB(fake_db, "end-session-hang")
+
+    try:
+        with patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
+            with pytest.raises(TimeoutError):
+                bounded.finalize_session("session-1", "cron_complete")
+
+        assert fake_db.end_entered.wait(timeout=0.5)
+        bounded.close()
+        assert not fake_db.close_called.is_set()
+
+        release.set()
+        assert fake_db.close_called.wait(timeout=0.5)
     finally:
         release.set()
 

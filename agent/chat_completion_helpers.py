@@ -1822,6 +1822,94 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _bounded_output_cap(agent: Any, value: Any) -> Any:
+    """Keep governed retry caps at or below the installed policy ceiling.
+
+    Unattended profile boundaries validate the *prepared* provider request. A
+    retry path may otherwise raise ``_ephemeral_max_output_tokens`` above the
+    ceiling that was installed on the agent, causing a deterministic boundary
+    failure before the provider is called. Agents without that private
+    governance binding retain their existing cap unchanged.
+    """
+    binding = getattr(agent, "_civic_assure_model_request_binding", None)
+    policy = binding.get("policy") if isinstance(binding, dict) else None
+    ceiling = policy.get("max_output_tokens") if isinstance(policy, dict) else None
+    if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling <= 0:
+        return value
+    if value is None:
+        return value
+    try:
+        requested = int(value)
+    except (TypeError, ValueError):
+        return value
+    if requested <= 0:
+        return value
+    return min(requested, ceiling)
+
+
+def _apply_output_cap_ceiling(agent: Any, api_kwargs: dict) -> dict:
+    """Apply a governed ceiling after provider-specific request construction."""
+    binding = getattr(agent, "_civic_assure_model_request_binding", None)
+    policy = binding.get("policy") if isinstance(binding, dict) else None
+    ceiling = policy.get("max_output_tokens") if isinstance(policy, dict) else None
+    if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling <= 0:
+        return api_kwargs
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+
+    # Native request shapes use different field names. Prefer the field already
+    # selected by the transport, then add the correct one if a late override
+    # removed the cap entirely.
+    generation = api_kwargs.get("generationConfig")
+    if isinstance(generation, dict) and "maxOutputTokens" in generation:
+        generation["maxOutputTokens"] = _bounded_output_cap(
+            agent, generation["maxOutputTokens"]
+        )
+        return api_kwargs
+
+    inference = api_kwargs.get("inferenceConfig")
+    if isinstance(inference, dict) and "maxTokens" in inference:
+        inference["maxTokens"] = _bounded_output_cap(agent, inference["maxTokens"])
+        return api_kwargs
+
+    if getattr(agent, "api_mode", None) == "codex_responses":
+        api_kwargs.pop("max_tokens", None)
+        api_kwargs.pop("max_completion_tokens", None)
+        api_kwargs["max_output_tokens"] = _bounded_output_cap(
+            agent, api_kwargs.get("max_output_tokens", ceiling)
+        )
+        return api_kwargs
+
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        api_kwargs.pop("max_completion_tokens", None)
+        api_kwargs.pop("max_output_tokens", None)
+        api_kwargs["max_tokens"] = _bounded_output_cap(
+            agent, api_kwargs.get("max_tokens", ceiling)
+        )
+        return api_kwargs
+
+    if "max_completion_tokens" in api_kwargs:
+        api_kwargs["max_completion_tokens"] = _bounded_output_cap(
+            agent, api_kwargs["max_completion_tokens"]
+        )
+        api_kwargs.pop("max_tokens", None)
+        api_kwargs.pop("max_output_tokens", None)
+    elif "max_tokens" in api_kwargs:
+        api_kwargs["max_tokens"] = _bounded_output_cap(agent, api_kwargs["max_tokens"])
+        api_kwargs.pop("max_output_tokens", None)
+    elif "max_output_tokens" in api_kwargs:
+        api_kwargs["max_output_tokens"] = _bounded_output_cap(
+            agent, api_kwargs["max_output_tokens"]
+        )
+    else:
+        try:
+            selected = agent._max_tokens_param(ceiling)
+        except Exception:
+            selected = {"max_tokens": ceiling}
+        api_kwargs.update(selected)
+    return api_kwargs
+
+
 def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = None) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     if tools_for_api is None:
@@ -1853,7 +1941,10 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # the profile hook that produces them is only consulted by the
         # OpenAI-wire transport. Merge them here so Messages traffic keeps
         # product attribution and sticky routing.
-        return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
+        return _apply_output_cap_ceiling(
+            agent,
+            _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs),
+        )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
     # The adapter handles message/tool conversion and boto3 calls directly.
@@ -1861,13 +1952,16 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         _bt = agent._get_transport()
         region = getattr(agent, "_bedrock_region", None) or "us-east-1"
         guardrail = getattr(agent, "_bedrock_guardrail_config", None)
-        return _bt.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            max_tokens=agent.max_tokens or 4096,
-            region=region,
-            guardrail_config=guardrail,
+        return _apply_output_cap_ceiling(
+            agent,
+            _bt.build_kwargs(
+                model=agent.model,
+                messages=api_messages,
+                tools=tools_for_api,
+                max_tokens=agent.max_tokens or 4096,
+                region=region,
+                guardrail_config=guardrail,
+            ),
         )
 
     # Rotation-stable logical cache scope, shared by every OpenAI-wire branch
@@ -1935,7 +2029,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
                     getattr(agent, "log_prefix", ""), exc,
                 )
 
-        return _ct.build_kwargs(
+        api_kwargs = _ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
@@ -1956,6 +2050,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             ),
             context_management=_context_management,
         )
+        return _apply_output_cap_ceiling(agent, api_kwargs)
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()
@@ -2039,27 +2134,30 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
 
-        return _ct.build_kwargs(
-            model=agent.model,
-            messages=api_messages,
-            tools=tools_for_api,
-            base_url=agent.base_url,
-            timeout=agent._resolved_api_call_timeout(),
-            max_tokens=agent.max_tokens,
-            ephemeral_max_output_tokens=_ephemeral_out,
-            max_tokens_param_fn=agent._max_tokens_param,
-            reasoning_config=agent.reasoning_config,
-            request_overrides=agent.request_overrides,
-            session_id=getattr(agent, "session_id", None),
-            cache_scope_id=_cache_scope_id,
-            provider_profile=_profile,
-            ollama_num_ctx=agent._ollama_num_ctx,
-            # Context forwarded to profile hooks:
-            provider_preferences=_prefs or None,
-            openrouter_min_coding_score=agent.openrouter_min_coding_score,
-            anthropic_max_output=_ant_max,
-            supports_reasoning=agent._supports_reasoning_extra_body(),
-            qwen_session_metadata=_qwen_meta,
+        return _apply_output_cap_ceiling(
+            agent,
+            _ct.build_kwargs(
+                model=agent.model,
+                messages=api_messages,
+                tools=tools_for_api,
+                base_url=agent.base_url,
+                timeout=agent._resolved_api_call_timeout(),
+                max_tokens=agent.max_tokens,
+                ephemeral_max_output_tokens=_bounded_output_cap(agent, _ephemeral_out),
+                max_tokens_param_fn=agent._max_tokens_param,
+                reasoning_config=agent.reasoning_config,
+                request_overrides=agent.request_overrides,
+                session_id=getattr(agent, "session_id", None),
+                cache_scope_id=_cache_scope_id,
+                provider_profile=_profile,
+                ollama_num_ctx=agent._ollama_num_ctx,
+                # Context forwarded to profile hooks:
+                provider_preferences=_prefs or None,
+                openrouter_min_coding_score=agent.openrouter_min_coding_score,
+                anthropic_max_output=_ant_max,
+                supports_reasoning=agent._supports_reasoning_extra_body(),
+                qwen_session_metadata=_qwen_meta,
+            ),
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -2072,42 +2170,45 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
 
-    return _ct.build_kwargs(
-        model=agent.model,
-        messages=_msgs_for_chat,
-        tools=tools_for_api,
-        base_url=agent.base_url,
-        timeout=agent._resolved_api_call_timeout(),
-        max_tokens=agent.max_tokens,
-        ephemeral_max_output_tokens=_ephemeral_out,
-        max_tokens_param_fn=agent._max_tokens_param,
-        reasoning_config=agent.reasoning_config,
-        request_overrides=agent.request_overrides,
-        session_id=getattr(agent, "session_id", None),
-        cache_scope_id=_cache_scope_id,
-        model_lower=(agent.model or "").lower(),
-        is_openrouter=_is_or,
-        is_nous=_is_nous,
-        is_qwen_portal=_is_qwen,
-        is_github_models=_is_gh,
-        is_nvidia_nim=_is_nvidia,
-        is_kimi=_is_kimi,
-        is_tokenhub=_is_tokenhub,
-        is_lmstudio=_is_lmstudio,
-        is_custom_provider=agent.provider == "custom",
-        ollama_num_ctx=agent._ollama_num_ctx,
-        provider_preferences=_prefs or None,
-        openrouter_min_coding_score=agent.openrouter_min_coding_score,
-        qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
-        qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
-        qwen_session_metadata=_qwen_meta,
-        fixed_temperature=_fixed_temp,
-        omit_temperature=_omit_temp,
-        supports_reasoning=agent._supports_reasoning_extra_body(),
-        github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
-        lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
-        anthropic_max_output=_ant_max,
-        provider_name=agent.provider,
+    return _apply_output_cap_ceiling(
+        agent,
+        _ct.build_kwargs(
+            model=agent.model,
+            messages=_msgs_for_chat,
+            tools=tools_for_api,
+            base_url=agent.base_url,
+            timeout=agent._resolved_api_call_timeout(),
+            max_tokens=agent.max_tokens,
+            ephemeral_max_output_tokens=_bounded_output_cap(agent, _ephemeral_out),
+            max_tokens_param_fn=agent._max_tokens_param,
+            reasoning_config=agent.reasoning_config,
+            request_overrides=agent.request_overrides,
+            session_id=getattr(agent, "session_id", None),
+            cache_scope_id=_cache_scope_id,
+            model_lower=(agent.model or "").lower(),
+            is_openrouter=_is_or,
+            is_nous=_is_nous,
+            is_qwen_portal=_is_qwen,
+            is_github_models=_is_gh,
+            is_nvidia_nim=_is_nvidia,
+            is_kimi=_is_kimi,
+            is_tokenhub=_is_tokenhub,
+            is_lmstudio=_is_lmstudio,
+            is_custom_provider=agent.provider == "custom",
+            ollama_num_ctx=agent._ollama_num_ctx,
+            provider_preferences=_prefs or None,
+            openrouter_min_coding_score=agent.openrouter_min_coding_score,
+            qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
+            qwen_prepare_inplace_fn=agent._qwen_prepare_chat_messages_inplace if _is_qwen else None,
+            qwen_session_metadata=_qwen_meta,
+            fixed_temperature=_fixed_temp,
+            omit_temperature=_omit_temp,
+            supports_reasoning=agent._supports_reasoning_extra_body(),
+            github_reasoning_extra=agent._github_models_reasoning_extra_body() if _is_gh else None,
+            lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
+            anthropic_max_output=_ant_max,
+            provider_name=agent.provider,
+        ),
     )
 
 
@@ -2846,6 +2947,52 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+def _execute_summary_request(
+    agent: Any,
+    request: dict,
+    callback,
+    *,
+    summary_api_request_id: str,
+    retry_count: int,
+):
+    """Execute an iteration summary through the installed request boundary."""
+    binding = getattr(agent, "_civic_assure_model_request_binding", None)
+    if isinstance(binding, dict):
+        missing = object()
+        previous_request_id = getattr(agent, "_current_api_request_id", missing)
+        agent._current_api_request_id = (
+            f"{summary_api_request_id}:{retry_count}"
+        )
+        try:
+            return agent._interruptible_api_call(request)
+        finally:
+            if previous_request_id is missing:
+                try:
+                    del agent._current_api_request_id
+                except AttributeError:
+                    pass
+            else:
+                agent._current_api_request_id = previous_request_id
+
+    from agent import relay_llm
+
+    return relay_llm.execute_current(
+        request,
+        callback,
+        name=str(getattr(agent, "provider", "") or "provider"),
+        model_name=str(getattr(agent, "model", "") or ""),
+        metadata={
+            "api_mode": str(
+                getattr(agent, "api_mode", "") or "chat_completions"
+            ),
+            "api_request_id": summary_api_request_id,
+            "call_role": "iteration_summary",
+            "retry_count": retry_count,
+        },
+        defer_logical_completion=True,
+    )
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     agent._safe_print(
@@ -2856,22 +3003,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_call_outcome = "failed"
 
     def _managed_summary_call(request, callback, *, retry_count: int):
-        from agent import relay_llm
-
-        return relay_llm.execute_current(
+        return _execute_summary_request(
+            agent,
             request,
             callback,
-            name=str(getattr(agent, "provider", "") or "provider"),
-            model_name=str(getattr(agent, "model", "") or ""),
-            metadata={
-                "api_mode": str(
-                    getattr(agent, "api_mode", "") or "chat_completions"
-                ),
-                "api_request_id": summary_api_request_id,
-                "call_role": "iteration_summary",
-                "retry_count": retry_count,
-            },
-            defer_logical_completion=True,
+            summary_api_request_id=summary_api_request_id,
+            retry_count=retry_count,
         )
 
     # Shared constant so compaction recognizers can identify this runtime nudge
@@ -2999,7 +3136,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
             codex_kwargs.pop("tools", None)
-            summary_response = agent._run_codex_stream(codex_kwargs)
+            summary_response = _managed_summary_call(
+                codex_kwargs,
+                lambda request: agent._run_codex_stream(request),
+                retry_count=0,
+            )
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
             final_response = (_cnr_sum.content or "").strip()
@@ -3065,6 +3206,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
+            summary_kwargs = _apply_output_cap_ceiling(agent, summary_kwargs)
 
             if agent.api_mode == "anthropic_messages":
                 _tsum = agent._get_transport()
@@ -3078,7 +3220,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     preserve_dots=agent._anthropic_preserve_dots(),
                     base_url=getattr(agent, "_anthropic_base_url", None),
                 )
-                _ant_kw = _merge_nous_portal_messages_extra_body(agent, _ant_kw)
+                _ant_kw = _apply_output_cap_ceiling(
+                    agent,
+                    _merge_nous_portal_messages_extra_body(agent, _ant_kw),
+                )
                 summary_response = _managed_summary_call(
                     _ant_kw,
                     agent._anthropic_messages_create,
@@ -3114,7 +3259,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if agent.api_mode == "codex_responses":
                 codex_kwargs = agent._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
-                retry_response = agent._run_codex_stream(codex_kwargs)
+                retry_response = _managed_summary_call(
+                    codex_kwargs,
+                    lambda request: agent._run_codex_stream(request),
+                    retry_count=1,
+                )
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)
                 final_response = (_cnr_retry.content or "").strip()
@@ -3130,7 +3279,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     preserve_dots=agent._anthropic_preserve_dots(),
                     base_url=getattr(agent, "_anthropic_base_url", None),
                 )
-                _ant_kw2 = _merge_nous_portal_messages_extra_body(agent, _ant_kw2)
+                _ant_kw2 = _apply_output_cap_ceiling(
+                    agent,
+                    _merge_nous_portal_messages_extra_body(agent, _ant_kw2),
+                )
                 retry_response = _managed_summary_call(
                     _ant_kw2,
                     agent._anthropic_messages_create,
@@ -3151,6 +3303,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
+                summary_kwargs = _apply_output_cap_ceiling(agent, summary_kwargs)
 
                 summary_client = agent._ensure_primary_openai_client(
                     reason="iteration_limit_summary_retry"

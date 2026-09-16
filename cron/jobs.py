@@ -523,6 +523,7 @@ def _civic_assure_native_config_module():
                 module.enforce_runtime_save,
                 module.enforce_runtime_update,
                 module.one_run_enable_blocks_dispatch,
+                module._scheduler_bookkeeping_context_for,
             )
     except (ImportError, OSError, AttributeError) as exc:
         raise RuntimeError("Civic Assure native-config enforcement module is unavailable") from exc
@@ -538,7 +539,14 @@ def _civic_assure_native_config_target_profile():
         value = os.environ.get("HERMES_HOME", "").strip()
     if not value:
         return False
-    return Path(value).expanduser().resolve().name == "civic-assure-maintainer"
+    profile = Path(value).expanduser().resolve()
+    if profile.name != "civic-assure-maintainer" or not profile.is_dir():
+        return False
+    try:
+        store_path = _current_cron_store().jobs_file.resolve()
+    except (AttributeError, OSError, RuntimeError):
+        return False
+    return store_path == (profile / "cron" / "jobs.json").resolve()
 
 
 def _civic_assure_native_one_run_blocks_dispatch(job_id):
@@ -573,10 +581,117 @@ _CIVIC_ASSURE_HERMES_SCHEDULER_CONTROL_FIELDS = frozenset(
         "failure_streak",
     }
 )
+_CIVIC_ASSURE_SCHEDULER_SAVE_CONTEXT: ContextVar[dict[str, str] | None] = ContextVar(
+    "civic_assure_scheduler_save_context",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def _civic_assure_scheduler_save_context(operation: str):
+    """Authorize one save issued by an internal scheduler operation.
+
+    This is deliberately process-local and short-lived. It is not lifecycle
+    authority; it only prevents arbitrary callers of ``save_jobs`` from
+    impersonating the scheduler's claim/schedule bookkeeping path.
+    """
+    token = _CIVIC_ASSURE_SCHEDULER_SAVE_CONTEXT.set(
+        {"operation": str(operation)}
+    )
+    try:
+        yield
+    finally:
+        _CIVIC_ASSURE_SCHEDULER_SAVE_CONTEXT.reset(token)
+
+
+def _save_scheduler_jobs(
+    jobs,
+    *,
+    operation: str,
+    removed_ids=None,
+    replace: bool = False,
+):
+    """Persist a scheduler-owned jobs snapshot under the internal capability."""
+    with _civic_assure_scheduler_save_context(operation):
+        return save_jobs(jobs, removed_ids=removed_ids, replace=replace)
+
+
+def _civic_assure_scheduler_control_requires_context(
+    jobs,
+    *,
+    removed_ids=None,
+    replace: bool = False,
+) -> bool:
+    """Return whether a target scheduler-state mutation lacks its capability."""
+    if (
+        not _civic_assure_native_config_target_profile()
+        or _CIVIC_ASSURE_SCHEDULER_SAVE_CONTEXT.get() is not None
+        or replace
+        or removed_ids
+    ):
+        return False
+    try:
+        payload = json.loads(_current_cron_store().jobs_file.read_text(encoding="utf-8"))
+        current_rows = payload.get("jobs") if isinstance(payload, dict) else None
+        proposed_rows = [dict(item) for item in jobs]
+        current = next(
+            (dict(item) for item in current_rows or [] if item.get("id") == "406ba6820205"),
+            None,
+        )
+        proposed = next(
+            (dict(item) for item in proposed_rows if item.get("id") == "406ba6820205"),
+            None,
+        )
+        if current is None or proposed is None:
+            return False
+        changed = {
+            key
+            for key in set(current) | set(proposed)
+            if (key in current) != (key in proposed) or current.get(key) != proposed.get(key)
+        }
+        return bool(
+            changed
+            & {
+                "enabled",
+                "state",
+                "paused_at",
+                "paused_reason",
+                "next_run_at",
+                "fire_claim",
+                "run_claim",
+                "last_run_at",
+                "last_status",
+                "last_error",
+                "failure_streak",
+            }
+        )
+    except (OSError, TypeError, ValueError):
+        # Let the profile authority produce the canonical corruption/error
+        # response when the current store cannot be compared safely.
+        return False
+
+
+def _civic_assure_native_scheduler_bookkeeping_active() -> bool:
+    """Return whether the profile's stronger finish validator is active."""
+    if not _civic_assure_native_config_target_profile():
+        return False
+    try:
+        profile = _civic_assure_native_config_profile()
+        context_reader = _civic_assure_native_config_module()[5]
+        return context_reader(profile) is not None
+    except Exception:
+        # The normal save guard will fail closed if the profile authority is
+        # unavailable. Do not let this probe make unrelated profiles crash.
+        return False
 
 
 def _civic_assure_hermes_scheduler_control_update(updates):
     """Return whether update_job changes only Hermes-owned scheduler state."""
+    # Public ``update_job``/pause/resume/trigger calls do not carry the
+    # scheduler save capability. They must reach the profile lifecycle
+    # authority instead of treating an arbitrary update as internal state.
+    if _CIVIC_ASSURE_SCHEDULER_SAVE_CONTEXT.get() is None:
+        return False
     try:
         keys = set(updates)
     except (TypeError, ValueError):
@@ -638,7 +753,13 @@ def _civic_assure_hermes_scheduler_control_save(
     replace=False,
 ):
     """Return True only for a pure Hermes-owned operational-state save."""
-    if replace or removed_ids or not _civic_assure_native_config_target_profile():
+    if (
+        replace
+        or removed_ids
+        or not _civic_assure_native_config_target_profile()
+        or _CIVIC_ASSURE_SCHEDULER_SAVE_CONTEXT.get() is None
+        or _civic_assure_native_scheduler_bookkeeping_active()
+    ):
         return False
     try:
         proposed_rows = [dict(item) for item in jobs]
@@ -740,7 +861,30 @@ def _civic_assure_due_scan_module():
                 raise
         if Path(getattr(module, "__file__", "")).resolve() != path.resolve():
             raise RuntimeError("Civic Assure due-scan authority provenance is stale")
-        return module.due_scan_context, module.enforce_due_scan_save
+        return (
+            module.due_scan_context,
+            module.enforce_due_scan_save,
+            getattr(module, "_admission_identity", None),
+        )
+
+
+def _civic_assure_due_scan_is_cold_start() -> bool:
+    """Return whether the stronger cold-start due-scan authority may be used."""
+    if not _civic_assure_native_config_target_profile():
+        return False
+    try:
+        admission_check = _civic_assure_due_scan_module()[2]
+        if not callable(admission_check):
+            return False
+        admission_check(_civic_assure_native_config_profile())
+        return True
+    except Exception:
+        # The due-scan module is deliberately stricter than ordinary scheduler
+        # bookkeeping: its admission is valid only while the profile is still
+        # quiescent and its cold-start budget is untouched. Once that predicate
+        # is false, normal scheduler-owned saves remain the correct path; do not
+        # turn a routine recovery scan into a failed tick.
+        return False
 
 
 def _civic_assure_due_scan_context(jobs, scan_now, *, removed_ids=None):
@@ -778,11 +922,17 @@ def _civic_assure_native_config_guard_save(jobs, *, removed_ids=None, replace=Fa
     """Gate declarative config while Hermes owns scheduler bookkeeping."""
     if not _civic_assure_native_config_target_profile():
         return
-    if _civic_assure_hermes_scheduler_control_save(
+    if _civic_assure_scheduler_control_requires_context(
+        jobs, removed_ids=removed_ids, replace=replace
+    ):
+        raise RuntimeError(
+            "Civic Assure scheduler-state save requires an internal scheduler capability"
+        )
+    if _civic_assure_due_scan_guard_save(
         jobs, removed_ids=removed_ids, replace=replace
     ):
         return
-    if _civic_assure_due_scan_guard_save(
+    if _civic_assure_hermes_scheduler_control_save(
         jobs, removed_ids=removed_ids, replace=replace
     ):
         return
@@ -2683,7 +2833,7 @@ def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
                     job.pop(field, None)
                 if prior != value:
                     jobs[i] = job
-                    save_jobs(jobs)
+                    _save_scheduler_jobs(jobs, operation="alert_flag")
                 return prior
     return False
 
@@ -2740,7 +2890,7 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
                     "detail": str(detail or "")[:500],
                 }
                 jobs[i] = job
-                save_jobs(jobs)
+                _save_scheduler_jobs(jobs, operation="fire_forward_failure")
                 return True
     return False
 
@@ -2853,7 +3003,7 @@ def _mark_job_run_locked(
                         job["enabled"] = False
                         job["state"] = "completed"
                         job["next_run_at"] = None
-                        save_jobs(jobs)
+                        _save_scheduler_jobs(jobs, operation="mark_job_run_terminal")
                         return True
                 
                 # Compute next run
@@ -2888,7 +3038,7 @@ def _mark_job_run_locked(
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
-                save_jobs(jobs)
+                _save_scheduler_jobs(jobs, operation="mark_job_run")
                 return True
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
@@ -2980,7 +3130,7 @@ def claim_dispatch(job_id: str) -> bool:
                     job["enabled"] = False
                     job["state"] = "completed"
                     job["next_run_at"] = None
-                    save_jobs(jobs)
+                    _save_scheduler_jobs(jobs, operation="claim_dispatch_terminal")
                     logger.info(
                         "Job '%s': dispatch limit reached (%d/%d) — marking completed",
                         job.get("name", job.get("id", "?")),
@@ -2993,7 +3143,11 @@ def claim_dispatch(job_id: str) -> bool:
                 # it stops appearing as due, and leave an operator-visible
                 # diagnostic instead of vanishing silently.
                 jobs.pop(i)
-                save_jobs(jobs, removed_ids={job_id})
+                _save_scheduler_jobs(
+                    jobs,
+                    operation="claim_dispatch_remove",
+                    removed_ids={job_id},
+                )
                 _write_wedged_oneshot_diagnostic(job)
                 logger.info(
                     "Job '%s': dispatch limit reached (%d/%d) — removing",
@@ -3004,7 +3158,7 @@ def claim_dispatch(job_id: str) -> bool:
                 return False
             # Claim this dispatch before the side effect runs.
             repeat["completed"] = completed + 1
-            save_jobs(jobs)
+            _save_scheduler_jobs(jobs, operation="claim_dispatch")
             logger.debug(
                 "Job '%s': claimed dispatch %d/%d",
                 job.get("name", job.get("id", "?")),
@@ -3048,7 +3202,7 @@ def heartbeat_run_claim(job_id: str, *, expected_owner: str) -> bool:
             if not isinstance(claim, dict) or claim.get("by") != expected_owner:
                 return False
             claim["at"] = _hermes_now().isoformat()
-            save_jobs(jobs)
+            _save_scheduler_jobs(jobs, operation="run_claim_heartbeat")
             return True
     return False
 
@@ -3075,7 +3229,7 @@ def clear_run_claim(job_id: str) -> bool:
                 return False
             if job.get("run_claim") is not None:
                 job["run_claim"] = None
-                save_jobs(jobs)
+                _save_scheduler_jobs(jobs, operation="run_claim_clear")
                 return True
             return False  # already cleared
     return False
@@ -3114,7 +3268,7 @@ def advance_next_runs(job_ids) -> int:
                 job["next_run_at"] = new_next
                 advanced += 1
         if advanced:
-            save_jobs(jobs)
+            _save_scheduler_jobs(jobs, operation="advance_next_runs")
         return advanced
 
 
@@ -3152,6 +3306,22 @@ def _machine_id() -> str:
     return f"{host}:{os.getpid()}"
 
 
+def _civic_assure_maintenance_hold_blocks_claim(job_id: str) -> bool:
+    """Return whether a target claim is blocked by the active profile hold."""
+    if job_id != "406ba6820205" or not _civic_assure_native_config_target_profile():
+        return False
+    try:
+        from cron.scheduler import _civic_assure_maintenance_hold_blocks
+
+        return bool(_civic_assure_maintenance_hold_blocks(job_id))
+    except Exception as exc:
+        logger.error(
+            "Civic Assure maintenance hold check unavailable; blocking claim: %s",
+            exc,
+        )
+        return True
+
+
 def claim_job_for_fire(
     job_id: str,
     *,
@@ -3159,6 +3329,8 @@ def claim_job_for_fire(
     force: bool = False,
     return_job: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
+    if _civic_assure_maintenance_hold_blocks_claim(job_id):
+        return False
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
             return False
@@ -3242,7 +3414,7 @@ def _claim_job_for_fire_locked(
                 nxt = compute_next_run(job["schedule"], now.isoformat())
                 if nxt:
                     job["next_run_at"] = nxt
-            save_jobs(jobs)
+            _save_scheduler_jobs(jobs, operation="fire_claim")
             return copy.deepcopy(job) if return_job else True
         return False
 
@@ -3361,7 +3533,7 @@ def _heartbeat_fire_claim_locked(job_id: str, *, expected_owner: str) -> bool:
             if not isinstance(claim, dict) or claim.get("by") != expected_owner:
                 return False
             claim["at"] = _hermes_now().isoformat()
-            save_jobs(jobs)
+            _save_scheduler_jobs(jobs, operation="fire_claim_heartbeat")
             return True
     return False
 
@@ -3823,15 +3995,23 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
     if needs_save:
         removed_ids = intentionally_removed or None
-        if civic_assure_due_scan_authorized:
+        if civic_assure_due_scan_authorized and _civic_assure_due_scan_is_cold_start():
             with _civic_assure_due_scan_context(
                 raw_jobs,
                 now,
                 removed_ids=removed_ids,
             ):
-                save_jobs(raw_jobs, removed_ids=removed_ids)
+                _save_scheduler_jobs(
+                    raw_jobs,
+                    operation="due_scan",
+                    removed_ids=removed_ids,
+                )
         else:
-            save_jobs(raw_jobs, removed_ids=removed_ids)
+            _save_scheduler_jobs(
+                raw_jobs,
+                operation="due_scan",
+                removed_ids=removed_ids,
+            )
 
     return due
 

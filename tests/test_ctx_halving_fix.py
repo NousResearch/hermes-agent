@@ -23,6 +23,7 @@ These are different and the old code conflated them; the fix keeps them
 separate.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -205,6 +206,29 @@ class TestEphemeralMaxOutputTokens:
         agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert agent._ephemeral_max_output_tokens is None
 
+    def test_ephemeral_override_is_clamped_to_unattended_ceiling(self):
+        """A governed agent cannot raise a retry cap above its policy."""
+        from agent.chat_completion_helpers import _bounded_output_cap
+
+        agent = SimpleNamespace(
+            _civic_assure_model_request_binding={
+                "policy": {"max_output_tokens": 16_000},
+            }
+        )
+
+        assert _bounded_output_cap(agent, 32_768) == 16_000
+
+    def test_prepared_anthropic_request_uses_unattended_ceiling(self):
+        """The cap reaches the provider kwargs after ephemeral consumption."""
+        agent = self._make_agent()
+        agent._civic_assure_model_request_binding = {
+            "policy": {"max_output_tokens": 16_000},
+        }
+        agent._ephemeral_max_output_tokens = 32_768
+
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+        assert kwargs["max_tokens"] == 16_000
 
 
 

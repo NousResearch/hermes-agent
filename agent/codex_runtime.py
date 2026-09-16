@@ -1376,7 +1376,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     from agent import relay_llm
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
-    max_stream_retries = 1
+    # The profile boundary records one physical request per invocation. Keep
+    # the transport-local retry for ordinary agents, but let governed cron
+    # requests return to the outer retry loop so each attempt receives a fresh
+    # request identity and deadline.
+    max_stream_retries = (
+        0
+        if getattr(agent, "_civic_assure_model_request_binding", None) is not None
+        else 1
+    )
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
 

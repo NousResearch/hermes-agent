@@ -85,6 +85,28 @@ def _civic_assure_profile_home() -> Path:
     return root
 
 
+def _civic_assure_profile_is_active() -> bool:
+    """Return whether the current scheduler process is the maintainer profile."""
+    value = os.environ.get("HERMES_PROFILE_HOME", "").strip()
+    try:
+        root = (
+            Path(value).expanduser().resolve()
+            if value
+            else get_hermes_home().resolve()
+        )
+    except Exception:
+        return False
+    if root.name != "civic-assure-maintainer" or not root.is_dir():
+        return False
+    try:
+        from cron.jobs import _current_cron_store
+
+        store_path = _current_cron_store().jobs_file.resolve()
+    except Exception:
+        return False
+    return store_path == (root / "cron" / "jobs.json").resolve()
+
+
 def _civic_assure_maintenance_hold_blocks(job_id: str | None) -> bool:
     """Return whether the exact maintainer job is blocked by runtime hold."""
     if job_id != "406ba6820205":
@@ -105,6 +127,8 @@ def _civic_assure_maintenance_hold_blocks(job_id: str | None) -> bool:
 
 def _civic_assure_filter_due_jobs(due_jobs: list[dict]) -> list[dict]:
     """Filter held maintainer work without inspecting unrelated profiles."""
+    if not _civic_assure_profile_is_active():
+        return due_jobs
     if not any(
         isinstance(job, dict) and job.get("id") == "406ba6820205"
         for job in due_jobs
@@ -113,6 +137,31 @@ def _civic_assure_filter_due_jobs(due_jobs: list[dict]) -> list[dict]:
     if not _civic_assure_maintenance_hold_blocks("406ba6820205"):
         return due_jobs
     return [job for job in due_jobs if job.get("id") != "406ba6820205"]
+
+
+def _civic_assure_session_id_for_job(job: dict) -> str | None:
+    """Derive the canonical maintainer session identity from its fire claim."""
+    if not isinstance(job, dict) or job.get("id") != "406ba6820205":
+        return None
+    claim = job.get("fire_claim")
+    supplied = str(job.get("session_id") or "").strip()
+    if isinstance(claim, dict):
+        claim_at = claim.get("at")
+        if not isinstance(claim_at, str) or not claim_at.strip():
+            raise RuntimeError("Civic Assure maintainer fire-claim timestamp is missing")
+        try:
+            parsed = datetime.fromisoformat(claim_at.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RuntimeError("Civic Assure maintainer fire-claim timestamp is malformed") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise RuntimeError("Civic Assure maintainer fire-claim timestamp is not timezone-aware")
+        derived = f"cron_406ba6820205_{parsed.strftime('%Y%m%d_%H%M%S')}"
+        if supplied and supplied != derived:
+            raise RuntimeError(
+                "Civic Assure maintainer session identity disagrees with its fire claim"
+            )
+        return derived
+    return supplied or None
 
 
 def _civic_assure_validate_job_identity(job_id: str | None, job_name: str | None) -> str:
@@ -369,12 +418,32 @@ def _civic_assure_model_request_identity(job_id, execution_id, session_id, fire_
     }
 
 
+def _civic_assure_model_request_config(config):
+    """Overlay the canonical maintainer request policy onto runtime config."""
+    base = dict(config) if isinstance(config, dict) else {}
+    policy_path = _civic_assure_profile_home() / "config" / "automation-telemetry.yaml"
+    if not policy_path.exists():
+        return base
+    try:
+        import yaml
+
+        payload = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError("Civic Assure model-request policy is unreadable") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("model_request"), dict):
+        raise RuntimeError("Civic Assure model-request policy is malformed")
+    base["model_request"] = dict(payload["model_request"])
+    return base
+
+
 def _civic_assure_model_request_max_tokens(job_id, model, runtime, config):
     """Resolve the maintainer output ceiling without weakening provider caps."""
-    if job_id != "406ba6820205":
+    if job_id != "406ba6820205" or not _civic_assure_profile_is_active():
         return None
     module = _civic_assure_model_request_module()
-    policy = module.model_request_policy(config)
+    policy = module.model_request_policy(
+        _civic_assure_model_request_config(config)
+    )
     limit = int(policy["max_output_tokens"])
     provider_name = str((runtime or {}).get("provider") or "").strip()
     try:
@@ -397,15 +466,24 @@ def _civic_assure_model_request_max_tokens(job_id, model, runtime, config):
 
 def _civic_assure_install_model_request_boundary(agent, job, runtime, config, session_id):
     """Install the real unattended request boundary for the maintainer job."""
-    if job.get("id") != "406ba6820205":
+    if (
+        job.get("id") != "406ba6820205"
+        or not _civic_assure_profile_is_active()
+    ):
         return
+    if str((runtime or {}).get("api_mode") or "").strip() == "codex_app_server":
+        raise RuntimeError(
+            "Civic Assure model-request boundary does not support codex app-server turns"
+        )
     execution_id = str(job.get("execution_id") or "").strip()
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "").strip() if isinstance(claim, dict) else ""
     if not execution_id or not fire_owner:
         raise RuntimeError("Civic Assure model-request native execution identity is missing")
     module = _civic_assure_model_request_module()
-    policy = module.model_request_policy(config)
+    policy = module.model_request_policy(
+        _civic_assure_model_request_config(config)
+    )
     module.install_agent(
         agent,
         context_provider=lambda: _civic_assure_model_request_identity(
@@ -5893,6 +5971,7 @@ def _run_cron_cleanup_with_timeout(
     job_id: str,
     label: str,
     timeout_seconds: Optional[float] = None,
+    on_complete=None,
 ) -> bool:
     """Run fallible post-run cleanup without permanently wedging a cron ID."""
     timeout = (
@@ -5918,6 +5997,15 @@ def _run_cron_cleanup_with_timeout(
             error.append(exc)
         finally:
             done.set()
+            if callable(on_complete):
+                try:
+                    on_complete()
+                except BaseException as exc:
+                    logger.debug(
+                        "Job '%s': late cleanup completion callback failed: %s",
+                        job_id,
+                        exc,
+                    )
 
     # A daemon thread is deliberate: unlike ThreadPoolExecutor workers it is
     # not joined by Python's interpreter-exit hook if the cleanup target never
@@ -5955,6 +6043,52 @@ class _BoundedCronSessionDB:
         self._session_db = session_db
         self._job_id = job_id
         self._disabled = False
+        self._state_lock = threading.Lock()
+        self._inflight_cleanups = 0
+        self._close_requested = False
+        self._closed = False
+
+    def _begin_cleanup(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("session finalization disabled after session DB close")
+            self._inflight_cleanups += 1
+
+    def _finish_cleanup(self) -> None:
+        deferred_close = False
+        with self._state_lock:
+            self._inflight_cleanups = max(0, self._inflight_cleanups - 1)
+            if (
+                self._inflight_cleanups == 0
+                and self._close_requested
+                and not self._closed
+            ):
+                self._closed = True
+                self._close_requested = False
+                deferred_close = True
+        if deferred_close:
+            self._close_underlying()
+
+    def _close_underlying(self) -> None:
+        """Close the wrapped DB only after every timed-out call has returned."""
+        target = getattr(self._session_db, "close")
+        _run_cron_cleanup_with_timeout(
+            target,
+            job_id=self._job_id,
+            label="session finalization (late close)",
+        )
+
+    def close(self):
+        """Defer close while a timed-out cleanup worker still owns the DB."""
+        with self._state_lock:
+            if self._closed:
+                return None
+            if self._inflight_cleanups:
+                self._close_requested = True
+                return None
+            self._closed = True
+        self._close_underlying()
+        return None
 
     def __getattr__(self, name):
         target = getattr(self._session_db, name)
@@ -5964,6 +6098,8 @@ class _BoundedCronSessionDB:
         def _bounded(*args, **kwargs):
             if self._disabled:
                 raise RuntimeError("session finalization disabled after prior cleanup failure")
+
+            self._begin_cleanup()
 
             result = {}
 
@@ -5978,6 +6114,7 @@ class _BoundedCronSessionDB:
                 _call,
                 job_id=self._job_id,
                 label=f"session finalization ({name})",
+                on_complete=self._finish_cleanup,
             )
             if not ok:
                 error = result.get("error")
@@ -5996,6 +6133,7 @@ class _BoundedCronSessionDB:
     def finalize_session(self, session_id, end_reason):
         """Attempt end_session even after another cleanup call timed out."""
         target = self._session_db.end_session
+        self._begin_cleanup()
         result = {}
 
         def _call():
@@ -6009,6 +6147,7 @@ class _BoundedCronSessionDB:
             _call,
             job_id=self._job_id,
             label="session finalization (end_session)",
+            on_complete=self._finish_cleanup,
         )
         if not ok:
             error = result.get("error")
@@ -6361,7 +6500,12 @@ def run_job(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
-    _cron_session_id = str(job.get("session_id") or f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
+    _claim_session_id = _civic_assure_session_id_for_job(job)
+    _cron_session_id = str(
+        _claim_session_id
+        or job.get("session_id")
+        or f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    )
     _native_cancellation_update(
         str(job.get("execution_id") or ""),
         session_id=_cron_session_id,
@@ -8409,7 +8553,7 @@ def tick(
             except Exception as _reap_exc:
                 logger.debug("Dead-owner execution reclaim failed: %s", _reap_exc)
 
-        due_jobs = get_due_jobs()
+        due_jobs = _civic_assure_filter_due_jobs(get_due_jobs())
 
         # Bound the in-flight set BEFORE the dedup guard is consulted, so a
         # leaked claim is force-released in-cycle rather than silently eating

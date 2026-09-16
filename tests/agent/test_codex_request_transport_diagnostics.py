@@ -61,3 +61,39 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
     assert "payload" not in message
     assert request_content.decode() not in message
     assert "example.invalid" not in message
+
+
+def test_governed_codex_stream_does_not_retry_inside_request_boundary(monkeypatch):
+    """One boundary invocation owns one physical Codex request attempt."""
+    calls = []
+
+    class FailingResponses:
+        def create(self, **_kwargs):
+            calls.append(1)
+            raise httpx.ConnectError("connection closed")
+
+    client = SimpleNamespace(responses=FailingResponses())
+    agent = SimpleNamespace(
+        _interrupt_requested=False,
+        _current_api_request_id="request-id",
+        _fallback_index=0,
+        _civic_assure_model_request_binding={"policy": {"max_output_tokens": 16000}},
+        is_subagent=False,
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        session_id="",
+    )
+    monkeypatch.setattr(agent, "_fire_stream_delta", lambda _text: None, raising=False)
+    monkeypatch.setattr(agent, "_fire_reasoning_delta", lambda _text: None, raising=False)
+    monkeypatch.setattr(agent, "_fire_streamed_codex_commentary", lambda _text: None, raising=False)
+    monkeypatch.setattr(agent, "_touch_activity", lambda _description: None, raising=False)
+    monkeypatch.setattr(agent, "_client_log_context", lambda: "", raising=False)
+
+    with pytest.raises(httpx.ConnectError):
+        run_codex_stream(
+            agent,
+            {"model": "gpt-5.6-sol", "max_output_tokens": 16000},
+            client=client,
+        )
+
+    assert len(calls) == 1

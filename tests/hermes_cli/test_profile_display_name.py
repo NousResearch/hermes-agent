@@ -50,6 +50,9 @@ class TestMetaAndValidation:
         (profile_env / "profile.yaml").write_text(
             "ui_meta:\n  hermes-bots:\n    title: JordyV\n", encoding="utf-8")
         assert read_profile_meta(profile_env)["bot_title"] == "JordyV"
+        # The web/Desktop roster carries it through the same dict the chips read.
+        from hermes_cli.web_routers.profiles import _profile_to_dict
+        assert _profile_to_dict(list_profiles()[0])["bot_title"] == "JordyV"
 
     def test_bot_title_absent_when_no_bots_meta(self, profile_env):
         (profile_env / "profile.yaml").write_text(

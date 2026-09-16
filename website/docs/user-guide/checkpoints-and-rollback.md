@@ -234,6 +234,10 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 
 ## Safety and Performance Guards
 
+### Container Backends
+
+With a container terminal backend (`docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or a container plugin), file paths belong to the sandbox rather than the host. Hermes therefore does not take checkpoints or record the agent-write ledger for those paths, and `/rollback` explains the limitation; local and SSH backends are unaffected.
+
 - **Git availability** — if `git` is not found on `PATH`, checkpoints are transparently disabled.
 - **Directory scope** — Hermes skips overly broad directories (root `/`, home `$HOME`).
 - **Repository size** — directories with more than 50,000 files are skipped.

@@ -251,9 +251,17 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                for _p in landed_paths:
+                backend = None
+                with suppress(Exception):
+                    from agent.tool_executor import _checkpoint_container_backend
+                    backend = _checkpoint_container_backend(task_id or "default")
+                if backend is not None:
                     with suppress(Exception):
-                        mgr.record_agent_write(_p)
+                        mgr.note_unsupported_backend(backend)
+                else:
+                    for _p in landed_paths:
+                        with suppress(Exception):
+                            mgr.record_agent_write(_p)
         if is_error and not landed:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)

@@ -949,6 +949,20 @@ def _(rid, params: dict, session) -> dict:
         return _err(rid, 4009, busy_message("rollback restore"))
 
     def go(mgr, cwd):
+        # Container-backed session: the host checkpoints listed are not this session's tree. Classify
+        # with the identity and scopes a turn binds (prompt_turn.py): the session key is the tool-call
+        # task id, the session context drives the terminal registry lookup, and the profile scope
+        # supplies the terminal policy; otherwise a cached launch-profile environment or the launch
+        # config would answer for another profile's session.
+        task_id = session.get("session_key") or "default"
+        tokens = _set_session_context(task_id, cwd=cwd)
+        try:
+            with _session_profile_runtime_scope(session):
+                reason = getattr(mgr, "unsupported_backend_reason", lambda *_: None)(task_id)
+        finally:
+            _clear_session_context(tokens)
+        if reason:
+            return {"success": False, "error": reason}
         result = mgr.restore(cwd, _resolve_checkpoint_hash(mgr, cwd, target), file_path=file_path or None)
         if result.get("success") and not file_path:
             removed = 0

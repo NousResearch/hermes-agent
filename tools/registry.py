@@ -170,7 +170,8 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         return
     try:
         from utils import atomic_json_write  # stdlib+yaml only; no cycle
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, cache, indent=0)
     except Exception as e:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
@@ -350,9 +351,10 @@ def _check_fn_cached(fn: Callable) -> bool:
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # No recent success (or grace expired) — honor the failure. A False verdict is the
+        # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
+        log = logger.warning if exc_info else logger.info
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
             exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)

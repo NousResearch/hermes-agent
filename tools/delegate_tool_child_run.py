@@ -75,7 +75,8 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
     message = getattr(parent_agent, "_interrupt_message", None)
     hard = getattr(parent_agent, "_hard_interrupt_requested", None)
     if hard is None or hard.is_set():
-        _signal_child_stop(child, message or "parent agent interrupted")
+        _signal_child_stop(child, message or "parent agent interrupted",
+                           tool_reason=getattr(parent_agent, "_tool_interrupt_reason", None) or "parent agent interrupted")
     else:
         with _quiet("Failed to propagate interrupt to late child: %s"):
             child.interrupt(message)
@@ -89,10 +90,12 @@ def _detach_child(parent_agent: Any, child: Any) -> None:
     except (ValueError, UnboundLocalError) as e:
         logger.debug("Could not remove child from active_children: %s", e)
 
-def _signal_child_stop(child: Any, *reason: str) -> None:
-    """Cooperative interrupt so the child's worker thread can exit cleanly."""
+def _signal_child_stop(child: Any, *reason: str, tool_reason: str = "parent delegation ended") -> None:
+    """Cooperative interrupt so the child's worker thread can exit cleanly. ``tool_reason`` is the
+    fixed cause the child's tools see (a pending approval wait reports it instead of a user deny)."""
     with _quiet(None):
-        if child is not None and not request_hard_interrupt(child, *reason) and hasattr(child, "_interrupt_requested"):
+        if (child is not None and not request_hard_interrupt(child, *reason, tool_reason=tool_reason)
+                and hasattr(child, "_interrupt_requested")):
             child._interrupt_requested = True
 
 # ── 0-API-call timeout diagnostic ────────────────────────────────────────────
@@ -424,9 +427,14 @@ def _validate_child_output_schema(
     # schema re-paste — the child already holds the contract in its context).
     _retry_result = None
     try:
-        _retry_result = child.run_conversation(
-            user_message=build_retry_message(_schema_errors), task_id=child_task_id, stream_callback=relay_child_text,
-        )
+        # Same identity as the main child turn: this runs on the parent worker's thread, and an
+        # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
+        from agent.delegation_context import delegated_child_context
+        with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            _retry_result = child.run_conversation(
+                user_message=build_retry_message(_schema_errors), task_id=child_task_id,
+                stream_callback=relay_child_text,
+            )
     except Exception as _retry_exc:
         logger.warning("Subagent %d schema-retry turn failed: %s", task_index, _retry_exc)
     if isinstance(_retry_result, dict):

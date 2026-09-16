@@ -59,6 +59,43 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  catalog: {
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    browse: string
+    installed: string
+    searchSkills: string
+    searchPlugins: string
+    allSources: string
+    allCategories: string
+    about: string
+    author: string
+    source: string
+    category: string
+    version: string
+    platforms: string
+    requires: string
+    tools: string
+    hooks: string
+    repository: string
+    documentation: string
+    noResults: string
+    tryAnother: string
+    clearFilters: string
+    loadFailed: string
+    retry: string
+    more: string
+    pinned: string
+    snapshotHint: string
+    installHint: string
+    results: (count: number) => string
+    back: string
+  }
   connectors: {
     title: string
     connect: string
@@ -322,6 +359,8 @@ export interface Translations {
       tryRecordingAgain: string
       unavailable: string
       liveEnded: string
+      liveEndedConnectionLost: string
+      liveEndedClosed: string
       liveError: string
       liveDelegationFailed: string
       liveUnavailable: (reason: string) => string
@@ -2511,6 +2550,7 @@ export interface Translations {
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
+    wakeWord: (phrase: string) => string
     wakeWordListening: (phrase: string) => string
     wakeWordOff: (phrase: string) => string
     wakeWordPausedVoice: (phrase: string) => string

@@ -22,6 +22,11 @@ from typing import Optional
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
 
+    # Last completed turn's raw agent result. chat() returns only the rendered
+    # response string, so one-shot callers that must map an outcome onto a
+    # process exit code (see cli._run_single_query_mode) read this instead.
+    _last_turn_result = None
+
     def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
@@ -441,6 +446,7 @@ class CLIChatTurnMixin:
             self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
             self._prompt_start_time = None
         self._last_turn_finished_at = time.time()  # status bar idle time
+        self._last_turn_result = turn.result
         # AsyncOpenAI clients bound to the worker's now-closed loop would crash
         # prompt_toolkit's loop from __del__ on GC.
         try:

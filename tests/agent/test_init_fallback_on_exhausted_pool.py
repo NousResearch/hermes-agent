@@ -51,17 +51,17 @@ def test_init_tries_fallback_when_primary_returns_none():
 
 def test_init_moa_fallback_persists_native_aggregator_identity():
     """Init fallback must not pair a native aggregator client with the MoA facade."""
-    fb = _mock_client(base_url="https://api.x.ai/v1")
+    fb = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
 
     def fake_resolve(provider, model=None, raw_codex=False,
                      explicit_base_url=None, explicit_api_key=None):
         if provider == "moa":
-            return fb, "grok-4.6"
+            return fb, "gpt-5.6-sol"
         return None, None
 
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
          patch("agent.auxiliary_client._resolve_moa_aggregator",
-               return_value=("xai-oauth", "grok-4.6")), \
+               return_value=("codex", "gpt-5.6-sol")), \
          patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
@@ -77,9 +77,9 @@ def test_init_moa_fallback_persists_native_aggregator_identity():
             fallback_model=[{"provider": "moa", "model": "default"}],
         )
 
-        assert agent.provider == "xai-oauth"
-        assert agent.requested_provider == "xai-oauth"
-        assert agent.model == "grok-4.6"
+        assert agent.provider == "openai-codex"
+        assert agent.requested_provider == "openai-codex"
+        assert agent.model == "gpt-5.6-sol"
         assert agent.api_mode == "codex_responses"
         assert agent._fallback_activated is True
 

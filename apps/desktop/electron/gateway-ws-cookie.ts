@@ -447,5 +447,22 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     return { ...(response || {}), requestHeaders: headers }
   }
 
-  return { apply, forget, register }
+  // The safe way to sign out: revoke, run the caller's jar clearing, and
+  // release the window in a `finally` here. `forget` hands its release back to
+  // the caller, and a caller who drops it leaves the scope closed for the
+  // process lifetime -- every later registration for it would stand down and
+  // the feature would silently stop working. Production has no reason to take
+  // that risk, so it calls this instead; `forget` stays for tests that need to
+  // hold a window open deliberately.
+  const forgetWhile = async (baseUrl: string, clearJar: () => Promise<unknown> | unknown) => {
+    const release = forget(baseUrl)
+
+    try {
+      await clearJar()
+    } finally {
+      release()
+    }
+  }
+
+  return { apply, forget, forgetWhile, register }
 }

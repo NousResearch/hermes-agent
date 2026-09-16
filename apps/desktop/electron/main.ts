@@ -7678,57 +7678,53 @@ function cookieHostFromBaseUrl(baseUrl) {
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
 
-  // Before anything else: the in-memory snapshot outlives the cookie jar, and
-  // a signed-out session must not keep riding renderer requests. The removal
-  // below is asynchronous, so hold the store's sign-out window open until it
-  // is done — a WS registration racing the cleanup would otherwise snapshot
-  // cookies that are already on their way out.
-  const signOutDone = gatewayWsCookieStore.forget(baseUrl)
-
-  if (!sess) {
-    signOutDone()
-
-    return
-  }
-
-  try {
-    // Read the whole jar and match on DOMAIN ourselves, rather than handing the
-    // base url to the cookie store. A url filter applies PATH matching, so the
-    // forward-auth cookie this feature forwards -- scoped to `Path=/api/` or to
-    // a reverse-proxy prefix -- was never in that enumeration and survived the
-    // sign-out meant to remove it, ready to be forwarded onto the next upgrade.
-    // cookieAppliesToHost covers every path, and every cookie that applies to
-    // this host including one set on a parent domain, while leaving other
-    // gateways' own host cookies in a shared jar alone -- a cookie on a shared
-    // parent domain is one session, and goes with it. cookieAppliesToHost's
-    // comment records the measurements behind this.
-    //
-    // An empty base url means "clear everything" (the store's blanket revoke
-    // mirrors it). A NON-empty url we cannot parse deletes nothing rather than
-    // everything: it names a gateway, just not one we can match cookies to.
-    const signedOutHost = cookieHostFromBaseUrl(baseUrl)
-
-    if (baseUrl && !signedOutHost) {
-      rememberLog(`[oauth] sign-out could not parse the gateway url; left its cookies in place`)
-
+  // Before anything else: the in-memory snapshot outlives the cookie jar, and a
+  // signed-out session must not keep riding renderer requests. The removal is
+  // asynchronous, so it runs INSIDE the store's sign-out window -- a WS
+  // registration racing the cleanup would otherwise snapshot cookies that are
+  // already on their way out -- and the store closes that window itself.
+  await gatewayWsCookieStore.forgetWhile(baseUrl, async () => {
+    if (!sess) {
       return
     }
 
-    const jar = await sess.cookies.get({})
-    const cookies = signedOutHost ? jar.filter(c => cookieAppliesToHost(c, signedOutHost)) : jar
-    await Promise.all(
-      cookies.map(c => {
-        const scheme = c.secure ? 'https' : 'http'
-        const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
+    try {
+      // Read the whole jar and match on DOMAIN ourselves, rather than handing the
+      // base url to the cookie store. A url filter applies PATH matching, so the
+      // forward-auth cookie this feature forwards -- scoped to `Path=/api/` or to
+      // a reverse-proxy prefix -- was never in that enumeration and survived the
+      // sign-out meant to remove it, ready to be forwarded onto the next upgrade.
+      // cookieAppliesToHost covers every path, and every cookie that applies to
+      // this host including one set on a parent domain, while leaving other
+      // gateways' own host cookies in a shared jar alone -- a cookie on a shared
+      // parent domain is one session, and goes with it. cookieAppliesToHost's
+      // comment records the measurements behind this.
+      //
+      // An empty base url means "clear everything" (the store's blanket revoke
+      // mirrors it). A NON-empty url we cannot parse deletes nothing rather than
+      // everything: it names a gateway, just not one we can match cookies to.
+      const signedOutHost = cookieHostFromBaseUrl(baseUrl)
 
-        return sess.cookies.remove(cookieUrl, c.name).catch(() => undefined)
-      })
-    )
-  } catch {
-    // Best effort — a stale cookie self-expires anyway.
-  } finally {
-    signOutDone()
-  }
+      if (baseUrl && !signedOutHost) {
+        rememberLog(`[oauth] sign-out could not parse the gateway url; left its cookies in place`)
+
+        return
+      }
+
+      const jar = await sess.cookies.get({})
+      const cookies = signedOutHost ? jar.filter(c => cookieAppliesToHost(c, signedOutHost)) : jar
+      await Promise.all(
+        cookies.map(c => {
+          const scheme = c.secure ? 'https' : 'http'
+          const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
+
+          return sess.cookies.remove(cookieUrl, c.name).catch(() => undefined)
+        })
+      )
+    } catch {
+      // Best effort — a stale cookie self-expires anyway.
+    }
+  })
 }
 
 // Open a gateway login window in the OAuth session partition, resolving once

@@ -583,6 +583,44 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, WS_URL)).toBeUndefined()
   })
 
+  // The contract production uses: the store owns the window, so a caller cannot
+  // leave one open and silently disable the feature for the process lifetime.
+  it('closes the sign-out window itself when the jar clearing is handed to it', async () => {
+    const { store } = createStore()
+    let clearing = false
+
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+
+    await store.forgetWhile(GATEWAY, async () => {
+      clearing = true
+      // Mid-clear: the scope is closed, so a racing read publishes nothing.
+      await store.register(WS_URL, GATEWAY, CONSUMER)
+
+      expect(cookieOn(store, WS_URL)).toBeUndefined()
+    })
+
+    expect(clearing).toBe(true)
+
+    // Released, so the next sign-in works again.
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
+  it('releases the sign-out window even when the jar clearing throws', async () => {
+    const { store } = createStore()
+
+    await expect(
+      store.forgetWhile(GATEWAY, async () => {
+        throw new Error('jar unavailable')
+      })
+    ).rejects.toThrow('jar unavailable')
+
+    await store.register(WS_URL, GATEWAY, CONSUMER)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
   it('lets a registration started after sign-out completes authorize normally', async () => {
     const { store } = createStore()
 

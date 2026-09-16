@@ -677,7 +677,7 @@ describe('rankSkillCommands', () => {
 describe('registry-derived block-list (contract with hermes_cli/commands.py)', () => {
   beforeEach(() => rememberDesktopCommandsCatalog(undefined))
 
-  it('marks registry-only rows unavailable offline while preserving local desktop overrides', () => {
+  it('marks every registry row with a reason unavailable offline, without a hand-typed copy', () => {
     for (const [name, reason] of Object.entries(desktopSlashRegistry)) {
       if (reason === 'hidden') {
         continue
@@ -685,18 +685,12 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
 
       const spec = resolveDesktopCommand(name)
 
-      // A desktop-owned surface may intentionally override the offline registry
-      // for compatibility with older backends (for example the review-only
-      // /skills spec). The generated block-list owns every remaining row.
+      // A desktop-owned action (e.g. /model picker) may override the registry.
       if (spec?.surface.kind === 'unavailable') {
         expect(spec.surface.reason).toBe(reason)
-        expect(isDesktopSlashSuggestion(name)).toBe(false)
-
-        continue
       }
 
-      expect(isDesktopSlashCommand(name)).toBe(true)
-      expect(isDesktopSlashSuggestion(name)).toBe(true)
+      expect(isDesktopSlashSuggestion(name)).toBe(false)
     }
   })
 

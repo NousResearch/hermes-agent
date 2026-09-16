@@ -510,8 +510,7 @@ export const opsCommands: SlashCommand[] = [
         ctx.gateway.gw
           .request<SlashExecResponse>('slash.exec', {
             command: cmd.slice(1),
-            session_id: ctx.sid,
-            surface: 'tui'
+            session_id: ctx.sid
           })
           .then(r => {
             if (ctx.stale()) {

@@ -13,7 +13,7 @@ def _screen_status(args) -> int:
     from tools.bot_desktop import lease, runtime
     st = runtime.status()
     if bool(getattr(args, "json", False)):
-        print(json.dumps({**st.as_dict(), "lease": lease.get().as_dict()}, indent=2, sort_keys=True))
+        print(json.dumps({**st.as_dict(), "lease": lease.public_view(lease.get())}, indent=2, sort_keys=True))
         return 0 if st.running else 1
     if not st.supported:
         print("Bot Desktop screens run on Linux gateway hosts only (this host keeps its real display).")
@@ -23,8 +23,8 @@ def _screen_status(args) -> int:
         print("  Install: " + (st.install_command or "hermes computer-use screen install"))
         return 1
     if st.running:
-        holder = lease.get()
-        who = f"human ({holder.viewer_id})" if holder.holder == "human" else "agent"
+        holder = lease.public_view(lease.get())
+        who = f"human (viewer {holder['viewer_hash']})" if holder["holder"] == lease.HUMAN else "agent"
         print(f"Bot Desktop [{st.profile}]: running on DISPLAY {st.display} ({st.geometry}), pid {st.pid}")
         print(f"  control: {who}   rfb socket: {st.socket}")
         print("  View it: Hermes Desktop → Bots → this bot → Screen")

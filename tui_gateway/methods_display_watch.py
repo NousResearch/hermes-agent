@@ -31,8 +31,8 @@ _runtime_marks: dict[str, tuple] = {}
 
 def _lease_event_payload(profile_key: str, lease) -> dict:
     # Same shape and the same redaction (viewer_hash, never the raw id) as the in-process broadcast.
-    from tui_gateway.methods_display import _lease_view
-    return {"profile_key": profile_key, "lease": _lease_view(lease)}
+    from tools.bot_desktop.lease import public_view
+    return {"profile_key": profile_key, "lease": public_view(lease)}
 
 
 def _watched_lease_homes() -> list[Path]:

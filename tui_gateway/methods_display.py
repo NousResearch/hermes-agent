@@ -28,23 +28,11 @@ _DISPLAY_ERR = 5300
 _lease_listener_installed = threading.Event()
 
 
-def _lease_view(lease) -> dict:
-    """The lease as clients may see it: the holder's viewer id is a capability (whoever presents it
-    co-drives or releases the lease), so it is replaced by a short hash the holder can match against
-    its own id to know it is the one in control."""
-    import hashlib
-    d = lease.as_dict()
-    vid = d.pop("viewer_id")
-    d["viewer_id"] = None
-    d["viewer_hash"] = hashlib.sha256(vid.encode()).hexdigest()[:12] if vid else None
-    return d
-
-
 def _display_snapshot() -> dict:
     from hermes_constants import hermes_home_key
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     st = _bd_runtime.status()
-    return {**st.as_dict(), "lease": _lease_view(_bd_lease.get()), "profile_key": hermes_home_key()}
+    return {**st.as_dict(), "lease": _bd_lease.public_view(_bd_lease.get()), "profile_key": hermes_home_key()}
 
 
 def _install_lease_listener() -> None:
@@ -54,7 +42,7 @@ def _install_lease_listener() -> None:
     from tools.bot_desktop import lease as _bd_lease
 
     def _on_change(profile_key: str, lease) -> None:
-        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _lease_view(lease)})
+        _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _bd_lease.public_view(lease)})
     _bd_lease.on_change(_on_change)
     _lease_listener_installed.set()  # only once the subscription exists, or a failed import would silence every client
 
@@ -234,7 +222,7 @@ def _(rid, params: dict) -> dict:
     if (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
         return refused
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
-    return _ok(rid, {"lease": _lease_view(lease)})
+    return _ok(rid, {"lease": _bd_lease.public_view(lease)})
 
 
 @method("display.lease.release")
@@ -251,7 +239,7 @@ def _(rid, params: dict) -> dict:
     if viewer_id is None and lease.holder == _bd_lease.HUMAN:
         return _err(rid, _DISPLAY_ERR, "viewer_id required to release another viewer's lease (or pass force: true)",
                     data={"code": "viewer_mismatch"})
-    return _ok(rid, {"lease": _lease_view(lease)})
+    return _ok(rid, {"lease": _bd_lease.public_view(lease)})
 
 
 def register(server) -> None:

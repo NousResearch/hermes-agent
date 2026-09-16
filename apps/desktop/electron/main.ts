@@ -13224,6 +13224,8 @@ async function runHermesStart() {
         return
       }
 
+      primaryProfilePin.clear()
+
       rememberLog(`Hermes backend failed to start: ${error.message}`)
       updateBootProgress(
         {
@@ -13249,6 +13251,8 @@ async function runHermesStart() {
 
         return
       }
+
+      primaryProfilePin.clear()
 
       rememberLog(`Hermes backend exited (${signal || code})`)
       sendBackendExit({ code, signal })
@@ -13344,6 +13348,7 @@ async function runHermesStart() {
       throw error
     }
 
+    primaryProfilePin.clear()
     const failedProcess = backendConnectionState.invalidate()
     stopBackendChild(failedProcess)
 

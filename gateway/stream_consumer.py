@@ -714,10 +714,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             should_edit = bool(self._accumulated) or self._tool_progress_active
         else:
             elapsed = time.monotonic() - self._last_edit_time
-            # buffer_threshold is a codepoint debounce heuristic, not a
-            # platform-limit check (_len_fn is for overflow).
+            # The size threshold may accelerate the first output, never repeated
+            # updates: the cumulative buffer stays large, even during flood backoff.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or len(self._accumulated) >= self.cfg.buffer_threshold)
+                               or (self._last_edit_time == 0.0
+                                   and len(self._accumulated) >= self.cfg.buffer_threshold))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(

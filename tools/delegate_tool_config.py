@@ -350,10 +350,13 @@ def _resolve_direct_endpoint_api_key(v: dict, parent_agent) -> Optional[str]:
         )
     if not configured_provider:
         return None
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None),
+    )
     if _same_effective_delegation_provider(
         parent_provider,
         configured_provider,
-        parent_base_url=getattr(parent_agent, "base_url", None),
+        parent_base_url=parent_base_url,
         configured_base_url=v["base_url"],
     ):
         return None

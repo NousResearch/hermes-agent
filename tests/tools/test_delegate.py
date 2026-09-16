@@ -1165,6 +1165,58 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
         self.assertIsNone(creds["api_key"])
 
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_custom_parent_stale_endpoint_does_not_inherit_live_key(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://stale.example/v1",
+            "api_key": "stale-endpoint-key",
+            "api_mode": "chat_completions",
+            "source": "env/config",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://stale.example/v1"
+        parent._client_kwargs = {"base_url": "https://live.example/v1"}
+        parent.api_key = "live-endpoint-key"
+        cfg = {
+            "model": "local-model",
+            "provider": "custom",
+            "base_url": "https://stale.example/v1",
+            "api_key": "",
+        }
+
+        creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertEqual(creds["api_key"], "stale-endpoint-key")
+        self.assertNotEqual(creds["api_key"], parent.api_key)
+        mock_resolve.assert_any_call(
+            requested="custom",
+            explicit_base_url=cfg["base_url"],
+            target_model="local-model",
+        )
+
+    def test_custom_parent_live_endpoint_inherits_despite_stale_attribute(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "custom"
+        parent.base_url = "https://stale.example/v1"
+        parent._client_kwargs = {"base_url": "https://live.example/v1"}
+        parent.api_key = "live-endpoint-key"
+        cfg = {
+            "model": "local-model",
+            "provider": "custom",
+            "base_url": "https://live.example/v1/",
+            "api_key": "",
+        }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={"request_overrides": {}},
+        ):
+            creds = _resolve_delegation_credentials(cfg, parent)
+
+        self.assertIsNone(creds["api_key"])
+
     def test_custom_parent_named_provider_same_base_url_inherits_parent_key(self):
         """Direct-endpoint parents are stamped provider=custom; same URL may inherit.
 

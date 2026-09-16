@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable
 
+from hermes_cli.plugin_catalog import CATALOG_CATEGORIES
 from hermes_cli.subcommands._shared import add_json_flag
 
 
@@ -47,6 +48,9 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_search.add_argument(
         "term", nargs="?", default="",
         help="Query matched against entry names, descriptions and declared tools (omit to list the whole catalog)")
+    plugins_search.add_argument(
+        "--category", dest="category", choices=CATALOG_CATEGORIES, default=None,
+        help="Restrict results to one catalog category (memory, tools, web, ...)")
     add_json_flag(plugins_search, "Print machine-readable JSON")
 
     plugins_subparsers.add_parser("browse", help="List every curated plugin catalog entry")

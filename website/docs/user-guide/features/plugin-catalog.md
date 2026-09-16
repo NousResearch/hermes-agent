@@ -24,6 +24,20 @@ The catalog complements — it does not replace — the existing
 normal plugin under the hood; the catalog just adds discovery and a review
 layer on top.
 
+## Searching from the terminal
+
+```bash
+hermes plugins search                         # Browse all entries
+hermes plugins search --category memory       # Browse one category
+hermes plugins search browser --category web  # Match text within a category
+hermes plugins search --category tools --json # Machine-readable results
+```
+
+`--category` accepts the category keys listed below. When combined with a search
+term, results must match both the category and the term. Omitting the flag keeps
+the normal search across all categories; no matches produce an empty JSON
+`results` list or a terminal message.
+
 ## What's in an entry
 
 Each catalog entry is a small YAML file in the

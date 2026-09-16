@@ -5817,27 +5817,38 @@ def _process_extracted_items_durably(raw_result: Any, args: dict, kw: dict) -> s
     except Exception as exc:
         logger.debug("RuntimeCapabilityRegistry audit note: %s", exc)
 
+    task_id = str(kw.get("task_id") or "browser_batch")
     # 1. Store complete extracted raw dataset into ArtifactStore
     artifact_ref = None
     artifact_path = None
+    artifact_error = None
     try:
+        import hashlib as _hashlib
         from workstation.artifacts import ArtifactStore
         store = ArtifactStore()
-        artifact_ref = store.store_json({
+        _artifact_payload = {
             "source": "browser_extract_items",
             "selector_used": data.get("selector_used"),
             "url": data.get("url"),
             "title": data.get("title"),
             "count": len(items),
             "items": items,
-        })
-        artifact_path = str(store.resolve_path(artifact_ref))
+        }
+        _digest = _hashlib.sha256(json.dumps(_artifact_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        artifact_ref = store.store_json(
+            _artifact_payload, task_id=task_id, name=f"browser-extract-{_digest}.json",
+            schema="browser_extract_items/v1", summary={"count": len(items)},
+        )
+        _resolved_artifact = store.resolve_path(artifact_ref)
+        artifact_path = str(_resolved_artifact) if _resolved_artifact is not None else None
+        if artifact_path is None:
+            raise RuntimeError("ArtifactStore returned an unresolved artifact_ref")
     except Exception as exc:
+        artifact_error = str(exc)
         logger.warning("Failed to store extraction to ArtifactStore: %s", exc)
 
     # 2. Persist durable WorkPlan and WorkItems in canonical kanban_db
     anomalies = []
-    task_id = kw.get("task_id") or "browser_batch"
     try:
         from workstation.durable_tasks import DurableTaskStore
         from workstation.semantic_validation import SemanticValidator
@@ -5886,7 +5897,13 @@ def _process_extracted_items_durably(raw_result: Any, args: dict, kw: dict) -> s
         "artifact_path": artifact_path,
         "sample_preview": items[:2] if items else [],
         "anomalies": anomalies[:5] if anomalies else [],
-        "note": f"Complete {len(items)} items saved durably to ArtifactStore and kanban_db WorkPlan. Prompt context protected.",
+        "durable": artifact_ref is not None,
+        "artifact_error": artifact_error,
+        "note": (
+            f"Complete {len(items)} items saved durably to task-scoped ArtifactStore and kanban_db WorkPlan. Prompt context protected."
+            if artifact_ref is not None
+            else f"Extracted {len(items)} items, but durable artifact persistence failed; result is not marked durable."
+        ),
     }
     return json.dumps(summary, ensure_ascii=False)
 

@@ -166,76 +166,61 @@ export interface WorkstationControllerError {
   details: Record<string, unknown>
 }
 
-/** Map controller failures to remediation data without changing task ownership. */
-export function normalizeWorkstationControllerError(error: unknown, resourceRef?: string): WorkstationControllerError {
-  const message = error instanceof Error ? error.message : String(error)
-  const lower = message.toLowerCase()
-  const base = {
-    message,
-    retry_after_ms: 0,
-    resource_ref: resourceRef,
-    details: {}
-  }
+export class WorkstationControllerFault extends Error {
+  readonly structured: WorkstationControllerError
 
-  if (lower.includes('human control')) {
-    return {
-      ...base,
-      error_code: 'USER_CONTROL_ACTIVE',
-      retryable: true,
-      state_changed: true,
-      recommended_action: 'WAIT_FOR_RELEASE'
-    }
+  constructor(structured: WorkstationControllerError) {
+    super(structured.message)
+    this.name = 'WorkstationControllerFault'
+    this.structured = structured
   }
-  if (lower.includes('no_bound_browser_tab') || lower.includes('no active tab')) {
-    return {
-      ...base,
-      error_code: 'NO_BOUND_TAB',
-      retryable: true,
-      state_changed: true,
-      recommended_action: 'BIND_OR_NAVIGATE'
-    }
+}
+
+function workstationControllerFault(
+  error_code: WorkstationControllerError['error_code'],
+  message: string,
+  options: Partial<Omit<WorkstationControllerError, 'error_code' | 'message'>> = {}
+): WorkstationControllerFault {
+  const defaults: Record<WorkstationControllerError['error_code'], Omit<WorkstationControllerError, 'error_code' | 'message'>> = {
+    STALE_REF: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'RESNAPSHOT', details: {} },
+    NO_BOUND_TAB: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'BIND_OR_NAVIGATE', details: {} },
+    AUTH_REQUIRED: { retryable: false, retry_after_ms: 0, state_changed: false, recommended_action: 'REAUTHENTICATE_CONTROLLER', details: {} },
+    USER_CONTROL_ACTIVE: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'WAIT_FOR_RELEASE', details: {} },
+    CAPABILITY_MISSING: { retryable: false, retry_after_ms: 0, state_changed: false, recommended_action: 'ESCALATE', details: {} },
+    TIMEOUT: { retryable: true, retry_after_ms: 0, state_changed: false, recommended_action: 'RETRY_WITH_BACKOFF', details: {} },
+    INVALID_ARGUMENT: { retryable: false, retry_after_ms: 0, state_changed: false, recommended_action: 'CORRECT_REQUEST', details: {} },
+    CONTROLLER_DOWN: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'RECONCILE_CONTROLLER', details: {} }
   }
-  if (
-    lower.includes('ref_required') ||
-    lower.includes('element_unavailable') ||
-    lower.includes('browser_tab_destroyed')
-  ) {
+  return new WorkstationControllerFault({ error_code, message, ...defaults[error_code], ...options })
+}
+
+/** Map legacy controller failures without granting semantics from incidental prose. */
+export function normalizeWorkstationControllerError(error: unknown, resourceRef?: string): WorkstationControllerError {
+  if (error instanceof WorkstationControllerFault) {
+    return { ...error.structured, resource_ref: error.structured.resource_ref ?? resourceRef }
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  const token = message.trim().toLowerCase()
+  const base = { message, retry_after_ms: 0, resource_ref: resourceRef, details: { compatibility_path: true } }
+  if (token === 'human control active' || token.startsWith('human control active:')) {
+    return { ...base, error_code: 'USER_CONTROL_ACTIVE', retryable: true, state_changed: true, recommended_action: 'WAIT_FOR_RELEASE' }
+  }
+  if (token.startsWith('no_bound_browser_tab:') || token === 'no active tab') {
+    return { ...base, error_code: 'NO_BOUND_TAB', retryable: true, state_changed: true, recommended_action: 'BIND_OR_NAVIGATE' }
+  }
+  if (token === 'ref_required' || token === 'element_unavailable' || token === 'browser_tab_destroyed') {
     return { ...base, error_code: 'STALE_REF', retryable: true, state_changed: true, recommended_action: 'RESNAPSHOT' }
   }
-  if (lower.includes('timed out') || lower.includes('timeout')) {
-    return {
-      ...base,
-      error_code: 'TIMEOUT',
-      retryable: true,
-      state_changed: false,
-      recommended_action: 'RETRY_WITH_BACKOFF'
-    }
+  if (token === 'timeout' || token === 'timed out') {
+    return { ...base, error_code: 'TIMEOUT', retryable: true, state_changed: false, recommended_action: 'RETRY_WITH_BACKOFF' }
   }
-  if (lower.includes('unavailable') || lower.includes('could not bind')) {
-    return {
-      ...base,
-      error_code: 'CONTROLLER_DOWN',
-      retryable: true,
-      state_changed: true,
-      recommended_action: 'RECONCILE_CONTROLLER'
-    }
+  if (token === 'controller_unavailable' || token === 'controller_down') {
+    return { ...base, error_code: 'CONTROLLER_DOWN', retryable: true, state_changed: true, recommended_action: 'RECONCILE_CONTROLLER' }
   }
-  if (lower.includes('unsupported') || lower.includes('invalid') || lower.includes('required')) {
-    return {
-      ...base,
-      error_code: 'INVALID_ARGUMENT',
-      retryable: false,
-      state_changed: false,
-      recommended_action: 'CORRECT_REQUEST'
-    }
+  if (token === 'unsupported_action' || token === 'invalid_extension_options_request') {
+    return { ...base, error_code: 'INVALID_ARGUMENT', retryable: false, state_changed: false, recommended_action: 'CORRECT_REQUEST' }
   }
-  return {
-    ...base,
-    error_code: 'CAPABILITY_MISSING',
-    retryable: false,
-    state_changed: false,
-    recommended_action: 'ESCALATE'
-  }
+  return { ...base, error_code: 'CAPABILITY_MISSING', retryable: false, state_changed: false, recommended_action: 'ESCALATE' }
 }
 
 interface ControlHandle {
@@ -1827,7 +1812,7 @@ export class WorkstationBrowserRuntime {
     const runId = controllerBoundedIdentity(request.run_id, 'run identity')
 
     if (!action.startsWith('browser_')) {
-      throw new Error('unsupported_action')
+      throw workstationControllerFault('INVALID_ARGUMENT', 'unsupported_action')
     }
 
     // Extension operations deliberately remain on the authenticated
@@ -1915,7 +1900,7 @@ export class WorkstationBrowserRuntime {
     }
 
     if (!entry) {
-      throw new Error('no_bound_browser_tab: call browser_navigate first')
+      throw workstationControllerFault('NO_BOUND_TAB', 'no_bound_browser_tab: call browser_navigate first')
     }
 
     if (!this.activeTabId) {
@@ -1928,7 +1913,7 @@ export class WorkstationBrowserRuntime {
         .toLowerCase()
       const optionsPath = String(args.options_path ?? 'options.html').replace(/^[/\\]+/, '')
       if (!/^[a-p]{32}$/.test(extensionId) || !optionsPath || optionsPath.includes('..')) {
-        throw new Error('invalid_extension_options_request')
+        throw workstationControllerFault('INVALID_ARGUMENT', 'invalid_extension_options_request')
       }
       const verified = this.verifyExtensionForController(extensionId)
       if (!verified.loaded) {

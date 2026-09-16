@@ -151,21 +151,28 @@ class BrowserRuntimeSupervisor:
             logger.debug("Failed removing stale descriptor: %s", exc)
 
     def classify_error(self, exc: Exception) -> ControllerErrorKind:
-        """Classify a connection or runtime error."""
+        """Classify typed Workstation errors first; text matching is a legacy fallback."""
+        code = getattr(exc, "error_code", None)
+        if code == "TIMEOUT":
+            return ControllerErrorKind.TIMEOUT
+        if code == "CONTROLLER_DOWN":
+            return ControllerErrorKind.CONNECTION_REFUSED
+        if code == "AUTH_REQUIRED":
+            return ControllerErrorKind.AUTH_MISMATCH
+        if code in {"STALE_REF", "NO_BOUND_TAB", "USER_CONTROL_ACTIVE", "INVALID_ARGUMENT", "CAPABILITY_MISSING"}:
+            return ControllerErrorKind.ACTION_FAILED
         text = str(exc)
         lowered = text.lower()
-
         if "10061" in text or "connection refused" in lowered or "actively refused" in lowered:
             return ControllerErrorKind.CONNECTION_REFUSED
         if "timeout" in lowered or "timed out" in lowered:
             return ControllerErrorKind.TIMEOUT
-        if "401" in text or "unauthorized" in lowered or "auth" in lowered:
+        if "401" in text or "unauthorized" in lowered:
             return ControllerErrorKind.AUTH_MISMATCH
-        if "stale" in lowered or "dead" in lowered:
-            return ControllerErrorKind.PROCESS_DEAD
         if "protocol mismatch" in lowered:
             return ControllerErrorKind.PROTOCOL_MISMATCH
         return ControllerErrorKind.UNKNOWN
+
 
     def check_health(self, *, force: bool = False) -> SupervisorHealth:
         """Probe overall controller and process health."""

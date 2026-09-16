@@ -85,6 +85,8 @@ class ArtifactStore:
         """Store content atomically and return an ArtifactRef."""
         task_dir = self._task_dir(task_id)
         safe_name = "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in name)
+        if safe_name in {"", ".", ".."}:
+            raise ValueError("artifact name must identify a file")
         target_path = task_dir / safe_name
 
         if isinstance(content, (dict, list)):
@@ -106,7 +108,8 @@ class ArtifactStore:
             temp_path.replace(target_path)
 
         # Meta descriptor
-        ref_uri = f"artifact://tasks/{task_id}/{safe_name}"
+        safe_task = task_dir.name
+        ref_uri = f"artifact://tasks/{safe_task}/{safe_name}"
         computed_summary = summary or {}
         if not computed_summary and isinstance(content, (dict, list)):
             computed_summary = {
@@ -143,16 +146,33 @@ class ArtifactStore:
         return ref.ref
 
     def resolve_ref(self, ref_uri: str) -> Optional[Path]:
-        if ref_uri.startswith("artifact://tasks/"):
-            parts = ref_uri[len("artifact://tasks/"):].split("/", 1)
-            if len(parts) == 2:
-                task_id, name = parts
-                path = self._task_dir(task_id) / name
-                if path.exists():
-                    return path
-        # Fallback to local path
-        p = Path(ref_uri)
-        return p if p.exists() else None
+        """Resolve only canonical artifact:// references and enforce root containment."""
+        prefix = "artifact://tasks/"
+        if not isinstance(ref_uri, str) or not ref_uri.startswith(prefix):
+            return None
+        tail = ref_uri[len(prefix):]
+        if "\x00" in tail or "\\" in tail:
+            return None
+        parts = tail.split("/")
+        if len(parts) != 2:
+            return None
+        task_component, name = parts
+        if not task_component or not name or task_component in {".", ".."} or name in {".", ".."}:
+            return None
+        safe_task = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in task_component)
+        safe_name = "".join(c if c.isalnum() or c in ("-", "_", ".") else "_" for c in name)
+        if safe_task != task_component or safe_name != name:
+            return None
+        root = self.root.resolve()
+        candidate = (root / safe_task / safe_name).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        if candidate.parent != (root / safe_task).resolve():
+            return None
+        return candidate if candidate.is_file() else None
+
 
     def resolve_path(self, ref_uri: str) -> Optional[Path]:
         """Alias for resolve_ref returning Path or None."""

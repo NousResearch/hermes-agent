@@ -1,10 +1,11 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from collections import deque
 import json
+import os
 import logging
 from pathlib import Path
 import shutil
@@ -182,6 +183,7 @@ class _PersistentWorkerRecord:
     # represented as completion. Recovery keeps the work item visible for an
     # explicit idempotent retry/reconciliation.
     in_flight_message: dict[str, Any] | None = None
+    generation: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -494,6 +496,18 @@ class PersistentWorker:
             self._on_update(self)
 
 
+class WorkerRecoveryRequiredError(RuntimeError):
+    code = "RECOVERY_REQUIRED"
+
+
+class WorkerPersistenceConflictError(RuntimeError):
+    code = "WORKER_PERSISTENCE_CONFLICT"
+
+
+class WorkerPersistenceCorruptError(RuntimeError):
+    code = "WORKER_PERSISTENCE_CORRUPT"
+
+
 class WorkerRegistry:
     """Registry and orchestrator for specialized worker agents (Codex, Claude Code, Antigravity, OpenCode).
 
@@ -506,7 +520,9 @@ class WorkerRegistry:
         self.storage_path = Path(storage_path or get_hermes_home() / "workstation" / "workers.json")
         self._persistent_records: dict[str, _PersistentWorkerRecord] = {}
         self._persistent_workers: dict[str, PersistentWorker] = {}
-        self._persistent_lock = threading.Lock()
+        self._persistent_lock = threading.RLock()
+        self._dirty_worker_ids: set[str] = set()
+        self._persistence_load_error: str | None = None
         self._event_bus = event_bus
         self._load_persistent_records()
         self._register_default_known_workers()
@@ -514,7 +530,10 @@ class WorkerRegistry:
     def _load_persistent_records(self) -> None:
         try:
             data = json.loads(self.storage_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, OSError, ValueError):
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            self._persistence_load_error = str(exc)
             return
         for item in data.get("workers", []) if isinstance(data, dict) else []:
             if not isinstance(item, dict) or not item.get("worker_id"):
@@ -542,6 +561,7 @@ class WorkerRegistry:
                         if isinstance(item.get("in_flight_message"), dict)
                         else None
                     ),
+                    generation=max(0, int(item.get("generation", 0))),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
@@ -549,55 +569,178 @@ class WorkerRegistry:
             self._persistent_records[record.worker_id] = record
 
     def _persist_persistent_records(self) -> None:
+        """Merge dirty worker records atomically under an inter-process lease.
+
+        The call shape intentionally stays argument-free for compatibility with
+        existing fault-injection tests. Generation is a cross-process CAS only.
+        """
         with self._persistent_lock:
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            temp = self.storage_path.with_suffix(self.storage_path.suffix + f".{threading.get_ident()}.tmp")
-            temp.write_text(
-                json.dumps({"workers": [record.to_dict() for record in self._persistent_records.values()]}, indent=2),
-                encoding="utf-8",
-            )
-            # Windows security/indexing software can briefly hold either the
-            # destination or the just-written temp file. Keep the atomic
-            # replace contract, but tolerate a short transient sharing lock;
-            # persistent failures still surface to the caller.
-            for attempt in range(8):
+            dirty_ids = set(self._dirty_worker_ids)
+            if not dirty_ids:
+                return
+            lock_path = self.storage_path.with_suffix(self.storage_path.suffix + ".lock")
+            deadline = time.monotonic() + 10.0
+            lock_fd: int | None = None
+            while lock_fd is None:
                 try:
-                    temp.replace(self.storage_path)
-                    break
-                except PermissionError:
-                    if attempt == 7:
-                        raise
-                    time.sleep(0.01 * (attempt + 1))
+                    self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+                    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    os.write(lock_fd, json.dumps({"pid": os.getpid(), "created_at": time.time()}).encode("utf-8"))
+                except FileExistsError:
+                    try:
+                        lock_data = json.loads(lock_path.read_text(encoding="utf-8"))
+                        owner_pid = int(lock_data.get("pid", 0))
+                    except Exception:
+                        owner_pid = 0
+                    owner_alive = True
+                    if owner_pid > 0:
+                        try:
+                            os.kill(owner_pid, 0)
+                        except ProcessLookupError:
+                            owner_alive = False
+                        except (PermissionError, OSError):
+                            owner_alive = True
+                    if owner_pid > 0 and not owner_alive:
+                        try:
+                            lock_path.unlink()
+                            continue
+                        except FileNotFoundError:
+                            continue
+                    if time.monotonic() >= deadline:
+                        raise WorkerPersistenceConflictError(f"worker persistence lease busy: {lock_path}")
+                    time.sleep(0.02)
+            try:
+                disk_records: dict[str, _PersistentWorkerRecord] = {}
+                if self.storage_path.exists():
+                    try:
+                        raw = json.loads(self.storage_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError) as exc:
+                        raise WorkerPersistenceCorruptError(f"refusing to overwrite corrupt worker projection: {exc}") from exc
+                    if not isinstance(raw, dict) or not isinstance(raw.get("workers", []), list):
+                        raise WorkerPersistenceCorruptError("worker projection has invalid shape")
+                    for item in raw.get("workers", []):
+                        if not isinstance(item, dict) or not item.get("worker_id"):
+                            continue
+                        try:
+                            record = _PersistentWorkerRecord(
+                                worker_id=str(item["worker_id"]), parent_task_id=str(item["parent_task_id"]),
+                                session_id=str(item["session_id"]),
+                                status=PersistentWorkerStatus(item.get("status", PersistentWorkerStatus.STOPPED.value)),
+                                last_sequence=int(item.get("last_sequence", 0)), created_at=str(item.get("created_at", _utc_now())),
+                                pending_messages=[dict(x) for x in item.get("pending_messages", []) if isinstance(x, dict)],
+                                pending_results=[dict(x) for x in item.get("pending_results", []) if isinstance(x, dict)],
+                                in_flight_message=(dict(item["in_flight_message"]) if isinstance(item.get("in_flight_message"), dict) else None),
+                                generation=max(0, int(item.get("generation", 0))),
+                            )
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise WorkerPersistenceCorruptError(f"worker projection contains an invalid record: {exc}") from exc
+                        disk_records[record.worker_id] = record
+
+                next_generations: dict[str, int] = {}
+                for worker_id in dirty_ids:
+                    local = self._persistent_records.get(worker_id)
+                    if local is None:
+                        continue
+                    disk = disk_records.get(worker_id)
+                    if disk is not None and (disk.parent_task_id != local.parent_task_id or disk.session_id != local.session_id):
+                        raise WorkerRecoveryRequiredError(
+                            f"worker '{worker_id}' persisted lineage changed; explicit recovery is required"
+                        )
+                    disk_generation = disk.generation if disk is not None else 0
+                    if disk_generation != local.generation:
+                        raise WorkerPersistenceConflictError(
+                            f"worker '{worker_id}' generation changed: expected {local.generation}, found {disk_generation}"
+                        )
+                    next_generation = disk_generation + 1
+                    next_generations[worker_id] = next_generation
+                    disk_records[worker_id] = _PersistentWorkerRecord(
+                        worker_id=local.worker_id,
+                        parent_task_id=local.parent_task_id,
+                        session_id=local.session_id,
+                        status=local.status,
+                        last_sequence=local.last_sequence,
+                        created_at=local.created_at,
+                        pending_messages=[dict(x) for x in local.pending_messages],
+                        pending_results=[dict(x) for x in local.pending_results],
+                        in_flight_message=(dict(local.in_flight_message) if isinstance(local.in_flight_message, dict) else None),
+                        generation=next_generation,
+                    )
+
+                temp = self.storage_path.with_suffix(self.storage_path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
+                temp.write_text(json.dumps({"workers": [record.to_dict() for record in disk_records.values()]}, indent=2), encoding="utf-8")
+                for attempt in range(8):
+                    try:
+                        temp.replace(self.storage_path)
+                        break
+                    except PermissionError:
+                        if attempt == 7:
+                            raise
+                        time.sleep(0.01 * (attempt + 1))
+                for worker_id, generation in next_generations.items():
+                    local = self._persistent_records.get(worker_id)
+                    if local is not None:
+                        local.generation = generation
+                for worker_id, disk_record in disk_records.items():
+                    if worker_id not in dirty_ids:
+                        self._persistent_records[worker_id] = disk_record
+                self._dirty_worker_ids.difference_update(dirty_ids)
+            finally:
+                if lock_fd is not None:
+                    os.close(lock_fd)
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+
 
     def _sync_persistent_worker(self, worker: PersistentWorker) -> None:
-        record = self._persistent_records.get(worker.worker_id)
-        if record is None:
-            record = _PersistentWorkerRecord(worker.worker_id, worker.parent_task_id, worker.session_id)
-            self._persistent_records[worker.worker_id] = record
-        previous = (
-            record.status,
-            record.last_sequence,
-            record.pending_messages,
-            record.pending_results,
-            record.in_flight_message,
-        )
-        record.status = worker.status
-        record.last_sequence = worker._sequence
-        with worker._condition:
-            record.pending_messages = [message.to_dict() for message in worker._messages]
-            record.pending_results = [result.to_dict() for result in worker._results]
-            record.in_flight_message = worker._in_flight.to_dict() if worker._in_flight else None
-        try:
-            self._persist_persistent_records()
-        except Exception:
-            (
-                record.status,
-                record.last_sequence,
-                record.pending_messages,
-                record.pending_results,
-                record.in_flight_message,
-            ) = previous
-            raise
+        with self._persistent_lock:
+            record = self._persistent_records.get(worker.worker_id)
+            if record is None:
+                record = _PersistentWorkerRecord(worker.worker_id, worker.parent_task_id, worker.session_id)
+                self._persistent_records[worker.worker_id] = record
+            if record.parent_task_id != worker.parent_task_id or record.session_id != worker.session_id:
+                raise WorkerRecoveryRequiredError(
+                    f"worker '{worker.worker_id}' lineage changed in-process; explicit recovery is required"
+                )
+            previous = (
+                record.status, record.last_sequence, record.pending_messages,
+                record.pending_results, record.in_flight_message, record.generation,
+            )
+            record.status = worker.status
+            record.last_sequence = worker._sequence
+            with worker._condition:
+                record.pending_messages = [message.to_dict() for message in worker._messages]
+                record.pending_results = [result.to_dict() for result in worker._results]
+                record.in_flight_message = worker._in_flight.to_dict() if worker._in_flight else None
+            self._dirty_worker_ids.add(worker.worker_id)
+            try:
+                self._persist_persistent_records()
+            except WorkerPersistenceConflictError:
+                (
+                    record.status, record.last_sequence, record.pending_messages,
+                    record.pending_results, record.in_flight_message, record.generation,
+                ) = previous
+                self._dirty_worker_ids.discard(worker.worker_id)
+                # A stale process may be shutting down after another process has
+                # already reconstructed and advanced this durable worker. Terminal
+                # cleanup must never overwrite the newer owner, but it also must
+                # not turn local thread cleanup into an application failure.
+                if worker.status in {
+                    PersistentWorkerStatus.STOPPING,
+                    PersistentWorkerStatus.STOPPED,
+                    PersistentWorkerStatus.FAILED,
+                }:
+                    return
+                raise
+            except Exception:
+                (
+                    record.status, record.last_sequence, record.pending_messages,
+                    record.pending_results, record.in_flight_message, record.generation,
+                ) = previous
+                self._dirty_worker_ids.discard(worker.worker_id)
+                raise
+
 
     def start_persistent_worker(
         self,
@@ -609,21 +752,30 @@ class WorkerRegistry:
         journal: ExecutionJournal | None = None,
         event_bus: RuntimeEventBus | None = None,
     ) -> PersistentWorker:
+        if self._persistence_load_error:
+            raise WorkerPersistenceCorruptError(f"worker projection could not be loaded: {self._persistence_load_error}")
         worker = self._persistent_workers.get(worker_id)
         if worker is not None and worker.status not in {PersistentWorkerStatus.STOPPED, PersistentWorkerStatus.FAILED}:
+            if worker.parent_task_id != parent_task_id or worker.session_id != session_id:
+                raise WorkerRecoveryRequiredError(f"worker '{worker_id}' is already owned by a different task/session")
             return worker
-        record = _PersistentWorkerRecord(worker_id, parent_task_id, session_id)
+        record = self._persistent_records.get(worker_id)
+        if record is not None:
+            if record.parent_task_id != parent_task_id or record.session_id != session_id:
+                raise WorkerRecoveryRequiredError(
+                    f"worker '{worker_id}' persisted lineage does not match parent_task_id/session_id; explicit recovery is required"
+                )
+        else:
+            record = _PersistentWorkerRecord(worker_id, parent_task_id, session_id)
+            self._persistent_records[worker_id] = record
         worker = PersistentWorker(
-            record,
-            executor_fn,
-            journal=journal,
-            event_bus=event_bus or self._event_bus,
+            record, executor_fn, journal=journal, event_bus=event_bus or self._event_bus,
             on_update=self._sync_persistent_worker,
         )
-        self._persistent_records[worker_id] = record
         self._persistent_workers[worker_id] = worker
         worker.start()
         return worker
+
 
     def reconstruct_worker(
         self,

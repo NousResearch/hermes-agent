@@ -479,15 +479,10 @@ def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
     config: BudgetConfig = DEFAULT_BUDGET,
+    *,
+    result_scope: str | None = None,
 ) -> list[dict]:
-    """Layer 3: enforce aggregate budget across all tool results in a turn.
-
-    If total chars exceed budget, persist the largest non-persisted results
-    first (via sandbox write) until under budget. Already-persisted results
-    are skipped.
-
-    Mutates the list in-place and returns it.
-    """
+    """Enforce aggregate budget while preserving content-addressed security scope."""
     candidates = []
     total_size = 0
     for i, msg in enumerate(tool_messages):
@@ -496,34 +491,22 @@ def enforce_turn_budget(
         total_size += size
         if PERSISTED_OUTPUT_TAG not in content:
             candidates.append((i, size))
-
     if total_size <= config.turn_budget:
         return tool_messages
-
     candidates.sort(key=lambda x: x[1], reverse=True)
-
     for idx, size in candidates:
         if total_size <= config.turn_budget:
             break
         msg = tool_messages[idx]
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
-
         replacement = maybe_persist_tool_result(
-            content=content,
-            tool_name=_BUDGET_TOOL_NAME,
-            tool_use_id=tool_use_id,
-            env=env,
-            config=config,
-            threshold=0,
+            content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
+            env=env, config=config, threshold=0, result_scope=result_scope,
         )
         if replacement != content:
             total_size -= size
             total_size += len(replacement)
             tool_messages[idx]["content"] = replacement
-            logger.info(
-                "Budget enforcement: persisted tool result %s (%d chars)",
-                tool_use_id, size,
-            )
-
+            logger.info("Budget enforcement: persisted tool result %s (%d chars)", tool_use_id, size)
     return tool_messages

@@ -56,6 +56,21 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+def _structured_exception_result(function_name: str, exc: Exception) -> str:
+    """Preserve explicitly structured tool failures instead of flattening them to prose."""
+    to_dict = getattr(exc, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            payload.setdefault("tool", function_name)
+            payload.setdefault("success", False)
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return f"Error executing tool '{function_name}': {exc}"
+
+
 def _pairing_tool_call_id(tool_call: Any) -> str:
     """Return the canonical id used by the persisted assistant message."""
     return coalesce_tool_call_id(tool_call)
@@ -1435,7 +1450,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
                 return
             except Exception as tool_error:
-                result = f"Error executing tool '{function_name}': {tool_error}"
+                result = _structured_exception_result(function_name, tool_error)
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             if not blocked and not dispatched:
@@ -1913,7 +1928,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(parsed_calls)
     if finalize and num_tools > 0:
         turn_tool_msgs = messages[-num_tools:]
-        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id), config=_tool_budget, result_scope=f"task:{effective_task_id}")
 
     # ── /steer injection ──────────────────────────────────────────────
     # Append any pending user steer text to the last tool result so the
@@ -2573,7 +2588,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 raise
             except Exception as tool_error:
-                function_result = f"Error executing tool '{function_name}': {tool_error}"
+                function_result = _structured_exception_result(function_name, tool_error)
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
                 tool_duration = time.time() - tool_start_time
@@ -2652,7 +2667,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 raise
             except Exception as tool_error:
-                function_result = f"Error executing tool '{function_name}': {tool_error}"
+                function_result = _structured_exception_result(function_name, tool_error)
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
@@ -2846,7 +2861,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # be discarded when aggregate budget enforcement replaces a tool result.
     num_tools_seq = len(assistant_message.tool_calls)
     if finalize and num_tools_seq > 0:
-        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget)
+        enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id), config=_tool_budget, result_scope=f"task:{effective_task_id}")
 
     # ── /steer injection ──────────────────────────────────────────────
     # See _execute_tool_calls_parallel for the rationale. Same hook,
@@ -2913,6 +2928,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             messages[-total_tools:],
             env=get_active_env(effective_task_id),
             config=_tool_budget,
+            result_scope=f"task:{effective_task_id}",
         )
         agent._apply_pending_steer_to_tool_results(messages, total_tools)
 

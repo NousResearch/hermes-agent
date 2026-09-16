@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -46,12 +47,71 @@ _LAST_HEALTH_VALUE = False
 
 
 class WorkstationBrowserError(RuntimeError):
-    """Base Workstation Browser route error."""
+    """Structured Workstation Browser controller failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "CAPABILITY_MISSING",
+        retryable: bool = False,
+        retry_after_ms: int = 0,
+        state_changed: bool = False,
+        recommended_action: str = "ESCALATE",
+        resource_ref: str | None = None,
+        details: Optional[Dict[str, Any]] = None,
+        http_status: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = str(error_code)
+        self.retryable = bool(retryable)
+        self.retry_after_ms = max(0, int(retry_after_ms or 0))
+        self.state_changed = bool(state_changed)
+        self.recommended_action = str(recommended_action)
+        self.resource_ref = resource_ref
+        self.details = dict(details or {})
+        self.http_status = http_status
+
+    @classmethod
+    def from_payload(cls, payload: Dict[str, Any], *, http_status: int | None = None) -> "WorkstationBrowserError":
+        message = str(payload.get("message") or payload.get("error") or "Hermes Browser action failed")
+        error_code = str(payload.get("error_code") or "CAPABILITY_MISSING")
+        target_cls = WorkstationBrowserUnavailable if error_code == "CONTROLLER_DOWN" else cls
+        return target_cls(
+            message,
+            error_code=error_code,
+            retryable=bool(payload.get("retryable", False)),
+            retry_after_ms=int(payload.get("retry_after_ms") or 0),
+            state_changed=bool(payload.get("state_changed", False)),
+            recommended_action=str(payload.get("recommended_action") or "ESCALATE"),
+            resource_ref=(str(payload["resource_ref"]) if payload.get("resource_ref") is not None else None),
+            details=(payload.get("details") if isinstance(payload.get("details"), dict) else {}),
+            http_status=http_status,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": False,
+            "error_code": self.error_code,
+            "message": str(self),
+            "retryable": self.retryable,
+            "retry_after_ms": self.retry_after_ms,
+            "state_changed": self.state_changed,
+            "recommended_action": self.recommended_action,
+            "resource_ref": self.resource_ref,
+            "details": self.details,
+        }
 
 
 class WorkstationBrowserUnavailable(WorkstationBrowserError):
     """Raised when the internal browser is required but its controller is down."""
 
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        kwargs.setdefault("error_code", "CONTROLLER_DOWN")
+        kwargs.setdefault("retryable", True)
+        kwargs.setdefault("state_changed", True)
+        kwargs.setdefault("recommended_action", "RECONCILE_CONTROLLER")
+        super().__init__(message, **kwargs)
 
 def _bool_env(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -149,6 +209,36 @@ def _workstation_home() -> Path:
     return (Path(base) if base else Path.home() / ".config") / "HermesWorkstation"
 
 
+def workstation_browser_task_state_path() -> Path:
+    override = os.getenv("HERMES_WORKSTATION_BROWSER_TASK_FILE", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return _workstation_home() / "Runtime" / "browser-tasks.json"
+
+
+def _canonical_browser_task_binding(task_id: Optional[str], session_id: Optional[str]) -> str:
+    """Return bound/unbound/unknown/conflict from Electron's BrowserTask projection."""
+    if not task_id:
+        return "unknown"
+    path = workstation_browser_task_state_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "unknown"
+    except (OSError, json.JSONDecodeError):
+        return "conflict"
+    if not isinstance(raw, dict) or raw.get("version") != 1 or not isinstance(raw.get("tasks"), list):
+        return "conflict"
+    for item in raw["tasks"]:
+        if not isinstance(item, dict) or str(item.get("taskId") or "") != task_id:
+            continue
+        owner_session = item.get("sessionHost")
+        if session_id and owner_session and str(owner_session) != session_id:
+            return "conflict"
+        return "bound"
+    return "unbound"
+
+
 def workstation_control_path() -> Path:
     override = os.getenv("HERMES_WORKSTATION_BROWSER_CONTROL_FILE", "").strip()
     if override:
@@ -186,9 +276,7 @@ def _request_json(
     base = str(control["url"]).rstrip("/")
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = Request(
-        f"{base}{suffix}",
-        method=method,
-        data=data,
+        f"{base}{suffix}", method=method, data=data,
         headers={
             "Authorization": f"Bearer {control['token']}",
             "Content-Type": "application/json",
@@ -196,19 +284,74 @@ def _request_json(
         },
     )
     try:
-        # The descriptor validation above hard-limits this request to 127.0.0.1.
         with urlopen(request, timeout=timeout) as response:  # noqa: S310
-            decoded = json.loads(response.read().decode("utf-8"))
+            raw_body = response.read().decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise WorkstationBrowserError(f"Hermes Browser controller HTTP {exc.code}: {detail[:1000]}") from exc
-    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        raise WorkstationBrowserUnavailable(f"Hermes Browser controller connection failed: {exc}") from exc
+        try:
+            decoded_error = json.loads(detail)
+        except json.JSONDecodeError:
+            decoded_error = None
+        if isinstance(decoded_error, dict) and decoded_error.get("error_code"):
+            raise WorkstationBrowserError.from_payload(decoded_error, http_status=exc.code) from exc
+        if exc.code == 401:
+            raise WorkstationBrowserError(
+                "Hermes Browser controller authentication failed",
+                error_code="AUTH_REQUIRED", retryable=False,
+                recommended_action="REAUTHENTICATE_CONTROLLER",
+                http_status=exc.code, details={"http_status": exc.code},
+            ) from exc
+        raise WorkstationBrowserError(
+            f"Hermes Browser controller HTTP {exc.code}",
+            error_code="CAPABILITY_MISSING", retryable=False,
+            recommended_action="ESCALATE", http_status=exc.code,
+            details={"http_status": exc.code},
+        ) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise WorkstationBrowserError(
+            "Hermes Browser controller request timed out",
+            error_code="TIMEOUT", retryable=True,
+            recommended_action="RETRY_WITH_BACKOFF",
+        ) from exc
+    except URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            raise WorkstationBrowserError(
+                "Hermes Browser controller request timed out",
+                error_code="TIMEOUT", retryable=True,
+                recommended_action="RETRY_WITH_BACKOFF",
+            ) from exc
+        raise WorkstationBrowserUnavailable(
+            "Hermes Browser controller connection failed",
+            details={"transport": type(reason).__name__ if reason is not None else type(exc).__name__},
+        ) from exc
+    except OSError as exc:
+        raise WorkstationBrowserUnavailable(
+            "Hermes Browser controller connection failed",
+            details={"transport": type(exc).__name__},
+        ) from exc
+
+    try:
+        decoded = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise WorkstationBrowserUnavailable(
+            "Hermes Browser controller returned invalid JSON",
+            details={"response_bytes": len(raw_body.encode("utf-8", errors="replace"))},
+        ) from exc
     if not isinstance(decoded, dict):
-        raise WorkstationBrowserError("Hermes Browser controller returned a non-object response")
+        raise WorkstationBrowserError(
+            "Hermes Browser controller returned a non-object response",
+            error_code="CAPABILITY_MISSING", recommended_action="ESCALATE",
+        )
     if not decoded.get("success"):
-        raise WorkstationBrowserError(str(decoded.get("error") or "Hermes Browser action failed"))
+        if decoded.get("error_code"):
+            raise WorkstationBrowserError.from_payload(decoded)
+        raise WorkstationBrowserError(
+            str(decoded.get("error") or "Hermes Browser action failed"),
+            error_code="CAPABILITY_MISSING", recommended_action="ESCALATE",
+        )
     return decoded
+
 
 
 def workstation_controller_available(*, force: bool = False) -> bool:
@@ -419,6 +562,17 @@ def workstation_routed_browser_handler(
 
     key = _task_key(task_id, session_id)
     bound = _is_bound(key)
+    canonical_binding = _canonical_browser_task_binding(task_id, session_id)
+    if canonical_binding == "bound":
+        bound = True
+        _bind(key)
+    elif canonical_binding == "conflict":
+        raise WorkstationBrowserError(
+            "BrowserTask binding metadata is invalid or conflicts with the requested session",
+            error_code="INVALID_ARGUMENT", retryable=False, state_changed=True,
+            recommended_action="RECONCILE_BINDING",
+            details={"task_id": task_id, "session_id": session_id},
+        )
     available = workstation_controller_available(force=bound)
 
     if not available:

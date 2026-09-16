@@ -130,7 +130,7 @@ def test_format_reset_uses_configured_timezone_and_falls_back_to_host_timezone(m
         raise RuntimeError("configuration unavailable")
 
     monkeypatch.setattr("agent.account_usage.hermes_time.get_timezone", unavailable_timezone)
-    assert "2030-01-02 12:00 UTC" in _format_reset(reset_at)
+    assert reset_at.astimezone().strftime("%Y-%m-%d %H:%M %Z") in _format_reset(reset_at)
 
 
 def test_fetch_account_usage_codex_labels_weekly_only_primary_window(monkeypatch):

@@ -34,51 +34,31 @@ def _create(capsys, **overrides):
     return capsys.readouterr().out
 
 
-def test_native_profile_keeps_the_plain_start_hint(profile_env, capsys):
-    out = _create(capsys, runtime="native")
+@pytest.mark.parametrize(
+    ("runtime", "config", "declared", "expected_kind", "start_hint"),
+    [
+        ("native", {}, None, "native", "coder gateway start"),
+        ("container", {}, None, "container", "docker exec hermes hermes -p coder gateway start"),
+        ("container", {"profiles": {"container_name": "hermes-prod"}}, None, "container", "docker exec hermes-prod hermes -p coder gateway start"),
+        # the shape this feature exists for: created from a host, the serving gateway declares a container
+        (None, {}, "container", "container", "docker exec hermes hermes -p coder gateway start"),
+        (None, {}, None, "native", "coder gateway start"),
+    ],
+    ids=["native", "container", "container-name-from-config", "auto-follows-container", "auto-is-todays-behaviour"],
+)
+def test_create_names_the_runtime_and_a_start_command_that_works_for_it(profile_env, capsys, monkeypatch, runtime, config, declared, expected_kind, start_hint):
+    """The host cannot register an s6 slot, so a containerized profile's only working start command
+    is the one that runs inside the container, and the host command is warned against."""
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    if declared:
+        (profile_env / "gateway_state.json").write_text(json.dumps({"runtime_kind": declared}), encoding="utf-8")
 
-    assert "Runtime: native" in out
-    assert "coder gateway start" in out
-    assert "docker exec" not in out
+    out = _create(capsys, runtime=runtime)
 
-
-def test_container_profile_hands_off_to_the_container(profile_env, capsys):
-    """The host cannot register an s6 slot, so the only command that works is the one that
-    runs inside the container — and the host command must be warned against, not printed."""
-    out = _create(capsys, runtime="container")
-
-    assert "Runtime: container" in out
-    assert "docker exec hermes hermes -p coder gateway start" in out
-    assert "⚠ Do not run 'coder gateway start' on this host" in out
-
-
-def test_container_name_comes_from_config(profile_env, capsys, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.load_config",
-                        lambda: {"profiles": {"container_name": "hermes-prod"}})
-
-    out = _create(capsys, runtime="container")
-
-    assert "docker exec hermes-prod hermes -p coder gateway start" in out
-
-
-def test_auto_follows_a_containerized_serving_gateway(profile_env, capsys):
-    """The shape this feature exists for: created from a host, but the gateway serving the
-    active home declares a container, so the new profile is treated as containerized."""
-    (profile_env / "gateway_state.json").write_text(
-        json.dumps({"runtime_kind": "container"}), encoding="utf-8")
-
-    out = _create(capsys)
-
-    assert "Runtime: container" in out
-    assert "docker exec" in out
-
-
-def test_auto_is_todays_behaviour_when_nothing_declares_a_container(profile_env, capsys):
-    out = _create(capsys)
-
-    assert "Runtime: native" in out
-    assert "coder gateway start" in out
-    assert "docker exec" not in out
+    assert f"Runtime: {expected_kind}" in out
+    assert start_hint in out
+    assert ("docker exec" in out) is (expected_kind == "container")
+    assert ("⚠ Do not run 'coder gateway start' on this host" in out) is (expected_kind == "container")
 
 
 def test_a_bad_runtime_value_fails_before_the_profile_is_created(profile_env, capsys):

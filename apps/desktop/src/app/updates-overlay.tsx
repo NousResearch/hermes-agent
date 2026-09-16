@@ -33,6 +33,7 @@ import {
   $updateStatus,
   applyBackendUpdate,
   applyUpdates,
+  cancelUpdateWait,
   checkBackendUpdates,
   checkUpdates,
   resetUpdateApplyState,
@@ -81,22 +82,30 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
-  const updateAvailable = status?.updateAvailable || behind > 0
+  const updateAvailable = status?.updateAvailable || behind > 0 || (!isBackend && Boolean(status?.bundleOutOfSync))
 
-  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
-    apply.stage === 'manual'
-      ? 'manual'
-      : apply.stage === 'guiSkew'
-        ? 'guiSkew'
-        : apply.applying || apply.stage === 'restart'
-          ? 'applying'
-          : apply.stage === 'error'
-            ? 'error'
-            : 'idle'
+  const phase: 'idle' | 'applying' | 'waiting' | 'manual' | 'guiSkew' | 'error' =
+    apply.stage === 'waiting'
+      ? 'waiting'
+      : apply.stage === 'manual'
+        ? 'manual'
+        : apply.stage === 'guiSkew'
+          ? 'guiSkew'
+          : apply.applying || apply.stage === 'restart'
+            ? 'applying'
+            : apply.stage === 'error'
+              ? 'error'
+              : 'idle'
 
   const updateBlockers = !isBackend && apply.error === 'venv-blocked' && apply.blockers?.length ? apply.blockers : null
 
   const handleClose = (next: boolean) => {
+    if (phase === 'waiting') {
+      void cancelUpdateWait()
+
+      return
+    }
+
     if (phase === 'applying') {
       return
     }
@@ -126,6 +135,8 @@ export function UpdatesOverlay() {
         showCloseButton={phase !== 'applying'}
       >
         {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
+
+        {phase === 'waiting' && <WaitingForBlockersView apply={apply} onCancel={cancelUpdateWait} />}
 
         {phase === 'manual' && (
           <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
@@ -273,7 +284,12 @@ function IdleView({
   // backend, not the local client — say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
   // instead of generic filler.
-  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+  const { title, body } = resolveUpdateCopy({
+    target,
+    shownItems,
+    bundleRebuildOnly: target === 'client' && status.behind === 0 && Boolean(status.bundleOutOfSync),
+    copy: u
+  })
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -314,7 +330,7 @@ function IdleView({
   )
 }
 
-function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+function UpdateCommand({ command, showShellPrompt = false }: { command: string; showShellPrompt?: boolean }) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
@@ -329,6 +345,78 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
       window.setTimeout(() => setCopied(false), 1800)
     })
   }
+
+  return (
+    <button
+      className={cn(
+        'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
+        copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
+      )}
+      onClick={handleCopy}
+      type="button"
+    >
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all select-all font-mono text-sm text-foreground">
+        {showShellPrompt && <span className="select-none text-muted-foreground">$ </span>}
+        {command}
+      </code>
+      <span
+        className={cn(
+          'flex shrink-0 items-center gap-1 text-xs font-medium transition-colors',
+          copied ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
+        )}
+      >
+        {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        {copied ? u.copied : u.copy}
+      </span>
+    </button>
+  )
+}
+
+function WaitingForBlockersView({ apply, onCancel }: { apply: UpdateApplyState; onCancel: () => Promise<boolean> }) {
+  const { t } = useI18n()
+  const u = t.updates
+  const [cancelling, setCancelling] = useState(false)
+
+  const handleCancel = async () => {
+    if (cancelling) {
+      return
+    }
+
+    setCancelling(true)
+
+    if (!(await onCancel())) {
+      setCancelling(false)
+    }
+  }
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <Loader className="size-8" label={u.stages.waiting} />
+        <DialogTitle className="text-center text-xl">{u.stages.waiting}</DialogTitle>
+        <DialogDescription className="whitespace-pre-wrap break-words text-center text-sm">
+          {apply.message}
+        </DialogDescription>
+      </div>
+
+      {apply.command && <UpdateCommand command={apply.command} />}
+
+      <Button
+        aria-busy={cancelling}
+        disabled={cancelling}
+        onClick={() => void handleCancel()}
+        size="lg"
+        variant="secondary"
+      >
+        {cancelling ? u.cancellingWait : t.common.cancel}
+      </Button>
+    </div>
+  )
+}
+
+function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+  const { t } = useI18n()
+  const u = t.updates
 
   // No command (e.g. the Linux sandbox-blocked relaunch): render the explanatory
   // message + a Done button, not a copy-a-command box.
@@ -358,28 +446,7 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <DialogDescription className="text-center text-sm">{u.manualBody}</DialogDescription>
       </div>
 
-      <button
-        className={cn(
-          'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
-          copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
-        )}
-        onClick={handleCopy}
-        type="button"
-      >
-        <code className="min-w-0 flex-1 truncate select-all font-mono text-sm text-foreground">
-          <span className="select-none text-muted-foreground">$ </span>
-          {command}
-        </code>
-        <span
-          className={cn(
-            'flex shrink-0 items-center gap-1 text-xs font-medium transition-colors',
-            copied ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
-          )}
-        >
-          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-          {copied ? u.copied : u.copy}
-        </span>
-      </button>
+      <UpdateCommand command={command} showShellPrompt />
 
       <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>
 

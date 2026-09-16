@@ -3338,7 +3338,12 @@ export const zh = defineLocale({
   },
 
   updates: {
+    rebuildTitle: '桌面应用需要重新构建',
+    rebuildBody: '代码已是最新，但当前运行的应用是由旧版本构建的。立即更新以重新构建。',
+    cancellingWait: '正在取消…',
+    cancelWaitFailed: 'Hermes 无法取消等待。请重试，或关闭列出的进程以继续。',
     stages: {
+      waiting: '正在等待进程关闭',
       idle: '准备中…',
       prepare: '准备中…',
       fetch: '下载中…',

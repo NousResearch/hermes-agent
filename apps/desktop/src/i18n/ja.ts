@@ -2653,7 +2653,12 @@ export const ja = defineLocale({
   },
 
   updates: {
+    rebuildTitle: 'デスクトップアプリの再ビルドが必要です',
+    rebuildBody: 'コードは最新ですが、実行中のアプリは古いバージョンからビルドされています。今すぐ更新して再ビルドしてください。',
+    cancellingWait: 'キャンセルしています…',
+    cancelWaitFailed: '待機をキャンセルできませんでした。もう一度試すか、表示されたプロセスを終了してください。',
     stages: {
+      waiting: 'プロセスの終了を待っています',
       idle: '準備中…',
       prepare: '準備中…',
       fetch: 'ダウンロード中…',

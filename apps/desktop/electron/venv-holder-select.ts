@@ -1,13 +1,19 @@
 /**
  * venv-holder-select.ts
  *
- * Pure Windows venv-holder selection logic (testable without Electron).
+ * Pure venv-holder selection logic for the Windows pre-update hand-off
+ * (testable without Electron).
  *
- * The pre-update handoff kills Hermes-OWNED venv daemons (the memory plugin's
- * hindsight daemon) so the updater never races a mapped shim. External
- * holders (a user terminal running `hermes`, unrelated scripts) must NOT be
- * killed — current design reports them via scanVenvBlockers and ABORTS the
- * handoff instead (main.ts releaseBackendLock / applyUpdates).
+ * The hand-off kills Hermes-OWNED venv processes so the updater never races a
+ * mapped shim or `.pyd`. External holders — a user terminal running `hermes`,
+ * unrelated scripts — must NOT be killed: scanVenvBlockers reports them and
+ * `main.ts` (releaseBackendLock / applyUpdates) aborts the hand-off instead.
+ *
+ * Exactly one process shape is owned here: the memory plugin's `hindsight_api`
+ * daemon. It is spawned DETACHED, so it outlives the backend tree-kill and
+ * keeps `venv\Lib\site-packages\*.pyd` mapped. Selection is an ordinal path
+ * prefix plus a cmdline match — no PowerShell `-like` wildcards, whose
+ * metacharacters in an install path are a correctness hazard.
  */
 
 /** Ordinal case-insensitive prefix check for Windows paths. */
@@ -20,8 +26,7 @@ export function hasWindowsPathPrefix(exePath: string, venvScriptsDir: string): b
 /**
  * True when a process is a Hermes-owned venv daemon: its exe lives under
  * `<venv>\Scripts\` (ordinal case-insensitive prefix) AND its cmdline
- * references `hindsight_api.main` (the memory daemon the memory plugin
- * spawns DETACHED — it outlives Hermes and holds venv shims mapped).
+ * references `hindsight_api.main`.
  */
 export function isHermesOwnedVenvDaemon(
   exePath: string | null | undefined,

@@ -2770,6 +2770,8 @@ export interface Translations {
   }
 
   updates: {
+    rebuildTitle: string
+    rebuildBody: string
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string
@@ -2826,6 +2828,8 @@ export interface Translations {
     everythingSkipped: string
     everythingRowFailed: string
     everythingFanoutFailedTitle: string
+    cancellingWait: string
+    cancelWaitFailed: string
     applyStatus: {
       preparing: string
       pulling: string

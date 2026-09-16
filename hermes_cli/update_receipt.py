@@ -24,6 +24,7 @@ COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 # ``hermes update`` is a single-threaded CLI command; a module singleton lets the 7k-line updater
 # record steps from any depth without threading a handle through every helper.
 _current: Optional["UpdateReceipt"] = None
+_last_finalize: dict[str, Any] = {"path": None, "error": None, "outcome": None}
 
 
 def _utc_now_iso() -> str:
@@ -186,13 +187,33 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         with suppress(OSError):  # stable pointer for the dashboard/desktop
             (directory / "latest.json").write_text(body, encoding="utf-8")
         _prune_old_receipts(directory)
+        _last_finalize.update(path=path, error=None, outcome=outcome)
         return path
     except Exception as exc:
         # Visible, not debug: a run that pulled code and left no receipt is exactly the run
         # operators need to post-mortem, and INFO-level logs discard debug (#112465, #112558).
         logger.warning("Could not write update receipt (%s): %s", outcome, exc)
         print(f"  ⚠ Update receipt not written: {exc}")
+        _last_finalize.update(
+            path=None, error=f"{type(exc).__name__}: {exc}", outcome=outcome
+        )
         return None
+
+
+def describe_last_receipt() -> str:
+    """Describe where the most recently finalized receipt went. Never raises."""
+    try:
+        path = _last_finalize.get("path")
+        error = _last_finalize.get("error")
+        if path is not None:
+            return f"→ Update receipt: {path}"
+        if error:
+            return f"⚠ Update receipt NOT written: {error}"
+        if _current is not None:
+            return "⚠ Update receipt still open at the command boundary (never finalized)"
+        return "⚠ No update receipt was recorded for this run (never started)"
+    except Exception:  # pragma: no cover - defensive
+        return "⚠ Update receipt state unavailable"
 
 
 def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason: str = "") -> Optional[Path]:

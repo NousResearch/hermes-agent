@@ -89,6 +89,7 @@ const {
   reportBackendContract,
   applyUpdates,
   applyEverythingUpdate,
+  cancelUpdateWait,
   hasMultipleUpdateTargets,
   openUpdatesWindow,
   startActiveUpdate,
@@ -836,6 +837,41 @@ describe('applyUpdates terminal state', () => {
     expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ kind: 'success' })
   })
 
+  it('returns to idle without an error toast after cancellation finishes restoration', async () => {
+    applyMock.mockResolvedValue({ ok: false, error: 'update-cancelled', message: 'Update cancelled.' })
+    await applyUpdates()
+    expect($updateApply.get().stage).toBe('idle')
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['is refused', vi.fn().mockResolvedValue(false)],
+    ['rejects', vi.fn().mockRejectedValue(new Error('ipc unavailable'))]
+  ])('keeps the waiting surface actionable when cancellation %s', async (_label, cancelWaiting) => {
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock, cancelWaiting } }
+    }
+    $updateApply.set({
+      applying: true,
+      stage: 'waiting',
+      message: 'Waiting',
+      percent: null,
+      error: null,
+      command: 'Stop-Process -Id 123',
+      log: []
+    })
+
+    expect(await cancelUpdateWait()).toBe(false)
+    expect($updateApply.get()).toMatchObject({
+      applying: true,
+      stage: 'waiting',
+      command: 'Stop-Process -Id 123',
+      message: 'Hermes could not cancel the wait. Try again, or close the listed processes to continue.'
+    })
+  })
+
   it('lands on a closeable error state when the apply resolves not-ok', async () => {
     applyMock.mockResolvedValue({ ok: false, error: 'rebuild-failed', message: 'rebuild failed' })
 
@@ -1353,6 +1389,16 @@ describe('startUpdatePoller', () => {
     stopUpdatePoller()
     delete (globalThis as unknown as { window?: unknown }).window
     vi.useRealTimers()
+  })
+
+  it('keeps the updater busy and resets restart progress while waiting, then clears the command on resume', () => {
+    startUpdatePoller()
+    const progress = onProgressMock.mock.calls[0]![0]
+    progress({ stage: 'restart', message: 'Restarting', percent: 100, at: 1 })
+    progress({ stage: 'waiting', message: 'Waiting', command: 'PowerShell command', percent: null, at: 2 })
+    expect($updateApply.get()).toMatchObject({ applying: true, stage: 'waiting', percent: null, command: 'PowerShell command' })
+    progress({ stage: 'prepare', message: 'Checking again', percent: null, at: 3 })
+    expect($updateApply.get()).toMatchObject({ applying: true, stage: 'prepare', command: null })
   })
 
   it('calls checkUpdates() on startup so the version pill populates immediately', async () => {

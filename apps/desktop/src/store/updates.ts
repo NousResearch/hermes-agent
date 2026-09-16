@@ -473,6 +473,30 @@ export async function checkUpdates({ force = false }: UpdateCheckOptions = {}): 
   }
 }
 
+export async function cancelUpdateWait(): Promise<boolean> {
+  const reportFailure = () => {
+    const current = $updateApply.get()
+
+    if (current.stage === 'waiting') {
+      $updateApply.set({ ...current, message: translateNow('updates.cancelWaitFailed') })
+    }
+  }
+
+  try {
+    const cancelled = (await window.hermesDesktop?.updates.cancelWaiting()) ?? false
+
+    if (!cancelled) {
+      reportFailure()
+    }
+
+    return cancelled
+  } catch {
+    reportFailure()
+
+    return false
+  }
+}
+
 export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promise<DesktopUpdateApplyResult> {
   const bridge = window.hermesDesktop?.updates
 
@@ -485,6 +509,13 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
 
   try {
     const result = await bridge.apply(opts)
+
+    if (result?.error === 'update-cancelled') {
+      $updateApply.set(IDLE)
+      setUpdateOverlayOpen(false)
+
+      return result
+    }
 
     // CLI install with no staged updater: not an error — the user just runs
     // `hermes update` themselves. Land on a dedicated manual state so the
@@ -998,10 +1029,11 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     message: payload.message,
     // Streamed log lines carry percent: null; keep the last milestone percent
     // (10/60/…) instead of resetting the bar to indeterminate on every line.
-    percent: payload.percent ?? current.percent,
+    percent: payload.stage === 'waiting' ? null : (payload.percent ?? current.percent),
     error: payload.error,
-    // 'manual' carries the command to run in its message field.
-    command: payload.stage === 'manual' ? payload.message : current.command,
+    // 'manual' carries a CLI update command; 'waiting' carries a process-stop command.
+    command:
+      payload.stage === 'waiting' ? (payload.command ?? null) : payload.stage === 'manual' ? payload.message : null,
     log
   })
 }

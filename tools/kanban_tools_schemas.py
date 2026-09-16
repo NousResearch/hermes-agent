@@ -523,7 +523,9 @@ KANBAN_LINK_SCHEMA = _schema(
     (
         "Add a parent→child dependency edge after both tasks already "
         "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "are 'done'. Cycles and self-links are rejected. A running child "
+        "is rejected unless the active owning worker is linking its own "
+        "card for a dependency handoff."
     ),
     {
         "parent_id": {"type": "string", "description": "Parent task id."},

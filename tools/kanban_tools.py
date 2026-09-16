@@ -993,13 +993,18 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
-    """Add a parent→child dependency edge after the fact (cycles/self-links → ValueError)."""
+    """Add a dependency edge, proving ownership for an active child handoff."""
     _reject_delegated_child_mutation("kanban_link")
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
-        gated = kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+        gated = kb.link_tasks(
+            conn,
+            parent_id=parent_id,
+            child_id=child_id,
+            expected_child_run_id=_worker_run_id(child_id),
+        )
         return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
                    **({"gated_by": parent_id} if gated else {}))
 

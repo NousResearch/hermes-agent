@@ -695,7 +695,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        gated = kb.link_tasks(conn, args.parent_id, args.child_id)
+        gated = kb.link_tasks(
+            conn,
+            args.parent_id,
+            args.child_id,
+            expected_child_run_id=_worker_run_id_for(args.child_id),
+        )
     print(f"Linked {args.parent_id} -> {args.child_id}")
     if gated:
         print(

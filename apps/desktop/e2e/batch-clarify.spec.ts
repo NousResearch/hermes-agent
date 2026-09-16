@@ -12,10 +12,10 @@
  * clarify.request event → renderer, against the mock inference server.
  */
 
-import { expect, test } from './test'
+import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { BATCH_CLARIFY_QUESTIONS, BATCH_CLARIFY_TRIGGER } from '../../../tests-js/scripts/mock-server'
+import { expect, test } from './test'
 
 let fixture: MockBackendFixture | null = null
 

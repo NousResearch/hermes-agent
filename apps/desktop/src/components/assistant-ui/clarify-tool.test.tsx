@@ -812,17 +812,17 @@ describe('ClarifyTool batch card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledTimes(3)
     })
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
       answer: 'red',
       question_id: 'q0',
       request_id: 'request-batch'
     })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
       answer: 'Coffee',
       question_id: 'q1',
       request_id: 'request-batch'
     })
-    expect(request).toHaveBeenNthCalledWith(3, 'clarify.respond', {
+    expect(request).toHaveBeenNthCalledWith(3, 'clarify.lock', {
       answer: 'Morning',
       question_id: 'q2',
       request_id: 'request-batch'
@@ -833,7 +833,7 @@ describe('ClarifyTool batch card', () => {
   })
 
   it('Enter on a focused multi-select choice is suppressed while another batch question is incomplete', () => {
-    const request = renderLiveBatch(undefined, true)
+    const { request } = renderLiveBatch(undefined, true)
     const red = screen.getByRole('button', { name: /red/ })
     const blue = screen.getByRole('button', { name: /blue/ })
 

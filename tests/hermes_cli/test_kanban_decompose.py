@@ -154,6 +154,44 @@ def test_decompose_fanout_children_inherit_root_assignee_when_unrouted(kanban_ho
     assert c1.assignee == "zdr"
 
 
+def test_decompose_explicit_default_assignee_wins_over_root_assignee(kanban_home):
+    """#114294: an explicitly configured ``kanban.default_assignee`` stays
+    authoritative for unroutable children; the root task's assignee only
+    fills in when no explicit default is set (explicit config → card
+    assignee → active profile)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ship it", assignee="engineer", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "research", "body": "look it up", "assignee": "made_up", "parents": []},
+            {"title": "build", "body": "code it", "assignee": None, "parents": [0]},
+        ],
+    })
+
+    patches = _patch_list_profiles(["engineer", "docs", "private"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"kanban": {"default_assignee": "docs"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+    assert c0.assignee == "docs"
+    assert c1.assignee == "docs"
+
+
 def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="route me safely", triage=True)

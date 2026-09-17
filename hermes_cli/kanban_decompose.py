@@ -188,6 +188,10 @@ class _Routing:
 
     orchestrator: str
     default_assignee: str
+    # True only when ``kanban.default_assignee`` is explicitly set AND names an
+    # existing profile — i.e. the operator, not the active-profile fallback,
+    # chose the default assignee.
+    default_assignee_explicit: bool
     auto_promote: bool
     roster: list[dict]
     valid_names: set[str]
@@ -200,10 +204,19 @@ def _load_routing() -> _Routing:
     except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
+    if explicit_default:
+        try:
+            explicit_default_ok = profiles_mod.profile_exists(explicit_default)
+        except Exception:
+            explicit_default_ok = False
+    else:
+        explicit_default_ok = False
     roster, valid_names = _build_roster()
     return _Routing(
         orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile"),
         default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee"),
+        default_assignee_explicit=explicit_default_ok,
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
@@ -315,7 +328,14 @@ def decompose_task(
     # workers deadlocked on capability blockers. Explicit LLM routing
     # still wins; this only replaces the no-fit fallback, mirroring how
     # decompose_triage_task already inherits the root's workspace.
-    if task.assignee and task.assignee in routing.valid_names:
+    # An explicitly configured ``kanban.default_assignee`` stays
+    # authoritative over the card's assignee: the chain is
+    # explicit config → root assignee → active profile.
+    if (
+        task.assignee
+        and task.assignee in routing.valid_names
+        and not routing.default_assignee_explicit
+    ):
         routing.default_assignee = task.assignee
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,

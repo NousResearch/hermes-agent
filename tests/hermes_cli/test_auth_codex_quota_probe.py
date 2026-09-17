@@ -124,6 +124,52 @@ def test_probe_sends_chatgpt_account_id_from_jwt(monkeypatch):
     assert calls[0]["headers"].get("ChatGPT-Account-Id") == "acct-123"
 
 
+def _credits_payload(*, primary_used: float = 100.0, **credits) -> dict:
+    payload = _usage_payload(primary_used, 50.0)
+    payload["credits"] = {"has_credits": True, "unlimited": False, "overage_limit_reached": False,
+                          "balance": "12.5", **credits}
+    payload["spend_control"] = {"reached": False}
+    return payload
+
+
+def _probe_token() -> str:
+    return _jwt({"exp": time.time() + 3600})
+
+
+def test_probe_restored_when_window_exhausted_but_credits_cover_overage(monkeypatch):
+    """Paid credits serve the overage while used_percent stays pinned at 100 until the window resets."""
+    _patch_httpx(monkeypatch, _StubResponse(200, _credits_payload()))
+    assert _probe_codex_quota_restored(_probe_token()) is True
+
+
+def test_probe_restored_with_unlimited_credits(monkeypatch):
+    _patch_httpx(monkeypatch, _StubResponse(200, _credits_payload(unlimited=True, balance="0")))
+    assert _probe_codex_quota_restored(_probe_token()) is True
+
+
+@pytest.mark.parametrize("credits", [
+    {"balance": "0"},
+    {"balance": "not-a-number"},
+    {"has_credits": False},
+    {"overage_limit_reached": True},
+])
+def test_probe_not_restored_when_credits_cannot_cover_overage(monkeypatch, credits):
+    _patch_httpx(monkeypatch, _StubResponse(200, _credits_payload(**credits)))
+    assert _probe_codex_quota_restored(_probe_token()) is False
+
+
+def test_probe_not_restored_when_spend_control_reached(monkeypatch):
+    payload = _credits_payload()
+    payload["spend_control"] = {"reached": True}
+    _patch_httpx(monkeypatch, _StubResponse(200, payload))
+    assert _probe_codex_quota_restored(_probe_token()) is False
+
+
+def test_probe_window_verdict_unchanged_without_credits_block(monkeypatch):
+    _patch_httpx(monkeypatch, _StubResponse(200, _usage_payload(100.0, 10.0)))
+    assert _probe_codex_quota_restored(_probe_token()) is False
+
+
 # ---------------------------------------------------------------------------
 # clear_codex_pool_quota_cooldowns
 # ---------------------------------------------------------------------------

@@ -175,10 +175,12 @@ class TestOutageCopy:
 
     def test_other_routes_and_other_reasons_keep_the_technical_summary(self):
         from agent.turn_recovery import _welcome_outage_copy
-        assert _welcome_outage_copy(PAID, SimpleNamespace(reason=FailoverReason.timeout)) == ""
-        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit)) == ""
+        assert _welcome_outage_copy(PAID, SimpleNamespace(reason=FailoverReason.timeout), anonymous=True) == ""
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit), anonymous=True) == ""
         # ``unknown`` is the catch-all for status-less local failures, not the free model's trouble.
-        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.unknown)) == ""
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.unknown), anonymous=True) == ""
+        # A named account's outage is its provider's trouble, not the free model's.
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.timeout)) == ""
 
 
 class TestTerminalResultsCarryTheFreeTierBlock:

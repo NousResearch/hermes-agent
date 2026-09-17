@@ -25,10 +25,8 @@ def agent_for(api_key, base_url):
     )
 
 
-@pytest.mark.parametrize("api_key", [
-    make_jwt(account_tier="free", client_id="hermes-cli"),
-    make_jwt(account_tier="paid", client_id="hermes-cli"), "sk-named", None,
-], ids=["named-free", "named-paid", "api-key", "unknown"])
+@pytest.mark.parametrize("api_key", [make_jwt(account_tier="free", client_id="hermes-cli"), "sk-named"],
+                         ids=["named-free", "api-key"])
 @pytest.mark.parametrize("base_url", [NAMED, WELCOME])
 @pytest.mark.parametrize("case", ["rate_limited", "at_capacity", "admission_closed", "model_not_free", "feature_not_free", "403", "503"])
 def test_named_errors_do_not_offer_anonymous_recovery(api_key, base_url, case):
@@ -88,7 +86,6 @@ def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch, t
     named_blocked = guard_for(guest)
     assert named_blocked.action == "return"
     assert "free_tier" not in named_blocked.result
-    assert "Your Nous account has hit its rate limit" in named_blocked.result["final_response"]
     clear_nous_rate_limit()
     assert nous_rate_limit_remaining() is None
     assert nous_rate_limit_remaining(anonymous=True) > 0

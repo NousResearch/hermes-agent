@@ -731,6 +731,9 @@ class TurnRunner:
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
+        if ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled:
+            await self._send_matrix_activity_progress()
+            return
         # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
         # each update would be a separate bubble. getattr, not attribute access: duck-typed
         # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
@@ -778,6 +781,75 @@ class TurnRunner:
             except Exception as e:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
+
+    async def _send_matrix_activity_progress(self) -> None:
+        """Drain Matrix tool labels through the turn's shared activity pane."""
+
+        ctx = self._ctx
+        pane = ctx.matrix_activity_pane
+        if pane is None:
+            return
+
+        # Heartbeat and queue updates share this throttle; idle polling flushes
+        # pending snapshots even when no later tool arrives.
+        pane.publish_interval = 1.5
+
+        async def _absorb(raw: Any) -> None:
+            if isinstance(raw, tuple) and raw and raw[0] == "__reset__":
+                # Matrix has one root for the whole turn, including across
+                # streamed content segment boundaries.
+                return
+            if (
+                isinstance(raw, tuple)
+                and len(raw) == 3
+                and raw[0] == "__dedup__"
+            ):
+                _, base_msg, count = raw
+                await pane.replace_activity(
+                    str(base_msg),
+                    f"{base_msg} (×{count + 1})",
+                    publish=False,
+                )
+                return
+            await pane.append_activity(str(raw), publish=False)
+
+        pending = None
+        try:
+            while True:
+                if not ctx._run_still_current():
+                    return
+                try:
+                    pending = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    if not self._agent_interrupted():
+                        await pane.flush()
+                    await asyncio.sleep(0.1)
+                    continue
+                if ctx._run_still_current() and not self._agent_interrupted():
+                    await _absorb(pending)
+                    pending = None
+                    await pane.flush()
+                else:
+                    pending = None
+                # Yield under a continuously replenished queue, without emitting
+                # one replacement per queued label.
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            # A label waiting on a heartbeat's lock has been dequeued but not
+            # absorbed. Keep it ahead of the tail, and leave all transport to
+            # close() so a slow connection cannot turn the drain into N calls.
+            while True:
+                if pending is None:
+                    try:
+                        pending = ctx.progress_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                if ctx._run_still_current() and not self._agent_interrupted():
+                    await _absorb(pending)
+                pending = None
+            return
+        except Exception:
+            logger.debug("Matrix activity progress failed", exc_info=True)
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
@@ -915,6 +987,10 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        if (ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled
+                and ctx.progress_queue is not None):
+            ctx.progress_queue.put(prepared)
             return
         def present():
             fut = self._schedule(

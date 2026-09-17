@@ -695,8 +695,10 @@ _shadow_state_metrics: Dict[str, Dict[str, Any]] = {}
 
 
 def reset_shadow_state_for_tests() -> None:  # pragma: no cover — test seam
+    from tools.computer_use.identity_trend import reset_identity_trends_for_tests
     _shadow_state_prev.clear()
     _shadow_state_metrics.clear()
+    reset_identity_trends_for_tests()
 
 
 def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None:
@@ -709,6 +711,7 @@ def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None
         import time as _time
 
         from tools.computer_use.semantic_state import build_state
+        from tools.computer_use.identity_trend import record_identity_step
         from tools.computer_use.state_diff import (
             delta_bytes, diff_states, full_observation_bytes,
         )
@@ -736,6 +739,10 @@ def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None
             "ambiguous": len(delta.ambiguous) if delta else 0,
             "mean_confidence": delta.mean_confidence if delta else 1.0,
         }
+        if delta:  # first capture has nothing to reconcile; the trend starts at step 2
+            record_identity_step(sid, retention=delta.identity_retention, matched=delta.matched,
+                                 removed=len(delta.removed), ambiguous=len(delta.ambiguous),
+                                 mean_confidence=delta.mean_confidence, revision=revision)
     except Exception:
         logger.debug("shadow semantic-state observation failed", exc_info=True)
 
@@ -743,6 +750,18 @@ def _shadow_state_observe(cap: CaptureResult, session_id: Optional[str]) -> None
 def get_shadow_state_metrics(session_id: Optional[str] = None) -> Dict[str, Any]:
     """Last shadow measurement for a session (test/reporting seam; empty before any capture)."""
     return dict(_shadow_state_metrics.get(_scoped_sid(session_id or ""), {}))
+
+
+def get_identity_trend(session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Per-run identity-retention trend for a session (empty before any reconciliation)."""
+    from tools.computer_use.identity_trend import get_identity_trend as _trend
+    return _trend(_scoped_sid(session_id or ""))
+
+
+def aggregate_identity_trends() -> Dict[str, Any]:
+    """Across-runs identity-retention aggregate over every tracked session."""
+    from tools.computer_use.identity_trend import aggregate_identity_trends as _agg
+    return _agg()
 
 
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,

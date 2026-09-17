@@ -1212,6 +1212,40 @@ class TestAdapterBehavior(unittest.TestCase):
 
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_raw_message_sanitizes_lone_surrogates(self):
+        """#113799: a lone surrogate in the payload must not reach the SDK marshal."""
+        import asyncio
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat", msg_type="text",
+                    payload="hello \ud800 world", reply_to=None, metadata=None))
+
+        content = captured["request"].request_body.content
+        assert "\ud800" not in content
+        assert "hello \ufffd world" in content
+        json.dumps(content)  # must not raise UnicodeEncodeError at marshal time
+
     def test_send_document_reply_uses_thread_flag(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

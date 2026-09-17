@@ -3616,6 +3616,10 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _send_raw_message(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        # Lone surrogates crash the SDK's JSON marshal (UnicodeEncodeError) after all
+        # retries; scrub once here so every outbound path is covered (#113799).
+        from agent.message_sanitization import _sanitize_surrogates
+        payload = _sanitize_surrogates(payload)
         thread_id = (metadata or {}).get("thread_id")
         effective_reply_to = reply_to or ((metadata or {}).get("reply_to_message_id") if thread_id else None)
         if effective_reply_to:

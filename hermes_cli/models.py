@@ -1504,6 +1504,11 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
+    # external_process providers (ACP agent CLIs) have no api_key/base_url credentials:
+    # the profile's fetch_models drives its own subprocess, so let it supply the catalog.
+    if profile and profile.auth_type == "external_process":
+        live = profile.fetch_models()
+        return list(live) if live else None
     if not (profile and profile.auth_type == "api_key" and profile.base_url):
         return None
     api_key, base_url = _api_key_credentials(normalized)

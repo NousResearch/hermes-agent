@@ -749,7 +749,10 @@ def _prompt_desc_limit() -> int:
 
     Cached on the config file's mtime so the hot prompt-build path never re-reads
     config.yaml; clamped to [20, 400] because values outside that range are
-    user error, not intent.
+    user error, not intent. Parsing is deliberately lenient (``int(raw)``):
+    non-numeric strings fall back to the default, and booleans coerce via
+    ``int(True) == 1`` (then clamp to 20) — malformed input fails safe, never
+    raises.
     """
     global _DESC_LIMIT_CACHE
     try:

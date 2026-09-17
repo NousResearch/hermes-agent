@@ -1164,9 +1164,12 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
-    from agent.skill_utils import _prompt_desc_limit
-    if (isinstance(snapshot, dict)
-            and tuple(snapshot.get("version") or ()) == (_SKILLS_SNAPSHOT_VERSION, _prompt_desc_limit())
+    # Pre-upgrade snapshots wrote "version" as the bare int (e.g. 2); tuple() on an
+    # int raises TypeError, so normalize: only v3+ list/tuple versions can match,
+    # anything else — legacy int, missing, malformed — is a rebuild trigger.
+    version = snapshot.get("version") if isinstance(snapshot, dict) else None
+    if (isinstance(version, (list, tuple))
+            and tuple(version) == (_SKILLS_SNAPSHOT_VERSION, _prompt_desc_limit())
             and snapshot.get("manifest") == _build_skills_manifest(skills_dir)):
         return snapshot
     return None

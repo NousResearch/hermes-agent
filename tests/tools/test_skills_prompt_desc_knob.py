@@ -8,6 +8,10 @@ reaches the rendered prompt is the failure mode this file pins out:
   3. the skills-index snapshot version embeds the limit (so changing the knob
      rebuilds the snapshot instead of serving stale truncations)
   4. out-of-range values clamp instead of corrupting the prompt
+  5. a PRE-UPGRADE snapshot whose "version" is the bare int (e.g. 2) is a
+     rebuild trigger — it must not raise TypeError past the corrupt guard
+  6. a snapshot whose [version, limit] matches the knob is served as-is
+  7. a snapshot written under a DIFFERENT limit rebuilds
 """
 from __future__ import annotations
 
@@ -97,3 +101,62 @@ def test_knob_absent_config_uses_default_60(knob):
     knob.write_text('{"skills": {}}', encoding="utf-8")
     su._DESC_LIMIT_CACHE = (0, su.SKILL_PROMPT_DESC_LIMIT_DEFAULT)
     assert su._prompt_desc_limit() == 60
+
+
+# --- snapshot migration: _load_skills_snapshot must survive every legacy shape --
+
+def _snapshot_fixture(monkeypatch, tmp_path):
+    """Point prompt_builder's snapshot path at a temp file; empty skills dir."""
+    from agent import prompt_builder as pb
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    snap_path = tmp_path / "snap.json"
+    monkeypatch.setattr(pb, "_skills_prompt_snapshot_path", lambda: snap_path, raising=True)
+    monkeypatch.setattr(pb, "clear_skills_system_prompt_cache", lambda *a, **k: None, raising=True)
+    return pb, skills_dir, snap_path
+
+
+def test_knob_path_5_legacy_int_version_is_rebuild_trigger(monkeypatch, tmp_path):
+    """Pre-upgrade snapshot wrote the version as a bare int (e.g. 2) — no TypeError, just rebuild."""
+    import json
+    pb, skills_dir, snap_path = _snapshot_fixture(monkeypatch, tmp_path)
+    snap_path.write_text(json.dumps({"version": 2, "skills": []}), encoding="utf-8")
+    assert pb._load_skills_snapshot(skills_dir) is None  # must not raise
+
+
+def test_knob_path_6_current_version_snapshot_is_served(monkeypatch, tmp_path, knob):
+    """A v3 snapshot written under the CURRENT limit round-trips as a list."""
+    import json
+    pb, skills_dir, snap_path = _snapshot_fixture(monkeypatch, tmp_path)
+    _set_limit(knob, 100)
+    snap_path.write_text(json.dumps({
+        "version": [pb._SKILLS_SNAPSHOT_VERSION, 100],
+        "manifest": pb._build_skills_manifest(skills_dir),
+        "skills": [],
+        "category_descriptions": {},
+    }), encoding="utf-8")
+    loaded = pb._load_skills_snapshot(skills_dir)
+    assert loaded is not None and loaded["skills"] == []
+
+
+def test_knob_path_7_limit_change_rebuilds_snapshot(monkeypatch, tmp_path, knob):
+    """Snapshot written under a different limit is stale — must rebuild (None)."""
+    import json
+    pb, skills_dir, snap_path = _snapshot_fixture(monkeypatch, tmp_path)
+    _set_limit(knob, 100)
+    snap_path.write_text(json.dumps({
+        "version": [pb._SKILLS_SNAPSHOT_VERSION, 400],  # written under another limit
+        "manifest": pb._build_skills_manifest(skills_dir),
+        "skills": [],
+        "category_descriptions": {},
+    }), encoding="utf-8")
+    assert pb._load_skills_snapshot(skills_dir) is None
+
+
+def test_knob_path_7b_missing_version_is_rebuild_trigger(monkeypatch, tmp_path):
+    """No version key at all (corrupt dict) — rebuild, never raise."""
+    import json
+    pb, skills_dir, snap_path = _snapshot_fixture(monkeypatch, tmp_path)
+    snap_path.write_text(json.dumps({"skills": []}), encoding="utf-8")
+    assert pb._load_skills_snapshot(skills_dir) is None

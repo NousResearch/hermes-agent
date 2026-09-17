@@ -226,7 +226,7 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     turn_ctx = SimpleNamespace(
         source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
-        context_prompt=None, result_holder=[None])
+        context_prompt=None, result_holder=[None], gateway_review_admission=None)
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
                                     message_type=None, internal=True, metadata={}, reply_expected=True)
 

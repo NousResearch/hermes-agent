@@ -1,0 +1,15 @@
+name: zerosignal
+repo: https://github.com/TxnLab/hermes-zerosignal-provider
+sha: ce1ba1f1603b4f191d3cd1aad284879df51a9f4a  # v0.1.0
+version: "0.1.0"
+description: ZeroSignal — private, pay-per-request inference through the local zs-proxy; no API key, your wallet is the credential.
+maintainer: TxnLab
+tier: community
+category: models
+docs_url: https://github.com/TxnLab/hermes-zerosignal-provider#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ZEROSIGNAL_API_KEY

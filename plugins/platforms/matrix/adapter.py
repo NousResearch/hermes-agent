@@ -3298,7 +3298,9 @@ def register(ctx) -> None:
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
         allow_update_command=True,
         platform_hint=PLATFORM_HINT,
-        display_tier="medium",
+        # Tool activity persists as one m.replace pane, so the high tier (tool_progress: all) is the
+        # default. Opt out with tool_progress: off. streaming stays None (follows top level).
+        display_tier="high",
         env_overrides=gateway_env.ENV_OVERRIDES,
         env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )

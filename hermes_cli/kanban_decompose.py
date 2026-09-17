@@ -306,6 +306,17 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, reason)
 
     routing = _load_routing()
+    # #114294: children the decomposer can't route must inherit the ROOT
+    # task's assignee before the global default chain. The old fallback
+    # (configured default_assignee, else the decomposer process's active
+    # profile) silently routed them to whatever profile the decomposer
+    # happened to run under — e.g. the incognito ``private`` profile,
+    # which by design has no credentials, so the dispatcher's spawned
+    # workers deadlocked on capability blockers. Explicit LLM routing
+    # still wins; this only replaces the no-fit fallback, mirroring how
+    # decompose_triage_task already inherits the root's workspace.
+    if task.assignee and task.assignee in routing.valid_names:
+        routing.default_assignee = task.assignee
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

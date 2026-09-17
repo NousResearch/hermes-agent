@@ -911,6 +911,12 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         failure_reason: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        # A local-fail re-mark (the pool gate's synthesized error carries no payload)
+        # must not erase a provider-declared reset: the whole reset-aware restore
+        # chain reads it, and wiping it drops the window back to the 60s sole-
+        # credential TTL — re-probing a proven-empty weekly quota every turn.
+        if normalized_error.get("reset_at") is None and entry.last_error_reset_at is not None:
+            normalized_error["reset_at"] = entry.last_error_reset_at
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
         # fails immediately until the user removes it (#32849).

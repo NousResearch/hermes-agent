@@ -253,7 +253,9 @@ export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
  *  default (Today / Yesterday / Last week dividers). `profile` only means
  *  anything while the sidebar is showing every profile at once. */
 export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
-export const SIDEBAR_GROUPING_CYCLE: readonly SidebarGrouping[] = ['date', 'project', 'status', 'profile']
+/** The one ordering of groupings: the filter menu lists them in it and the
+ *  `view.cycleSidebarGrouping` keybind walks it, so the two cannot drift. */
+export const SIDEBAR_GROUPING_ORDER: readonly SidebarGrouping[] = ['date', 'project', 'status', 'profile']
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
@@ -658,10 +660,9 @@ export function setSidebarGrouping(grouping: SidebarGrouping) {
 }
 
 export function cycleSidebarGrouping() {
-  const currentIndex = SIDEBAR_GROUPING_CYCLE.indexOf($sidebarGrouping.get())
-  const nextIndex = (currentIndex + 1) % SIDEBAR_GROUPING_CYCLE.length
+  const currentIndex = SIDEBAR_GROUPING_ORDER.indexOf($sidebarGrouping.get())
 
-  setSidebarGrouping(SIDEBAR_GROUPING_CYCLE[nextIndex])
+  setSidebarGrouping(SIDEBAR_GROUPING_ORDER[(currentIndex + 1) % SIDEBAR_GROUPING_ORDER.length])
 }
 
 export function setSidebarOrdering(ordering: SidebarOrdering) {

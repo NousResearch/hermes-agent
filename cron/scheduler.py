@@ -3471,10 +3471,27 @@ class CronSchedulerRegistrationError(RuntimeError):
             "retry_create": False}
 
 
+class CronDeadStoreError(ValueError):
+    """No gateway is running, so the job would be stored with no ticker to ever fire it (#87033)."""
+
+
 def create_job_with_scheduler_registration(**kwargs) -> dict:
-    """Persist one job and register its first trigger with the active provider."""
+    """Persist one job and register its first trigger with the active provider.
+
+    Every creation surface (tool, CLI, blueprints, suggestions, REST) routes through here, so the
+    dead-store gate (#87033) lives here too: with the builtin provider and no gateway process there
+    is no ticker, and the job would be saved dead on arrival -> CronDeadStoreError. A ``paused``
+    create is exempt: it is deliberately inert, and resuming it needs a gateway anyway.
+    """
     from cron.jobs import create_job
     from cron.scheduler_provider import resolve_cron_scheduler
+    from tools.cronjob_job_args import _dead_store_refusal, _gateway_liveness_notice
+
+    allow_dead_store = kwargs.pop("allow_dead_store", False)
+    if not kwargs.get("paused"):
+        refusal = _dead_store_refusal(_gateway_liveness_notice(), allow_dead_store)
+        if refusal:
+            raise CronDeadStoreError(refusal)
 
     job = create_job(**kwargs)
     if not job.get("enabled", True):

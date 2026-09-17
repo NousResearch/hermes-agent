@@ -2,6 +2,7 @@
 tools/cronjob_tools.py)."""
 
 import logging
+import os
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
@@ -431,3 +432,63 @@ def _gateway_liveness_notice(plural: bool = False) -> dict:
                 + " Tell the user the task is scheduled but not active yet."),
         }
     return {"gateway_running": None if _gw is None else True}
+
+
+def _is_kanban_worker_run() -> bool:
+    """True when this process is a dispatcher-spawned kanban/board worker.
+
+    Mirrors the canonical gate used by the kanban toolset
+    (``tools/kanban_tools._check_kanban_mode``): the env var alone is not
+    proof of ownership, because delegate_task children and cron jobs fired
+    in-process from a worker inherit it — ``agent.delegation_context``
+    settles that. Fails open to True (warn, don't refuse) if the probe
+    itself breaks, matching kanban_tools' own fallback.
+    """
+    if not (
+        os.environ.get("HERMES_KANBAN_TASK")
+        or os.environ.get("HERMES_KANBAN_WORKSPACE")
+    ):
+        return False
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        return is_dispatcher_owned_worker_context()
+    except Exception:
+        return True
+
+
+def _dead_store_refusal(
+    notice: dict,
+    allow_dead_store: Optional[bool] = None,
+    override_hint: str = "re-run with allow_dead_store=True",
+) -> Optional[str]:
+    """The one refuse-vs-warn decision for creating an un-fireable job (#87033).
+
+    The builtin ticker only runs inside the gateway process, so a job stored
+    while no gateway is running is dead on arrival — three incidents of
+    "it said it was scheduled and nothing ever happened" came from creating
+    one anyway. Returns the refusal message when the create must be blocked,
+    or ``None`` when it may proceed (the advisory ``warning`` in ``notice``
+    still rides along on the success payload).
+
+    Never refuses when liveness is True (scheduler live), None (probe failed —
+    refusing there would be a false alarm) or the provider is non-builtin
+    (``_builtin_gateway_liveness`` already reports those as alive). Also never
+    refuses for a dispatcher-spawned board worker: a worker scheduling a
+    followup has no human at the prompt to start a gateway, so it gets the
+    loud warning instead of a hard stop.
+
+    ``override_hint`` names the caller's escape hatch (the CLI passes its
+    ``--allow-dead-store`` flag) so the message is actionable on both surfaces.
+    """
+    if notice.get("gateway_running") is not False:
+        return None
+    if allow_dead_store:
+        return None
+    if _is_kanban_worker_run():
+        return None
+    return (
+        _DEAD_STORE_WARNING.format(subject="this job would be saved")
+        + " Refusing to create a job that can never fire: start the gateway "
+        f"and try again, or {override_hint} to schedule it anyway."
+    )

@@ -611,7 +611,7 @@ def cron_create(args):
 
     refusal = _dead_store_refusal(
         _gateway_liveness_notice(),
-        getattr(args, "allow_dead_store", False),
+        getattr(args, "allow_dead_store", False) or getattr(args, "paused", False),
         override_hint="re-run with --allow-dead-store",
     )
     if refusal:

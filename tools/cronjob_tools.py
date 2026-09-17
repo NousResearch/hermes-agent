@@ -4,7 +4,6 @@
 import contextlib
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -48,10 +47,10 @@ from cron.jobs import (
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
-    _DEAD_STORE_WARNING,
     _apply_continuity,
     _canonical_skills,
     _clean_str_list,
+    _dead_store_refusal,
     _format_job,
     _gateway_liveness_notice,
     _local_delivery_notice,
@@ -594,21 +593,15 @@ def _action_create(a: Dict[str, Any]) -> str:
     if error:
         return tool_error(error, success=False)
 
-    # Dead-store guard (#87033): the builtin ticker lives in the gateway process, so storing a job
-    # with no gateway running schedules something that can never fire. Probe once here and reuse
-    # the same notice for the success payload below.
-    _liveness = _gateway_liveness_notice()
-    _refusal = _dead_store_refusal(_liveness, a.get("allow_dead_store"))
-    if _refusal:
-        return tool_error(_refusal, success=False, gateway_running=False)
-
     context_from = a["context_from"]
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
 
-    from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
+    from cron.scheduler import (
+        CronDeadStoreError, CronSchedulerRegistrationError, create_job_with_scheduler_registration)
     try:
         job = create_job_with_scheduler_registration(
+            allow_dead_store=a.get("allow_dead_store"),
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
             deliver=_resolve_cron_context_deliver(deliver), origin=_origin_from_env(), skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
@@ -623,6 +616,8 @@ def _action_create(a: Dict[str, Any]) -> str:
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
+    except CronDeadStoreError as exc:
+        return tool_error(str(exc), success=False, gateway_running=False)
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
@@ -635,7 +630,7 @@ def _action_create(a: Dict[str, Any]) -> str:
         "success": True, "job_id": job["id"], "name": job["name"], "skill": job.get("skill"),
         "skills": job.get("skills", []), "schedule": job["schedule_display"], "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"), "next_run_at": job["next_run_at"], "job": _format_job(job),
-        "message": _create_message, **_liveness,
+        "message": _create_message, **_gateway_liveness_notice(),
     }
     return _dumps(_with_guidance(_result, job, deliver))
 
@@ -937,66 +932,6 @@ def _resolve_job_or_error(job_id: str):
             {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
         )
     return job, None
-
-
-def _is_kanban_worker_run() -> bool:
-    """True when this process is a dispatcher-spawned kanban/board worker.
-
-    Mirrors the canonical gate used by the kanban toolset
-    (``tools/kanban_tools._check_kanban_mode``): the env var alone is not
-    proof of ownership, because delegate_task children and cron jobs fired
-    in-process from a worker inherit it — ``agent.delegation_context``
-    settles that. Fails open to True (warn, don't refuse) if the probe
-    itself breaks, matching kanban_tools' own fallback.
-    """
-    if not (
-        os.environ.get("HERMES_KANBAN_TASK")
-        or os.environ.get("HERMES_KANBAN_WORKSPACE")
-    ):
-        return False
-    try:
-        from agent.delegation_context import is_dispatcher_owned_worker_context
-
-        return is_dispatcher_owned_worker_context()
-    except Exception:
-        return True
-
-
-def _dead_store_refusal(
-    notice: dict,
-    allow_dead_store: Optional[bool] = None,
-    override_hint: str = "re-run with allow_dead_store=True",
-) -> Optional[str]:
-    """The one refuse-vs-warn decision for creating an un-fireable job (#87033).
-
-    The builtin ticker only runs inside the gateway process, so a job stored
-    while no gateway is running is dead on arrival — three incidents of
-    "it said it was scheduled and nothing ever happened" came from creating
-    one anyway. Returns the refusal message when the create must be blocked,
-    or ``None`` when it may proceed (the advisory ``warning`` in ``notice``
-    still rides along on the success payload).
-
-    Never refuses when liveness is True (scheduler live), None (probe failed —
-    refusing there would be a false alarm) or the provider is non-builtin
-    (``_builtin_gateway_liveness`` already reports those as alive). Also never
-    refuses for a dispatcher-spawned board worker: a worker scheduling a
-    followup has no human at the prompt to start a gateway, so it gets the
-    loud warning instead of a hard stop.
-
-    ``override_hint`` names the caller's escape hatch (the CLI passes its
-    ``--allow-dead-store`` flag) so the message is actionable on both surfaces.
-    """
-    if notice.get("gateway_running") is not False:
-        return None
-    if allow_dead_store:
-        return None
-    if _is_kanban_worker_run():
-        return None
-    return (
-        _DEAD_STORE_WARNING.format(subject="this job would be saved")
-        + " Refusing to create a job that can never fire: start the gateway "
-        f"and try again, or {override_hint} to schedule it anyway."
-    )
 
 
 def cronjob(

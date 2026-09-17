@@ -275,7 +275,8 @@ class TestAdapterInit:
             staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
-        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 37)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: {"terminal", "file"})
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
@@ -288,6 +289,61 @@ class TestAdapterInit:
         assert captured["checkpoint_max_snapshots"] == 7
         assert captured["checkpoint_max_total_size_mb"] == 321
         assert captured["checkpoint_max_file_size_mb"] == 4
+        assert captured["enabled_toolsets"] == ["file", "terminal"]
+        assert captured["max_iterations"] == 37
+        assert "skip_memory" not in captured
+        assert "skip_context_files" not in captured
+
+    def test_create_agent_composition_only_disables_tools_and_context(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.api_mode = "chat_completions"
+                self.tools = [{"function": {"name": "kanban_show"}}]
+                self.valid_tool_names = {"kanban_show"}
+                self._context_engine_tool_names = {"lcm_grep"}
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 37)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: {"terminal", "file"})
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "task-1")
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session", composition_only=True)
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["enabled_toolsets"] == []
+        assert captured["max_iterations"] == 1
+        assert captured["skip_memory"] is True
+        assert captured["skip_context_files"] is True
+        assert getattr(agent, "_composition_only", False) is True
+        assert agent.tools == []
+        assert agent.valid_tool_names == set()
+        assert agent._context_engine_tool_names == set()
+
+    def test_create_agent_composition_only_rejects_codex_app_server(self, monkeypatch):
+        closed = []
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                self.api_mode = "codex_app_server"
+
+            def close(self):
+                closed.append(True)
+
+        _patch_create_agent_runtime(monkeypatch, {}, FakeAgent)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        with pytest.raises(RuntimeError, match="composition_only.*codex_app_server"):
+            adapter._create_agent(session_id="api-session", composition_only=True)
+
+        assert closed == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1056,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["composition_only_runs"] is True
             assert data["features"]["runs_idempotency"] == {
                 "supported": True,
                 "durable": True,

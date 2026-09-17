@@ -449,7 +449,11 @@ def _refresh_mcp_tools_between_turns(agent: Any) -> None:
     try:
         # Import-cost gate: MCP tools are only registered by code that already imported
         # ``tools.mcp_tool`` (~0.4s); not in sys.modules => nothing to do.
-        if not getattr(agent, "_skip_mcp_refresh", False) and "tools.mcp_tool" in sys.modules:
+        if (
+            not getattr(agent, "_composition_only", False)
+            and not getattr(agent, "_skip_mcp_refresh", False)
+            and "tools.mcp_tool" in sys.modules
+        ):
             from tools.mcp_tool_discovery import has_registered_mcp_tools
             from tools.mcp_tool_agent import refresh_agent_mcp_tools
             if has_registered_mcp_tools():
@@ -960,12 +964,13 @@ def build_turn_context(
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
     # gate as the protocol section); gate is session-stable, so cache-safe.
-    try:
-        from tools.bot_mode_dm import ensure_message_agent_tool
+    if not getattr(agent, "_composition_only", False):
+        try:
+            from tools.bot_mode_dm import ensure_message_agent_tool
 
-        ensure_message_agent_tool(agent)
-    except Exception:
-        logger.debug("message_agent injection skipped", exc_info=True)
+            ensure_message_agent_tool(agent)
+        except Exception:
+            logger.debug("message_agent injection skipped", exc_info=True)
 
     _ensure_session_row(agent, pending_cli_message)
 

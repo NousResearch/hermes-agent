@@ -302,6 +302,45 @@ class TestStartRun:
         mock_create.assert_not_called()
         assert adapter._run_statuses == {}
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("composition_only", [None, 0, 1, "true", []])
+    async def test_start_rejects_non_boolean_composition_only(self, adapter, composition_only):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs", json={"input": "hello", "composition_only": composition_only}
+                )
+                body = await resp.json()
+
+        assert resp.status == 400
+        assert body["error"]["code"] == "invalid_composition_only"
+        mock_create.assert_not_called()
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
+    async def test_start_passes_composition_only_to_agent_creation(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs", json={"input": "hello", "composition_only": True}
+                )
+                assert resp.status == 202
+                for _ in range(20):
+                    if mock_create.call_args is not None:
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert mock_create.call_args.kwargs["composition_only"] is True
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):
@@ -369,6 +408,7 @@ class TestStartRun:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+        assert "composition_only" not in kwargs
 
 
 # ---------------------------------------------------------------------------

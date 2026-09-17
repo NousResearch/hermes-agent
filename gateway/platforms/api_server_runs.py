@@ -370,6 +370,7 @@ class _RunLaunch:
     browser_control_principal: Any
     browser_control_transport_family: Any
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
+    composition_only: bool = False
 
     @property
     def approval_session_key(self) -> str:
@@ -427,6 +428,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         body = await request.json()
     except Exception:
         return _json_error(_openai_error, "Invalid JSON", status=400)
+    if not isinstance(body, dict):
+        return _json_error(_openai_error, "Request body must be a JSON object.", status=400)
+    composition_only = body.get("composition_only", False)
+    if not isinstance(composition_only, bool):
+        return _json_error(
+            _openai_error, "'composition_only' must be a boolean", code="invalid_composition_only", status=400)
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
@@ -536,7 +543,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
+        turn_author=turn_author, composition_only=composition_only)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -662,9 +669,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("cancelled")
             return
         with self._profile_scope(run.request_profile):
+            create_agent_kwargs = dict(run.agent_kwargs)
+            if run.composition_only:
+                create_agent_kwargs["composition_only"] = True
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                **run.agent_kwargs)
+                **create_agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage = await loop.run_in_executor(

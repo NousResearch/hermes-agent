@@ -66,6 +66,7 @@ _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 # /v1/capabilities static feature flags (order is part of the JSON shape).
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
+    "composition_only_runs": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
@@ -2137,7 +2138,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model_options: Optional[Dict[str, Any]] = None, route: Optional[Dict[str, Any]] = None,
         session_model: Optional[str] = None, confirmed_runtime_lock: bool = False,
         room_dispatch: Optional[Dict[str, Any]] = None,
-        room_execution_policy: Optional[Dict[str, Any]] = None) -> Any:
+        room_execution_policy: Optional[Dict[str, Any]] = None,
+        composition_only: bool = False) -> Any:
         """Create an AIAgent from the gateway runtime config + platform toolsets.
         ``gateway_session_key`` persists across transcripts (memory scope), unlike ``session_id``;
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
@@ -2171,6 +2173,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             policy = RoomExecutionPolicy.from_mapping(room_execution_policy or {})
             enabled_toolsets = list(policy.enabled_toolsets)
             max_iterations = policy.max_iterations
+        if composition_only:
+            enabled_toolsets = []
+            max_iterations = 1
         # Reasoning resolves against the model that actually runs (per-model overrides), so only
         # after the precedence chain settles; an explicit request wins.
         if request_reasoning_config is None:
@@ -2192,7 +2197,25 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "gateway_session_key": gateway_session_key}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        if composition_only:
+            agent_kwargs.update(skip_memory=True, skip_context_files=True)
         agent = AIAgent(**agent_kwargs)
+        if composition_only:
+            if getattr(agent, "api_mode", None) == "codex_app_server":
+                with suppress(Exception):
+                    agent.close()
+                raise RuntimeError(
+                    "composition_only is not supported with api_mode='codex_app_server'"
+                )
+            setattr(agent, "_composition_only", True)
+            setattr(agent, "tools", [])
+            for _attr in ("valid_tool_names", "_context_engine_tool_names"):
+                _names = getattr(agent, _attr, None)
+                _clear = getattr(_names, "clear", None)
+                if callable(_clear):
+                    _clear()
+                else:
+                    setattr(agent, _attr, set())
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

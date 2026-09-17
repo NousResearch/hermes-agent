@@ -48,6 +48,28 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     assert len(agent.tools) == 3
 
 
+def test_composition_only_refresh_does_not_reinject_mcp_tools(monkeypatch):
+    agent = _agent([])
+    agent._composition_only = True
+    agent._context_engine_tool_names = set()
+
+    import model_tools
+    monkeypatch.setattr(
+        model_tools,
+        "get_tool_definitions",
+        lambda **_kw: pytest.fail("composition_only agent must not refresh MCP tools"),
+    )
+
+    assert _mcp_agent.refresh_agent_mcp_tools(agent) == set()
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+    assert agent._context_engine_tool_names == set()
+    assert _mcp_agent.restore_agent_tool_prefix(agent, ["mcp_late_tool"]) is False
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+    assert agent._context_engine_tool_names == set()
+
+
 def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch):
     """B1 regression: a rebuild must NOT drop post-build-injected tools.
 

@@ -494,6 +494,22 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
 
 
+def test_composition_only_turn_skips_mcp_and_bot_tool_injection():
+    agent = _FakeAgent()
+    setattr(agent, "_composition_only", True)
+
+    import tools.mcp_tool  # noqa: F401 — exercise the normal import-cost gate
+    with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
+         patch("tools.mcp_tool_agent.refresh_agent_mcp_tools") as mcp_refresh, \
+         patch("tools.bot_mode_dm.ensure_message_agent_tool") as bot_inject:
+        _build(agent)
+
+    mcp_refresh.assert_not_called()
+    bot_inject.assert_not_called()
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
 class _TitlingAgent:
     """Only what ``_maybe_title_session_at_turn_start`` reads off an agent."""
 

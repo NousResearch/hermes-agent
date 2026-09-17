@@ -133,6 +133,8 @@ def ensure_message_agent_tool(agent: Any) -> bool:
     Idempotent and deterministic for the session's life (the gate is stable from the
     first turn), so the tool list is byte-identical across turns — prompt-cache safe. Never raises."""
     try:
+        if getattr(agent, "_composition_only", False):
+            return False
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
         tools = getattr(agent, "tools", None)

@@ -22,7 +22,18 @@ needs provider-specific code today:
 
 Model ids are bare (``claude-opus-5``, not ``anthropic/claude-opus-5``), so the
 picker's curated list and the per-endpoint context windows in
-``agent/model_metadata._ENDPOINT_SCOPED_CONTEXT`` both key off bare ids.
+``agent/model_metadata._ENDPOINT_SCOPED_CONTEXT`` both key off bare ids. Every id in
+``fallback_models`` was checked against the live catalogue on 2026-09-17 and all of
+them are served.
+
+``supports_vision`` here is the host-level default that lets the vision path engage at
+all; it is not a claim about every model. Probed on 2026-09-17 by sending a 32x32
+solid-colour PNG as a data: URI and asking for the colour, four colours per route: 34
+of the 55 chat routes read the image, and of the ids curated below claude-sonnet-5,
+glm-5.3, glm-5.3-flash and gpt-5-mini do not - they either reject the part or answer
+without seeing it. Per-model truth comes from the models.dev catalogue this repo
+already reads, whose cheaperinference entries carry those probed values; a user can
+still pin ``providers.cheaperinference.models.<id>.supports_vision`` in config.
 """
 
 from providers import register_provider

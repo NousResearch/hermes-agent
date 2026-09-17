@@ -122,6 +122,30 @@ def _log_hint_action(task_id: str) -> DiagnosticAction:
     return _cli_hint(f"Check logs: {cmd}", cmd, suggested=True)
 
 
+def _crash_output_tail(task_id: str) -> str:
+    """Last 300 chars of a worker's log (never raises), for crash diagnostics."""
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        raw = _kb.read_worker_log(task_id, tail_bytes=500)
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    # Strip ANSI escape sequences for clean display.
+    import re
+
+    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw)
+    # Trim non-printable characters.
+    clean = "".join(ch if 32 <= ord(ch) < 127 else " " for ch in clean)
+    return clean[-300:]
+
+
+def _one_line(text: str) -> str:
+    """First line up to 160 chars, stripped."""
+    return text.splitlines()[0][:160].strip() if text else ""
+
+
 def _error_snippet(last_err) -> str:
     """First 500 chars of the error (with ellipsis), or "" when absent."""
     err_text = (last_err or "").strip() if last_err else ""
@@ -411,6 +435,18 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             f"This task has failed {failures} times in a row (most recent: {outcome_label}) but no "
             f"error text was captured. Check the suggested command or the worker log."
         )
+
+    # Attach crash output tail when the last failure was a crash.
+    task_id = _task_field(task, "id")
+    crash_tail = None
+    if most_recent_outcome == "crashed" and task_id:
+        crash_tail = _crash_output_tail(task_id)
+        if crash_tail and crash_tail not in (err_snippet or ""):
+            tail_line = _one_line(crash_tail)
+            if tail_line:
+                title = f"Agent crashed x{failures}: {tail_line}"
+                detail += f"\n\nLast worker log tail:\n{crash_tail}"
+
     return [Diagnostic(
         kind="repeated_failures", severity=severity,
         title=title, detail=detail, actions=actions,
@@ -421,6 +457,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             "last_error": last_err,
             "failure_threshold": threshold,
             "failure_limit": failure_limit,
+            "crash_output_tail": crash_tail if (most_recent_outcome == "crashed" and task_id) else None,
         },
     )]
 
@@ -475,11 +512,21 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
             f"The last {consecutive} runs ended with outcome=crashed but "
             f"no error text was captured. Check the worker log for more."
         )
+
+    # Attach crash output tail.
+    crash_tail = _crash_output_tail(task_id) if task_id else None
+    if crash_tail and crash_tail not in (err_snippet or ""):
+        tail_line = _one_line(crash_tail)
+        if tail_line:
+            title = f"Agent crashed {consecutive}x: {tail_line}"
+            detail += f"\n\nLast worker log tail:\n{crash_tail}"
+
     return [Diagnostic(
         kind="repeated_crashes", severity=severity,
         title=title, detail=detail, actions=actions,
         first_seen_at=now, last_seen_at=now, count=consecutive,
-        data={"consecutive_crashes": consecutive, "last_error": last_err},
+        data={"consecutive_crashes": consecutive, "last_error": last_err,
+              "crash_output_tail": crash_tail},
     )]
 
 

@@ -813,14 +813,34 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
                 .expanduser()
                 .resolve()
             )
+        # Deny-list matches PRODUCTION board paths only: ``<root>/kanban.db``,
+        # anything under ``<root>/kanban/`` and ``<root>/profiles/<name>/``.
+        # A blanket "anywhere under the real root" refuse-mode mis-fires when
+        # the pytest temp root itself sits under ``~/.hermes`` (conductor
+        # delegate TMPDIR / ``--basetemp ~/.hermes/tmp/...``): sandboxed test
+        # DBs land at e.g. ``~/.hermes/tmp/.../.hermes/kanban.db`` — inside the
+        # root but NOT the production board — and 20+ hermetic tests errored
+        # (2026-09-17 full-suite run). ``_REAL_KANBAN_ROOT`` is the real
+        # ``~/.hermes`` root; relative_to can't fail (resolved paths agree),
+        # but keep the try for exotic mismatches (symlink races).
+        is_production = False
         try:
-            resolved.relative_to(_REAL_KANBAN_ROOT)
+            parts = resolved.relative_to(_REAL_KANBAN_ROOT).parts
         except ValueError:
-            # Resolved path is NOT under the real root — safe to write.
+            parts = ()
+        if parts:
+            is_production = (
+                parts == ("kanban.db",)
+                or (len(parts) >= 2 and parts[0] == "kanban")
+                or (len(parts) == 3 and parts[0] == "profiles")
+            )
+        if not is_production:
+            # Resolved path is NOT a production board path — safe to write.
             return _orig_connect(db_path, *args, **kwargs)
         raise RuntimeError(
             f"kanban_write_guard: kanban DB path resolved to {resolved}, "
-            f"which is under the REAL kanban root ({_REAL_KANBAN_ROOT}). "
+            f"which is a production board path under the REAL kanban root "
+            f"({_REAL_KANBAN_ROOT}). "
             f"Hermetic isolation has been bypassed — refusing to write "
             f"to the real ~/.hermes. See #69283."
         )

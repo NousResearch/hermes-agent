@@ -209,6 +209,9 @@ class SessionRecoveryMixin:
         platform = parts[2] if len(parts) >= 3 and parts[0] == "agent" else None
         if not platform:
             return None
+        # No scope/profile fences here, unlike _query_recoverable_row: with no chat tuple the finder
+        # runs only the `s.session_key = ?` branch in the store _db_for_key picked for this key, so a
+        # hit carries this very key — same profile namespace and (for scoped Slack) same scope_id slot.
         row = self._peer_row(db, source=platform, session_key=session_key)
         if not isinstance(row, dict) or not row.get("id"):
             return None

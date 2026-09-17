@@ -2,7 +2,7 @@
 
 from agent.secret_sources import bitwarden_write
 from tools.secret_capture_tool import get_secret_capture_callback
-from tui_gateway import agent_callbacks
+from tui_gateway import server
 
 
 def test_bitwarden_failure_is_safe_and_destination_is_bound_to_prompt(monkeypatch):
@@ -15,10 +15,10 @@ def test_bitwarden_failure_is_safe_and_destination_is_bound_to_prompt(monkeypatc
     def fail_storage(_name, _value):
         raise ValueError("provider detail containing captured-secret")
 
-    monkeypatch.setattr(agent_callbacks, "_ask", ask)
+    monkeypatch.setattr(server, "_ask", ask)
     monkeypatch.setattr(bitwarden_write, "store_bitwarden_secret", fail_storage)
 
-    agent_callbacks._wire_callbacks("session-a")
+    server._wire_callbacks("session-a")
     callback = get_secret_capture_callback()
     assert callback is not None
 

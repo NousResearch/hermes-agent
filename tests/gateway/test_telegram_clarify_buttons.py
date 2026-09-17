@@ -256,3 +256,52 @@ class TestBaseAdapterClarifyFallback:
         assert "1." in text and "apple" in text
         assert "2." in text and "banana" in text
 
+
+# ===========================================================================
+# Opt-in choice-text button labels (telegram.clarify_button_labels: text)
+# ===========================================================================
+
+async def _send_and_capture_buttons(adapter, choices):
+    """Send a clarify prompt; return the message body and its buttons as (label, callback_data)."""
+    adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    with patch("plugins.platforms.telegram.adapter.InlineKeyboardButton",
+               side_effect=lambda label, callback_data: (label, callback_data)), \
+         patch("plugins.platforms.telegram.adapter.InlineKeyboardMarkup", side_effect=lambda rows: rows):
+        await adapter.send_clarify(
+            chat_id="12345", question="Pick one", choices=choices, clarify_id="cid", session_key="sk")
+    kwargs = adapter._bot.send_message.call_args[1]
+    return kwargs["text"], [button for row in kwargs["reply_markup"] for button in row]
+
+
+class TestTelegramClarifyTextLabels:
+    """With text labels configured, a button shows the choice it answers."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    async def test_yaml_text_labels_put_each_choice_on_the_button_that_answers_it(self):
+        from plugins.platforms.telegram.adapter import _apply_yaml_config
+
+        adapter = _make_adapter(_apply_yaml_config({}, {"clarify_button_labels": "text"}))
+        choices = ["Next.js", "Remix", "Astro"]
+
+        _, buttons = await _send_and_capture_buttons(adapter, choices)
+
+        answers = [(label, data.rsplit(":", 1)[1]) for label, data in buttons if not data.endswith(":other")]
+        assert answers == [(choice, str(index)) for index, choice in enumerate(choices)]
+
+    @pytest.mark.asyncio
+    async def test_long_choice_is_shortened_on_its_button_but_kept_whole_in_the_message(self):
+        import html
+
+        adapter = _make_adapter({"clarify_button_labels": "text"})
+        long_choice = "Rewrite the dashboard in Astro and keep the existing API layer untouched until the migration lands"
+
+        body, buttons = await _send_and_capture_buttons(adapter, [long_choice])
+
+        label = buttons[0][0]
+        assert len(label) < len(long_choice)
+        assert long_choice.startswith(label.rstrip("…"))
+        assert html.escape(long_choice) in body
+

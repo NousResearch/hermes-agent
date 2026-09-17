@@ -414,12 +414,14 @@ def _do_decide(backend, action, args, session_id=None, **_):
     if not goal:
         return json.dumps({"error": "decide requires `goal` (or `goal_hint`)"})
     from tools.computer_use.decision_lane import SemanticState, jev_available, run_decision_lane
-    from tools.computer_use.decision_stages import jev_stage, reranker_stage
+    from tools.computer_use.decision_stages import aux_stage, jev_stage, reranker_stage
     cap = backend.capture(mode="ax", app=args.get("app"),
                           **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
     candidates = _elements_to_candidates(cap.elements)
     state = SemanticState(elements=candidates, busy=bool(args.get("busy")), goal_hint=goal)
-    decision, packet = run_decision_lane(state, candidates, reranker=reranker_stage, jev=jev_stage)
+    decision, packet = run_decision_lane(
+        state, candidates, reranker=reranker_stage, aux=aux_stage, jev=jev_stage,
+    )
     packet_path = _persist_decision_packet(packet)
     payload: Dict[str, Any] = {
         "ok": True,

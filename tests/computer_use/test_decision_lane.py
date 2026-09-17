@@ -41,6 +41,24 @@ def test_rules_click_on_exact_goal_match():
     assert (decision.action, decision.target_ref) == ("click", "b1")
 
 
+def test_backend_order_aux_before_jev():
+    """RFC #113850 ladder: aux must win before Jev when both would fire."""
+    aux = lambda state, cands: Decision(action="click", target_ref="b1", confidence=0.9, backend="aux")
+
+    def _jev_should_not_run(state, cands):
+        raise AssertionError("jev stage should not run when aux accepts")
+
+    decision, packet = run_decision_lane(
+        SemanticState(goal_hint="ambiguous"),
+        (_cand("b1", "Save"), _cand("b2", "Save copy")),
+        reranker=None,
+        aux=aux,
+        jev=_jev_should_not_run,
+    )
+    assert decision is not None and decision.backend == "aux"
+    assert packet.scores == {"aux": 0.9}
+
+
 def test_rules_abstain_falls_through_to_reranker():
     reranker = lambda state, cands: Decision(
         action="click", target_ref="b2", confidence=0.8, backend="reranker")

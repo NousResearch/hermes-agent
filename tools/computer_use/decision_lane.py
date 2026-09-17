@@ -6,8 +6,9 @@ backends can answer without a frontier-model round trip. Backend order:
     deterministic rules -> local semantic reranker -> fast aux model
     -> Jev (only when TYPESAFE_API_KEY / JEV_API_KEY is set) -> abstain (fail open)
 
-Only the rules stage ships in-tree; other stages plug in as callables with
-the same ``(state, candidates) -> Decision | None`` shape (None = abstain).
+Rules, reranker, aux, and Jev stages ship in ``decision_stages``; callers may
+override any stage via the same ``(state, candidates) -> Decision | None`` shape
+(None = abstain).
 A stage that cannot run must abstain, never guess: the caller falls back to
 the current planner. Approval and safety paths are untouched.
 

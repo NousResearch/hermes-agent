@@ -83,4 +83,24 @@ describe('floating composer focus-follow vs a focused transcript text field', ()
 
     expect(document.activeElement).toBe(editor)
   })
+
+  // `isEditableTarget` counts a native <select> as text entry, so a focused
+  // dropdown in the surface keeps its focus on pointermove rather than snapping
+  // the caret to the pane composer — a deliberately wider set than a plain
+  // <input>, pinned here so the widening stays intentional.
+  it('keeps a focused native <select> in the surface when the pointer moves', () => {
+    const { editor, surface } = mount()
+    unregister = registerFloatingComposer('surface-1', { groupId: 'g1', target: 'main' })
+
+    const select = document.createElement('select')
+    select.appendChild(document.createElement('option'))
+    surface.appendChild(select)
+    select.focus()
+    expect(document.activeElement).toBe(select)
+
+    movePointerOver(select)
+
+    expect(document.activeElement).toBe(select)
+    expect(document.activeElement).not.toBe(editor)
+  })
 })

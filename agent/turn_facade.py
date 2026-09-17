@@ -54,6 +54,20 @@ class TurnFacadeMixin:
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
+        # Workspace skill routing belongs in the current user message: changing
+        # ``ephemeral_system_prompt`` after a session begins would invalidate its
+        # cached system-prompt prefix.  Keep the durable transcript/memory input
+        # clean by persisting the user's original request.
+        from agent.runtime_cwd import resolve_agent_cwd
+        from agent.workspace_skill_router import route_workspace_skill_context
+
+        routed_user_message, _ = route_workspace_skill_context(
+            user_message, cwd=resolve_agent_cwd(), task_id=effective_task_id,
+        )
+        if routed_user_message is not user_message:
+            if persist_user_message is None:
+                persist_user_message = user_message
+            user_message = routed_user_message
         session_id = str(getattr(self, "session_id", None) or "")
         task_context = {
             "session_id": session_id,

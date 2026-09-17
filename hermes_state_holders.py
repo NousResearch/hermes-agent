@@ -147,6 +147,7 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     """
     db_path_str = os.path.abspath(os.fspath(db_path))
     this_home = os.path.dirname(db_path_str)
+    this_home_norm = os.path.normcase(this_home)
     ours = {
         os.path.normcase(candidate)
         for candidate in (
@@ -160,20 +161,30 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     for token in argv:
         if not isinstance(token, str):
             continue
-        if token.startswith("/"):
+        # os.path.isabs (not a "/" prefix): Windows homes arrive as drive-letter
+        # (C:\...\state.db), forward-slash (C:/...), or UNC (\\host\...) tokens.
+        if os.path.isabs(token):
             path_token = token
         elif token.startswith("-") and "=" in token:
             # ``--db=/abs/path``-style options carry a path value; anchor on
             # the text after '=' so normpath does not prepend the option.
             value = token.split("=", 1)[1]
-            path_token = value if value.startswith("/") else None
+            path_token = value if os.path.isabs(value) else None
         else:
             path_token = None
         if path_token is not None:
             normalized = os.path.normcase(os.path.normpath(path_token))
-            if normalized in ours or normalized.startswith(this_home + os.sep):
+            if normalized in ours or normalized.startswith(this_home_norm + os.sep):
                 return False
-            if "/.hermes" in normalized or normalized.endswith("/.hermes"):
+            # Both separators: normcase folds "/" to os.sep only on Windows, so a
+            # forward-slash token on Windows (or a backslash one on POSIX) must
+            # still match textually.
+            if (
+                os.sep + ".hermes" in normalized
+                or normalized.endswith(os.sep + ".hermes")
+                or "/.hermes" in normalized
+                or normalized.endswith("/.hermes")
+            ):
                 other_home_seen = True
             elif os.path.basename(normalized) in (
                 "state.db",

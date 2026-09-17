@@ -457,7 +457,7 @@ def cron_status():
                   "    hermes gateway install    # Install as a user service\n"
                   "    sudo hermes gateway install --system  # Linux servers: boot-time system service\n"
                   "    hermes gateway run        # Or run in foreground")
-            if active != "default":
+            if active not in ("default", "custom"):
                 print("\n  Alternatives for this named profile:\n"
                       "    Keep the Desktop app open with this profile included in its scheduler and the machine awake, or\n"
                       "    configure a running default gateway to tick this profile:\n"

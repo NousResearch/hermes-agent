@@ -17,6 +17,8 @@ def profile(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "probe")
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: root)
+    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")
@@ -71,6 +73,22 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
     if mode == "external":
         assert "managed scheduler" in output
         assert "STALLED" not in output
+
+
+@pytest.mark.parametrize("home_kind", ["default", "custom", "named"])
+def test_standalone_guidance_matches_profile_membership(profile, monkeypatch, capsys, home_kind):
+    from hermes_cli.cron import cron_status
+
+    homes = {"default": profile, "custom": profile.parent / "custom", "named": profile / "profiles/probe"}
+    home = homes[home_kind]
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_PROFILE")
+    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    cron_status()
+    output = capsys.readouterr().out
+    assert "hermes gateway install" in output
+    assert ("hermes --profile default gateway restart" in output) == (home_kind == "named")
 
 
 @pytest.mark.parametrize("dispatch", ["catch_up", "late", "forward_error"])

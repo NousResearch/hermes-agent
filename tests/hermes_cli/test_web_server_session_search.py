@@ -142,3 +142,30 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
         ]
     }
     assert _FakeSessionDB.opened_read_only is True
+
+
+def test_desktop_session_search_attaches_profile_to_rich_results(monkeypatch):
+    class _RichFakeSessionDB(_FakeSessionDB):
+        def get_session_rich_row(self, session_id):
+            return {
+                "id": session_id,
+                "source": "cli",
+                "model": "claude",
+                "title": "Custom Title",
+                "started_at": 100,
+                "ended_at": None,
+                "last_active": 100,
+                "message_count": 2,
+                "tool_call_count": 0,
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "preview": "Test preview",
+                "parent_session_id": None,
+                "archived": False,
+            }
+
+    monkeypatch.setattr("hermes_state.SessionDB", _RichFakeSessionDB)
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+    response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=1, profile="personal"))
+    assert response["results"][0]["profile"] == "personal"
+    assert response["results"][0]["title"] == "Custom Title"

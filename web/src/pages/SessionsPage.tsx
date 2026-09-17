@@ -515,7 +515,7 @@ function SessionRow({
     }
     setRenameSaving(true);
     try {
-      await onRename(session.id, value);
+      await onRename(session.id, value, session.profile);
       setRenaming(false);
     } finally {
       setRenameSaving(false);
@@ -1467,9 +1467,10 @@ export default function SessionsPage() {
   ]);
 
   const handleRename = useCallback(
-    async (id: string, title: string) => {
+    async (id: string, title: string, profile?: string) => {
+      const targetProfile = profile ?? rowProfile(id);
       try {
-        await api.renameSession(id, title, rowProfile(id));
+        await api.renameSession(id, title, targetProfile);
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
@@ -2202,7 +2203,7 @@ interface SessionRowProps {
   isSelected: boolean;
   onDelete: () => void;
   onExport: (id: string) => void;
-  onRename: (id: string, title: string) => Promise<void>;
+  onRename: (id: string, title: string, profile?: string) => Promise<void>;
   onSelectClick: (event: React.MouseEvent) => void;
   onToggle: () => void;
   resumeInChatEnabled: boolean;

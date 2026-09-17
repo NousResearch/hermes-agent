@@ -627,10 +627,12 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
+  const targetProfile = profile ?? profileScoped(profile).profile
+
   return hermesApi<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
+    ...(targetProfile ? { profile: targetProfile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
+    body: { title, ...(targetProfile ? { profile: targetProfile } : {}) }
   })
 }

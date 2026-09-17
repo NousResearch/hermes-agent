@@ -1,12 +1,12 @@
-"""Agent flush path: a raw SQLITE_CANTOPEN (retired WAL generation) diverts to JSONL.
+"""Agent flush path: a raw SQLITE_CANTOPEN diverts the batch to JSONL.
 
-A surviving writer whose ``-wal``/``-shm`` sidecars were unlinked by a clean
-gateway close raises ``sqlite3.OperationalError: unable to open database file``
-on its next append — NOT the prose ``DeletedWalGenerationError`` guard, which only
-fires on the open path and on a write whose recorded sidecar identity has changed.
-The batch must still be diverted to ``sessions/<id>.jsonl`` (level 1: no data loss),
-while the flush still fails closed (``False`` → ``session_persistence_failed``): level 1
-adds no reopen/replay, so a genuinely invalid path can never silently mint a database.
+``sqlite3.OperationalError: unable to open database file`` is SQLITE_CANTOPEN — generic
+("could not open it": missing parent dir, unreadable file, FD exhaustion), and NOT proof that a
+``-wal``/``-shm`` generation was retired; that proven case has its own
+``DeletedWalGenerationError`` guard, backed by sidecar-identity and /proc fd evidence.
+The batch is diverted anyway, because the symptom costs the turn whatever its cause,
+while the flush still fails closed (``False`` → ``session_persistence_failed``): no
+reopen/replay is added, so an invalid path can never silently mint a database.
 """
 
 from __future__ import annotations
@@ -66,10 +66,35 @@ def test_flush_diverts_batch_to_jsonl_on_raw_cantopen(tmp_path, monkeypatch) -> 
 
         # Fail closed: the turn still aborts (no silent recovery), but the batch is saved.
         assert result is False
-        assert agent._last_persistence_error_cause == "deleted_wal"
+        assert agent._last_persistence_error_cause == "disk"
         jsonl = tmp_path / "sessions" / "live.jsonl"
         assert jsonl.is_file()
         assert "kept-on-disk-after-cantopen" in jsonl.read_text(encoding="utf-8")
+    finally:
+        db.close()
+
+
+def test_flush_fails_closed_when_the_divert_itself_fails(tmp_path, monkeypatch) -> None:
+    """Negative control: the divert can fail (unwritable sessions path). The flush must still
+    fail closed and quietly — never raise, never mint a database, never claim a kept copy."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("live", source="cli")
+        agent = _flush_agent(db, "live")
+        (tmp_path / "sessions" / "live.jsonl").mkdir(parents=True)  # open("a") on a dir fails
+
+        def _cantopen(self, *, session_id, messages, **kwargs):
+            raise sqlite3.OperationalError("unable to open database file")
+
+        monkeypatch.setattr(SessionDB, "append_messages_batch", _cantopen)
+
+        result = agent._flush_messages_to_session_db(
+            [{"role": "user", "content": "lost-if-not-diverted"}], []
+        )
+        assert result is False
+        assert agent._last_persistence_error_cause == "disk"
+        assert (tmp_path / "sessions" / "live.jsonl").is_dir()  # untouched, nothing fabricated
     finally:
         db.close()
 

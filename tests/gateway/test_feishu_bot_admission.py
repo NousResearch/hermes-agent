@@ -655,7 +655,7 @@ def test_smart_mention_rejects_message_mentioning_others():
                                id=SimpleNamespace(open_id="ou_other_bot", user_id=""),
                                name="OtherBot")])
     stub_mention(adapter, mentions_self=False)
-    assert adapter._admit(sender, message) == "bot_not_mentioned"
+    assert adapter._admit(sender, message) == "mentions_other_party"
 
 
 def test_smart_mention_accepts_unmentioned_message():
@@ -693,7 +693,7 @@ def test_smart_mention_per_group_rule_overrides_global():
                                id=SimpleNamespace(open_id="ou_other", user_id=""),
                                name="Other")])
     stub_mention(adapter, mentions_self=False)
-    assert adapter._admit(sender, message) == "bot_not_mentioned"
+    assert adapter._admit(sender, message) == "mentions_other_party"
 
 
 def test_smart_mention_disabled_keeps_open_behavior():

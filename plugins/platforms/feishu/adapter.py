@@ -339,7 +339,7 @@ class FeishuBatchState:
 
 # --- Admission: policy types ---
 
-RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "group_policy_rejected"]
+RejectReason = Literal["self_echo", "self_ids_unknown", "bots_disabled", "bot_not_mentioned", "mentions_other_party", "group_policy_rejected"]
 
 
 def _is_bot_sender(sender: Any) -> bool:
@@ -3293,7 +3293,10 @@ class FeishuAdapter(BasePlatformAdapter):
             # or @_all (checked inside _mentions_self).
             mentions = getattr(message, "mentions", None) or []
             if mentions and not self._mentions_self(message):
-                return "bot_not_mentioned"
+                # Explicitly addressed to someone else (another bot or user),
+                # not a forgotten @ of this bot — keep the drop reason distinct
+                # from bot_not_mentioned so gateway logs stay unambiguous.
+                return "mentions_other_party"
         if require_mention and not self._mentions_self(message):
             return "group_policy_rejected"
         return None

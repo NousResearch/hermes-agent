@@ -408,7 +408,8 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
+    from hermes_cli.profiles import get_active_profile_name
     print()
 
     provider = _active_cron_provider_name()
@@ -436,9 +437,7 @@ def cron_status():
                 pids = [lock_pid] if lock_pid else pids
             # Multiplexer identity does not establish the active profile's ticker health.
             if not pids and not gateway_alive_via_lock:
-                with contextlib.suppress(Exception):
-                    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-                    served_by_multiplexer = named_profile_served_by_running_multiplexer()
+                served_by_multiplexer = named_profile_served_by_running_multiplexer()
         if pids or gateway_alive_via_lock or served_by_multiplexer:
             if served_by_multiplexer:
                 print("  Scheduler host: default-profile multiplexer")
@@ -447,12 +446,7 @@ def cron_status():
                 _print_ticker_health(pids)
         else:
             print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
-            # Desktop scheduling requires an open app and an awake machine.
-            try:
-                from hermes_cli.profiles import get_active_profile_name
-                active = get_active_profile_name() or "default"
-            except Exception:
-                active = "default"
+            active = get_active_profile_name()
             print("\n  To enable automatic execution for this profile:\n"
                   "    hermes gateway install    # Install as a user service\n"
                   "    sudo hermes gateway install --system  # Linux servers: boot-time system service\n"

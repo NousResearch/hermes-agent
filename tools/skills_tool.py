@@ -4,6 +4,7 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+import hashlib
 import json
 import logging
 import os
@@ -16,8 +17,7 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, extract_skill_editorial_metadata,
-    is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -89,17 +89,11 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
 
 
 def load_env() -> Dict[str, str]:
-    """Load profile-scoped environment variables from HERMES_HOME/.env."""
-    env_path = get_hermes_home() / ".env"
-    env_vars: Dict[str, str] = {}
-    if env_path.exists():
-        # utf-8-sig: a Notepad BOM would otherwise glue U+FEFF onto the first key.
-        with env_path.open(encoding="utf-8-sig", errors="replace") as f:
-            for line in map(str.strip, f):
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, value = line.removeprefix("export ").partition("=")
-                    env_vars[key.strip()] = value.strip().strip("\"'")
-    return env_vars
+    """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
+    installs the profile scope, so a captured value never differs from the served one)."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(get_hermes_home() / ".env")
 
 
 def set_secret_capture_callback(callback) -> None:
@@ -185,23 +179,9 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _skill_metadata_projection(
-    skills: List[Dict[str, Any]], *, include_editorial: bool
-) -> List[Dict[str, Any]]:
-    """Copy cached metadata, omitting UI-only copy for agent-facing callers."""
-    if include_editorial:
-        return [dict(skill) for skill in skills]
-    return [
-        {key: value for key, value in skill.items()
-         if key not in {"editorial_name", "editorial_description"}}
-        for skill in skills
-    ]
-
-
-def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI).
-    ``include_editorial=True`` adds human-facing copy without replacing the canonical fields."""
+    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
     cache_key = "with_disabled" if skip_disabled else "filtered"
     disabled = set() if skip_disabled else _get_disabled_skill_names()
@@ -212,7 +192,7 @@ def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = F
     if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILLS_CACHE_TTL_SECONDS:
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
-        return _skill_metadata_projection(cached[2], include_editorial=include_editorial)
+        return [dict(s) for s in cached[2]]
     skills = []
     seen_names: set = set()
     for scan_dir in dirs_to_scan:  # project dirs go through the quarantine chokepoint
@@ -232,10 +212,7 @@ def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = F
                     description = next((ln for ln in map(str.strip, body.strip().split("\n"))
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
-                description = _truncate_description(description)
-                editorial = extract_skill_editorial_metadata(
-                    frontmatter, fallback_name=name, fallback_description=description)
-                skills.append({"name": name, "description": description, **editorial,
+                skills.append({"name": name, "description": _truncate_description(description),
                                "category": _get_category_from_path(skill_md)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
@@ -244,7 +221,7 @@ def _find_all_skills(*, skip_disabled: bool = False, include_editorial: bool = F
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
-    return _skill_metadata_projection(skills, include_editorial=include_editorial)
+    return [dict(s) for s in skills]
 
 
 def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -334,6 +311,18 @@ def _under_any(path: Path, dirs) -> bool:
     return any(resolved.is_relative_to(d) for d in dirs)
 
 
+def _is_package_owned_markdown(path: Path, search_root: Path) -> bool:
+    """True when a legacy Markdown candidate belongs to an ancestor directory skill."""
+    try:
+        relative = path.relative_to(search_root)
+    except ValueError:
+        return False
+    return any(
+        (search_root.joinpath(*relative.parts[:depth]) / "SKILL.md").is_file()
+        for depth in range(1, len(relative.parts))
+    )
+
+
 def _collect_skill_candidates(name, local_category_name, all_dirs):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
@@ -351,26 +340,28 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
             seen_md.add(key)
             candidates.append((sd, smd))
 
-    def _record_direct(direct_path: Path) -> None:  # "mlops/axolotl" / "axolotl" or its flat .md sibling
+    def _record_direct(direct_path: Path, search_root: Path) -> None:  # "mlops/axolotl" / "axolotl" or its flat .md sibling
         flat = direct_path.with_suffix(".md")
         if not _is_skill_support_path(direct_path) and direct_path.is_dir() and (direct_path / "SKILL.md").exists():
             _record(direct_path, direct_path / "SKILL.md")
-        elif flat.exists() and not _is_skill_support_path(flat):
+        elif (flat.exists() and not _is_skill_support_path(flat)
+              and not _is_package_owned_markdown(flat, search_root)):
             _record(None, flat)
 
     for search_dir in all_dirs:
         for direct in filter(None, (name, local_category_name)):  # "p:x" with no plugin p → "p/x"
-            _record_direct(search_dir / direct)
+            _record_direct(search_dir / direct, search_dir)
         # Recursive by directory name plus frontmatter `name:` — skills_list()
         # exposes the frontmatter name, so skill_view(name) must accept it too.
         for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
             if (found_skill_md.parent.name == name
                     or _safe_frontmatter(found_skill_md).get("name") == name):
                 _record(found_skill_md.parent, found_skill_md)
-        # Legacy flat <name>.md anywhere under the dir; support docs are excluded
-        # (they load via file_path and must not shadow real skills sharing the basename).
+        # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
+        # directory skill loads through file_path and must not shadow a real skill.
         for found_md in search_dir.rglob(f"{name}.md"):
-            if found_md.name != "SKILL.md" and not _is_skill_support_path(found_md):
+            if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
+                    and not _is_package_owned_markdown(found_md, search_dir)):
                 _record(None, found_md)
     return candidates
 
@@ -430,7 +421,8 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
     required_env_vars = _get_required_environment_variables(frontmatter)
-    backend = str(os.getenv("TERMINAL_ENV", "local")).strip().lower() or "local"
+    from tools.terminal_scope import terminal_env
+    backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
     env_snapshot = load_env()
     missing_required_env_vars = [
         e for e in required_env_vars
@@ -481,17 +473,57 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
     return fields, extras
 
 
+def _owning_search_dir(skill_md: Path, all_dirs) -> Optional[Path]:
+    """Most specific search dir containing *skill_md*, compared lexically: a symlinked entry
+    belongs to the root that exposes it, not to the root its target lives in."""
+    owners = [Path(d) for d in all_dirs if skill_md.is_relative_to(d)]
+    return max(owners, key=lambda d: len(d.parts), default=None)
+
+
+def _rank_same_root_candidate(candidate, root: Path) -> tuple:
+    """Real SKILL.md beats a legacy flat ``<name>.md``, then the shallower path wins."""
+    _skill_dir, skill_md = candidate
+    return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
+
+
+def _provably_same_skill(candidates) -> bool:
+    """True only when every candidate is the SAME skill: one resolved SKILL.md (symlink view)
+    or byte-identical content (copy). Anything else is two different skills sharing a name,
+    and picking one by depth would let ``<root>/evil`` (``name: github``) shadow the real one."""
+    try:
+        if len({os.path.realpath(smd) for _sd, smd in candidates}) == 1:
+            return True
+        return len({hashlib.sha256(smd.read_bytes()).hexdigest() for _sd, smd in candidates}) == 1
+    except OSError:
+        return False
+
+
 def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: list, all_dirs):
-    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, quarantine
-    gate, not-found listing. ``(error_json, skill_dir, skill_md)``; skill_md set iff no error."""
+    """Unique on-disk skill for *name*: collision refusal, project-tier precedence, same-root
+    precedence, quarantine gate, not-found listing. ``(error_json, skill_dir, skill_md)``;
+    skill_md set iff no error."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
     candidates = _collect_skill_candidates(name, local_category_name, all_dirs)
     if len(candidates) > 1 and project_dirs:
         # A project skill intentionally overrides a same-named local/external skill;
-        # ambiguity WITHIN the project tier still refuses.
+        # ambiguity WITHIN the project tier (two different skills) still refuses.
         candidates = [c for c in candidates if _under_any(c[1], project_dirs)] or candidates
+    if len(candidates) > 1:
+        # The refusal below guards against one skill silently shadowing another. Copies of ONE
+        # skill inside a single search dir (``<root>/x`` symlink view + ``<root>/cat/x`` copy)
+        # shadow nothing, so rank them instead; different content, an equal-rank tie or a
+        # cross-tier spread still refuses.
+        roots = {_owning_search_dir(smd, all_dirs) for _sd, smd in candidates}
+        if len(roots) == 1 and None not in roots and _provably_same_skill(candidates):
+            root = roots.pop()
+            ranked = sorted(candidates, key=lambda c: _rank_same_root_candidate(c, root))
+            if _rank_same_root_candidate(ranked[0], root) != _rank_same_root_candidate(ranked[1], root):
+                logger.info("Skill '%s': %d identical same-root copies, resolved to %s (duplicates: %s)",
+                            name, len(candidates), ranked[0][1],
+                            "; ".join(str(smd) for _sd, smd in ranked[1:]))
+                candidates = [ranked[0]]
     if len(candidates) > 1:
         paths = [str(smd) for _, smd in candidates]
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
@@ -521,7 +553,9 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
 
 def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, active_skills_dir):
     """Warn (never block) when loaded from outside the trusted dirs (project + local + external)
-    and/or when common prompt-injection patterns appear."""
+    and/or when common prompt-injection patterns appear. The check is on the RESOLVED path:
+    every candidate is built as ``<search_dir>/...`` so a lexical test can never fire, and a
+    SKILL.md symlinked to a file outside every root is exactly what this guards against."""
     trusted_dirs = [active_skills_dir.resolve()]
     with suppress(Exception):
         trusted_dirs.extend(d.resolve() for d in all_dirs)
@@ -655,25 +689,6 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
-def _record_active_skill_view(skill_name: str, **kw) -> None:
-    """Track every successful skill_view, including unchanged dedup stubs."""
-
-    try:
-        from tools.skill_usage import bump_use, bump_view
-
-        bump_view(skill_name)
-        # A skill_view tool call is the agent actively loading the skill to
-        # act on it. The unchanged-content stub saves prompt tokens, but it is
-        # still a real use for lifecycle and local Wisdom qualification.
-        bump_use(
-            skill_name,
-            task_id=kw.get("task_id"),
-            session_id=kw.get("session_id"),
-        )
-    except Exception:
-        pass
-
-
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
@@ -681,9 +696,6 @@ def _skill_view_with_bump(args, **kw):
     name = args.get("name", "")
     task_id = kw.get("task_id")
     if (stub := _check_skill_view_dedup(task_id, name, args.get("file_path"))) is not None:
-        with suppress(Exception):
-            if resolved := json.loads(stub).get("name") or name:
-                _record_active_skill_view(str(resolved), **kw)
         return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
@@ -691,7 +703,11 @@ def _skill_view_with_bump(args, **kw):
         if isinstance(parsed, dict) and parsed.get("success"):
             _record_skill_view(task_id, name, args.get("file_path"), parsed)
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
-                _record_active_skill_view(str(resolved), **kw)
+                from tools.skill_usage import bump_use, bump_view
+                bump_view(str(resolved))
+                # Viewing is actively loading the skill to act on it — that counts as use
+                # (the curator's stale timer keys off last_used_at).
+                bump_use(str(resolved), task_id=kw.get("task_id"), session_id=kw.get("session_id"))
     return result
 
 

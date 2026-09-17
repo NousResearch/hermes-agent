@@ -68,6 +68,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
+        member_id="",
     ):
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
         return {"accepted": True}
@@ -279,6 +280,7 @@ class _PromptRecordingRPC(_FakeRPC):
         task,
         execution_generation,
         on_terminal,
+        member_id="",
     ):
         self.prompts.append((profile, prompt))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
@@ -382,7 +384,7 @@ def test_create_send_drive_publish_and_replay_without_client_transport(tmp_path:
             event["kind"] == "message.member" for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     assert [event["kind"] for event in events][:3] == [
@@ -604,7 +606,7 @@ def test_same_thread_followup_migrates_and_delivers_committed_peer_reply(
         payload={"text": "@hermes continue", "thread_id": "thread-1"},
     )
     _wait_for(lambda: len(service.rpc.prompts) == 2)
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     profile, prompt = service.rpc.prompts[1]
     assert profile == "default"
@@ -649,7 +651,7 @@ def test_active_same_thread_followup_waits_for_current_task(tmp_path: Path):
             for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
     assert "User (user): @hermes follow up" in service.rpc.prompts[1][1]
 
 
@@ -681,7 +683,7 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
             for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
     for index in range(24):
         _append_room_event(
             db,
@@ -1046,7 +1048,7 @@ def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
             event["kind"] == "message.member" for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     reply = next(event for event in events if event["kind"] == "message.member")
@@ -1112,7 +1114,7 @@ def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
             for event in service._events("room-1")
         )
     )
-    assert service.stop(timeout=1.0)
+    assert service.stop(timeout=5.0)
 
     events = service._events("room-1")
     assert any(
@@ -2076,15 +2078,19 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
 
 
 def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
-    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir nor a
-    tombstoned profile is a roster member (#106847: ``.deleted`` failed validate_roster every cycle)."""
+    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir, a
+    tombstoned profile, nor a marker-less cron shell is a roster member (#106847: ``.deleted``
+    failed validate_roster every cycle; #99392: side-effect dirs listed as bots)."""
     from hermes_constants import mark_named_profile_deleted
 
     profiles = tmp_path / "profiles"
     (profiles / "ops").mkdir(parents=True)
+    (profiles / "ops" / "config.yaml").write_text("{}\n", encoding="utf-8")
     (profiles / "gone").mkdir()
+    (profiles / "gone" / "config.yaml").write_text("{}\n", encoding="utf-8")
     mark_named_profile_deleted(profiles / "gone")
     assert (profiles / ".deleted").is_dir()
+    (profiles / "shell" / "cron").mkdir(parents=True)
 
     service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
 

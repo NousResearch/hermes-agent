@@ -6,7 +6,7 @@ import {
   $chatOnboardingThreadIds,
   endChatOnboardingSolo,
   pickOnboardingGreeting,
-  startChatOnboardingSolo
+  takeGuideShape
 } from '@/components/onboarding-chat/assembly'
 import {
   $setupSession,
@@ -19,6 +19,7 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
+import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { skipGuide } from '@/store/onboarding-gate'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
@@ -37,7 +38,7 @@ export interface OnboardingKickoffOptions extends Pick<
   'createBackendSessionForSend' | 'resumeSession'
 > {
   requestGateway: AmbientGatewayRequest
-  /** The caller's own requestGateway is what reads the pin. */
+  /** The caller's own requestGateway reads the pin. */
   runCreatePinnedTo: <T>(profile: string, create: () => Promise<T>) => Promise<T>
 }
 
@@ -77,8 +78,8 @@ async function adoptGuideSession(
   }
 }
 
-/** Seed the runbook and banked greeting on hermes-setup before advancing the phase.
- * The seeded assistant row opens the chat without a model turn. */
+/** Seeds the runbook and a pre-written greeting on hermes-setup before the phase advances.
+ * The seeded assistant row shows the chat's first message without a model turn. */
 export function useOnboardingKickoff({
   createBackendSessionForSend,
   requestGateway,
@@ -114,17 +115,16 @@ export function useOnboardingKickoff({
       $newChatProfile.set(SETUP_PROFILE)
       await ensureGatewayProfile(SETUP_PROFILE)
 
-      startChatOnboardingSolo()
-      window.hermesDesktop?.chatOnboarding?.soloBoot?.()
+      // Idempotent: the gate already took the shape on the tick the guide was
+      // owed, so no full-size shell painted during the profile round trips.
+      takeGuideShape()
       await loadMachineProfile()
-
-      const seedMessages = buildChatOnboardingSeedMessages(pickOnboardingGreeting(), record.free_tier !== true)
 
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
         requestGatewayForProfile(SETUP_PROFILE, method, params, timeout)
 
-      // The exact title is the durable registry: a relaunch adopts the guide
-      // before creating, so UNIQUE(title) cannot strand an untitled duplicate.
+      // Look the guide up by its exact title: a relaunch adopts the existing guide session before creating
+      // one, so the backend's UNIQUE(title) constraint cannot leave an untitled duplicate behind.
       const registryHit = await guideRequest<{ sessions?: GuideSession[] }>('session.list', {
         include_hidden: true,
         title: SETUP_CHAT_TITLE
@@ -138,6 +138,15 @@ export function useOnboardingKickoff({
         // runGuideKickoff records the guided phase only after adoption.
         return true
       }
+
+      const capabilities = await readOnboardingCapabilities({
+        connectionId: previousConnectionId,
+        profile: SETUP_PROFILE
+      })
+
+      const seedMessages = buildChatOnboardingSeedMessages(
+        pickOnboardingGreeting(), record.free_tier !== true, capabilities
+      )
 
       const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
 
@@ -162,10 +171,10 @@ export function useOnboardingKickoff({
         storedId
       })
 
-      // Manual title authority prevents the hidden runbook becoming the title.
+      // Set the title explicitly so the backend does not name the session after the hidden runbook message.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
 
-      // session.create persisted both seed rows before the phase can advance.
+      // session.create has already persisted both seed rows, so the caller may advance the phase.
       return true
     } catch (error) {
       $newChatProfile.set(previousNewChatProfile)

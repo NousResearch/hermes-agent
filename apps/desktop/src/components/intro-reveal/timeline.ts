@@ -25,14 +25,12 @@ export const INTRO_TOTAL_MS = 17600
 
 export const INTRO_WALL_MS = Math.round(INTRO_TOTAL_MS * INTRO_PACE)
 
-/** Exit dissolve window after the sequence — kept in one place so the surface
- *  fade and the window self-close agree. A real CSS transition, so it is wall
- *  time and the pace does not touch it. */
+/** Exit dissolve window after the sequence. index.tsx uses it as a wall-time delay before closing the overlay.
+ *  use-intro-clock.ts adds it to score time for the brand fade and the loop cutoff, so INTRO_PACE scales it there. */
 export const INTRO_EXIT_MS = 900
 
-/** Overlay deadman margin: the surface force-closes its own window this long
- *  after the nominal end even if the clock stalls, and the main process holds
- *  an independent watchdog above that. The screen ALWAYS comes back. */
+/** Overlay deadman margin: the surface force-closes its own window this long after the nominal end, even if
+ *  the clock stalls. The main process holds an independent watchdog above this. */
 export const INTRO_DEADMAN_MS = INTRO_WALL_MS + 4000
 
 export function sampleCurves(t: number) {
@@ -60,9 +58,8 @@ export const INTRO_PROMPT = 'Model a hero cube in Blender and cycle it through s
 export const INTRO_REPLY_WORDS =
   'Done — materials compiled and previewed on the cube. Want a turntable render exported?'.split(' ')
 
-/** Tool activity rows that materialize during `working`. `doneAt` flips the
- *  trailing status from running to the check state. Times are absolute
- *  sequence ms so the whole piece stays on one clock. */
+/** Tool activity rows that appear during the `working` beat. `doneAt` changes the trailing status from
+ *  running to done. Times are absolute sequence ms, so the whole piece stays on one clock. */
 export interface IntroToolRow {
   at: number
   doneAt: number
@@ -99,9 +96,8 @@ export const INTRO_TOOL_ROWS: IntroToolRow[] = [
   }
 ]
 
-/** Per-character reveal times for the typed prompt: human cadence (variable
- *  inter-key delays, tiny pauses after spaces), deterministic via a seeded
- *  LCG so every run is identical and there is nothing to jitter. */
+/** Per-character reveal times for the typed prompt. Delays vary between keys, with longer pauses after
+ *  spaces and punctuation, and come from a seeded LCG so every run is identical. */
 export function typingSchedule(text: string, startMs: number, endMs: number): number[] {
   let seed = 1337
 
@@ -114,7 +110,7 @@ export function typingSchedule(text: string, startMs: number, endMs: number): nu
   const weights = Array.from(text, ch => {
     const base = 1 + rand() * 1.1
 
-    // Breathe after word boundaries; hesitate slightly on punctuation.
+    // The extra weight on a space or a punctuation mark is the delay before that character appears.
     if (ch === ' ') {
       return base + 0.9
     }
@@ -139,8 +135,8 @@ export function typingSchedule(text: string, startMs: number, endMs: number): nu
   return times
 }
 
-/** Word reveal times for the streaming reply — front-loaded like real token
- *  streaming (fast burst, gentle tail). */
+/** Word reveal times for the streaming reply. easeOutQuad on the index, so early words arrive quicker than
+ *  late ones. */
 export function streamingSchedule(wordCount: number, startMs: number, endMs: number): number[] {
   const times: number[] = []
   const span = endMs - startMs
@@ -148,16 +144,14 @@ export function streamingSchedule(wordCount: number, startMs: number, endMs: num
   for (let i = 0; i < wordCount; i += 1) {
     const f = (i + 1) / wordCount
 
-    // easeOutQuad on the index → early words arrive quicker.
     times.push(startMs + (1 - (1 - f) * (1 - f)) * span)
   }
 
   return times
 }
 
-/** Beats that land within (prevT, t] — used to fire sound cues exactly once
- *  even when rAF cadence is irregular. Pass prevT = -1 on the first frame so
- *  the t=0 beat fires. */
+/** Beats in the half-open range (prevT, t]. Callers fire each sound cue once even when the rAF cadence is
+ *  irregular. Pass prevT = -1 on the first frame so the beat at t = 0 fires. */
 export function beatsBetween(prevT: number, t: number): IntroBeat[] {
   return INTRO_BEATS.filter(b => b.t > prevT && b.t <= t)
 }

@@ -23,6 +23,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "openai/gpt-6-astra-flex": "0.5x price, flex tier",
     "openai/gpt-6-astra-pro-fast": "2x price, priority tier",
     "openai/gpt-6-astra-pro-flex": "0.5x price, flex tier",
+    "stealth/union-alpha": "free, stealth model",
 }
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
@@ -43,14 +44,16 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
         "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
     )
 ]
 
-# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier).
+# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier —
+# ``stealth/union-alpha`` is a $0 stealth SKU without the ``:free`` suffix).
 _OPENROUTER_ONLY = {
     "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
     "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
+    "stealth/union-alpha",
 }
 
 
@@ -228,16 +231,18 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "gemini-3-flash",
         "grok-4.6", "grok-4.5", "grok-build-0.1", "muse-spark-1.2", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "deepseek-v4-pro",
-        "deepseek-v4-flash", "deepseek-v4-flash-free", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
-        "hy3-free", "laguna-s-2.1-free", "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
+        "deepseek-v4-flash", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
+        "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
     ],
     # OpenCode keyless free tier — OFFLINE FLOOR only. provider_model_ids("opencode-free")
     # revalidates live against GET /zen/v1/models and filters to the anonymous tier, so this list
     # may lag the relay (intentional). Known-delisted models are REMOVED (the offline fallback must
-    # not offer a model that 401s, e.g. x-preview-f-free).
+    # not offer a model that 401s; x-preview-f-free delisted 2026-08-26, hy3-free and
+    # laguna-s-2.1-free delisted 2026-09-09, and deepseek-v4-flash-free delisted
+    # 2026-09-15 — all removed from this offline floor after their relay delisting).
     "opencode-free": [
-        "deepseek-v4-flash-free", "hy3-free", "mimo-v2.5-free", "laguna-s-2.1-free",
+        "mimo-v2.5-free",
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free",
         "muse-spark-1.3-contributor-free",
     ],
@@ -504,14 +509,6 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 _AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
-
-
-# OpenRouter request-time routing variants (docs: guides/routing/model-variants): per-request
-# modifiers valid on ANY model id (":nitro" throughput sort + priority tier, ":floor" price sort +
-# flex tier, ":exacto" quality-first provider sort, ":online" web plugin). Never separate catalog
-# entries — /models lists only the base id. NOT here: ":free", ":batch", ":thinking", ":extended"
-# — those ARE distinct SKUs that appear in /models when they exist, so absence is authoritative.
-_OPENROUTER_VARIANT_SUFFIXES = frozenset({"nitro", "floor", "exacto", "online"})
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last

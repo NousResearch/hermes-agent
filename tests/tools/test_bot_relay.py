@@ -528,6 +528,33 @@ def test_drain_expires_old_envelope_with_queued_expired_reply(root):
     assert not reply["reply"]
 
 
+def test_the_outbox_is_claimed_oldest_first(root):
+    """Two DMs from one sender to one agent must arrive in the order they were sent. The Desktop
+    delivers each target's claimed envelopes in the order this list gives them, one turn at a
+    time, so the claim IS the delivery order — and sorting by filename ordered them by
+    ``uuid4().hex``. The names here are forced into the reverse of the send order to pin that
+    deterministically, which random ids reproduce half the time."""
+    first = bot_relay.enqueue_envelope(
+        root, target=_target(), message="do this first",
+        sender_profile="default", sender_handle="hermes",
+    )
+    second = bot_relay.enqueue_envelope(
+        root, target=_target(), message="then this",
+        sender_profile="default", sender_handle="hermes",
+    )
+    outbox = bot_relay.relay_root(root) / bot_relay.OUTBOX_DIR
+    now = _time2.time()
+    for env, name, sent_at in ((first, "f" * 32, now - 2), (second, "0" * 32, now - 1)):
+        path = outbox / f"{name}.json"
+        (outbox / f"{env['id']}.json").rename(path)
+        _os2.utime(path, (sent_at, sent_at))
+
+    claimed = bot_relay.claim_pending_envelopes(root)
+
+    assert [e["id"] for e in claimed] == [first["id"], second["id"]]
+    assert [e["message"] for e in claimed] == ["do this first", "then this"]
+
+
 def test_drain_delivers_fresh_envelope_under_ttl(root):
     env = bot_relay.enqueue_envelope(
         root, target=_target(), message="on time",
@@ -614,8 +641,19 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
 
     monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
     monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-A")
+    monkeypatch.setenv("HERMES_UI_SESSION_ID", "ui-A")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-A")
+    monkeypatch.setenv("HERMES_SESSION_PROFILE", "profile-A")
+    # A session-* knob, not identity: stripping it would break the child's watcher tuning.
+    monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "97")
 
     assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
     env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
     assert json.loads(env[TURN_AUTHOR_ENV]) == {"id": "bot:ops", "name": "ops", "is_bot": True}
     assert env["HERMES_RELAY_TEST_MARKER"] == "kept"
+    assert "HERMES_SESSION_KEY" not in env
+    assert "HERMES_UI_SESSION_ID" not in env
+    assert "HERMES_SESSION_ID" not in env
+    assert "HERMES_SESSION_PROFILE" not in env
+    assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"

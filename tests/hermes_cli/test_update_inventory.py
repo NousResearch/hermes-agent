@@ -8,8 +8,9 @@ import pytest
 import hermes_cli.update_inventory as ui
 
 
-def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None):
-    record = {"pid": pid}
+def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None,
+                 gateway_state: str = "running"):
+    record = {"pid": pid, "gateway_state": gateway_state}
     if sha:
         record["code_sha"] = sha
     if version:
@@ -31,6 +32,9 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: default_home / "profiles")
     monkeypatch.setattr("hermes_cli.profiles._PROFILE_ID_RE", re.compile(r"^[a-z0-9][a-z0-9_-]*$"), raising=False)
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
+    # A runtime is a VERIFIED gateway identity: live PID whose command line is a gateway's for that home.
+    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
+        100: "hermes gateway run", 200: "hermes --profile work gateway run"}.get(pid))
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
@@ -98,6 +102,28 @@ class TestCollectInventory:
         assert bare_restarted[0]["outcome"] == "unaccounted"
         assert bare_failed[0]["outcome"] == "unaccounted"
 
+    def test_inventory_keeps_bare_unit_identity_across_sudo_home_switch(
+        self, fleet, monkeypatch,
+    ):
+        """An installed bare unit remains authoritative when sudo changes the process naming basis."""
+        default_home = (fleet / "home").resolve()
+        monkeypatch.setattr("hermes_cli.gateway._native_service_homes", lambda: set())
+        monkeypatch.setattr("hermes_cli.gateway._bare_unit_pinned_home", lambda: default_home)
+
+        plan = ui.collect_runtime_inventory()
+        runtime = next(r for r in plan.runtimes if r.profile == "default")
+
+        assert runtime.detail["service_names"] == [
+            "hermes-gateway", "ai.hermes.gateway",
+        ]
+        outcomes = ui.match_runtime_outcomes(
+            ui.UpdatePlan(runtimes=[runtime]),
+            restarted_services=["hermes-gateway.service"],
+            relaunched_profiles=[], externally_supervised_profiles=[],
+            killed_pids=set(), failed_units=[],
+        )
+        assert outcomes[0]["outcome"] == "restarted"
+
     def test_docker_install_not_updatable_in_place(self, fleet, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "docker")
         monkeypatch.setattr(
@@ -113,6 +139,16 @@ class TestCollectInventory:
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
         plan = ui.collect_runtime_inventory()
         assert plan.runtimes == []
+
+    def test_stopped_record_with_recycled_pid_is_not_a_runtime(self, fleet, monkeypatch):
+        """#109680: a ``stopped`` record whose PID an unrelated process now holds must not fabricate a
+        gateway the restart phase can never touch (that phantom made `hermes update` exit partial)."""
+        work_home = fleet / "home" / "profiles" / "work"
+        _write_state(work_home, 200, gateway_state="stopped")
+        monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
+            100: "hermes gateway run", 200: "C:/Windows/system32/dllhost.exe /Processid:{X}"}.get(pid))
+        plan = ui.collect_runtime_inventory()
+        assert [r.profile for r in plan.runtimes] == ["default"]
 
     def test_pid_file_fallback_covers_unstamped_profiles(self, fleet, monkeypatch):
         """Gateways with a PID file but no runtime-status record still appear."""

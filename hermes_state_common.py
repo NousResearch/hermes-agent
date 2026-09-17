@@ -15,12 +15,38 @@ from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _ME
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
 
 
+# Persisted title provenance: automatic display labels are not user-selected identities.
+TITLE_SOURCE_DERIVED = "derived"
+TITLE_SOURCE_LLM = "llm"
+TITLE_SOURCE_USER = "user"
+
+
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
 # embeds the whole skill body, so scaffolded rows take a wider excerpt (whole message under budget, else head +
 # tail where the typed instruction lands) and ``_shape_preview`` recovers ``/work — fix ...`` from it.
 _PREVIEW_HEAD_CHARS = 63
 _PREVIEW_SCAFFOLD_WINDOW = 400
 _PREVIEW_MAX_CHARS = 60
+
+
+def routed_sessions_setting(key: str, env_var: str) -> Any:
+    """``sessions.<key>`` for the profile whose state.db this process is touching.
+
+    ``gateway/run.py`` bridges the LAUNCH profile's ``sessions.*`` into ``env_var`` (the cross-process
+    carrier CLI/cron children read). Under a multiplexer a routed turn runs with a HERMES_HOME override
+    and that env slot holds the default profile's value, so a served profile with different
+    ``sessions.*`` settings must read its own config.yaml. Unscoped: the env bridge, as before.
+    Returns ``None`` when neither source sets the key.
+    """
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override():
+        try:
+            from hermes_cli.config import load_config_readonly
+            return (load_config_readonly().get("sessions") or {}).get(key)
+        except Exception:
+            return None
+    return os.environ.get(env_var)
 
 
 def escape_like(text: str) -> str:
@@ -137,7 +163,7 @@ _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASON
 # never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
 _BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
-# Accidental end reasons recovery treats as resumable (docs/session-lifecycle.md); single source of truth for
+# Accidental end reasons recovery treats as resumable (website/docs/developer-guide/gateway-session-lifecycle.md); single source of truth for
 # recovery SQL and SessionDB.RECOVERABLE_END_REASONS.  superseded_by_resume = sentinel-parked runtime replaced
 # by a fresh session.resume; startup_orphan_reap = dead-gateway sweep, same class as ws_orphan_reap but kept
 # distinct for forensics.
@@ -602,7 +628,14 @@ END;
 DROP TRIGGER IF EXISTS messages_display_identity_update;
 CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
 AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
-                display_kind, display_metadata ON messages
+                display_kind ON messages
+WHEN new.role IS NOT old.role
+  OR new.content IS NOT old.content
+  OR new.timestamp IS NOT old.timestamp
+  OR new.tool_call_id IS NOT old.tool_call_id
+  OR new.tool_calls IS NOT old.tool_calls
+  OR new.tool_name IS NOT old.tool_name
+  OR new.display_kind IS NOT old.display_kind
 BEGIN
     UPDATE messages SET display_identity = NULL, display_order = NULL
     WHERE id = new.id OR (

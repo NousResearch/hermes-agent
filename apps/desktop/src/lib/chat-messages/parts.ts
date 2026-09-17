@@ -41,7 +41,7 @@ const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS]
  * `(?:[^\S\n]+\S+?)*?\.(?:EXT)` permits spaces inside filenames (#96657).
  */
 const _MEDIA_PATH_ANCHORED =
-  `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'_,;:)\\]}]|MEDIA:|$)`
+  `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
 
 const MEDIA_LINE_RE = new RegExp(
   `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?[\\t ]*(\\n|$)`,
@@ -73,6 +73,11 @@ export function renderMediaTags(text: string): string {
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
     )
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
+}
+
+/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */
+export function mediaTagValues(text: string): string[] {
+  return [...text.matchAll(MEDIA_TAG_RE)].map(match => match[1] ?? '')
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
@@ -328,16 +333,19 @@ export function appendAssistantTextPart(
     return next
   }
 
-  const mayContainMedia =
-    delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
+  // Re-render from the raw stream, never from the previous render: an unquoted
+  // spaced path (`MEDIA:/tmp/AI Brain/report.pdf`) split across deltas would
+  // otherwise settle on a card for `/tmp/AI` and keep the rest as prose (#96657).
+  const previous = parts[index]
+  const source = `${previous?.type === 'text' ? (previous.mediaSource ?? previous.text) : ''}${delta}`
 
-  if (mayContainMedia || part.text.includes('MEDIA:')) {
-    const rendered = renderMediaTags(part.text)
-
-    if (rendered !== part.text) {
-      next[index] = { ...part, text: rendered }
-    }
+  if (!source.includes('MEDIA:')) {
+    return next
   }
+
+  const rendered = renderMediaTags(source)
+
+  next[index] = rendered === source ? { ...part, text: source } : { ...part, mediaSource: source, text: rendered }
 
   return next
 }

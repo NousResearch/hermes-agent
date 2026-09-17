@@ -1,5 +1,97 @@
 # Workstation roadmap
 
+## IMMEDIATE NEXT — Canonical Execution Reliability Gate (2026-09-17)
+
+**This is now the active next implementation milestone.** It supersedes the old
+V1 #1.5 sequencing and every later feature-expansion item as the next engineering
+priority. All existing roadmap work below is preserved, but it resumes only after
+this gate closes with executable evidence.
+
+Canonical specification and exit criteria:
+[`context/CANONICAL_EXECUTION_RELIABILITY_GATE.md`](context/CANONICAL_EXECUTION_RELIABILITY_GATE.md).
+
+The gate converts the Workstation from a broad set of implemented capabilities into
+a causally trustworthy operational system. The target loop is:
+
+```text
+intent
+  -> canonical Task
+  -> canonical TaskRun
+  -> WorkPlan / WorkItems
+  -> Browser / Worker / Host operations
+  -> evidence
+  -> acceptance / verification
+  -> canonical commit
+  -> journal / projections
+  -> result
+  -> learning / routine
+```
+
+The work is dependency ordered:
+
+1. **P0 — causal execution invariants**
+   - canonical Task -> TaskRun -> WorkPlan/WorkItem lineage;
+   - separate durable `execution_key` from canonical Task identity;
+   - propagate `run_id` through Workstation events/evidence/resources/reports;
+   - complete agent-owned tasks with canonical `expected_run_id` fencing;
+   - commit canonical completion before terminal journal/UI/Hybrid projections;
+   - reconcile terminal parents with live descendants;
+   - give mutable effects durable `operation_id` + uncertainty/reconciliation semantics;
+   - enforce typed Intent Authority at every work-creation boundary.
+2. **P1 — reliability, fencing and recovery**
+   - Run-scoped mutation fencing for Browser/Worker/Host resources;
+   - startup/periodic reconciliation over existing Supervisor/Recovery/Evidence owners;
+   - exactly-once Agent Task -> Human Card result/evidence projection;
+   - systemic-failure cohort/circuit-breaker coverage beyond the TaskCompiler canary;
+   - cron health/config/model migration semantics.
+3. **P2 — efficiency and auditability**
+   - evidence provenance tied to Task/Run/operation/acceptance criterion;
+   - Runtime State Resolver so the LLM stops reconstructing deterministic state;
+   - reference-first artifact/tool outputs and context/FTS canonicalization;
+   - bounded no-progress/polling behavior;
+   - long-run journal scalability/integrity benchmark.
+4. **P3 — evaluation, learning and UX**
+   - corpus-derived Hermes Work 100 seed suite;
+   - AVCR plus false-completion/zombie/recovery/uncertainty/efficiency metrics;
+   - measured Experience -> Candidate -> Validate -> Promote -> Routine -> Drift;
+   - Task Cockpit/Control Center only after state truth is proven.
+
+### Immediate invariants
+
+```text
+Task.status = terminal
+  must be attributable to the authoritative TaskRun or an explicit human override
+
+parent.status = terminal
+  => no descendant remains externally LIVE after the reconciliation barrier
+
+mutable operation dispatched + acknowledgement lost
+  => UNCERTAIN / RECONCILING, never blind retry
+
+journal says completed
+  => canonical completion already committed successfully
+
+system/tool/scheduler/recovery event
+  != human CREATE_WORK unless an explicit authority transition permits it
+```
+
+### Reuse, do not rebuild
+
+This gate deliberately reuses what current `main` already has: canonical Kanban
+`task_runs/current_run_id`, `expected_run_id` CAS support, BrowserTask,
+TaskCompiler canary/admission, dispatch checkpoints, idempotency contracts,
+recipe staleness/quarantine, Execution Journal, EvidenceState, WorkerRegistry,
+Recovery Plane, human-control leases, Hybrid delegation and the existing artifact
+reference plane. The work is integration/hardening, not a second orchestration or
+state system.
+
+### Global sequencing override
+
+Any later wording in this historical roadmap that says a V1/V1.1/V2/V3/V3.5/V4
+item is “active next”, “must happen next”, or is otherwise next in sequence is
+**deferred by this gate**. Completed/implemented labels below remain implementation
+history; they do not imply product-level causal reliability until this gate passes.
+
 ## Foundation — on current `main`
 
 - `workstation/` architecture, contracts, policies and upstream tracking.
@@ -40,12 +132,13 @@ Acceptance evidence:
 
 The following work remains intentionally outside Implementation 4.
 
-## Delivery strategy — MVP first, architectural hardening second
+## Delivery strategy — reliability gate before further feature hardening
 
-From V1 #1 onward the roadmap has two complementary delivery modes:
+From 2026-09-17 the roadmap has three complementary delivery modes:
 
-1. **Canonical milestone hardening** — each numbered milestone remains responsible for its rigorous architecture, ownership model, security boundary, recovery semantics, migrations, regression coverage and native evidence.
-2. **Integrated MVP dogfood** — after V1 #1 is completed, one intermediate milestone (`1.5`) implements a deliberately narrow but real vertical slice of every later roadmap capability so the Workstation can be used continuously before every subsystem receives full hardening.
+1. **Canonical Execution Reliability Gate** — immediate cross-domain invariant hardening; this blocks further feature-expansion sequencing until its exit criteria pass.
+2. **Canonical milestone hardening** — each numbered milestone remains responsible for its rigorous architecture, ownership model, security boundary, recovery semantics, migrations, regression coverage and native evidence.
+3. **Integrated MVP dogfood** — the historical V1 #1.5 vertical slice remains useful product history and a post-gate feature-integration reference.
 
 The MVP track is **not** permission to create throwaway architecture. Every MVP slice must:
 
@@ -57,18 +150,20 @@ The MVP track is **not** permission to create throwaway architecture. Every MVP 
 - leave the original milestone open for later robustness work rather than marking it complete merely because its MVP exists;
 - include at least one behavior contract or dogfood scenario strong enough to prove that the slice is actually usable.
 
-The intended cadence becomes:
+The intended cadence is now:
 
 ```text
 V1 #1 BrowserSessionState — rigorous completion
         ↓
-V1 #1.5 Integrated Dogfood MVP — minimum viable slice of the whole roadmap
+pre-1.5 Mainline Consolidation Gate — PASS
         ↓
-continuous real usage / dogfooding
+Canonical Execution Reliability Gate — ACTIVE
         ↓
-V1 #2, #3, #4... — revisit each original milestone for architectural hardening
+V1 #1.5 / remaining feature-hardening roadmap resumes
         ↓
-V1.1 and V2 — harden the experimental slices already exercised during dogfood
+continuous real usage / dogfooding + Hermes Work 100
+        ↓
+V1 #2, #3, #4... / V1.1 / V2 / V3+ hardening as still applicable
 ```
 
 ## V1 #1 — BrowserSessionState — promoted
@@ -83,28 +178,29 @@ semantics. H010 emitted `H010_CLASSIFICATION=VALIDATED` on the exact accepted
 Windows/Electron head.
 
 Controller/session/run/Kanban linkage beyond the identifiers already present in
-BrowserTask remains the V1 #1.5 identity slice and later V1 #5 hardening; it does
-not reopen the completed structural BrowserSessionState owner.
+BrowserTask is now part of the immediate Canonical Execution Reliability Gate where
+it affects causal TaskRun identity. This does not reopen the completed structural
+BrowserSessionState owner.
 
 ## Mainline Consolidation Gate
 
-The extraordinary gate between V1 #1/PR #12 and implementation of V1 #1.5 is
+The extraordinary gate between V1 #1/PR #12 and the historical V1 #1.5 sequence is
 **PASS**. Its audit base, PR/branch disposition ledger, checklist and recurring
 review procedure are canonical in
 `context/MAINLINE_CONSOLIDATION.md`.
 
-The gate establishes one handoff line: V1 #1.5 branches exclusively from the
-resulting `main`; no retained diagnostic/validation branch is an implicit
-dependency. A proportional Mainline Consolidation Review repeats after each
-later major milestone.
+Its branch/history result remains valid. The 2026-09-17 reliability gate is a new
+post-consolidation priority discovered from runtime/state evidence; it does not
+invalidate the historical consolidation result.
 
-## V1 next
+## Deferred roadmap — resumes after Canonical Execution Reliability Gate
 
 ### 1.5. Integrated Dogfood MVP — whole-roadmap vertical slice
 
 **Sequence:** V1 #1 and the pre-1.5 Mainline Consolidation Gate are complete.
-This is the active next implementation milestone and it must complete before the
-project resumes V1 #2.
+This remains the next historical feature-integration milestone **after** the
+Canonical Execution Reliability Gate closes. It no longer outranks the reliability
+gate.
 
 **Purpose:** make the Hermes Workstation useful as an integrated daily-driver alpha as early as possible. Instead of waiting for every later subsystem to become architecturally exhaustive, implement the smallest real version of every currently planned capability on top of the correct owners. Real dogfood then supplies evidence for the later hardening milestones.
 

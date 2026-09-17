@@ -1,0 +1,18 @@
+name: hermes-filebox
+repo: https://github.com/imzacksong/hermes-filebox
+sha: 04070506c55419925d38cbc7b7e11aec65aef47e
+description: 'Explorer-style file browser for Hermes Desktop: tabbed panes, multi-select
+  batch ops, grid + details list views, reorderable sidebar, drag-and-drop, recycle bin
+  with restore, full edit ops, right-click menu, video + 3D model thumbs,
+  interactive STL/OBJ viewer. Zero API keys, zero model tokens.'
+maintainer: imzacksong
+tier: community
+category: desktop
+requires_hermes: '>=0.21'
+docs_url: https://github.com/imzacksong/hermes-filebox
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

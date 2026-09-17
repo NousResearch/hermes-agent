@@ -23,6 +23,8 @@ import types
 
 import pytest
 
+from gateway.run_turn_runner import TurnRunner
+
 _GROUP = "-1004294267446"
 _DM = "8622947177"
 
@@ -155,6 +157,3 @@ def test_proxy_stream_consumer_keeps_streaming_for_other_chats(monkeypatch):
         "platform streaming True with no chat override must pass the streaming "
         "gate and reach adapter lookup"
     )
-
-
-from gateway.run_turn_runner import TurnRunner  # noqa: E402  (after fakes defined)

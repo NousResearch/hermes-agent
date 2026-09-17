@@ -1397,6 +1397,8 @@ class TestMatrixSyncLoop:
             # Reverse proxy rewrote the body to HTML and dropped the errcode; the
             # 401 status alone must still stop the loop.
             (_sync_error("401: <html>proxy</html>", errcode=None, http_status=401), 1),
+            # Structured 403 with no persisted cursor is still permanent auth.
+            (_sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403), 1),
         ],
         ids=[
             "502-html-body-with-403-digits",
@@ -1404,6 +1406,7 @@ class TestMatrixSyncLoop:
             "429-rate-limited",
             "401-unknown-token",
             "401-html-body-no-errcode",
+            "403-forbidden-no-cursor",
         ],
     )
     async def test_sync_loop_retries_only_non_auth_errors(self, exc, expected_sync_calls):
@@ -1412,6 +1415,134 @@ class TestMatrixSyncLoop:
         sync_calls, sleeps = await self._run_sync_loop_with_first_error(exc)
         assert sync_calls == expected_sync_calls
         assert (5 in sleeps) is (expected_sync_calls == 2)  # the retry backoff, not the 0s dispatch-yield
+
+    async def _run_sync_loop_with_cursor(self, *, first_exc, later=None, max_errors=1):
+        """Drive _sync_loop starting from a persisted since token."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._joined_rooms = {"!old:example.org"}
+        adapter._dm_rooms = {"!old:example.org": True}
+        calls = {"n": 0}
+        since_seen = []
+
+        async def _sync_side_effect(**kwargs):
+            calls["n"] += 1
+            since_seen.append(kwargs.get("since"))
+            if calls["n"] <= max_errors:
+                raise first_exc
+            adapter._closing = True
+            if later is not None:
+                return later
+            return {
+                "next_batch": "s-fresh",
+                "rooms": {"join": {"!keep:example.org": {}}},
+            }
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = MagicMock()
+        fake_client.sync_store.get_next_batch = AsyncMock(return_value="s-stale")
+        fake_client.sync_store.put_next_batch = AsyncMock()
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._sync_loop()
+        return adapter, fake_client, since_seen
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_resets_forbidden_incremental_sync_cursor(self):
+        """403/M_FORBIDDEN with a live since token clears the cursor and retries."""
+        adapter, client, since_seen = await self._run_sync_loop_with_cursor(
+            first_exc=_sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403),
+        )
+        assert since_seen[0] == "s-stale"
+        assert None in since_seen[1:]
+        client.sync_store.put_next_batch.assert_any_await(None)
+        assert "!old:example.org" not in adapter._joined_rooms
+        assert "!keep:example.org" in adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_resets_unknown_pos_cursor(self):
+        adapter, client, since_seen = await self._run_sync_loop_with_cursor(
+            first_exc=_sync_error("unknown since", errcode="M_UNKNOWN_POS", http_status=400),
+        )
+        assert since_seen[0] == "s-stale"
+        assert None in since_seen[1:]
+        client.sync_store.put_next_batch.assert_any_await(None)
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_unknown_token_even_with_cursor(self):
+        adapter, client, since_seen = await self._run_sync_loop_with_cursor(
+            first_exc=_sync_error("Invalid access token", errcode="M_UNKNOWN_TOKEN", http_status=401),
+            max_errors=8,
+        )
+        assert client.sync.await_count == 1
+        assert since_seen == ["s-stale"]
+        cleared = [
+            c for c in client.sync_store.put_next_batch.await_args_list
+            if c.args and c.args[0] is None
+        ]
+        assert cleared == []
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_forbidden_after_cursor_cleared(self):
+        """Once the since token is gone, 403 is permanent auth — not another reset."""
+        adapter, client, since_seen = await self._run_sync_loop_with_cursor(
+            first_exc=_sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403),
+            max_errors=8,
+        )
+        assert client.sync.await_count == 2
+        assert since_seen == ["s-stale", None]
+        client.sync_store.put_next_batch.assert_any_await(None)
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_after_cursor_reset_budget(self):
+        """A new cursor that is also rejected counts toward the reset budget."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._joined_rooms = set()
+        adapter._dm_rooms = {}
+        since_seen = []
+
+        async def _sync_side_effect(**kwargs):
+            since_seen.append(kwargs.get("since"))
+            n = len(since_seen)
+            if n % 2 == 1:
+                raise _sync_error("Forbidden", errcode="M_FORBIDDEN", http_status=403)
+            adapter._closing = n >= 8
+            return {"next_batch": f"s{n}", "rooms": {"join": {}}}
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_side_effect)
+        fake_client.sync_store = MagicMock()
+        fake_client.sync_store.get_next_batch = AsyncMock(return_value="s-stale")
+        fake_client.sync_store.put_next_batch = AsyncMock()
+        fake_client.handle_sync = MagicMock(return_value=[])
+        fake_client.get_account_data = AsyncMock(side_effect=Exception("no m.direct"))
+        adapter._client = fake_client
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await adapter._sync_loop()
+        # 3 resets succeed (odd calls 1,3,5); 4th rejection (call 7) stops.
+        assert fake_client.sync.await_count == 7
+        assert since_seen[0] == "s-stale"
+        assert since_seen.count(None) == 3
+
+    @pytest.mark.asyncio
+    async def test_html_403_digits_do_not_reset_cursor(self):
+        """Unstructured 502 HTML that happens to contain '403' is still a retry, not a reset."""
+        adapter, client, since_seen = await self._run_sync_loop_with_cursor(
+            first_exc=_sync_error(
+                '502: <!DOCTYPE html><svg><path d="M17.4517 1403.2C12.7214 1403.2"/></svg>',
+                http_status=502,
+            ),
+        )
+        assert client.sync.await_count == 2
+        assert since_seen == ["s-stale", "s-stale"]
+        cleared = [
+            c for c in client.sync_store.put_next_batch.await_args_list
+            if c.args and c.args[0] is None
+        ]
+        assert cleared == []
 
     @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):

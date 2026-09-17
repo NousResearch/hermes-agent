@@ -7,16 +7,15 @@ import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
 
-const REASONING_BLOCK_RE = /<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*?<\/\1>\s*/gi
-// An unterminated reasoning block: an open tag that starts its own block (start
-// of text, or a fresh line) with no close tag in the text yet. Reasoning models
-// inline their chain of thought in the answer channel and stream the open tag
-// long before the close one, so between those two flushes the regex above — which
-// needs a close tag — matches nothing and the reasoning renders as chat prose.
-// `agent/think_scrubber.py` draws the same block-boundary line for the same
-// reason: a real reasoning preamble is always its own block, while prose that
-// merely *mentions* `<thinking>` mid-sentence must survive.
-const OPEN_REASONING_BLOCK_RE = /(^|\n)[ \t]*<(think|thinking|reasoning|scratchpad|analysis)>[\s\S]*$/i
+// Same tag set as agent/think_scrubber.py THINK_TAG_NAMES, plus the desktop-only
+// `scratchpad`/`analysis` that were already stripped here before the two lists met.
+const REASONING_TAGS = 'think|thinking|reasoning|thought|reasoning_scratchpad|scratchpad|analysis'
+const REASONING_BLOCK_RE = new RegExp(`<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1>\\s*`, 'gi')
+// An open tag that starts its own block with no close tag yet. The block-boundary
+// requirement is what lets a real reasoning preamble (always its own block) vanish
+// while prose that merely mentions `<thinking>` mid-sentence survives — the same
+// line agent/think_scrubber.py draws.
+const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[\\s\\S]*$`, 'i')
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
@@ -168,25 +167,11 @@ function scrubBacktickNoise(text: string): string {
   return out
 }
 
-/**
- * Strip reasoning blocks out of assistant text.
- *
- * Applied to the whole accumulated text on every streaming flush, which is what
- * makes the two defects around the plain `.replace(REASONING_BLOCK_RE, '')` show
- * up in chat but never on a settled message:
- *
- * 1. The regex consumes the whitespace on its seam, so a block sitting BETWEEN
- *    two words fused them — `no` + `Hermes` rendered as `noHermes` (the report's
- *    `noHermes` / `backendveal`). When both sides of the removed span are still
- *    prose, keep one space instead of deleting the seam.
- * 2. An unterminated block was not stripped at all, so the model's chain of
- *    thought painted as answer prose for as long as the close tag took to arrive,
- *    and when it arrived the whole span vanished in one frame — the text the
- *    reader had already read, gone. Stripping the unterminated block is what the
- *    backend scrubber already does at end-of-stream ("leaking partial reasoning
- *    is worse than a truncated answer"); doing it here keeps the surface stable
- *    instead of showing reasoning then deleting it.
- */
+// Runs on the ACCUMULATED text every streaming flush, so an unterminated block
+// must already be hidden here: otherwise the chain of thought paints as prose
+// until the close tag lands and then the whole span vanishes in one frame
+// (#62774). Removing a closed block between two words keeps one space so `no` +
+// `Hermes` does not fuse into `noHermes`.
 function stripReasoningBlocks(text: string): string {
   const closed = text.replace(REASONING_BLOCK_RE, (match: string, _tag: string, offset: number, whole: string) => {
     const before = whole.slice(0, offset)

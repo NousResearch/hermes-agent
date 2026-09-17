@@ -49,6 +49,23 @@ _REDACTED_PATCH_REMEDIATION = (
     "(the flag is read at process start)."
 )
 
+# The vault marker is different: ``redact_registered_vault_values`` scrubs
+# browser-vault secrets on every ``redact_sensitive_text`` call regardless of
+# ``security.redact_secrets`` (vault fills are model-blind by design), so the
+# flag hint above would send the agent into a restart loop that can't work.
+_VAULT_MARKER = "«redacted-vault-secret»"
+_VAULT_PATCH_REMEDIATION = (
+    "Re-read the file with a tight offset/limit that excludes the secret "
+    "lines and edit only the non-secret surroundings. This marker replaces a "
+    "browser-vault secret, which is hidden from the model regardless of "
+    "`security.redact_secrets`; the value cannot be recovered or written "
+    "through file tools, so ask the user to edit that value themselves."
+)
+
+
+def _redacted_remediation(hit: str) -> str:
+    return _VAULT_PATCH_REMEDIATION if hit == _VAULT_MARKER else _REDACTED_PATCH_REMEDIATION
+
 # --- Binary-content identification -------------------------------------------
 
 _MAGIC_SIGNATURES: tuple = (
@@ -1260,7 +1277,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return WriteResult(error=(
                 f"Refusing write: content contains what looks like a "
                 f"redacted-secret placeholder ({_hit!r}). "
-                f"{_REDACTED_PATCH_REMEDIATION}"
+                f"{_redacted_remediation(_hit)}"
             ))
         ext = os.path.splitext(path)[1].lower()
         refused = self._fail_closed_syntax_error(path, ext, content)
@@ -1368,7 +1385,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 return PatchResult(error=(
                     f"Refusing patch: {_arg_name} contains what looks like a "
                     f"redacted-secret placeholder ({_hit!r}). "
-                    f"{_REDACTED_PATCH_REMEDIATION}"
+                    f"{_redacted_remediation(_hit)}"
                 ))
 
         read_result = self._cat(path)
@@ -1416,7 +1433,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return PatchResult(error=(
                 f"Refusing patch: V4A patch contains what looks like a "
                 f"redacted-secret placeholder ({_hit!r}). "
-                f"{_REDACTED_PATCH_REMEDIATION}"
+                f"{_redacted_remediation(_hit)}"
             ))
 
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations

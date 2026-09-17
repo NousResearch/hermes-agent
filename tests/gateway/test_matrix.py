@@ -1496,8 +1496,8 @@ class TestMatrixSyncLoop:
         client.sync_store.put_next_batch.assert_any_await(None)
 
     @pytest.mark.asyncio
-    async def test_sync_loop_stops_after_cursor_reset_budget(self):
-        """A new cursor that is also rejected counts toward the reset budget."""
+    async def test_sync_loop_cursor_reset_budget_clears_after_successful_sync(self):
+        """Reset budget is consecutive, not process lifetime — a healthy snapshot starts over."""
         adapter = _make_adapter()
         adapter._closing = False
         adapter._joined_rooms = set()
@@ -1522,10 +1522,10 @@ class TestMatrixSyncLoop:
         adapter._client = fake_client
         with patch("asyncio.sleep", new=AsyncMock()):
             await adapter._sync_loop()
-        # 3 resets succeed (odd calls 1,3,5); 4th rejection (call 7) stops.
-        assert fake_client.sync.await_count == 7
+        # Four 403+snapshot cycles would have exhausted a lifetime budget of 3.
+        assert fake_client.sync.await_count == 8
         assert since_seen[0] == "s-stale"
-        assert since_seen.count(None) == 3
+        assert since_seen.count(None) == 4
 
     @pytest.mark.asyncio
     async def test_html_403_digits_do_not_reset_cursor(self):

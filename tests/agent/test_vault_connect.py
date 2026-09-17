@@ -93,7 +93,6 @@ def test_connect_one_time_password_field_is_announced_and_minted(monkeypatch):
     item with a usable authenticator seed could never produce a code — ``browser_vault_enter_code``
     fell through to asking the user (unavailable headless) instead of minting it.
     """
-    import time as _time
     from agent.vault_store import normalize_otp_secret, totp_now
     fields = [{'purpose': 'USERNAME', 'value': 'synthetic@example.com'},
               {'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
@@ -107,12 +106,17 @@ def test_connect_one_time_password_field_is_announced_and_minted(monkeypatch):
         # The Connect LIST route carries no fields, so a field-less list item must NOT claim
         # automatic 2FA; the authoritative answer is the item detail route.
         assert backend.list_items()[0].has_otp is False
+        seed = normalize_otp_secret(OTP_URI)
+        # Sample the clock on BOTH sides of the production call: the expectation can no longer
+        # straddle a step boundary with a slower/faster mint.
+        before = totp_now(seed)
         code = backend.resolve_otp(handle)
-        expected = totp_now(normalize_otp_secret(OTP_URI), at=_time.time())
-        assert code == expected and code.isdigit() and len(code) == 8
+        assert code in {before, totp_now(seed)}
+        assert code is not None and code.isdigit() and len(code) == 8
         meta = backend.get_meta(handle)
         assert meta.has_otp is True, 'a stored authenticator seed must be announced as automatic'
         assert OTP_URI not in repr(meta)
+        assert seed not in repr(meta), 'the bare seed must not surface in metadata either'
     finally:
         reset_secret_scope(scope); set_multiplex_active(False)
         server.shutdown(); server.server_close(); thread.join()

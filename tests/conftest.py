@@ -774,7 +774,7 @@ _REAL_KANBAN_ROOT = _capture_real_kanban_root()
 
 
 @pytest.fixture(autouse=True)
-def _kanban_write_guard(_hermetic_environment, monkeypatch):
+def _kanban_write_guard(_hermetic_environment, request, monkeypatch):
     """Fail-closed guard: refuse kanban writes that target the REAL root.
 
     Uses a **deny-list**: only blocks writes where the resolved DB path
@@ -792,6 +792,7 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     _kdb = sys.modules.get("hermes_cli.kanban_db")
     _kdbc = sys.modules.get("hermes_cli.kanban_db_connect")
     if _kdb is None or _kdbc is None:
+        yield
         return
 
     # The sys.modules probe can observe the module MID-IMPORT: a fixture
@@ -802,6 +803,17 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
     # this round; the next test's fixture will patch the completed module.
     _orig_connect = getattr(_kdbc, "connect", None)
     if _orig_connect is None or getattr(_kdb, "kanban_db_path", None) is None:
+        yield
+        return
+
+    # Escape hatch for tests that genuinely need the live board: the same
+    # ``@pytest.mark.live_system_guard_bypass`` marker ``_state_db_write_guard``
+    # honors flips the product-side choke's module global (mirrors
+    # ``hermes_state._STATE_DB_GUARD_BYPASS``). This wrapper AND the conftest
+    # deny-list below stay armed only for unmarked tests.
+    if request.node.get_closest_marker("live_system_guard_bypass") is not None:
+        monkeypatch.setattr(_kdbc, "_KANBAN_GUARD_BYPASS", True)
+        yield
         return
 
     def _guarded_connect(db_path=None, *args, **kwargs):
@@ -846,6 +858,7 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
         )
 
     monkeypatch.setattr(_kdbc, "connect", _guarded_connect)
+    yield
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import os
 import random
 import re
 import secrets
@@ -32,6 +33,13 @@ _INITIALIZED_PATHS: set[str] = set()
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
+
+# ``@pytest.mark.live_system_guard_bypass`` escape hatch, mirroring
+# ``hermes_state._STATE_DB_GUARD_BYPASS``: the hermetic conftest flips the
+# module global for a marked test; a child process exports the env twin
+# instead (a module global cannot cross a process boundary).
+_KANBAN_GUARD_BYPASS = False
+_KANBAN_GUARD_BYPASS_ENV = "HERMES_KANBAN_GUARD_BYPASS"
 
 # Cap on ``<db>.corrupt.<hash>.bak`` quarantines per board: content-addressing
 # dedupes identical bytes, but mutating corruption mints a new fingerprint each
@@ -684,15 +692,19 @@ def _ensure_test_isolation(path: Path) -> None:
     ~/.hermes/tmp/...``) are legitimate, so only the production board files
     themselves are refused: ``<root>/kanban.db``, ``<root>/kanban/`` (boards,
     workspaces-side DBs), and ``<root>/profiles/<name>/`` kanban paths.
+
+    Escape hatch mirrors ``hermes_state._STATE_DB_GUARD_BYPASS``: the
+    ``@pytest.mark.live_system_guard_bypass`` conftest wiring flips the module
+    global (``_KANBAN_GUARD_BYPASS``), and spawned children export the env twin
+    (``HERMES_KANBAN_GUARD_BYPASS=1``) instead of stripping markers.
     """
+    if _KANBAN_GUARD_BYPASS or os.environ.get(_KANBAN_GUARD_BYPASS_ENV):
+        return
     try:
         from hermes_state_guard import _in_test_context, _real_platform_state_root
     except ImportError:
         return
     if not _in_test_context():
-        return
-    import os as _os
-    if _os.environ.get("HERMES_KANBAN_GUARD_BYPASS") == "1":
         return
     try:
         resolved = Path(path).expanduser().resolve()
@@ -718,6 +730,8 @@ def _ensure_test_isolation(path: Path) -> None:
             "root — or export HERMES_KANBAN_GUARD_BYPASS=1 for a test that "
             "genuinely needs the live board."
         )
+
+
 
 
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:

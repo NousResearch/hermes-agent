@@ -18,6 +18,7 @@ import pytest
 from gateway.config import Platform
 from gateway.session import SessionSource
 from gateway.turn_context import TurnContext
+from tools.delegation_status import get_detached_status_owner
 
 
 def _make_runner(ctx):
@@ -68,6 +69,30 @@ class TestTurnRunner:
         ctx = TurnContext(progress_queue=queue_mod.Queue())
         runner = _make_runner(ctx)  # stub adapter resolver returns None
         assert asyncio.run(runner.send_progress_messages()) is None
+
+    def test_run_conversation_binds_owner_only_for_call_and_requests_seal(self):
+        sealed = []
+
+        class Owner:
+            def request_seal(self):
+                sealed.append(True)
+
+        owner = Owner()
+
+        class Agent:
+            def run_conversation(self, message, **kwargs):
+                assert get_detached_status_owner() is owner
+                return {"final_response": message}
+
+        ctx = TurnContext(subagent_status_owner=owner)
+        runner = _make_runner(ctx)
+
+        assert get_detached_status_owner() is None
+        assert runner._run_conversation_with_status(Agent(), "hello", {}) == {
+            "final_response": "hello"
+        }
+        assert get_detached_status_owner() is None
+        assert sealed == [True]
 
     def test_normal_response_preserves_compression_exhausted(self):
         """A non-empty exhaustion response must still reach auto-reset consumers."""

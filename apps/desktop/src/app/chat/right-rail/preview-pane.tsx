@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
@@ -770,6 +771,34 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     })
   }, [isWebPreview, tabId])
 
+  // Host focus the user (or composer) held before hidden-guest automation.
+  // sendInputEvent can focus the <webview> asynchronously after the script
+  // channel's finally runs, so both channels share this and a focus bounce.
+  const automationHostFocusRef = useRef<HTMLElement | null>(null)
+
+  const rememberAutomationHostFocus = useCallback(() => {
+    const focused = document.activeElement
+
+    if (focused instanceof HTMLElement && !isElementInHiddenPane(focused)) {
+      automationHostFocusRef.current = focused
+    }
+  }, [])
+
+  const restoreAutomationHostFocus = useCallback((webview: PreviewWebview) => {
+    const hostFocus = automationHostFocusRef.current
+
+    // Native guest focus bypasses host inert. Only reclaim when the hidden
+    // guest still owns document focus; a user's intervening change wins.
+    if (
+      isElementInHiddenPane(webview) &&
+      document.activeElement === webview &&
+      hostFocus?.isConnected &&
+      !isElementInHiddenPane(hostFocus)
+    ) {
+      hostFocus.focus({ preventScroll: true })
+    }
+  }, [])
+
   // Publish the SCRIPT runner for this tab: the one channel into the guest
   // page, shared by the tour tool (injected driver.js walkthroughs) and the
   // drive_preview tool (clicking, typing, scrolling the page the user sees).
@@ -785,9 +814,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         throw new Error('preview webview is not ready')
       }
 
-      return webview.executeJavaScript(code)
+      rememberAutomationHostFocus()
+
+      try {
+        return await webview.executeJavaScript(code)
+      } finally {
+        restoreAutomationHostFocus(webview)
+      }
     })
-  }, [isWebPreview, tabId])
+  }, [isWebPreview, rememberAutomationHostFocus, restoreAutomationHostFocus, tabId])
 
   // Publish the INPUT channel for this tab. Same idea as the script runner, but
   // it carries real Chromium input rather than script — the agent's clicks and
@@ -799,7 +834,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     return registerPreviewInput(tabId, {
-      focus: () => webviewRef.current?.focus?.(),
+      focus: () => {
+        const webview = webviewRef.current
+
+        // Trusted input still reaches the guest while hidden. Focusing the
+        // webview element would steal the host's composer focus even when inert.
+        if (webview && !isElementInHiddenPane(webview)) {
+          webview.focus()
+        }
+      },
       send: event => {
         const webview = webviewRef.current
 
@@ -810,10 +853,43 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           throw new Error('preview webview cannot take input events')
         }
 
+        rememberAutomationHostFocus()
         webview.sendInputEvent(event)
+        // Chromium may apply guest focus after this call returns; bounce now
+        // and again on the next task so a late steal cannot keep the host.
+        restoreAutomationHostFocus(webview)
+        queueMicrotask(() => restoreAutomationHostFocus(webview))
       }
     })
-  }, [isRemoteHtml, isWebPreview, tabId])
+  }, [isRemoteHtml, isWebPreview, rememberAutomationHostFocus, restoreAutomationHostFocus, tabId])
+
+  // Late native focus onto a hidden guest (after sendInputEvent settles) must
+  // not keep the host keyboard. Bounce only while the webview is still hidden.
+  useEffect(() => {
+    if (!isWebPreview || isRemoteHtml) {
+      return
+    }
+
+    const host = hostRef.current
+
+    if (!host) {
+      return
+    }
+
+    const onFocusIn = (event: FocusEvent) => {
+      const webview = webviewRef.current
+
+      if (!webview || event.target !== webview || !isElementInHiddenPane(webview)) {
+        return
+      }
+
+      restoreAutomationHostFocus(webview)
+    }
+
+    host.addEventListener('focusin', onFocusIn)
+
+    return () => host.removeEventListener('focusin', onFocusIn)
+  }, [isRemoteHtml, isWebPreview, restoreAutomationHostFocus, tabId, target.url])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {

@@ -8,6 +8,8 @@ vi.mock('./right-rail/preview-console-store', () => ({
   forgetPreviewConsole: () => undefined
 }))
 
+import { emptyPaneLifecycleState, reconcilePaneLifecycle } from '@/components/pane-shell/pane-lifecycle'
+import { paneChrome } from '@/components/pane-shell/tree/renderer/track-model'
 import { registry } from '@/contrib/registry'
 import { $previewTabs, closeRightRail, noteBrowserPage, openPreview } from '@/store/preview'
 
@@ -89,6 +91,23 @@ const fileTarget = (path: string) =>
   ({ kind: 'file', label: path.split('/').at(-1) ?? path, path, source: path, url: path }) as const
 
 describe('preview tiles stack, not split (#93610)', () => {
+  it('retains live browser pages beyond the ordinary pane cache budget', () => {
+    openPreview({ kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }, 'manual')
+    const browserId = `preview-tile:${$previewTabs.get()[0].id}`
+    const paneIds = [browserId, 'file-a', 'file-b', 'file-c']
+    let state = emptyPaneLifecycleState()
+
+    for (const activeId of paneIds) {
+      state = reconcilePaneLifecycle(state, {
+        activeId,
+        paneIds,
+        keepAlive: id => Boolean(paneChrome(registry.getArea('panes').find(p => p.id === id)).lifecycleKeepAlive)
+      })
+    }
+
+    expect(state.entries[browserId].lifecycle).toBe('hot-hidden')
+  })
+
   it('docks the first preview right and stacks the second as a center tab in the same zone', () => {
     openPreview(fileTarget('/tmp/a.ts'), 'file-browser')
 

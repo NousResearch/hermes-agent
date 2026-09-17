@@ -1,14 +1,22 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { usePaneLifecycle } from '@/components/pane-shell/pane-visibility'
 import { registry } from '@/contrib/registry'
 import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
 
 import { TreeGroup } from './tree-group'
+
+function LivePage() {
+  const lifecycle = usePaneLifecycle()
+
+  return <input data-lifecycle={lifecycle} data-live-page defaultValue="original" />
+}
 
 let root: null | Root = null
 let container: HTMLDivElement | null = null
@@ -43,6 +51,8 @@ const toggle = (label: string) =>
   globalThis.document.querySelector<HTMLButtonElement>(
     `[data-tree-group="terminal-zone"] button[aria-label="${label}"]`
   )!
+
+beforeEach(() => stubResizeObserver())
 
 afterEach(() => {
   if (root) {
@@ -189,6 +199,112 @@ describe('TreeGroup', () => {
       expect(strip.className).toContain('bottom-0')
       expect(handles.some(handle => handle.className.includes('flex-1') && handle.style.width === '')).toBe(true)
     })
+  })
+
+  it('keeps a live pane mounted and inert through hide/restore, releasing it on close', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { lifecycleKeepAlive: true },
+      id: 'terminal',
+      title: 'Browser',
+      render: () => <LivePage />
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="row" />)
+    const page = container!.querySelector<HTMLInputElement>('[data-live-page]')!
+    page.value = 'unsaved page state'
+
+    render(<TreeGroup node={terminalGroup(true)} parentAxis="row" />)
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.closest('[data-pane-hidden]')?.hasAttribute('inert')).toBe(true)
+    expect(page.dataset.lifecycle).toBe('hot-hidden')
+
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="row" />)
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.value).toBe('unsaved page state')
+    expect(page.closest('[data-pane-hidden]')).toBeNull()
+
+    render(<TreeGroup node={{ ...terminalGroup(true), panes: [], active: '' }} parentAxis="row" />)
+    expect(container!.querySelector('[data-live-page]')).toBeNull()
+  })
+
+  it('keeps a live pane mounted through column-oriented hide/restore', () => {
+    disposePane = registry.register({
+      area: 'panes',
+      data: { lifecycleKeepAlive: true },
+      id: 'terminal',
+      title: 'Browser',
+      render: () => <LivePage />
+    })
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
+    const page = container!.querySelector<HTMLInputElement>('[data-live-page]')!
+    page.value = 'column state'
+
+    render(<TreeGroup node={terminalGroup(true)} parentAxis="column" />)
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.closest('[data-pane-hidden]')?.hasAttribute('inert')).toBe(true)
+    expect(page.value).toBe('column state')
+
+    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.value).toBe('column state')
+  })
+
+  it('closing one keep-alive tab while hidden leaves its sibling mounted', () => {
+    const disposeA = registry.register({
+      area: 'panes',
+      data: { lifecycleKeepAlive: true },
+      id: 'browser-a',
+      title: 'A',
+      render: () => <input data-browser="a" defaultValue="alpha" />
+    })
+
+    const disposeB = registry.register({
+      area: 'panes',
+      data: { lifecycleKeepAlive: true },
+      id: 'browser-b',
+      title: 'B',
+      render: () => <input data-browser="b" defaultValue="beta" />
+    })
+
+    disposePane = () => {
+      disposeA()
+      disposeB()
+    }
+
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+
+    const both: GroupNode = {
+      active: 'browser-a',
+      id: 'browser-zone',
+      minimized: false,
+      panes: ['browser-a', 'browser-b'],
+      tabStrip: 'always',
+      type: 'group'
+    }
+
+    render(<TreeGroup node={both} parentAxis="row" />)
+    // Activate B once so both keep-alive panes enter the hot cache.
+    render(<TreeGroup node={{ ...both, active: 'browser-b' }} parentAxis="row" />)
+    const a = container!.querySelector<HTMLInputElement>('[data-browser="a"]')!
+    const b = container!.querySelector<HTMLInputElement>('[data-browser="b"]')!
+    a.value = 'live-a'
+    b.value = 'live-b'
+
+    render(<TreeGroup node={{ ...both, minimized: true, active: 'browser-b' }} parentAxis="row" />)
+    expect(container!.querySelector('[data-browser="a"]')).toBe(a)
+    expect(container!.querySelector('[data-browser="b"]')).toBe(b)
+
+    render(
+      <TreeGroup
+        node={{ ...both, minimized: true, panes: ['browser-b'], active: 'browser-b' }}
+        parentAxis="row"
+      />
+    )
+    expect(container!.querySelector('[data-browser="a"]')).toBeNull()
+    expect(container!.querySelector('[data-browser="b"]')).toBe(b)
+    expect(b.value).toBe('live-b')
   })
 
   it('keeps a top-edge strip inside its panel and yields native drag while moving a pane', () => {

@@ -258,6 +258,15 @@ geometry. Panels without room beside the measured window controls place their
 tabs on a full-width row below the controls. Minimized row groups use vertical
 restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
 restore minimized or fully hidden side groups without changing the selected tab.
+For a live Browser, the collapse action is **Hide**: its page, viewport and
+in-app automation remain alive behind the restore rail. Click the rail's tab or
+choose **Restore** to return without reloading. **Close** (the tab's × or menu)
+releases the page and its automation handles; hiding is not a memory-saving
+close. Browser guests are exempt from inactive-tab cache eviction. Hidden layers
+are inert and excluded from visible-pane lookups; automation does not reveal
+them or retain the host's keyboard focus. Existing window/session targeting and
+browser cookie-partition policy are unchanged; Hide does not create a new
+session or promise live-page persistence across an app restart.
 Lower panels keep local headers. Empty header space moves the window;
 tabs and actions remain no-drag, with native-control space reserved from the
 existing traffic-light and Window Controls Overlay measurements.

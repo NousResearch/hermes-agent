@@ -3644,7 +3644,7 @@
     },
     {
       "name": "vault.add",
-      "summary": "Add a login / payment / address item to the local vault.",
+      "summary": "Add a login through the configured broker, or a payment/address to the local vault.",
       "params": [
         {
           "name": "params",
@@ -3698,7 +3698,7 @@
     },
     {
       "name": "vault.remove",
-      "summary": "Remove a local vault item by id.",
+      "summary": "Remove a vault item through the backend identified by its handle.",
       "params": [
         {
           "name": "params",

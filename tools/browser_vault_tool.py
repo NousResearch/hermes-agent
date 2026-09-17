@@ -252,6 +252,7 @@ def browser_vault_unlock(backend_name: str) -> str:
     """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
+    from agent.vault_store import scrub_secret_from_text
 
     backend = next((b for b in enabled_backends() if b.name == backend_name and b.needs_unlock), None)
     if backend is None:
@@ -271,17 +272,18 @@ def browser_vault_unlock(backend_name: str) -> str:
     try:
         backend.unlock(master)  # type: ignore[attr-defined]
     except Exception as exc:
-        return json.dumps({"success": False, "error_type": "unlock_failed", "error": str(exc)[:300]})
+        error = scrub_secret_from_text(str(exc), {"master_password": master})
+        return json.dumps({"success": False, "error_type": "unlock_failed", "error": error[:300]})
     finally:
         del master
     return json.dumps({"success": True, "backend": backend.name})
 
 
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
-    """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
-    vault bound to that origin, and fill the password at once. The values never enter the conversation."""
+    """Ask for the CURRENT page's login, save it through the configured credential broker, then fill it."""
+    from agent.credential_broker import get_credential_broker
     from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
-    from agent.vault_store import get_vault_store
+    from agent.vault_store import scrub_secret_from_text
 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
@@ -297,22 +299,36 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                                      f"`hermes vault add` or use Desktop → Settings → Passwords & Logins for {origin}.")})
     host = origin.split("://", 1)[-1]
     site = label.strip() or host
+    broker = get_credential_broker()
+    try:
+        write_backend = broker.write_backend()
+    except Exception as exc:
+        return json.dumps({"success": False, "error_type": "save_backend_unavailable",
+                           "error": str(exc)[:200]})
+    if write_backend.needs_unlock and not write_backend.is_unlocked():
+        unlocked = json.loads(browser_vault_unlock(write_backend.name))
+        if not unlocked.get("success"):
+            return json.dumps(unlocked, ensure_ascii=False)
     answer = prompt(origin, host)  # the prompt names the site by host: the user recognises URLs, not agent labels
     if not answer or not answer.get("password") or not answer.get("identifier"):
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
     identifier = str(answer["identifier"]).strip()
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
+    password = str(answer["password"])
     try:
-        meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
-                                                        "password": str(answer["password"])}, origin=origin)
+        saved = broker.save_login(label=site, origin=origin, identifier_type=id_type,
+                                  identifier=identifier, password=password)
     except Exception as exc:
-        return json.dumps({"success": False, "error_type": "save_failed", "error": str(exc)[:200]})
+        error = scrub_secret_from_text(str(exc), {"password": password})
+        return json.dumps({"success": False, "error_type": "save_failed", "error": error[:200]})
     finally:
         answer.clear()
-    filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
-    return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
-                       "identifier_type": id_type, "fill": filled,
+        del password
+    filled = json.loads(browser_vault_fill(saved.meta.id, task_id=effective_task_id))
+    return json.dumps({"success": True, "handle": saved.meta.id, "origin": origin, "identifier": identifier,
+                       "identifier_type": id_type, "backend": write_backend.name, "action": saved.action,
+                       "fill": filled,
                        "next": "Type the identifier into the username field if the form has one, then submit."},
                       ensure_ascii=False)
 

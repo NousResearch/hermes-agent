@@ -2371,6 +2371,8 @@ DEFAULT_CONFIG = {
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
+        # New/changed website logins are saved here. Read/fill still aggregates every enabled backend.
+        "write_backend": "local",  # local | bitwarden
         "onepassword": {
             # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
             "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.

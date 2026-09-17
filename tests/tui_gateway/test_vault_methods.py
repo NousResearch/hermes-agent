@@ -15,6 +15,8 @@ import json
 import pytest
 
 import tui_gateway.server as srv
+from agent.vault_backends.base import LoginSaveResult
+from agent.vault_store import VaultItemMeta
 
 
 @pytest.fixture
@@ -178,3 +180,53 @@ def test_launch_profile_vault_rpcs_stay_scoped_once_the_process_multiplexes(home
     monkeypatch.setattr("agent.vault_backends.base.is_installed", lambda name: name == "onepassword")
     set_multiplex_active(True)  # conftest resets the latch per test
     assert _sources_rows(home)["onepassword"]["enabled"] is True
+
+
+def test_login_add_and_remove_route_through_credential_broker(home, monkeypatch):
+    class FakeBroker:
+        def __init__(self):
+            self.saved = []
+            self.removed = []
+
+        def save_login(self, **kwargs):
+            self.saved.append(kwargs)
+            meta = VaultItemMeta("bw:item-1", "login", kwargs["label"], kwargs["origin"],
+                                 "2026-09-17T00:00:00Z", kwargs["identifier_type"],
+                                 kwargs["identifier"])
+            return LoginSaveResult(meta, "created")
+
+        def remove_item(self, handle):
+            self.removed.append(handle)
+            return True
+
+    fake = FakeBroker()
+    monkeypatch.setattr("agent.credential_broker.get_credential_broker", lambda: fake)
+
+    params = {**_LOGIN_PARAMS, "secret": {**_LOGIN_PARAMS["secret"], "otp_secret": "JBSWY3DPEHPK3PXP"}}
+    added = _result(srv._methods["vault.add"](1, params))
+    removed = _result(srv._methods["vault.remove"](2, {"id": added["id"]}))
+
+    assert added == {"id": "bw:item-1"}
+    assert removed == {"removed": True}
+    assert fake.saved[0]["password"] == "s3cret-pw-9000"
+    assert fake.saved[0]["otp_secret"] == "JBSWY3DPEHPK3PXP"
+    assert fake.removed == ["bw:item-1"]
+    assert "s3cret-pw-9000" not in json.dumps(added)
+
+
+def test_disabling_active_write_source_falls_back_to_local(home):
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    cfg.setdefault("vault", {})["write_backend"] = "bitwarden"
+    cfg["vault"].setdefault("bitwarden", {})["enabled"] = True
+    save_config(cfg)
+
+    result = _result(srv._methods["vault.source.set"](
+        1, {"name": "bitwarden", "enabled": False}
+    ))
+
+    assert result == {"name": "bitwarden", "enabled": False}
+    updated = load_config()
+    assert updated["vault"]["write_backend"] == "local"
+    assert updated["vault"]["bitwarden"]["enabled"] is False

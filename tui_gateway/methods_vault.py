@@ -93,6 +93,8 @@ def _(rid, params: dict) -> dict:
         section.pop("enabled", None)  # detected managers are on by default; this removes the opt-out
     else:
         section["enabled"] = False
+        if cfg["vault"].get("write_backend") == name:
+            cfg["vault"]["write_backend"] = "local"
     if not enabled:
         lock(name)
     save_config(cfg)
@@ -141,22 +143,28 @@ def _(rid, params: dict) -> dict:
     ``secret`` (dict). Result: ``{id}`` — metadata only. Exception text is
     scrubbed of secret values before it can reach a response or a log line.
     """
-    from agent.vault_store import (
-        VaultError,
-        get_vault_store,
-        scrub_secret_from_text,
-    )
+    from agent.vault_store import VaultError, get_vault_store, scrub_secret_from_text
 
     secret = params.get("secret")
     if not isinstance(secret, dict) or not secret:
         return _err(rid, 5095, "secret payload is required")
     try:
-        meta = get_vault_store().add_item(
-            kind=str(params.get("kind") or ""),
-            label=str(params.get("label") or ""),
-            origin=(str(params.get("origin")) if params.get("origin") else None),
-            secret=secret,
-        )
+        kind = str(params.get("kind") or "")
+        label = str(params.get("label") or "")
+        origin = str(params.get("origin")) if params.get("origin") else None
+        if kind == "login":
+            from agent.credential_broker import get_credential_broker
+
+            meta = get_credential_broker().save_login(
+                label=label,
+                origin=origin or "",
+                identifier_type=str(secret.get("identifier_type") or ""),
+                identifier=str(secret.get("identifier") or ""),
+                password=str(secret.get("password") or ""),
+                otp_secret=(str(secret["otp_secret"]) if secret.get("otp_secret") else None),
+            ).meta
+        else:
+            meta = get_vault_store().add_item(kind=kind, label=label, origin=origin, secret=secret)
         return _ok(rid, {"id": meta.id})
     except VaultError as e:
         # VaultError messages are metadata-safe by contract, but scrub anyway.
@@ -170,12 +178,12 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Remove a vault item by id. Result: ``{removed: bool}``."""
     try:
-        from agent.vault_store import get_vault_store
+        from agent.credential_broker import get_credential_broker
 
         item_id = str(params.get("id") or "")
         if not item_id:
             return _err(rid, 5095, "id is required")
-        return _ok(rid, {"removed": get_vault_store().remove_item(item_id)})
+        return _ok(rid, {"removed": get_credential_broker().remove_item(item_id)})
     except Exception as e:
         return _err(rid, 5095, str(e))
 

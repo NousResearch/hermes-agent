@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import subprocess
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, FrozenSet, List, Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
 
@@ -23,6 +24,12 @@ class UnlockRequired(Exception):
     def __init__(self, backend: "LoginBackend"):
         super().__init__(f"{backend.display_name} is locked")
         self.backend = backend
+
+
+@dataclass(frozen=True)
+class LoginSaveResult:
+    meta: VaultItemMeta
+    action: str  # created | updated
 
 
 class LoginBackend(ABC):
@@ -36,6 +43,10 @@ class LoginBackend(ABC):
 
     def is_unlocked(self) -> bool:
         return True
+
+    def capabilities(self) -> FrozenSet[str]:
+        """Stable feature negotiation used by the credential broker."""
+        return frozenset({"list", "resolve"})
 
     @abstractmethod
     def list_items(self) -> List[VaultItemMeta]:
@@ -57,6 +68,17 @@ class LoginBackend(ABC):
         """Full payload of a payment/address item (server-side only). External managers list only
         logins, so the base returns the password-only shape."""
         return {"password": self.resolve_password(handle)}
+
+    def create_login(self, *, label: str, origin: str, identifier_type: str,
+                     identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
+        raise RuntimeError(f"{self.display_name} does not support creating logins")
+
+    def update_login(self, handle: str, *, label: str, origin: str, identifier_type: str,
+                     identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
+        raise RuntimeError(f"{self.display_name} does not support updating logins")
+
+    def remove_item(self, handle: str) -> bool:
+        raise RuntimeError(f"{self.display_name} does not support removing items")
 
 
 def run_with_stdin_secret(argv: Sequence[str], *, env: Dict[str, str], secret: str, timeout: float,
@@ -88,10 +110,15 @@ def run_with_secret_env(argv: Sequence[str], *, env: Dict[str, str], secret_env:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
-def _cfg() -> Dict:
+def vault_config() -> Dict:
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("vault") or {}
     return cfg if isinstance(cfg, dict) else {}
+
+
+def _cfg() -> Dict:
+    """Backward-compatible internal alias."""
+    return vault_config()
 
 
 def external_backend_classes():

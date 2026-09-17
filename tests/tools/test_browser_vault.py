@@ -261,6 +261,33 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    def test_unlock_failure_never_returns_master_password(self):
+        from tools import browser_vault_tool
+
+        master = "master-password-from-prompt"
+
+        class EchoingBackend:
+            name = "bitwarden"
+            display_name = "Bitwarden"
+            needs_unlock = True
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                raise RuntimeError(f"bw rejected {password}")
+
+        with patch("agent.vault_backends.enabled_backends", return_value=[EchoingBackend()]), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch("agent.vault_backends.unlock.get_unlock_prompt_callback",
+                   return_value=lambda *_: master):
+            result = json.loads(browser_vault_tool.browser_vault_unlock("bitwarden"))
+
+        assert result["success"] is False
+        assert result["error_type"] == "unlock_failed"
+        assert master not in json.dumps(result)
+        assert "[REDACTED]" in result["error"]
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""

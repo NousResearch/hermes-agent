@@ -4617,13 +4617,13 @@ export interface RpcMethods {
   'toolsets.list': { params: _SessionScoped; result: ToolsetsListResult }
   /** Two-bar dollar usage view shared by /usage, /topup and /subscription; fail-open to unavailable. */
   'usage.bars': { params: ProfileParams; result: UsageModel }
-  /** Add a login / payment / address item to the local vault. */
+  /** Add a login through the configured broker, or a payment/address to the local vault. */
   'vault.add': { params: VaultAddParams; result: VaultAddResult }
   /** Metadata-only listing across the local vault and every unlocked password manager. */
   'vault.list': { params: ProfileParams; result: VaultListResult }
   /** Forget a manager's session token (every manager when no name is given). */
   'vault.lock': { params: VaultLockParams; result: VaultLockResult }
-  /** Remove a local vault item by id. */
+  /** Remove a vault item through the backend identified by its handle. */
   'vault.remove': { params: VaultRemoveParams; result: VaultRemoveResult }
   /** Enable or disable an external password manager (disabling also locks it). */
   'vault.source.set': { params: VaultSourceSetParams; result: VaultSourceSetResult }

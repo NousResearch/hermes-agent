@@ -334,26 +334,100 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
     return [p for p in paths if p]
 
 
+def _extract_reported_landed_paths(result: Any) -> List[str]:
+    """Return ONLY the explicit landed subset a tool result reports.
+
+    Pulls ``files_modified``, ``files_created``, and ``files_deleted`` from a parsed JSON tool
+    result (both endpoints of an ``old -> new`` move), or ``resolved_path``. Returns ``[]`` when
+    the result carries no explicit landed list — so a complete no-write failure is never treated
+    as landed (the caller distinguishes "no reported landed paths" from the requested-targets
+    fallback ``_extract_landed_file_mutation_paths`` applies).
+    """
+    if not isinstance(result, str):
+        return []
+    try:
+        data = json.loads(result.strip())
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    landed: List[str] = []
+    for field in ("files_modified", "files_created", "files_deleted"):
+        files = data.get(field)
+        if not isinstance(files, list):
+            continue
+        for item in files:
+            if not item:
+                continue
+            value = str(item)
+            if field == "files_modified" and " -> " in value:
+                # A move is reported as ``old -> new``; both endpoints changed on disk.
+                landed.extend(part for part in value.split(" -> ") if part)
+            else:
+                landed.append(value)
+    if landed:
+        return list(dict.fromkeys(landed))
+
+    resolved = data.get("resolved_path")
+    return [str(resolved)] if resolved else []
+
+
 def _extract_landed_file_mutation_paths(
     tool_name: str,
     args: Dict[str, Any],
     result: Any,
 ) -> List[str]:
-    """Concrete file paths a successful mutation reports (``files_modified`` /
-    ``resolved_path`` in the JSON result), falling back to the declared targets."""
+    """Concrete file paths a mutation reports as landed.
+
+    Aggregates the explicit landed subset (``files_modified`` / ``files_created`` /
+    ``files_deleted``, including both endpoints of an ``old -> new`` move) so a partial
+    multi-file patch that reports some files as landed can reconcile exactly which targets
+    changed. Falls back to the declared targets when the result carries no explicit landed list.
+    """
     targets = _extract_file_mutation_targets(tool_name, args)
     if tool_name not in _FILE_MUTATING_TOOLS or not isinstance(result, str):
         return targets
-    try:
-        data = json.loads(result.strip())
-    except Exception:
-        return targets
-    if not isinstance(data, dict):
-        return targets
-    files = data.get("files_modified")
-    landed = [str(p) for p in files if p] if isinstance(files, list) else []
-    resolved = data.get("resolved_path")
-    return landed or ([str(resolved)] if resolved else targets)
+    reported = _extract_reported_landed_paths(result)
+    return reported or targets
+
+
+def _paths_equal_reconciled(requested: str, landed: str) -> bool:
+    """True when one spelling of a target can be the same file as another spelling.
+
+    Compares the requested target (often relative to the execution cwd, e.g. ``src/app.py``)
+    against a reported landed path (often absolute, e.g. ``/tmp/project/src/app.py``) after
+    ``normcase``/``normpath``: exact equality, else a match at a path-component boundary in
+    either direction. A pairwise test only — ambiguity between several candidates is resolved
+    by ``_reconciles_to_reported_landed``, which is what callers should use.
+    """
+    if not requested or not landed:
+        return False
+    a = os.path.normcase(os.path.normpath(str(requested)))
+    b = os.path.normcase(os.path.normpath(str(landed)))
+    if a == b:
+        return True
+    return a.endswith(os.sep + b) or b.endswith(os.sep + a)
+
+
+def _reconciles_to_reported_landed(requested: str, reported_landed: Any) -> bool:
+    """True when ``requested`` names exactly one of the reported landed paths.
+
+    A bare ``app.py`` is a component-boundary suffix of *every* ``.../app.py`` in the report,
+    so a pure-suffix match is only trusted when it is unambiguous: an exact spelling match
+    always counts, and a suffix match counts only when a single reported path can be the file
+    named. An ambiguous suffix clears nothing.
+    """
+    if not requested:
+        return False
+    candidates = [str(p) for p in (reported_landed or ()) if p]
+    if not candidates:
+        return False
+    norm = os.path.normcase(os.path.normpath(str(requested)))
+    for candidate in candidates:
+        if os.path.normcase(os.path.normpath(candidate)) == norm:
+            return True
+    return len([c for c in candidates if _paths_equal_reconciled(requested, c)]) == 1
 
 
 def _extract_error_preview(result: Any, max_len: int = 180) -> str:

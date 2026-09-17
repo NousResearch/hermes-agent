@@ -67,9 +67,20 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
         from tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
+    # Per-thread interrupt flag (#83889): /stop and interrupt-mode messages mark the agent thread
+    # (tools.interrupt) while this wait runs ON that thread, so the loop must observe it — without
+    # it the agent stays blocked here until the full clarify timeout even though the run is already
+    # being cancelled, and the user's typed reply is dead. Mirrors the approval wait
+    # (tools/approval_gateway_wait._poll_event) and BaseEnvironment._wait_for_process.
+    try:
+        from tools.interrupt import is_interrupted
+    except Exception:  # pragma: no cover - optional
+        is_interrupted = lambda: False
     deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
+        if is_interrupted():
+            break
         remaining = 1.0 if deadline is None else deadline - time.monotonic()
         if remaining <= 0 or entry.event.wait(timeout=min(1.0, remaining)):
             break

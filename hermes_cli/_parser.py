@@ -99,6 +99,10 @@ Examples:
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
     hermes gateway                Run messaging gateway
+    hermes gateway start          Start the installed gateway service
+    hermes gateway stop           Stop the gateway service
+    hermes -p <profile> <cmd>     Run any command against a named profile's
+                                  home — e.g. hermes -p coder gateway stop
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install gateway background service

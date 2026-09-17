@@ -98,7 +98,9 @@ def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch, t
     assert nous_rate_limit_remaining() > 0
 
 
-def test_auxiliary_anonymous_cooldown_does_not_cache_named_provider_as_unhealthy(tmp_path, monkeypatch):
+def test_auxiliary_anonymous_cooldown_does_not_outlive_signing_in(tmp_path, monkeypatch):
+    """An anonymous cooldown marks the provider unhealthy only briefly: a named sign-in
+    mid-cooldown must not inherit the anonymous allowance's wait."""
     import agent.auxiliary_client as aux
     from agent.nous_rate_guard import record_nous_rate_limit
 
@@ -108,12 +110,12 @@ def test_auxiliary_anonymous_cooldown_does_not_cache_named_provider_as_unhealthy
     monkeypatch.setattr(aux, "_read_nous_auth", lambda: {})
     monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: tuple(runtime))
     unhealthy = []
-    monkeypatch.setattr(aux, "_mark_provider_unhealthy", lambda *a, **kw: unhealthy.append(a))
+    monkeypatch.setattr(aux, "_mark_provider_unhealthy", lambda *a, **kw: unhealthy.append(kw.get("ttl")))
     client = object()
     monkeypatch.setattr(aux, "_create_openai_client", lambda **kw: client)
     monkeypatch.setattr(aux, "_aux_probe_active", lambda: True)
     assert aux._try_nous() == (None, None)
-    assert unhealthy == []
+    assert unhealthy and all(ttl <= 60 for ttl in unhealthy)
     runtime[:] = [make_jwt(account_tier="free", client_id="hermes-cli"), NAMED]
     assert aux._try_nous()[0] is client
 

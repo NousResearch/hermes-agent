@@ -2265,7 +2265,6 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = str(
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
-    # Resolve the request identity before consulting its cross-session cooldown.
     with contextlib.suppress(Exception):
         from agent.nous_rate_guard import nous_rate_limit_remaining
         from hermes_cli.anon_auth import is_anonymous_request
@@ -2273,9 +2272,10 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         remaining = nous_rate_limit_remaining(anonymous=anonymous)
         if remaining is not None and remaining > 0:
             logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", remaining)
-            # A provider-wide cache would outlive signing in with a named account.
-            if not anonymous:
-                _mark_provider_unhealthy("nous", ttl=remaining)
+            # The health marker is provider-wide, so a full-length anonymous cooldown would
+            # outlive signing in mid-cooldown; bound it instead of re-resolving credentials
+            # (auth store lock, pool read) on every auxiliary call for the cooldown's duration.
+            _mark_provider_unhealthy("nous", ttl=min(remaining, 60.0) if anonymous else remaining)
             return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's

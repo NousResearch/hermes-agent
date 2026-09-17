@@ -984,7 +984,6 @@ def _run_prompt_submit(
             followup = run_body()
         if followup is not None:
             _run_post_turn_followups(rid, sid, session, *followup)
-    run_thread = threading.Thread(target=run, daemon=True)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
     with _routing_provenance_db(session) as routing_db, _sessions_lock:

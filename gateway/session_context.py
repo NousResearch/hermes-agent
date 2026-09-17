@@ -179,6 +179,34 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def get_current_session_identity() -> "dict | None":
+    """STRICT (no os.environ fallback) read of the current turn's routing identity.
+
+    Returns ``None`` unless the platform and chat id are bound in THIS context, else a plain
+    ``{"platform", "chat_id", "thread_id", "profile", "scope_id", "parent_chat_id"}`` dict
+    (missing members ``None``). Unlike ``get_session_env`` this never falls back to
+    ``os.environ``: an unbound context is indistinguishable from another chat's stale
+    last-published identity, so status/routing callers must fail closed rather than adopt a
+    process-global value (the ``HERMES_SESSION_ID`` env bridge is the documented contamination
+    path — identity reads stay on ContextVars)."""
+    platform = _SESSION_PLATFORM.get()
+    chat_id = _SESSION_CHAT_ID.get()
+    if platform is _UNSET or chat_id is _UNSET:
+        return None
+    platform_s, chat_s = str(platform).strip(), str(chat_id).strip()
+    if not platform_s or not chat_s:
+        return None
+
+    def _s(value: Any) -> "str | None":
+        return None if value is _UNSET or value is None or not str(value).strip() else str(value)
+
+    return {
+        "platform": platform_s, "chat_id": chat_s,
+        "thread_id": _s(_SESSION_THREAD_ID.get()), "profile": _s(_SESSION_PROFILE.get()),
+        "scope_id": _s(_SESSION_SCOPE_ID.get()), "parent_chat_id": _s(_SESSION_PARENT_CHAT_ID.get()),
+    }
+
+
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/
 # desktop bind HERMES_SESSION_SOURCE, so both are consulted).  Default-deny: an unrecognized
 # identity counts as messaging.  Mirrors LOCAL_SESSION_SOURCE_IDS in apps/desktop session-source.ts.

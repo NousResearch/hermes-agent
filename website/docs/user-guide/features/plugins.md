@@ -498,6 +498,7 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
 | `gateway.platform_actions` | `allow_platform_actions` |
+| `gateway.plugin_status` | `allow_plugin_status` |
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
@@ -556,6 +557,54 @@ surface — per the #64176 round-2 design correction it requires its own
 capability (`gateway.raw_events`) with a "no stability guarantee" label and a
 separate design, and has not shipped.
 :::
+
+### Plugin status lines
+
+`ctx.emit_status` / `ctx.platform_actions.send_status` post a **transient
+status line for the CURRENT conversation** — the sanctioned alternative for
+observability plugins that used to capture the runner from
+`pre_gateway_dispatch` and call `adapter.send_or_update_status()` directly.
+Status never starts a model turn, never enters conversation history, and
+never raises: a delivery failure is best-effort and changes no tool or agent
+result. Gated by the `gateway.plugin_status` capability (consent + audit
+visibility, default OFF — per the "Not a sandbox" note above, this is not a
+security boundary; it exists so grants are visible and revocable).
+
+```python
+# sync, fire-and-forget — acceptance semantics only (never waits):
+result = ctx.emit_status(
+    "👥 room-a · completed",
+    key="collab:botgroup:room-a",       # namespaced to your plugin by the facade
+    session_id=session_id,               # from the post_tool_call payload; optional
+)
+# result: {"accepted": bool, "error": str | None}  (scheduling, NOT delivery)
+
+# async, when you want the delivery result:
+out = await ctx.platform_actions.send_status(text, key, session_id=session_id)
+# out: {"ok": True, "mode": "edit"|"send"|"skipped", "message_id": ...} | {"ok": False, "error": ...}
+```
+
+Target resolution is fail-closed, never a default chat: explicit `session_id`
+first (unknown id → `invalid_argument`, NOT a silent reroute to the ambient
+context), then the task-local session ContextVars (strictly — `os.environ` is
+never an identity source), then an explicit `platform`+`chat_id` pair for
+background callers. Resolved thread/topic identity is injected into the
+adapter metadata (`thread_id`, the key Telegram/Slack consume) unless the
+caller supplied one explicitly, so status lands in the same topic/thread as
+the triggering turn. Same `key` + new text edits the previous bubble on
+adapters with native status support (Telegram, Slack) or resends a plain
+message elsewhere; identical text is throttled (process-local, bounded,
+advisory — digests are kept, never the text itself). Adapters are resolved
+through the same profile-aware, fail-closed ladder as the other platform-action
+verbs, so a plugin can never post through another profile's bot identity;
+a `session_id`-routed status uses the session's OWN profile, while a
+background `platform`+`chat_id` call resolves the active profile — the same
+fallback semantics as the other verbs, so background plugins that must target
+a secondary profile should pass `session_id`.
+The async primitive bounds its cross-loop wait (structured
+`{"ok": False, "error": "status_timeout"}` on expiry) and propagates
+`asyncio.CancelledError` rather than converting it to a failure; the sync
+helper never waits at all.
 
 ### Discovering plugins — the Hermes plugin catalog
 

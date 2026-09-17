@@ -690,15 +690,17 @@ def render_notice_line(notice) -> str:
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route a status through adapter.send_or_update_status when supported (edits the previous
-    bubble for the same status_key instead of appending); otherwise fall back to plain send.
+    """Route a status through the adapter (edit-in-place when supported, else plain send).
+
+    Thin delegation to the shared public helper ``gateway.status_delivery.send_or_update_status``
+    so the gateway turn-status lane and the plugin-facing ``ctx.emit_status`` / ``send_status``
+    facade share ONE implementation (no cross-layer dependency on this private name).
 
     See #30045.
     """
-    sender = getattr(adapter, "send_or_update_status", None)
-    if callable(sender):
-        return await sender(chat_id, status_key, content, metadata=metadata)
-    return await adapter.send(chat_id, content, metadata=metadata)
+    from gateway.status_delivery import send_or_update_status
+
+    return await send_or_update_status(adapter, chat_id, status_key, content, metadata)
 
 
 def _approval_send_outcome(future, timeout: float) -> str:

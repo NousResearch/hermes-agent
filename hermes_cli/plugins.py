@@ -293,12 +293,37 @@ class PluginContext:
 
     @cached_property
     def platform_actions(self):
-        """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call
-        re-checks ``gateway.platform_actions`` (legacy ``plugins.entries.<id>.allow_platform_actions``,
-        default OFF) and returns ``{"ok": bool, ...}`` — verbs never raise into hook dispatch; no adapter
-        handles or raw SDK objects."""
+        """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``,
+        ``send_status``). Every call re-checks the relevant capability (``gateway.platform_actions``
+        for the reaction/thread verbs — legacy ``plugins.entries.<id>.allow_platform_actions``;
+        ``gateway.plugin_status`` for ``send_status`` — legacy ``plugins.entries.<id>.allow_plugin_status``;
+        both default OFF) and returns ``{"ok": bool, ...}`` — verbs never raise into hook dispatch; no
+        adapter handles or raw SDK objects. ``await ctx.platform_actions.send_status(text, key, ...)``
+        awaits delivery; ``ctx.emit_status(...)`` is the sync fire-and-forget convenience wrapper."""
         from hermes_cli.platform_actions import PlatformActions
         return PlatformActions(self.plugin_id)
+
+    def emit_status(self, text: str, key: str, *, session_id: Optional[str] = None,
+                    platform: Optional[str] = None, chat_id: Optional[str] = None,
+                    metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Best-effort transient status for the current conversation (sync, non-blocking).
+
+        Acceptance semantics only — returns ``{"accepted": bool, "error": str | None}`` reflecting
+        SCHEDULING, not delivery; never waits, never calls ``Future.result()``, never raises into a
+        hook, and never changes tool/agent results. A new ``key`` posts a fresh line; the same ``key``
+        with new text edits it in place (adapters with native status support) or resends (others);
+        the same ``key``+text is throttled. ``key`` is namespaced to this plugin by the facade — the
+        plugin id comes from ``PluginContext``, not caller text.
+
+        Target resolution (never a default chat): explicit ``session_id`` first (fail-closed if
+        unknown — no silent reroute), then the task-local session ContextVars (no ``os.environ``
+        fallback), then an explicit ``platform``+``chat_id`` pair for background callers. Gated by the
+        ``gateway.plugin_status`` capability (consent + audit visibility, not a security boundary;
+        default OFF). Use ``await ctx.platform_actions.send_status(...)`` when a delivery result is
+        needed from an async context."""
+        return self.platform_actions.emit_status(
+            text, key, session_id=session_id, platform=platform, chat_id=chat_id, metadata=metadata,
+        )
 
     def _wrong_type(self, obj: Any, base_class: type, label: str, article: str = "a") -> bool:
         """Warn-and-ignore gate shared by every registrar that requires a base class."""

@@ -57,9 +57,13 @@ REASON_CANCEL_UNACKNOWLEDGED = "review_cancel_unacknowledged"
 REASON_REVIEW_REVOKED = "review_revoked"
 # A foreground turn in another process asked the review's durable lease to yield.
 REASON_PREEMPTED_CROSS_PROCESS = "review_preempted_cross_process"
-# A user transcript edit (/undo, /retry, an edited prompt, a detached delivery) asked the
-# review's durable lease to yield: the edit invalidated its replay basis.
+# A user transcript rewrite (/undo, /retry, an edited prompt) asked the review's durable lease
+# to yield: the rewrite invalidated its replay basis. An append (a detached delegation delivery)
+# lands without asking.
 REASON_PREEMPTED_BY_TRANSCRIPT_EDIT = "review_preempted_by_transcript_edit"
+# A deferred review its durable lease stopped (a yield stamp, or a lost row) is dropped, never
+# requeued: the transcript moved on under the captured snapshot.
+REASON_DROPPED_AFTER_LEASE_YIELD = "review_dropped_after_lease_yield"
 # The review's durable row outlived its renewals (dead process, starved refresher): seen by the
 # reclaiming foreground, and by the fork's next renewal tick.
 REASON_LEASE_EXPIRED_RECLAIMED = "review_lease_expired_reclaimed"

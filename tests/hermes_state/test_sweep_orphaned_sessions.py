@@ -236,6 +236,36 @@ class TestSweepOrphanedSessions:
         ) == []
         assert db.get_session("tip")["ended_at"] is None
 
+    def test_live_background_review_lease_spares_session_without_asking_it_to_yield(
+        self, db, caplog
+    ):
+        """A review fork holds the same durable row a foreground turn does, so the sweep and
+        the automatic prune spare it exactly like any live lease. A maintenance PROBE is not a
+        transcript edit: it never stamps the row to yield and never logs an edit reason."""
+        import os
+
+        from agent import review_admission
+        from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+
+        stale = time.time() - 8 * 3600
+        _make_session(db, "reviewed", source="tui", started_at=stale, message_at=stale)
+        holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}x"
+        assert db.try_acquire_session_turn_lease("reviewed", holder, ttl_seconds=300)
+
+        with caplog.at_level("INFO"):
+            assert db.sweep_orphaned_sessions(
+                max_idle_seconds=IDLE_S, sources=("tui",)
+            ) == []
+            db.end_session("reviewed", "cli_close")
+            assert db.prune_sessions(
+                older_than_days=0, exclude_active_write_guards=True
+            ) == 0
+
+        assert db.get_session("reviewed")["end_reason"] == "cli_close"
+        assert db.session_turn_lease_yield_requested("reviewed", holder) is False
+        assert review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT not in caplog.text
+        db.release_session_turn_lease("reviewed", holder)
+
     def test_active_compression_lock_spares_and_expiry_fences_owner(self, db):
         stale = time.time() - 8 * 3600
         _make_session(

@@ -737,6 +737,51 @@ def test_preempted_requeue_logs_its_own_reason_not_a_fresh_deferral(monkeypatch,
     assert "secret-session" not in caplog.text
 
 
+def test_review_stopped_by_a_lease_yield_is_dropped_not_requeued(
+    tmp_path, monkeypatch, caplog
+):
+    """A deferred review whose durable lease was asked to yield is NOT requeued: the transcript
+    moved on under it (an edit took the rows back, or another process ran a turn and reviews
+    its own), so replaying the captured snapshot later would learn from turns the user undid.
+    Dropped once, with its own slug and the hashed owner — never the raw session id."""
+    from agent import background_review as background_review_module
+    from agent.review_admission import owner_tag
+    from hermes_state import SessionDB
+
+    profile, session_id = "/profiles/alpha", "account@example.com:secret-session"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(session_id, source="test")
+    user_row_id = db.append_message(session_id, "user", "ask")
+    db.append_message(session_id, "assistant", "reply")
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: None, release_clients=lambda: None
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        types.SimpleNamespace(_session_db=db), fork, session_id, run
+    )
+    assert reason is None and lease is not None
+    db.rewind_to_message(session_id, user_row_id)  # /undo under the running review
+    assert lease.refresh_tick() is None
+    lease.stop_refresher()
+    lease.release()
+    assert run.cancel_requested.is_set()
+
+    requeue, calls = _requeue_agent(monkeypatch)
+    with caplog.at_level("INFO"):
+        requeue(run, {"task_cfg": {"defer": "auto"}, "focus": None,
+                      "_requeue_attempts": 1, "_idle_queue_origin": True,
+                      "messages_snapshot": [{"role": "user", "content": "ask"}],
+                      "_review_profile_key": profile, "_review_session_id": session_id})
+    assert calls["enqueued"] == []
+    assert "review_dropped_after_lease_yield" in caplog.text
+    assert "preempted_requeued" not in caplog.text
+    assert owner_tag(profile, session_id) in caplog.text
+    assert profile not in caplog.text
+    assert "secret-session" not in caplog.text
+
+
 def test_immediate_automatic_review_does_not_requeue(monkeypatch):
     requeue, calls = _requeue_agent(monkeypatch)
     requeue(_Run(cancelled=True),

@@ -15,6 +15,7 @@ from agent.context_compressor import (
     _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
 from agent.message_sanitization import _sanitize_surrogates
+from agent.review_admission import REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
@@ -44,8 +45,14 @@ _BUMP_GENERATION_SQL = """
             """
 
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
-_STAMP_REVIEW_YIELD_SQL = ("UPDATE session_turn_leases SET yield_requested_at = ? "
+_STAMP_REVIEW_YIELD_SQL = ("UPDATE session_turn_leases SET yield_requested_at = ?, yield_reason = ? "
                            "WHERE conversation_id = ? AND holder = ? AND yield_requested_at IS NULL")
+# What a transcript writer does about a live BACKGROUND-REVIEW turn lease. The review fork never
+# writes the transcript (immutable snapshot, persistence disabled), so the row cannot fence a write
+# the way a foreground holder's does; what it means depends on the writer, never on the guard.
+REVIEW_LEASE_REFUSE = "refuse"  # like any live lease: a maintenance probe spares the row, asks nothing
+REVIEW_LEASE_YIELD = "yield"  # a user rewrite invalidated the fork's replay basis: stamp it to yield
+REVIEW_LEASE_IGNORE = "ignore"  # an append cannot invalidate the snapshot: land beside the review
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 # Model-only rows (see MODEL_ONLY_DISPLAY_METADATA_KEY) never enter a display projection. Unqualified on
@@ -125,7 +132,7 @@ def _stale_holder(row, now: float) -> bool:
 def _log_review_yield_for_edit(session_id: str) -> None:
     """One body-free, owner-tagged line per stamp: a review preempted by a user edit is as greppable
     as one preempted by a foreground turn (``agent/review_admission.py``)."""
-    from agent.review_admission import REASON_PREEMPTED_BY_TRANSCRIPT_EDIT, current_profile_key, owner_tag
+    from agent.review_admission import current_profile_key, owner_tag
     logger.info("Background review asked to yield for a transcript edit (owner=%s, reason=%s)",
                 owner_tag(current_profile_key(), session_id), REASON_PREEMPTED_BY_TRANSCRIPT_EDIT)
 
@@ -214,7 +221,8 @@ class SessionMessagesMixin:
     def _check_transcript_write_guards(self, conn, session_id: str, compression_lock_holder: Optional[str],
         turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
         reject_active_turn_lease: bool = False, reject_active_compression_lock: bool = False,
-        allow_closed_compression_parent: bool = False) -> None:
+        allow_closed_compression_parent: bool = False,
+        review_lease_policy: str = REVIEW_LEASE_REFUSE) -> None:
         """Transcript-write admission checks, run INSIDE the write txn by every writer. Ordinary appends do
         NOT check compression_locks: the lock only stops two COMPRESSIONS colliding and archive_and_compact()
         commits against a watermark, so concurrent appends are safe (blocking them killed turns during slow
@@ -224,8 +232,9 @@ class SessionMessagesMixin:
         Shared by :meth:`append_message` and :meth:`append_messages_batch` so the two writers can never
         diverge on these correctness invariants (this guard has already needed targeted fixes — see the
         #74478 patience note below). User-initiated transcript mutations may opt in to rejecting an active
-        unowned turn lease in that same transaction — except a background-review holder, which never writes
-        the transcript and is asked to yield instead of refusing the mutation.
+        unowned turn lease in that same transaction; ``review_lease_policy`` (``REVIEW_LEASE_*``) is what a
+        live background-review holder means to THIS writer: a maintenance probe refuses like any live lease
+        (nothing stamped or logged), a user rewrite asks it to yield, an append ignores it.
         """
         from hermes_state import SessionCompressionInProgressError
         from hermes_state_errors import CompressionSessionClosedError, SessionTurnLeaseLostError
@@ -264,16 +273,18 @@ class SessionMessagesMixin:
                     # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
                     conn.execute("DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
                         (conversation_id, lease["holder"]))
-                elif BACKGROUND_REVIEW_LEASE_HOLDER_MARK in str(lease["holder"]):
-                    # A review fork never writes the transcript (immutable snapshot, persistence disabled), so
-                    # its lease cannot refuse a user mutation. The edit invalidated its replay basis, so it is
-                    # asked to yield: the fork stops on its next renewal tick and releases the row itself
-                    # (agent/background_review.py::_ReviewTurnLease). Stamped, and logged, once per hold.
-                    if conn.execute(_STAMP_REVIEW_YIELD_SQL, (now, conversation_id, lease["holder"])).rowcount > 0:
-                        _log_review_yield_for_edit(session_id)
-                else:
+                elif (BACKGROUND_REVIEW_LEASE_HOLDER_MARK not in str(lease["holder"])
+                      or review_lease_policy == REVIEW_LEASE_REFUSE):
                     raise SessionTurnLeaseLostError(
                         f"Session has an active turn lease; refusing transcript mutation for {session_id!r}")
+                elif review_lease_policy == REVIEW_LEASE_YIELD:
+                    # The rewrite invalidated the fork's replay basis, so it is asked to yield: the fork stops
+                    # on its next renewal tick, logs this stored cause, and releases the row itself
+                    # (agent/background_review.py::_ReviewTurnLease). Stamped, and logged, once per hold.
+                    if conn.execute(_STAMP_REVIEW_YIELD_SQL, (now, REASON_PREEMPTED_BY_TRANSCRIPT_EDIT,
+                                                              conversation_id, lease["holder"])).rowcount > 0:
+                        _log_review_yield_for_edit(session_id)
+                # REVIEW_LEASE_IGNORE: the append lands beside the live review.
         if _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()) and not allow_closed_compression_parent:
             raise CompressionSessionClosedError(session_id)
 
@@ -374,7 +385,9 @@ class SessionMessagesMixin:
                 (session_id, delegation_id, metadata.get("delivery_notice", ""))).fetchone()
             if existing is not None:
                 return existing[0]
-            self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
+            # An append after the review's snapshot: a live review neither refuses it nor yields to it.
+            self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True,
+                                                review_lease_policy=REVIEW_LEASE_IGNORE)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
@@ -598,7 +611,8 @@ class SessionMessagesMixin:
         def _do(conn):
             if reject_active_turn_lease:
                 self._check_transcript_write_guards(
-                    conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+                    conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True,
+                    review_lease_policy=REVIEW_LEASE_YIELD)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
             kept = kept_tool_calls = 0
@@ -1561,7 +1575,8 @@ class SessionMessagesMixin:
         lease refuses; expired/dead holders are reclaimed. ``rewind_count`` always increments."""
         def _do(conn):
             self._check_transcript_write_guards(
-                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True,
+                review_lease_policy=REVIEW_LEASE_YIELD)
             if expected_active_ids is not None:
                 active_rows = conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()
                 if [int(r[0]) for r in active_rows] != expected_active_ids:

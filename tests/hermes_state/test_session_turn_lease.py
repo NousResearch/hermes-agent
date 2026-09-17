@@ -719,9 +719,10 @@ def test_transcript_edits_ask_a_background_review_holder_to_yield_instead_of_ref
     """A review fork runs on an immutable snapshot with persistence disabled, so its lease can
     never justify refusing a user mutation: a detached delegation delivery, /undo and /retry
     (``rewind_to_message``) and an edited prompt (``replace_messages``) all land while the row
-    is held. The edit invalidates the review's replay basis, so the holder is asked to yield —
-    stamped once, logged once with the hashed owner — and keeps the row until its own exit. A
-    foreground holder still refuses and is never asked to yield."""
+    is held. A REWRITE invalidates the review's replay basis, so the holder is asked to yield —
+    stamped once, logged once with the hashed owner — and keeps the row until its own exit. The
+    delivery is an APPEND after the snapshot: it lands and asks nothing. A foreground holder
+    still refuses every one of them and is never asked to yield."""
     from agent import review_admission
     from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
 
@@ -733,7 +734,11 @@ def test_transcript_edits_ask_a_background_review_holder_to_yield_instead_of_ref
     assert db.try_acquire_session_turn_lease("shared", review_holder, ttl_seconds=60)
 
     with caplog.at_level("INFO"):
-        db.append_delegation_delivery("shared", "done", {"delegation_id": "d1"})
+        assert isinstance(
+            db.append_delegation_delivery("shared", "done", {"delegation_id": "d1"}), int
+        )
+        assert db.session_turn_lease_yield_requested("shared", review_holder) is False
+        assert review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT not in caplog.text
         rewound = db.rewind_to_message("shared", user_row_id)
         db.replace_messages(
             "shared", [{"role": "user", "content": "edited ask"}],
@@ -761,6 +766,8 @@ def test_transcript_edits_ask_a_background_review_holder_to_yield_instead_of_ref
             "shared", [{"role": "user", "content": "again"}],
             active_only=True, archive_dropped=True, reject_active_turn_lease=True,
         )
+    with pytest.raises(SessionTurnLeaseLostError):
+        db.append_delegation_delivery("shared", "done", {"delegation_id": "d2"})
     assert db.session_turn_lease_yield_requested("shared", foreground_holder) is False
     db.release_session_turn_lease("shared", foreground_holder)
 

@@ -546,6 +546,7 @@ class SessionCompressionMixin:
         path) stamps a background-review holder to yield in that same transaction; a live
         review renews until its own exit releases the row, so its row is reclaimed only by the
         same expired-or-dead rule as any other holder — and that reclaim is logged."""
+        from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
@@ -558,26 +559,40 @@ class SessionCompressionMixin:
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
             )
             if not acquired and preempt_background_review:
+                # First stamp wins (an edit may already have asked): the fork logs the stored cause.
                 conn.execute(
-                    "UPDATE session_turn_leases SET yield_requested_at = COALESCE(yield_requested_at, ?) "
+                    "UPDATE session_turn_leases SET yield_requested_at = COALESCE(yield_requested_at, ?), "
+                    "yield_reason = COALESCE(yield_reason, ?) "
                     "WHERE conversation_id = ? AND instr(holder, ?) > 0",
-                    (now, conversation_id, BACKGROUND_REVIEW_LEASE_HOLDER_MARK))
+                    (now, REASON_PREEMPTED_CROSS_PROCESS, conversation_id, BACKGROUND_REVIEW_LEASE_HOLDER_MARK))
             return acquired, reclaimed_holder
         acquired, reclaimed_holder = self._execute_write(_do, patience_s=patience_s)
         if reclaimed_holder and BACKGROUND_REVIEW_LEASE_HOLDER_MARK in reclaimed_holder:
             _log_review_lease_reclaimed(session_id)
         return bool(acquired)
 
-    def session_turn_lease_yield_requested(self, session_id: str, holder: str) -> bool:
-        """Whether a waiting foreground turn asked ``holder`` (a background-review lease) to yield."""
+    def session_turn_lease_yield_reason(self, session_id: str, holder: str) -> Optional[str]:
+        """The body-free slug (``agent/review_admission.py``) under which ``holder`` (a background-review
+        lease) was asked to yield — by a waiting foreground turn or a user transcript rewrite — or None
+        while nobody asked. A stamp is a request even without a stored cause (a row written before
+        ``yield_reason`` existed): only the waiting foreground path stamped then."""
         if not session_id or not holder:
-            return False
+            return None
         with self._read_ctx() as conn:
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             row = conn.execute(
-                "SELECT yield_requested_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                (conversation_id, holder)).fetchone()
-        return row is not None and row["yield_requested_at"] is not None
+                "SELECT yield_requested_at, yield_reason FROM session_turn_leases "
+                "WHERE conversation_id = ? AND holder = ?", (conversation_id, holder)).fetchone()
+        if row is None or row["yield_requested_at"] is None:
+            return None
+        if row["yield_reason"]:
+            return str(row["yield_reason"])
+        from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
+        return REASON_PREEMPTED_CROSS_PROCESS
+
+    def session_turn_lease_yield_requested(self, session_id: str, holder: str) -> bool:
+        """Whether ``holder`` (a background-review lease) was asked to yield, by any stamper."""
+        return self.session_turn_lease_yield_reason(session_id, holder) is not None
 
     def acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,

@@ -406,19 +406,24 @@ never beside it — and the turn never waits for the review to finish its work.
 The lease is reclaimed from a review only when its process is dead or its
 renewals stopped for a full TTL, and both sides log that
 (`review_lease_expired_reclaimed`, `review_lease_lost`). A review holder never
-refuses a transcript edit: `/undo`, `/retry`, an edited-and-resubmitted prompt or
-a detached delegation delivery lands at once and asks the review to yield the
-same way (`review_preempted_by_transcript_edit`). `/refine` is exempt from the
-replay and input bounds below but NOT from this exclusion: while a turn in
-another process owns the session, the requested review is skipped and a notice
-says so.
+refuses a transcript write: `/undo`, `/retry` and an edited-and-resubmitted
+prompt land at once and ask the review to yield the same way — the fork logs the
+cause that stamped it (`review_preempted_by_transcript_edit`), never a
+cross-process preemption. A detached delegation delivery is an append after the
+review's snapshot: it lands without asking. A deferred review stopped by either
+yield is dropped rather than requeued (`review_dropped_after_lease_yield`): its
+snapshot no longer describes the transcript. Maintenance sweeps and automatic
+pruning spare a review-held session like any live lease. `/refine` is exempt
+from the replay and input bounds below but NOT from this exclusion: while a
+turn in another process owns the session, the requested review is skipped and a
+notice says so.
 
 Every skip, defer, cancel, or drop is one body-free `agent.log` line carrying a
 hashed owner tag and a stable reason (`live_turn_active`,
 `queued_followup_pending`, `oversized_snapshot`, `durable_foreground_active`,
 `review_slot_busy`, `delivery_unconfirmed`, `pending_followup_handoff`,
 `review_preempted_cross_process`, `review_preempted_by_transcript_edit`,
-`review_lease_expired_reclaimed`, `review_lease_lost`,
+`review_dropped_after_lease_yield`, `review_lease_expired_reclaimed`, `review_lease_lost`,
 `review_cancel_unacknowledged`, `review_revoked`, `review_completion_error`, …),
 never the session id or any message text.
 

@@ -45,6 +45,9 @@ class _BackgroundReviewRun:
         self.cancel_requested = threading.Event()
         self.request_done = threading.Event()
         self.refused_reason: Optional[str] = None
+        # Set by ``_ReviewTurnLease`` when the durable lease stopped the run (a yield stamp or a
+        # lost row): the transcript moved on, so a deferred item is dropped rather than requeued.
+        self.lease_yield_reason: Optional[str] = None
         self._lock = threading.Lock()
         self._admission_gate = admission_gate
         self._admission_lock = admission_lock
@@ -1469,10 +1472,10 @@ class _ReviewForkState:
 
 
 # A review fork renews its durable row often, and keeps renewing after it is asked to yield: the
-# row is what a foreground waiter in another process (or a user transcript edit) stamps to make
-# the review yield, and only the fork's own exit releases it. The TTL bounds a row whose process
-# died without releasing it (a dead local PID is reclaimed at once). Foreground turns keep the
-# longer LEASE_TTL_SECONDS / 60s cadence.
+# row is what a foreground waiter in another process (or a user transcript rewrite) stamps to
+# make the review yield, and only the fork's own exit releases it. The TTL bounds a row whose
+# process died without releasing it (a dead local PID is reclaimed at once). Foreground turns
+# keep the longer LEASE_TTL_SECONDS / 60s cadence.
 _REVIEW_LEASE_TTL_SECONDS = 60.0
 _REVIEW_LEASE_REFRESH_SECONDS = 3.0
 
@@ -1481,15 +1484,18 @@ class _ReviewTurnLease(DurableTurnLease):
     """The review fork's durable session-row lease: it YIELDS to a foreground waiter.
 
     A foreground turn in another process (CLI resume, Desktop, a second gateway) stamps the row
-    (``SessionDB.acquire_session_turn_lease``); so does a user transcript edit
-    (``hermes_state_messages._check_transcript_write_guards``). The next renewal tick observes
-    the stamp, fences the run and hard-interrupts the fork — and keeps renewing: the row is
-    released only by the fork's own exit, so the waiter never decodes beside a still-running
-    fork. The tick doubles as the escalation clock (``escalate_unacknowledged_cancel``), so a
-    wedged fork is unwedged rather than left to the TTL. A holder-fenced renewal miss means the
-    row was reclaimed under the fork (a dead-PID sweep, or a TTL that elapsed with no renewal)
-    and another process may own the session: logged once as ``review_lease_lost``, and the fork
-    is stopped the same way.
+    (``SessionDB.acquire_session_turn_lease``); so does a user transcript rewrite
+    (``hermes_state_messages._check_transcript_write_guards``). Each stamper stores its own
+    body-free cause, and the next renewal tick logs THAT slug (``review_preempted_cross_process``
+    / ``review_preempted_by_transcript_edit``), fences the run and hard-interrupts the fork — and
+    keeps renewing: the row is released only by the fork's own exit, so the waiter never decodes
+    beside a still-running fork. The tick doubles as the escalation clock
+    (``escalate_unacknowledged_cancel``), so a wedged fork is unwedged rather than left to the
+    TTL. A holder-fenced renewal miss means the row was reclaimed under the fork (a dead-PID
+    sweep, or a TTL that elapsed with no renewal) and another process may own the session:
+    logged once as ``review_lease_lost``, and the fork is stopped the same way. Either stop is
+    recorded on the run, so a deferred review is dropped instead of replaying a snapshot the
+    transcript has moved past.
     """
 
     def __init__(
@@ -1508,14 +1514,9 @@ class _ReviewTurnLease(DurableTurnLease):
     def refresh_tick(self):
         if self.stop.is_set():
             return False
-        if self._yielded_at is None and self._yield_requested():
-            from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
-
-            logger.info(
-                "Background review preempted (owner=%s, reason=%s)",
-                self._owner, REASON_PREEMPTED_CROSS_PROCESS,
-            )
-            self._stop_fork("superseded by a live turn in another process")
+        if self._yielded_at is None and (cause := self._yield_reason()):
+            logger.info("Background review preempted (owner=%s, reason=%s)", self._owner, cause)
+            self._stop_fork(f"background review asked to yield ({cause})", cause)
         if self._yielded_at is not None:
             elapsed = self._now() - self._yielded_at
             if self._review_run is not None and elapsed >= _CANCEL_ACK_ESCALATION_SECONDS:
@@ -1532,16 +1533,15 @@ class _ReviewTurnLease(DurableTurnLease):
         logger.warning(
             "Background review lease lost (owner=%s, reason=%s)", self._owner, REASON_LEASE_LOST
         )
-        self._stop_fork("session turn lease lost; another process may own the session")
+        self._stop_fork("session turn lease lost; another process may own the session", REASON_LEASE_LOST)
         return None
 
-    def _yield_requested(self) -> bool:
+    def _yield_reason(self) -> Optional[str]:
+        """The stamper's slug, or None while nobody asked the review to yield."""
         try:
-            return bool(
-                self.db.session_turn_lease_yield_requested(self._current_session_id(), self.holder)
-            )
+            return self.db.session_turn_lease_yield_reason(self._current_session_id(), self.holder)
         except Exception:  # noqa: BLE001 — a broken store reads as no yield; the renewal decides
-            return False
+            return None
 
     def _renewed(self) -> bool:
         try:
@@ -1554,13 +1554,15 @@ class _ReviewTurnLease(DurableTurnLease):
             logger.debug("Background review lease renewal failed", exc_info=True)
             return False
 
-    def _stop_fork(self, reason: str) -> None:
-        """Fence the run and hard-interrupt the fork, once; starts the escalation clock."""
+    def _stop_fork(self, reason: str, slug: str) -> None:
+        """Fence the run and hard-interrupt the fork, once; starts the escalation clock. ``slug``
+        is recorded on the run before the fence so the requeue policy sees it with the cancel."""
         if self._yielded_at is not None:
             return
         self._yielded_at = self._now()
         fork = self.agent
         if self._review_run is not None:
+            self._review_run.lease_yield_reason = slug
             fork = self._review_run.cancel() or fork
         with suppress(Exception):
             from agent.interrupt_compat import request_hard_interrupt

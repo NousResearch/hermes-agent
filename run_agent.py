@@ -1022,8 +1022,9 @@ class AIAgent(
 
     _REVIEW_REQUEUE_MAX_ATTEMPTS = 3
 
-    def _requeue_deferred_review(self, kwargs) -> None:
-        """Re-enqueue only an idle-queue dispatch, with a fresh age and a bounded retry count."""
+    def _requeue_deferred_review(self, kwargs, *, drop_reason: Optional[str] = None) -> None:
+        """Re-enqueue only an idle-queue dispatch, with a fresh age and a bounded retry count.
+        ``drop_reason`` logs that same dispatch as dropped instead of requeuing it."""
         if (
             not kwargs.get("_idle_queue_origin")
             or kwargs.get("explicit")
@@ -1035,6 +1036,13 @@ class AIAgent(
         queue_key = _review_queue_key(
             self, kwargs.get("_review_profile_key"), kwargs.get("_review_session_id")
         )
+        if drop_reason is not None:
+            logger.info(
+                "Preempted background review dropped (owner=%s, reason=%s)",
+                review_admission.owner_tag(*queue_key),
+                drop_reason,
+            )
+            return
         if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
             logger.info(
                 "Preempted background review dropped (owner=%s, reason=%s, requeues=%d)",
@@ -1060,13 +1068,23 @@ class AIAgent(
         """Requeue a deferred-mode review that a live turn cancelled.
 
         Only for automatic reviews on the managed local runtime; bounded attempts stop a busy box cycling
-        forever.
+        forever. A run its durable lease stopped (a transcript rewrite, a turn in another process, a
+        lost row) is dropped instead: the captured snapshot no longer describes the transcript.
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
             if not review_run.cancel_requested.is_set():
                 return
-            self._requeue_deferred_review(kwargs)
+            from agent import review_admission
+
+            self._requeue_deferred_review(
+                kwargs,
+                drop_reason=(
+                    review_admission.REASON_DROPPED_AFTER_LEASE_YIELD
+                    if getattr(review_run, "lease_yield_reason", None)
+                    else None
+                ),
+            )
         except Exception:  # noqa: BLE001 — requeue is best-effort
             logger.debug("Preempted-review requeue failed", exc_info=True)
 

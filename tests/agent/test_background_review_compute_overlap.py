@@ -2043,6 +2043,47 @@ def test_yielded_review_lease_keeps_renewing_until_the_fork_exits(tmp_path):
     foreground_db.release_session_turn_lease("shared-session", fg)
 
 
+def test_transcript_edit_yield_is_logged_with_its_own_cause_and_recorded_on_the_run(
+    tmp_path, caplog
+):
+    """The fork's tick names the cause that stamped its row: a user edit reads as
+    ``review_preempted_by_transcript_edit`` — never as a cross-process preemption, so grepping
+    the cross-process slug counts only foreground turns from other processes — and the run
+    remembers the yield for the requeue policy. A detached delegation delivery is an append
+    after the snapshot: it neither stamps the row nor stops the fork."""
+    path, foreground_db, lease, run, interrupted, _fg = _shared_review_lease(tmp_path)
+    user_row_id = foreground_db.append_message("shared-session", "user", "ask")
+    foreground_db.append_message("shared-session", "assistant", "reply")
+
+    foreground_db.append_delegation_delivery(
+        "shared-session", "done", {"delegation_id": "d1"}
+    )
+    assert lease.refresh_tick() is None
+    assert not run.cancel_requested.is_set()
+    assert not interrupted.is_set()
+
+    foreground_db.rewind_to_message("shared-session", user_row_id)
+    with caplog.at_level("INFO"):
+        assert lease.refresh_tick() is None
+    assert interrupted.is_set()
+    assert run.cancel_requested.is_set()
+    assert review_admission.REASON_PREEMPTED_CROSS_PROCESS not in caplog.text
+    fork_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == background_review_module.logger.name
+        and review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT in r.getMessage()
+    ]
+    assert len(fork_lines) == 1, caplog.text
+    assert lease._owner in fork_lines[0]
+    assert "shared-session" not in fork_lines[0]
+    assert (
+        run.lease_yield_reason == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+    )
+    lease.stop_refresher()
+    lease.release()
+
+
 @pytest.mark.parametrize("yielded", [False, True], ids=["before_yield", "after_yield"])
 def test_review_lease_loss_is_logged_once_and_stops_the_fork(tmp_path, caplog, yielded):
     """A holder-fenced renewal miss means the row was reclaimed under the fork (a dead-PID

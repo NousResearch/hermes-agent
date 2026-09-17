@@ -3946,6 +3946,10 @@ class GatewayTurnMixin:
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
 
+        pane = getattr(turn_ctx, "matrix_commentary_pane", None)
+        if pane is not None:
+            await pane.close()
+
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
     ) -> None:
@@ -4099,6 +4103,19 @@ class GatewayTurnMixin:
         turn_ctx._progress_metadata, turn_ctx._progress_reply_to, _status_thread_metadata = (
             self._run_agent_progress_threading(source, event_message_id, _native_slack_task_cards)
         )
+        adapter = self._adapter_for_source(source)
+        if (
+            turn_ctx.interim_assistant_messages_enabled
+            and adapter is not None
+            and (getattr(adapter, "name", "") == "matrix" or source.platform == Platform.MATRIX)
+        ):
+            from gateway.matrix_commentary_pane import MatrixCommentaryPane
+            turn_ctx.matrix_commentary_pane = MatrixCommentaryPane(
+                adapter=adapter,
+                chat_id=source.chat_id,
+                reply_to=turn_ctx._progress_reply_to,
+                metadata=turn_ctx._progress_metadata,
+            )
         # Bridges: sync step/event/status callbacks → async hooks.emit and adapter.send.
         turn_ctx._loop_for_step = asyncio.get_running_loop()
         turn_ctx._hooks_ref = self.hooks

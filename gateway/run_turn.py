@@ -997,9 +997,15 @@ class GatewayTurnMixin:
             "proceeding without compression this turn%s",
             session_entry.session_id, time.monotonic() - attempt.wait_started, _log_suffix,
         )
-        await self._hmwa_hygiene_notify(
-            source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
-        )
+        # A deferred hygiene compression is routine progress (the summary is still adopted at the
+        # next safe boundary, nothing is lost), so the notice honours the same opt-in gate as the
+        # other routine compression statuses instead of reaching every chat unconditionally.
+        # Timeout/abort warnings below are unaffected: they always reach the user.
+        from gateway.run import _gateway_compression_progress_notices_enabled
+        if _gateway_compression_progress_notices_enabled():
+            await self._hmwa_hygiene_notify(
+                source, attempt.meta, t("gateway.compress.turnhold_deferred"), "compression-turnhold notice",
+            )
         raise
 
     async def _hmwa_hygiene_on_timeout(self, attempt, hs, session_entry, session_key, source):

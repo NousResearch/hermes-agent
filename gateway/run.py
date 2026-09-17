@@ -1788,38 +1788,6 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
         yield
 
 
-def _profile_session_db_probe(profile_home: "Path"):
-    """The goals-cached SessionDB for *profile_home* with ONLY the HERMES_HOME contextvar
-    installed — no config parse, no secret hydration, no terminal policy. Idle-path gates
-    ("is there any work for this profile at all?") use it before paying for a full
-    ``_profile_runtime_scope`` entry on every watcher tick. None when unavailable."""
-    from hermes_cli.goals import _get_session_db
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-    token = set_hermes_home_override(str(profile_home))
-    try:
-        return _get_session_db()
-    except Exception:
-        logger.debug("session-db probe failed for %s", profile_home, exc_info=True)
-        return None
-    finally:
-        reset_hermes_home_override(token)
-
-
-def _profile_meta_rows(profile_home: "Path", prefix: str) -> Optional[list]:
-    """``list_meta_prefix(prefix)`` rows from the probe DB, or None when the store is unavailable or
-    the read fails. None means "cannot prove emptiness": every idle gate treats it as work present, so
-    a broken or migrating store can never suppress a heartbeat restore or a due loop (fail OPEN)."""
-    db = _profile_session_db_probe(profile_home)
-    if db is None:
-        return None
-    try:
-        return db.list_meta_prefix(prefix)
-    except Exception:
-        logger.debug("meta probe %r failed for %s", prefix, profile_home, exc_info=True)
-        return None
-
-
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
     settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that

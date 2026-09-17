@@ -35,27 +35,6 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-async def _watcher_has_pending_handoffs(runner: object, profile_home: "Path") -> bool:
-    """Idle gate for the handoff watcher's per-profile ticks: True when the profile's store
-    holds a pending handoff — or when the probe can't prove otherwise (fail OPEN: a probe
-    error must never suppress a dispatch). The SessionDB read goes through the runner's
-    executor hop (off the loop thread); runners without one (bare test stand-ins) skip the
-    gate entirely and keep the historical always-enter behavior."""
-
-    def _probe() -> bool:
-        try:
-            from gateway.run import _profile_session_db_probe
-            db = _profile_session_db_probe(profile_home)
-            return True if db is None else db.has_pending_handoffs()
-        except Exception:
-            return True
-
-    offload = getattr(runner, "_run_in_executor_with_context", None)
-    if not callable(offload):
-        return True
-    return bool(await offload(_probe))
-
-
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
@@ -478,6 +457,7 @@ class GatewayAdapterLifecycleMixin:
         → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
         ``completed``/``failed``."""
         from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, _reclaim_stale
+        from gateway.run_idle_gates import off_loop_gate, profile_has_pending_handoff
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.
         try:
@@ -545,11 +525,10 @@ class GatewayAdapterLifecycleMixin:
             while self._running:
                 try:
                     for profile_name, profile_home in _handoff_watch_scopes(self):
-                        # Idle gate: the scope entry re-parses the profile's config/secrets,
-                        # so only pay it when the profile's store actually holds a pending
-                        # handoff. The root poll (None) is unscoped and stays cheap.
-                        if profile_home is not None and not await _watcher_has_pending_handoffs(
-                                self, profile_home):
+                        # Idle gate (run_idle_gates): skip the scope entry when the profile's store
+                        # holds no pending handoff. The root poll (None) is unscoped and stays cheap.
+                        if profile_home is not None and not await off_loop_gate(
+                                self, lambda home=profile_home: profile_has_pending_handoff(home)):
                             continue
                         async with _scope(profile_home):
                             await _tick(profile_name)

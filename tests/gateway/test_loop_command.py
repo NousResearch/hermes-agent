@@ -474,7 +474,7 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         cleared = loops.LoopState.from_json(raw)
         cleared.status = "cleared"
         work_db.set_meta("loop:sid-work-loop", cleared.to_json())
-        monkeypatch.setattr("gateway.run._profile_session_db_probe", lambda _home: None)
+        monkeypatch.setattr("gateway.run_idle_gates._profile_session_db_probe", lambda _home: None)
         await _run_one_tick()
         assert entered == [work_home], (
             f"unavailable store must fall back to the historical scan; got {entered}")

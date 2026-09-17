@@ -128,7 +128,7 @@ async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, mo
         # Fail OPEN: a store the probe cannot open must not suppress the sweep.
         dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
             prompt='p', interval_seconds=60, status='cleared').to_json())
-        monkeypatch.setattr('gateway.run._profile_session_db_probe', lambda _home: None)
+        monkeypatch.setattr('gateway.run_idle_gates._profile_session_db_probe', lambda _home: None)
         await restore_heartbeat_watches(runner)
         assert sweeps == [1, 1]
     finally:

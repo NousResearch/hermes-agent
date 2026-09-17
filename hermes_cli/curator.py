@@ -408,6 +408,11 @@ def _cmd_ledger(args) -> int:
         extra = ""
         if evidence.get("absorbed_into"):
             extra = f"  → absorbed into '{evidence['absorbed_into']}'"
+        elif evidence.get("recovered_consolidation_entry"):
+            extra = (
+                f"  → recovered consolidation {evidence['recovered_consolidation_entry']} "
+                f"(source {'active' if evidence.get('source_restored') else 'not restored'})"
+            )
         elif evidence.get("rollback_target"):
             extra = f"  → rollback of {evidence['rollback_target']}"
         print(

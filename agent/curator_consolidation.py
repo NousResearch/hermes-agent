@@ -175,6 +175,8 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
     archive_dir: Path | None = None
     source_dir: Path | None = None
     jobs_file: Path | None = None
+    consolidated_after: list[dict[str, str]] = []
+    ledger_id: str | None = None
     cron_bytes = usage_bytes = b""
     try:
         source_dir, _destination_dir, jobs_file, cron_bytes, usage_bytes = _preflight(source, destination)
@@ -203,9 +205,12 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
         _validate_forwarding(readback, source, destination)
         receipt["forwarding"] = {"rewrites": rewrites.get("rewrites", []), "readback": True}
 
-        after = skill_ledger.snapshot_paths(archive_dir, complete_package=True) + skill_ledger.snapshot_paths(jobs_file)
+        consolidated_after = (
+            skill_ledger.snapshot_paths(archive_dir, complete_package=True)
+            + skill_ledger.snapshot_paths(jobs_file)
+        )
         ledger_id = skill_ledger.append_entry(
-            "consolidate", source, before=before, after=after, actor=actor,
+            "consolidate", source, before=before, after=consolidated_after, actor=actor,
             evidence={"absorbed_into": destination, "archived": True, "archive_location": str(archive_dir),
                       "forwarding": receipt["forwarding"], "rollback_handle": snapshot.name,
                       "operation_id": operation_id},
@@ -217,12 +222,44 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
         _write_receipt(receipt)
         return receipt
     except Exception as exc:
+        receipt["success"] = False
         receipt["error"] = str(exc)
         if source_dir is not None and jobs_file is not None:
             receipt["recovery"] = _restore_after_failure(
                 source_dir=source_dir, archive_dir=archive_dir, jobs_file=jobs_file, cron_bytes=cron_bytes,
                 usage_file=get_hermes_home() / "skills" / ".usage.json", usage_bytes=usage_bytes,
             )
+            if receipt["recovery"]["source_restored"]:
+                receipt["archive_location"] = None
+            receipt["forwarding"]["recovered"] = receipt["recovery"]["cron_restored"]
+            if ledger_id is not None:
+                try:
+                    from tools import skill_ledger
+
+                    recovery_ledger_id = skill_ledger.append_entry(
+                        "consolidate-recovery", source,
+                        before=consolidated_after,
+                        after=(
+                            skill_ledger.snapshot_paths(source_dir, complete_package=True)
+                            + skill_ledger.snapshot_paths(jobs_file)
+                        ),
+                        actor=actor,
+                        evidence={
+                            "operation_id": operation_id,
+                            "recovered_consolidation_entry": ledger_id,
+                            "recovery_reason": str(exc),
+                            "source_restored": receipt["recovery"]["source_restored"],
+                            "cron_restored": receipt["recovery"]["cron_restored"],
+                            "archived": False,
+                        },
+                    )
+                    if recovery_ledger_id is None:
+                        receipt["recovery"]["ledger_error"] = "recovery ledger entry could not be written"
+                    else:
+                        receipt["recovery"]["ledger_entry"] = recovery_ledger_id
+                        receipt["recovery"]["consolidation_ledger_entry"] = ledger_id
+                except Exception as ledger_exc:
+                    receipt["recovery"]["ledger_error"] = str(ledger_exc)
         try:
             _write_receipt(receipt)
         except Exception as receipt_exc:

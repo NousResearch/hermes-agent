@@ -81,7 +81,7 @@ def test_public_consolidate_archives_forwards_restores_and_rolls_back(consolidat
     """The public command is one recoverable source-to-destination transaction."""
     from agent import curator_backup
     from hermes_cli import curator as curator_cli
-    from tools import skill_ledger, skill_usage
+    from tools import skill_ledger
 
     source_manifest = _package_manifest(consolidation_env["source"])
     destination_manifest = _package_manifest(consolidation_env["destination"])
@@ -97,7 +97,11 @@ def test_public_consolidate_archives_forwards_restores_and_rolls_back(consolidat
     assert not consolidation_env["source"].exists()
     archived = consolidation_env["skills"] / ".archive" / "source-skill"
     assert _package_manifest(archived) == source_manifest
-    assert skill_usage.list_archived_skill_names() == ["source-skill"]
+    from hermes_cli.main import _build_cli_parser
+    parser, _subparsers = _build_cli_parser()
+    list_archived = parser.parse_args(["curator", "list-archived"])
+    assert list_archived.func(list_archived) == 0
+    assert capsys.readouterr().out.strip() == "source-skill"
     assert _package_manifest(consolidation_env["destination"]) == destination_manifest
 
     ledger = skill_ledger.list_entries(skill="source-skill", limit=10)
@@ -158,6 +162,50 @@ def test_consolidate_recovers_source_and_cron_after_post_archive_failure(
     assert _package_manifest(consolidation_env["source"]) == source_manifest
     assert consolidation_env["jobs_file"].read_bytes() == original_cron
     assert not (consolidation_env["skills"] / ".archive" / "source-skill").exists()
+
+
+def test_consolidate_receipt_failure_recovers_and_compensates_success_ledger(
+    consolidation_env, monkeypatch, capsys,
+):
+    """A failed post-ledger receipt records recovery instead of a false archived success."""
+    from agent import curator_consolidation
+    from hermes_cli import curator as curator_cli
+    from tools import skill_ledger
+
+    source_manifest = _package_manifest(consolidation_env["source"])
+    original_cron = consolidation_env["jobs_file"].read_bytes()
+
+    def fail_after_success_ledger(receipt):
+        assert any(
+            row["action"] == "consolidate"
+            for row in skill_ledger.list_entries(skill="source-skill")
+        )
+        raise OSError("injected receipt write failure")
+
+    monkeypatch.setattr(curator_consolidation, "_write_receipt", fail_after_success_ledger)
+
+    assert curator_cli.cli_main(["consolidate", "source-skill", "destination-skill"]) == 1
+    receipt = json.loads(capsys.readouterr().out.removeprefix("curator: "))
+    assert receipt["success"] is False
+    assert receipt["recovery"]["attempted"] is True
+    assert receipt["recovery"]["source_restored"] is True
+    assert receipt["recovery"]["cron_restored"] is True
+    assert _package_manifest(consolidation_env["source"]) == source_manifest
+    assert consolidation_env["jobs_file"].read_bytes() == original_cron
+    assert not (consolidation_env["skills"] / ".archive" / "source-skill").exists()
+
+    entries = skill_ledger.list_entries(skill="source-skill", limit=10)
+    success_entry = next(row for row in entries if row["action"] == "consolidate")
+    recovery_entry = next(row for row in entries if row["action"] == "consolidate-recovery")
+    assert recovery_entry["evidence"]["operation_id"] == receipt["operation_id"]
+    assert recovery_entry["evidence"]["recovered_consolidation_entry"] == success_entry["id"]
+    assert recovery_entry["evidence"]["source_restored"] is True
+    assert recovery_entry["evidence"]["cron_restored"] is True
+
+    assert curator_cli.cli_main(["ledger", "--skill", "source-skill"]) == 0
+    ledger_output = capsys.readouterr().out
+    assert "consolidate-recovery" in ledger_output
+    assert f"recovered consolidation {success_entry['id']}" in ledger_output
 
 
 def test_background_consolidation_routes_through_the_public_transaction(consolidation_env, monkeypatch):

@@ -17,6 +17,7 @@ CRON_AUTO_DELIVER_) from the snapshot at both dump sites in
 
 import os
 import re
+import subprocess
 import sys
 
 import pytest
@@ -110,44 +111,41 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# #90782: scope-limited markers must not persist into the snapshot either.
+# #90782 / #71941: scope markers (delegate_task child, cron run) must not
+# persist into the snapshot either.
 # ---------------------------------------------------------------------------
 
-def test_export_snippet_unsets_delegation_and_cron_session_markers():
-    """The delegate_task child marker and the cron session bridge are
-    injected into the SUBPROCESS env while their scope is live; a snapshot
-    captured in that window must not persist them past the scope — otherwise
-    every later ``source`` re-asserts them (e.g. locking kanban mutations
-    out of the parent session)."""
-    snippet = _export_dump_excluding_session_vars('"$__hermes_snap_tmp"')
-    assert "HERMES_DELEGATED_CHILD_CONTEXT" in snippet
-    assert "HERMES_CRON_SESSION" in snippet
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
+def test_export_dump_drops_every_bridged_var_and_the_delegation_marker():
+    """Run the real dump: nothing the gateway bridges per command, nor the
+    delegate_task marker, may survive ``export -p``; ordinary exports must."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from gateway.session_context import _VAR_MAP
+
+    scoped = [*_VAR_MAP, DELEGATED_CHILD_ENV_MARKER]
+    exports = "; ".join([f'export {n}="x"' for n in scoped] + ['export HERMES_HOME="/h"', 'export MYVAR="keep"'])
+    out = subprocess.run(
+        ["bash", "-c", f"{exports}; {_export_dump_excluding_session_vars('/dev/stdout')}"],
+        capture_output=True, text=True, check=True).stdout
+    leaked = [n for n in scoped if f"declare -x {n}=" in out]
+    assert not leaked, f"persisted into the snapshot: {leaked}"
+    assert 'declare -x HERMES_HOME="/h"' in out
+    assert 'declare -x MYVAR="keep"' in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash snapshot path")
-def test_snapshot_does_not_persist_delegated_child_marker(tmp_path):
-    """End-to-end: a command run with the delegated-child marker in its env
-    must not leave that marker in the snapshot file."""
+def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path, monkeypatch):
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, delegated_child_context
     from tools.environments.local import LocalEnvironment
 
+    monkeypatch.delenv(DELEGATED_CHILD_ENV_MARKER, raising=False)
+    probe = f'printf "[${{{DELEGATED_CHILD_ENV_MARKER}+set}}]"'
     env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
-    env.init_session()
     try:
-        os.environ["HERMES_DELEGATED_CHILD_CONTEXT"] = "1"
-        try:
-            res = env.execute("echo marker-captured")
-        finally:
-            del os.environ["HERMES_DELEGATED_CHILD_CONTEXT"]
-        assert "marker-captured" in res.get("output", "")
-
-        snap = env._snapshot_path
-        if os.path.exists(snap):
-            with open(snap) as f:
-                content = f.read()
-            assert "HERMES_DELEGATED_CHILD_CONTEXT" not in content, (
-                "the delegated-child marker leaked into the terminal "
-                "snapshot — later commands would inherit it and kanban "
-                "mutations would stay locked out of the parent (#90782)"
-            )
+        with delegated_child_context():
+            child = env.execute(probe)
+        assert "[set]" in child["output"], f"delegated child lost its marker: {child!r}"
+        parent = env.execute(probe)
+        assert "[]" in parent["output"], f"parent command inherited the marker: {parent!r}"
     finally:
         env.cleanup()

@@ -15270,6 +15270,186 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
     assert "utf-8 decode failure" in resp["error"]["data"]["details"]
 
 
+def test_prompt_submit_waits_for_persist_rejection_before_queuing_follow_up(monkeypatch):
+    """A concurrent submit must not be accepted into a queue before the first
+    submit's pre-execution persistence decision is known."""
+    persist_entered = threading.Event()
+    release_persist = threading.Event()
+    busy_entered = threading.Event()
+    responses = {}
+    ensure_calls = 0
+    ensure_lock = threading.Lock()
+
+    def _blocked_store_unavailable(_session):
+        nonlocal ensure_calls
+        with ensure_lock:
+            ensure_calls += 1
+            call = ensure_calls
+        if call == 1:
+            persist_entered.set()
+            assert release_persist.wait(2)
+        return False
+
+    real_busy_submit = server._handle_busy_submit
+
+    def _observed_busy_submit(*args, **kwargs):
+        busy_entered.set()
+        return real_busy_submit(*args, **kwargs)
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {}})
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    monkeypatch.setattr(server, "_ensure_session_db_row", _blocked_store_unavailable)
+    monkeypatch.setattr(server, "_db_error", "store unavailable")
+    monkeypatch.setattr(server, "_handle_busy_submit", _observed_busy_submit)
+
+    session = _session()
+    server._sessions["persist-race-sid"] = session
+
+    def _submit(name, text):
+        responses[name] = server.handle_request(
+            {
+                "id": name,
+                "method": "prompt.submit",
+                "params": {"session_id": "persist-race-sid", "text": text},
+            }
+        )
+
+    first = threading.Thread(target=_submit, args=("first", "first prompt"))
+    second = threading.Thread(target=_submit, args=("second", "second prompt"))
+    try:
+        first.start()
+        assert persist_entered.wait(2)
+        second.start()
+        assert busy_entered.wait(2)
+        release_persist.set()
+        first.join(2)
+        second.join(2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert responses["first"]["error"]["code"] == 5072
+        assert responses["second"]["error"]["code"] == 5072
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        assert session.get("queued_prompt") is None
+        assert not session.get("queued_prompts")
+        assert server._session_live_status("persist-race-sid", session) == "idle"
+    finally:
+        release_persist.set()
+        first.join(2)
+        second.join(2)
+        server._sessions.pop("persist-race-sid", None)
+
+
+def test_prompt_submit_fast_finished_worker_keeps_acceptance_waiters(monkeypatch):
+    ready = threading.Event()
+    ready.set()
+    session = _session(agent_ready=ready, agent_error="agent build failed")
+    first_persist = threading.Event()
+    release_persist = threading.Event()
+    waiter_entered = threading.Event()
+    first_worker_done = threading.Event()
+    release_first_start = threading.Event()
+    next_admission_seen = threading.Event()
+    responses = {}
+    errors = []
+    gates = []
+    real_busy = server._handle_busy_submit
+    real_claim = server._lock_in_submit_turn
+    real_thread = threading.Thread
+
+    def persist(current):
+        if not first_persist.is_set():
+            gate = current["_submit_acceptance_gate"]
+            gates.append(gate)
+            old_wait = gate.wait
+            def observed_wait(*args, **kwargs):
+                waiter_entered.set()
+                return old_wait(*args, **kwargs)
+            monkeypatch.setattr(gate, "wait", observed_wait)
+            first_persist.set()
+            assert release_persist.wait(5)
+        return True
+
+    def claim(rid, *args, **kwargs):
+        result = real_claim(rid, *args, **kwargs)
+        if rid == "next":
+            next_admission_seen.set()
+        return result
+
+    def busy(rid, *args, **kwargs):
+        if rid == "next":
+            next_admission_seen.set()
+        return real_busy(rid, *args, **kwargs)
+
+    class WorkerThread(real_thread):
+        def start(self):
+            first = threading.current_thread().name == "first-rpc"
+            super().start()
+            if first:
+                self.join(5)
+                assert not self.is_alive()
+                first_worker_done.set()
+                assert release_first_start.wait(5)
+
+    for name, replacement in {
+        "_load_cfg": lambda: {"dashboard": {}},
+        "_ensure_active_session_slot": lambda *a: None,
+        "_ensure_session_db_row": persist,
+        "_persist_branch_seed": lambda *a: None,
+        "_start_agent_build": lambda *a: None,
+        "_restart_completed_failed_agent_build": lambda *a: False,
+        "_load_busy_input_mode": lambda: "queue",
+        "_emit_terminal_turn_error": lambda *a, **kw: None,
+        "_emit": lambda *a, **kw: None,
+        "_session_info": lambda *a, **kw: {},
+        "_lock_in_submit_turn": claim,
+        "_handle_busy_submit": busy,
+    }.items():
+        monkeypatch.setattr(server, name, replacement)
+    monkeypatch.setattr(server, "threading", types.SimpleNamespace(
+        **{name: getattr(threading, name) for name in dir(threading) if name != "Thread"},
+        Thread=WorkerThread))
+    server._sessions["gate-probe-sid"] = session
+
+    def submit(rid):
+        try:
+            responses[rid] = server.handle_request({"id": rid, "method": "prompt.submit",
+                "params": {"session_id": "gate-probe-sid", "text": rid}})
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [real_thread(target=submit, args=(rid,), name=rid + "-rpc", daemon=True)
+               for rid in ("first", "waiting", "next")]
+    try:
+        threads[0].start()
+        assert first_persist.wait(5)
+        threads[1].start()
+        assert waiter_entered.wait(5)
+        release_persist.set()
+        assert first_worker_done.wait(5)
+        assert session["running"] is False
+        threads[2].start()
+        assert next_admission_seen.wait(5)
+        release_first_start.set()
+        for thread in threads:
+            thread.join(5)
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads), "a concurrent submit never received its response"
+        assert set(responses) == {"first", "waiting", "next"}
+    finally:
+        release_persist.set()
+        release_first_start.set()
+        for gate in gates:
+            gate.set()
+        if (gate := session.get("_submit_acceptance_gate")) is not None:
+            gate.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(5)
+        server._sessions.pop("gate-probe-sid", None)
+
+
 @pytest.mark.real_agent_prewarm
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:

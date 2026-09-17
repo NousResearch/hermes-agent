@@ -335,7 +335,7 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 
 def test_set_state_active(skills_home):
     from tools.skill_usage import set_state, get_record, STATE_ACTIVE
-    set_state("x", STATE_ACTIVE)
+    assert set_state("x", STATE_ACTIVE) is True
     assert get_record("x")["state"] == "active"
 
 

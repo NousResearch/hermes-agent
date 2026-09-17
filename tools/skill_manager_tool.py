@@ -727,14 +727,20 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     clear, curator telemetry, debounced sync push."""
     with suppress(Exception):
         from tools import skill_ledger as _ledger
-        _post = _find_skill(name)
-        # delete: consolidation vs prune, and whether the recoverable archive handled it
-        _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
-                     if action == "delete" else {})
-        _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
-        _ledger.record_mutation(
-            action, name, before=ledger_before if ledger_before is not None else [],
-            after_root=_post["path"] if _post else None, evidence=_evidence)
+        receipt = result.get("receipt") if action == "delete" else None
+        # The recoverable consolidation primitive already persisted the complete
+        # source/archive/cron transaction. Do not follow it with this generic
+        # delete entry: that entry lacks forwarding state and would become the
+        # newest, misleading rollback target. Ordinary deletes still ledger here.
+        if not (isinstance(receipt, dict) and receipt.get("success") and receipt.get("ledger_entry")):
+            _post = _find_skill(name)
+            # delete: consolidation vs prune, and whether the recoverable archive handled it
+            _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
+                         if action == "delete" else {})
+            _evidence.update({k: v for k, v in (("session_id", session_id), ("file_path", file_path)) if v})
+            _ledger.record_mutation(
+                action, name, before=ledger_before if ledger_before is not None else [],
+                after_root=_post["path"] if _post else None, evidence=_evidence)
     with suppress(Exception):
         from agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)

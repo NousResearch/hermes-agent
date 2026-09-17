@@ -530,11 +530,15 @@ def mark_agent_created(skill_name: str) -> None:
     _set_field(skill_name, "created_by", "agent")
 
 
-def set_state(skill_name: str, state: str) -> None:
-    """Set lifecycle state (no-op if invalid / unmanageable). Emits archived/stale/restored; active<-stale is silent."""
+def set_state(skill_name: str, state: str) -> bool:
+    """Set lifecycle state and report whether its durable write landed.
+
+    Invalid states and curation-ineligible/unwritable records return ``False``.
+    Lifecycle hooks remain best-effort and never change the persistence result.
+    """
     if state not in _VALID_STATES:
         logger.debug("set_state: invalid state %r for %s", state, skill_name)
-        return
+        return False
 
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         previous = rec.get("state")
@@ -544,11 +548,14 @@ def set_state(skill_name: str, state: str) -> None:
                 rec["archived_at"] = _now_iso() if state == STATE_ARCHIVED else None
         return {"changed": previous != state, "created_by": rec.get("created_by"), "previous_state": previous}
     facts = _mutate(skill_name, _apply, require_curation_eligible=True)
-    if isinstance(facts, dict) and facts["changed"]:
+    if not isinstance(facts, dict):
+        return False
+    if facts["changed"]:
         restored = state == STATE_ACTIVE and facts["previous_state"] == STATE_ARCHIVED
         action = "restored" if restored else {STATE_ARCHIVED: "archived", STATE_STALE: "stale"}.get(state)
         if action is not None:
             _emit_skill_lifecycle(skill_name, action, record=facts)
+    return True
 
 
 def set_pinned(skill_name: str, pinned: bool) -> bool:

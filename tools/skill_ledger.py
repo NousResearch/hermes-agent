@@ -393,6 +393,21 @@ def rollback_entry(entry_id: str) -> Tuple[bool, str]:
                     removed += 1
             except OSError as e:
                 logger.warning("skill_ledger: could not remove %s during rollback: %s", p, e)
+    # File manifests intentionally do not record directories.  Prune only the
+    # now-empty descendants created by the mutation so a consolidation rollback
+    # removes its archived package rather than leaving an empty archive shell.
+    skills_root = _skills_dir()
+    cleanup = sorted(
+        {Path(str(item["path"])).parent for item in after if item.get("path")},
+        key=lambda path: len(path.parts), reverse=True,
+    )
+    for parent in cleanup:
+        while _is_within(skills_root, parent) and parent != skills_root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break  # non-empty or unavailable; never remove its parent
+            parent = parent.parent
     append_entry(
         "rollback", entry.get("skill", "?"), before=safety_before, after=before,
         evidence={"rollback_target": entry_id, "restored": restored, "removed": removed})

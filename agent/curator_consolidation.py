@@ -207,7 +207,8 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
         receipt["archive_location"] = str(archive_dir)
         if _package_manifest(archive_dir) != _package_manifest_from_bytes(before, source_dir):
             raise RuntimeError("archive verification failed: source package hash mismatch")
-        skill_usage.set_state(source, skill_usage.STATE_ARCHIVED)
+        if not skill_usage.set_state(source, skill_usage.STATE_ARCHIVED):
+            raise RuntimeError("archive lifecycle state could not be persisted")
 
         rewrites = cron_jobs.rewrite_skill_refs(consolidated={source: destination}, pruned=[])
         readback = cron_jobs.load_jobs()
@@ -234,6 +235,21 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
         receipt["success"] = False
         receipt["error"] = str(exc)
         if source_dir is not None and jobs_file is not None:
+            failed_after: list[dict[str, str]] = []
+            # A post-archive failure has real on-disk state worth recording even
+            # when the authoritative consolidation ledger was not reached yet.
+            # Capture before recovery so this compensating ledger entry is
+            # truthful and undoable like the post-receipt recovery path.
+            if archive_dir is not None and archive_dir.exists():
+                try:
+                    from tools import skill_ledger
+
+                    failed_after = (
+                        skill_ledger.snapshot_paths(archive_dir, complete_package=True)
+                        + skill_ledger.snapshot_paths(jobs_file)
+                    )
+                except Exception:
+                    failed_after = []
             receipt["recovery"] = _restore_after_failure(
                 source_dir=source_dir, archive_dir=archive_dir, jobs_file=jobs_file, cron_bytes=cron_bytes,
                 usage_file=get_hermes_home() / "skills" / ".usage.json", usage_bytes=usage_bytes,
@@ -241,32 +257,35 @@ def consolidate_skills(source: str, destination: str, *, actor: str = "user") ->
             if receipt["recovery"]["source_restored"]:
                 receipt["archive_location"] = None
             receipt["forwarding"]["recovered"] = receipt["recovery"]["cron_restored"]
-            if ledger_id is not None:
+            if ledger_id is not None or failed_after:
                 try:
                     from tools import skill_ledger
 
+                    recovery_evidence = {
+                        "operation_id": operation_id,
+                        "recovery_reason": str(exc),
+                        "source_restored": receipt["recovery"]["source_restored"],
+                        "cron_restored": receipt["recovery"]["cron_restored"],
+                        "archived": False,
+                    }
+                    if ledger_id is not None:
+                        recovery_evidence["recovered_consolidation_entry"] = ledger_id
                     recovery_ledger_id = skill_ledger.append_entry(
                         "consolidate-recovery", source,
-                        before=consolidated_after,
+                        before=consolidated_after if ledger_id is not None else failed_after,
                         after=(
                             skill_ledger.snapshot_paths(source_dir, complete_package=True)
                             + skill_ledger.snapshot_paths(jobs_file)
                         ),
                         actor=actor,
-                        evidence={
-                            "operation_id": operation_id,
-                            "recovered_consolidation_entry": ledger_id,
-                            "recovery_reason": str(exc),
-                            "source_restored": receipt["recovery"]["source_restored"],
-                            "cron_restored": receipt["recovery"]["cron_restored"],
-                            "archived": False,
-                        },
+                        evidence=recovery_evidence,
                     )
                     if recovery_ledger_id is None:
                         receipt["recovery"]["ledger_error"] = "recovery ledger entry could not be written"
                     else:
                         receipt["recovery"]["ledger_entry"] = recovery_ledger_id
-                        receipt["recovery"]["consolidation_ledger_entry"] = ledger_id
+                        if ledger_id is not None:
+                            receipt["recovery"]["consolidation_ledger_entry"] = ledger_id
                 except Exception as ledger_exc:
                     receipt["recovery"]["ledger_error"] = str(ledger_exc)
         try:

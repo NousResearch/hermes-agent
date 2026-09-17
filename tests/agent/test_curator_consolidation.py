@@ -225,6 +225,83 @@ def test_background_consolidation_routes_through_the_public_transaction(consolid
     assert result["receipt"]["forwarding"]["readback"] is True
 
 
+def test_public_background_skill_manage_consolidation_has_one_ledger_entry_and_rolls_back(
+    consolidation_env,
+):
+    """The public background dispatcher must retain the transaction's complete ledger entry.
+
+    A second dispatcher ``delete`` entry has only the source package and cannot
+    undo the archived package plus cron forwarding.  Exercise the real public
+    ``skill_manage`` route rather than its private delete helper.
+    """
+    from tools import skill_ledger
+    from tools.skill_manager_tool import skill_manage
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    source_manifest = _package_manifest(consolidation_env["source"])
+    original_cron = consolidation_env["jobs_file"].read_bytes()
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        result = json.loads(skill_manage(
+            action="delete",
+            name="source-skill",
+            absorbed_into="destination-skill",
+        ))
+    finally:
+        reset_current_write_origin(token)
+
+    assert result["success"] is True, result
+    receipt = result["receipt"]
+    entries = skill_ledger.list_entries(skill="source-skill", limit=10)
+    assert [entry["action"] for entry in entries] == ["consolidate"]
+    assert entries[0]["id"] == receipt["ledger_entry"]
+    assert not consolidation_env["source"].exists()
+    assert (consolidation_env["skills"] / ".archive" / "source-skill").is_dir()
+
+    ok, message = skill_ledger.rollback_entry(receipt["ledger_entry"])
+    assert ok is True, message
+    assert _package_manifest(consolidation_env["source"]) == source_manifest
+    assert not (consolidation_env["skills"] / ".archive" / "source-skill").exists()
+    assert consolidation_env["jobs_file"].read_bytes() == original_cron
+
+
+def test_consolidate_recovers_when_archive_usage_persistence_fails(
+    consolidation_env, monkeypatch, capsys,
+):
+    """Archival is unsuccessful unless the archived usage state durably lands."""
+    from hermes_cli import curator as curator_cli
+    from tools import skill_ledger, skill_usage
+
+    source_manifest = _package_manifest(consolidation_env["source"])
+    original_cron = consolidation_env["jobs_file"].read_bytes()
+    usage_file = consolidation_env["skills"] / ".usage.json"
+    original_usage = usage_file.read_bytes()
+    monkeypatch.setattr(skill_usage, "set_state", lambda *_args, **_kwargs: False)
+
+    assert curator_cli.cli_main(["consolidate", "source-skill", "destination-skill"]) == 1
+    receipt = json.loads(capsys.readouterr().out.removeprefix("curator: "))
+
+    assert receipt["success"] is False
+    assert "lifecycle" in receipt["error"]
+    assert receipt["recovery"]["attempted"] is True
+    assert receipt["recovery"]["source_restored"] is True
+    assert receipt["recovery"]["cron_restored"] is True
+    assert _package_manifest(consolidation_env["source"]) == source_manifest
+    assert consolidation_env["jobs_file"].read_bytes() == original_cron
+    assert usage_file.read_bytes() == original_usage
+    assert not (consolidation_env["skills"] / ".archive" / "source-skill").exists()
+
+    entries = skill_ledger.list_entries(skill="source-skill", limit=10)
+    assert [entry["action"] for entry in entries] == ["consolidate-recovery"]
+    assert entries[0]["evidence"]["operation_id"] == receipt["operation_id"]
+    assert entries[0]["evidence"]["source_restored"] is True
+    assert entries[0]["evidence"]["cron_restored"] is True
+
+
 @pytest.mark.parametrize(
     ("refusal", "error_fragment"),
     [

@@ -8,7 +8,7 @@ import {
 } from 'd3-force'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import type { VaultGraph, VaultGraphEdge, VaultGraphNode } from './types'
+import type { VaultGraph, VaultGraphNode } from './types'
 
 interface SimNode extends VaultGraphNode, SimulationNodeDatum {
   x?: number
@@ -23,8 +23,9 @@ interface SimLink {
 }
 
 export function filterVaultGraph(graph: VaultGraph, tag: string): VaultGraph {
-  if (!tag) return graph
+  if (!tag) {return graph}
   const visible = new Set(graph.nodes.filter(node => node.tags.includes(tag)).map(node => node.id))
+
   return {
     nodes: graph.nodes.filter(node => visible.has(node.id)),
     edges: graph.edges.filter(edge => visible.has(edge.source) && visible.has(edge.target))
@@ -33,21 +34,27 @@ export function filterVaultGraph(graph: VaultGraph, tag: string): VaultGraph {
 
 export function connectedVaultNodeIds(graph: VaultGraph, nodeId: string | null): Set<string> {
   const connected = new Set<string>()
-  if (!nodeId) return connected
+
+  if (!nodeId) {return connected}
   connected.add(nodeId)
+
   for (const edge of graph.edges) {
-    if (edge.source === nodeId) connected.add(edge.target)
-    if (edge.target === nodeId) connected.add(edge.source)
+    if (edge.source === nodeId) {connected.add(edge.target)}
+
+    if (edge.target === nodeId) {connected.add(edge.source)}
   }
+
   return connected
 }
 
 export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onSelectNote: (title: string) => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [nodes, setNodes] = useState<SimNode[]>([])
+
   const [links, setLinks] = useState<
     Array<{ source: { x: number; y: number }; target: { x: number; y: number }; sourceId: string; targetId: string }>
   >([])
+
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
   const [tagFilter, setTagFilter] = useState('')
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
@@ -58,6 +65,7 @@ export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onS
     () => Array.from(new Set(graph.nodes.flatMap(node => node.tags))).sort((left, right) => left.localeCompare(right)),
     [graph.nodes]
   )
+
   const filteredGraph = useMemo(() => filterVaultGraph(graph, tagFilter), [graph, tagFilter])
   const connectedNodes = useMemo(() => connectedVaultNodeIds(filteredGraph, hoveredNode), [filteredGraph, hoveredNode])
 
@@ -65,6 +73,7 @@ export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onS
     if (!containerRef.current || !filteredGraph.nodes.length) {
       setNodes([])
       setLinks([])
+
       return
     }
 
@@ -90,16 +99,19 @@ export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onS
 
     sim.on('tick', () => {
       setNodes([...simNodes])
+
       const renderedLinks: Array<{
         source: { x: number; y: number }
         target: { x: number; y: number }
         sourceId: string
         targetId: string
       }> = []
+
       for (const link of simLinks) {
         if (typeof link.source === 'object' && typeof link.target === 'object') {
           const s = link.source as SimNode
           const t = link.target as SimNode
+
           if (s.x != null && s.y != null && t.x != null && t.y != null) {
             renderedLinks.push({
               source: { x: s.x, y: s.y },
@@ -110,6 +122,7 @@ export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onS
           }
         }
       }
+
       setLinks(renderedLinks)
     })
 
@@ -130,13 +143,13 @@ export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onS
   }
 
   const onMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return
+    if (e.button !== 0) {return}
     isDraggingRef.current = true
     dragStartRef.current = { x: e.clientX - transform.x, y: e.clientY - transform.y }
   }
 
   const onMouseMove = (e: React.MouseEvent) => {
-    if (!isDraggingRef.current) return
+    if (!isDraggingRef.current) {return}
     setTransform(prev => ({
       ...prev,
       x: e.clientX - dragStartRef.current.x,
@@ -216,6 +229,7 @@ export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onS
             const isHovered = hoveredNode === node.id
             const isDimmed = hoveredNode !== null && !connectedNodes.has(node.id)
             const radius = 5 + Math.min(node.weight * 2, 16)
+
             return (
               <g
                 className="cursor-pointer"

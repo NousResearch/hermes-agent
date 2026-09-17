@@ -178,6 +178,7 @@ function probeGatewayWebSocket<T>(
     }
   })
 }
+
 function addListener(socket, type, handler) {
   if (typeof socket.addEventListener === 'function') {
     socket.addEventListener(type, handler)
@@ -269,6 +270,7 @@ async function probeGatewayWebSocketWithRetry(
 
     // Fast-fail if the server explicitly rejected the credentials (4401 / 4403 / closed post-accept).
     const reason = String(lastResult.reason || '')
+
     if (reason.includes('4401') || reason.includes('4403') || reason.includes('credential rejected')) {
       return lastResult
     }

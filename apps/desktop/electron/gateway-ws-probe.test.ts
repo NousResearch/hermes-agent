@@ -180,12 +180,14 @@ test('probe passes extra upgrade headers to the WebSocket constructor (Cloudflar
 
 test('probeGatewayWebSocketWithRetry succeeds on first attempt', async () => {
   const { FakeWs, instances } = makeFakeWs()
+
   const promise = probeGatewayWebSocketWithRetry('ws://host/api/ws?token=t', {
     WebSocketImpl: FakeWs,
     connectTimeoutMs: 50,
     maxDurationMs: 200,
     retryDelayMs: 10
   })
+
   instances[0].emit('open', {})
   instances[0].emit('message', {})
   const result = await promise
@@ -194,6 +196,7 @@ test('probeGatewayWebSocketWithRetry succeeds on first attempt', async () => {
 
 test('probeGatewayWebSocketWithRetry retries after timeout and succeeds', async () => {
   const { FakeWs, instances } = makeFakeWs()
+
   const promise = probeGatewayWebSocketWithRetry('ws://host/api/ws?token=t', {
     WebSocketImpl: FakeWs,
     connectTimeoutMs: 20,
@@ -204,9 +207,11 @@ test('probeGatewayWebSocketWithRetry retries after timeout and succeeds', async 
   // First instance times out (no open event emitted).
   // Wait for the second instance to be created on retry.
   const t0 = Date.now()
+
   while (instances.length < 2 && Date.now() - t0 < 500) {
     await new Promise(resolve => setTimeout(resolve, 10))
   }
+
   assert.equal(instances.length >= 2, true)
   instances[1].emit('open', {})
   instances[1].emit('message', {})
@@ -218,6 +223,7 @@ test('probeGatewayWebSocketWithRetry retries after timeout and succeeds', async 
 test('probeGatewayWebSocketWithRetry fast-fails on auth 4401 rejection without retrying', async () => {
   const { FakeWs, instances } = makeFakeWs()
   const start = Date.now()
+
   const promise = probeGatewayWebSocketWithRetry('ws://host/api/ws?token=bad', {
     WebSocketImpl: FakeWs,
     connectTimeoutMs: 100,

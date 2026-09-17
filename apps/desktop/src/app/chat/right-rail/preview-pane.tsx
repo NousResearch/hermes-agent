@@ -33,6 +33,7 @@ function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
     return null
   }
 }
+
 import {
   clampConsoleHeight,
   compactUrl,

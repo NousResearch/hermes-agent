@@ -105,11 +105,13 @@ export function WorkstationBrowserPane({ onPopOut, className }: WorkstationBrows
       if (!bridge || !hostRef.current) {
         return
       }
+
       const rect = hostRef.current.getBoundingClientRect()
 
       if (rect.width < 1 || rect.height < 1) {
         return
       }
+
       const bounds = rectToBounds(rect)
 
       if (attach) {
@@ -140,6 +142,7 @@ export function WorkstationBrowserPane({ onPopOut, className }: WorkstationBrows
         if (disposed) {
           return
         }
+
         setState(next)
         requestAnimationFrame(() => void publishBounds(true))
       })
@@ -217,11 +220,13 @@ export function WorkstationBrowserPane({ onPopOut, className }: WorkstationBrows
     if (!bridge || !hostRef.current) {
       return
     }
+
     const rect = hostRef.current.getBoundingClientRect()
 
     if (rect.width < 1 || rect.height < 1) {
       return
     }
+
     const bounds = rectToBounds(rect)
     setState(await bridge.transferViewport('chat', bounds))
   }, [bridge])

@@ -435,6 +435,7 @@ test('human control lease is scoped, renewable, releasable, and expires determin
     { sessionId: 'session-a', tabId: 'tab-a', pageId: 11, profileScope: 'profile-a' },
     1_000
   )
+
   assert.equal(acquired.humanControlLease?.taskId, 'task-a')
   assert.equal(lifecycle.hasActiveHumanControl('task-a'), true)
   assert.equal(lifecycle.hasActiveHumanControl('task-b'), false)

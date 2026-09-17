@@ -103,6 +103,7 @@ test('resource projection bounds journal details while retaining total count', (
     message: `event ${index}`,
     timestamp: `2026-09-11T12:0${String(index % 10)}:00.000Z`
   }))
+
   const snapshot = buildWorkstationResourceSnapshot(baseState, () => events, () => '2026-09-11T12:02:00.000Z')
   const journal = snapshot.resources.find(resource => resource.resource_type === 'execution_journal')
   const latest = journal?.state.latest_event as { event_id?: string } | null

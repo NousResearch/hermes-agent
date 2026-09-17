@@ -7,7 +7,6 @@ import {
   ScrollArea,
   Streamdown,
   Textarea,
-  Tip,
   useMutation,
   useQuery,
   useQueryClient,
@@ -27,7 +26,6 @@ import {
   saveVaultNote
 } from './api'
 import { VaultGraphView } from './graph-view'
-import type { VaultNote, VaultNoteSummary } from './types'
 
 export function VaultPage() {
   const qc = useQueryClient()
@@ -56,6 +54,7 @@ export function VaultPage() {
     queryFn: fetchVaultNotes,
     refetchInterval: 10_000
   })
+
   const notes = notesData?.notes ?? []
 
   // Auto-select first note if none selected
@@ -67,10 +66,12 @@ export function VaultPage() {
     queryFn: () => fetchVaultNote(activeTitle),
     enabled: Boolean(activeTitle) && !isCreatingNew
   })
+
   const activeNote = noteData?.note
 
   const wikilinkPrefix = useMemo(() => {
     const match = draftContent.match(/\[\[([^\]\n]*)$/)
+
     return match?.[1] ?? null
   }, [draftContent])
 
@@ -95,6 +96,7 @@ export function VaultPage() {
     queryFn: fetchVaultGraph,
     enabled: viewMode === 'graph'
   })
+
   const graph = graphData?.graph ?? { nodes: [], edges: [] }
 
   // 4. Mutations
@@ -104,11 +106,13 @@ export function VaultPage() {
         .split(',')
         .map(t => t.trim().replace(/^#/, ''))
         .filter(Boolean)
+
       const res = await saveVaultNote({
         title: draftTitle.trim() || 'Sem Título',
         content: draftContent,
         frontmatter: { ...(activeNote?.frontmatter ?? {}), tags }
       })
+
       return res
     },
     onSuccess: res => {
@@ -145,7 +149,9 @@ export function VaultPage() {
         !searchQuery ||
         n.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         n.tags.some(t => t.toLowerCase().includes(searchQuery.toLowerCase()))
+
       const matchTag = !selectedTag || n.tags.includes(selectedTag)
+
       return matchSearch && matchTag
     })
   }, [notes, searchQuery, selectedTag])
@@ -153,9 +159,11 @@ export function VaultPage() {
   // Extract all unique tags
   const allTags = useMemo(() => {
     const s = new Set<string>()
+
     for (const n of notes) {
-      for (const t of n.tags) s.add(t)
+      for (const t of n.tags) {s.add(t)}
     }
+
     return Array.from(s).sort()
   }, [notes])
 
@@ -268,6 +276,7 @@ export function VaultPage() {
             <div className="flex flex-col gap-1">
               {filteredNotes.map(n => {
                 const isSelected = !isCreatingNew && n.title === activeTitle
+
                 return (
                   <button
                     className={`flex flex-col items-start gap-1 rounded-md p-2 text-left transition-colors ${

@@ -70,6 +70,7 @@ const electron = vi.hoisted(() => {
       if (this.destroyed) {
         return
       }
+
       this.destroyed = true
       this.emit('destroyed')
     }

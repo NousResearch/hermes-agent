@@ -79,6 +79,7 @@ const electron = vi.hoisted(() => {
       if (this.destroyed) {
         return
       }
+
       this.destroyed = true
       this.emit('destroyed')
     }
@@ -158,6 +159,7 @@ const electron = vi.hoisted(() => {
   }
 
   const extensions: Record<string, { id: string; name: string; version: string }> = {}
+
   const browserSession = {
     getCacheSize: async () => 0,
     clearCache: async () => undefined,
@@ -165,6 +167,7 @@ const electron = vi.hoisted(() => {
       const id = path.basename(extensionPath)
       const extension = { id, name: 'Fixture extension', version: '1.0.0' }
       extensions[id] = extension
+
       return extension
     },
     getAllExtensions: () => extensions,
@@ -262,6 +265,7 @@ function interruptibleSessionPersistence(home: string): {
       if (successfulReplacementsBeforeFailure !== null) {
         successfulReplacementsBeforeFailure -= 1
       }
+
       fs.renameSync(...args)
     }
   }
@@ -582,9 +586,11 @@ test('C3 destroy interruption drops the removed task and orphan projection deter
   interrupted.createTask({ taskId: 'task-c3' })
   const taskTab = interrupted.state().tabs.find(tab => tab.ownerTaskId === 'task-c3')
   assert.ok(taskTab)
+
   const taskContents = interrupted.getWebContents(taskTab.id) as unknown as InstanceType<
     typeof electron.FakeWebContents
   >
+
   interrupted.activateTab(taskTab.id)
 
   fault.failAfterSuccessfulReplacements(1)
@@ -640,6 +646,7 @@ test('controller loads, verifies and removes only an extension from the Workstat
     action: 'browser_extension_load',
     arguments: { extension_id: extensionId, path: extensionPath }
   })
+
   assert.equal(loaded.loaded, true)
   assert.equal(loaded.extension_id, extensionId)
 
@@ -647,12 +654,14 @@ test('controller loads, verifies and removes only an extension from the Workstat
     action: 'browser_extension_verify',
     arguments: { extension_id: extensionId }
   })
+
   assert.equal(verified.loaded, true)
 
   const removed = await (runtime as any).executeControlRequest({
     action: 'browser_extension_remove',
     arguments: { extension_id: extensionId }
   })
+
   assert.equal(removed.loaded, false)
   await runtime.destroy()
 })
@@ -752,6 +761,7 @@ test('controller actions preserve a visible task through Take Control and Releas
 test('human control lease blocks only its BrowserTask and leaves another task runnable', async () => {
   runtimeHome()
   const runtime = new WorkstationBrowserRuntime()
+
   const executeControlRequest = (
     runtime as unknown as {
       executeControlRequest(request: Record<string, unknown>): Promise<Record<string, unknown>>
@@ -806,6 +816,7 @@ test('human control lease blocks only its BrowserTask and leaves another task ru
 test('implicit human control follows the visible task instead of a stale chat preference', async () => {
   runtimeHome()
   const runtime = new WorkstationBrowserRuntime()
+
   const executeControlRequest = (
     runtime as unknown as {
       executeControlRequest(request: Record<string, unknown>): Promise<Record<string, unknown>>
@@ -960,7 +971,9 @@ test('runtime setVisible removes view from window contentView when false and res
 
 test('runtime clearError resets lastError', async () => {
   runtimeHome()
+
   const runtime = new WorkstationBrowserRuntime()
+
   ;(runtime as unknown as { recordError: (err: unknown) => void }).recordError('stale_or_unknown_ref')
 
   assert.equal(runtime.state().lastError, 'stale_or_unknown_ref')

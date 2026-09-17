@@ -13,7 +13,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupChatLine } from './group-round-prompt'
-import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import { isGroupPassText, isSessionGoneError, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
 export interface GroupRoundMemberContext {
@@ -24,7 +24,19 @@ export interface GroupRoundMemberContext {
   binding: { isLive(): boolean }
   isCurrent(): boolean
   failedMembers?: Set<string>
+  // Per-drive count of transient session-reap (4001-class) turn failures per
+  // member key. A thrown turn of that class (e.g. a ws_orphan_reap 4001 the
+  // turn-level retry couldn't recover) must NOT silently consume the user's
+  // delta and go stale: leave the watermark unadvanced so the next round
+  // re-drives the member, up to MAX_FAILED_TURN_RETRIES, after which the
+  // room settles against a genuinely-down member.
+  failedRetries?: Map<string, number>
 }
+
+/** How many extra times a member whose turn THREW is re-driven before the
+ *  round loop gives up and lets the room settle. Timeouts (reply===null
+ *  without a throw) keep their existing stranded-harvest path untouched. */
+export const MAX_FAILED_TURN_RETRIES = 1
 
 /** #93129: a held member's skip must consume its delta exactly once —
  *  advance the watermark past the current log so the same entries never
@@ -128,7 +140,7 @@ async function runVisibleMemberTurn(
 export async function runGroupRoundMember(
   context: GroupRoundMemberContext,
   member: GroupMember
-): Promise<boolean | null> {
+): Promise<boolean | null | 'retry'> {
   const { thread, startEpoch, binding } = context
 
   if (context.failedMembers?.has(groupMemberKey(member))) {
@@ -145,6 +157,8 @@ export async function runGroupRoundMember(
   const anchorId = room.log.at(-1)?.id ?? null
   let reply: null | string = null
   let accepted = false
+  let turnFailed = false
+  let turnError: any = null
 
   try {
     reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
@@ -174,8 +188,20 @@ export async function runGroupRoundMember(
         : {})
     })
     noteBotAttention(groupMemberKey(member), reason || error?.message || error)
-    context.failedMembers?.add(groupMemberKey(member))
+
+    // Parking in failedMembers is deferred to the retry decision below: a
+    // transient session-reap throw gets one re-drive (MAX_FAILED_TURN_RETRIES)
+    // before the member is parked for the rest of this drive. Any OTHER
+    // failure class is ambiguous — it may have double-delivered — so it parks
+    // immediately (the no-retry contract "does not retry ambiguous member
+    // admission / ambiguous submit" pins).
+    if (!context.failedRetries || !isSessionGoneError(error)) {
+      context.failedMembers?.add(groupMemberKey(member))
+    }
+
     reply = null // a failed turn is a pass, never a room error
+    turnFailed = true
+    turnError = error
   }
 
   // #93127: the turn may have finished AFTER a newer user send bumped
@@ -218,6 +244,31 @@ export async function runGroupRoundMember(
     })
 
     return null
+  }
+
+  // A THROWN turn of the transient session-reap class that still has retries
+  // left must NOT advance the watermark: leaving the user's delta unseen lets
+  // the NEXT round re-drive this member instead of silently consuming the
+  // mention. Only 4001-class throws (isSessionGoneError — unambiguously
+  // recoverable, nothing was delivered) are retried (timeouts keep the
+  // stranded-harvest path), and only up to MAX_FAILED_TURN_RETRIES so the
+  // room still settles against a genuinely-down member — at which point the
+  // member is parked in failedMembers (skipped until the user acts again).
+  // Return 'retry' so spokeThisRound stays > 0 and the round loop runs
+  // another round (the room would otherwise settle after a silent round
+  // before the re-drive) — no entry is appended, so this only keeps the
+  // loop alive; the actual reply lands on the retry round.
+  if (turnFailed && context.failedRetries && isSessionGoneError(turnError)) {
+    const failedKey = groupMemberKey(member)
+    const priorRetries = context.failedRetries.get(failedKey) || 0
+
+    if (priorRetries < MAX_FAILED_TURN_RETRIES) {
+      context.failedRetries.set(failedKey, priorRetries + 1)
+
+      return 'retry'
+    }
+
+    context.failedMembers?.add(failedKey)
   }
 
   // Resolve the frozen submit boundary against the retained log. If it was

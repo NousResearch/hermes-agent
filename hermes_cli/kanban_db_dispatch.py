@@ -1090,6 +1090,8 @@ def _record_task_failure(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
+    tripped = False
+    tripped_run_id = None
     with _kb.write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "
@@ -1174,7 +1176,20 @@ def _record_task_failure(
         if event_payload_extra:
             payload.update(event_payload_extra)
         _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+        tripped = True
+        tripped_run_id = run_id
+    if tripped:
+        # Circuit-breaker trip lands the task in 'blocked' exactly like the
+        # explicit kanban_block() path, so it must fire the same lifecycle
+        # hook (Decision HUD escalation bridge etc.) — outside the write_txn,
+        # after commit, matching block_task()'s own hook-firing point.
+        blocked_task = _kb.get_task(conn, task_id)
+        _kb._fire_task_hook(
+            "kanban_task_blocked", blocked_task, task_id, tripped_run_id,
+            reason=error,
+        )
         return True
+    return False
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:

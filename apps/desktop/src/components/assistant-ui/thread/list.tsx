@@ -19,6 +19,7 @@ import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
 import { usePaneLifecycle, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
+import { $codexLayout } from '@/store/codex-layout'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
@@ -423,6 +424,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   const { t } = useI18n()
+  const codexLayout = useStore($codexLayout)
   // Row structure is memoized on the STRUCTURAL signature only, so streaming
   // part-appends can't churn group identity (that would defeat the rows memo
   // below on every tick). Weights are folded in separately for the budget.
@@ -1062,7 +1064,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       >
         {renderEmpty ? (
           <div
-            className="mx-auto grid h-full w-full max-w-(--conversation-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
+            className={cn(
+              'mx-auto grid h-full w-full grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8',
+              codexLayout ? 'max-w-(--conversation-width)' : 'max-w-(--composer-width)'
+            )}
             data-slot="aui_thread-content"
           >
             {emptyPlaceholder}
@@ -1070,7 +1075,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         ) : (
           <div
             className={cn(
-              'mx-auto flex w-full max-w-(--conversation-width) min-w-0 flex-col px-6',
+              'mx-auto flex w-full min-w-0 flex-col px-6',
+              codexLayout ? 'max-w-(--conversation-width)' : 'max-w-(--composer-width)',
               threadContentTopPad
             )}
             data-slot="aui_thread-content"

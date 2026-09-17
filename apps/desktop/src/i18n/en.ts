@@ -764,6 +764,9 @@ export const en: Translations = {
       vibeHeartsTitle: 'Vibe Hearts',
       vibeHeartsDesc:
         'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',
+      codexLayoutTitle: 'Codex Layout',
+      codexLayoutDesc:
+        'Use a centered reading column for assistant messages, with code blocks that fill the width and scroll internally. Off uses the classic full-width layout.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',

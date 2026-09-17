@@ -735,6 +735,8 @@ export const zh = defineLocale({
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
       vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
+      codexLayoutTitle: 'Codex 风格布局',
+      codexLayoutDesc: '为助手消息使用居中的阅读列，代码块会填满宽度并在内部滚动。关闭则使用经典全宽布局。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',

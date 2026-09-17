@@ -55,6 +55,7 @@ import {
 } from '@/store/translucency'
 import { $userBubbleTransparency, setUserBubbleTransparency } from '@/store/user-bubble-transparency'
 import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
+import { $codexLayout, setCodexLayout } from '@/store/codex-layout'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -415,6 +416,7 @@ export function AppearanceSettings() {
   const toursEnabled = useStore($toursEnabled)
   const spentTips = useStore($spentTipCount)
   const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
+  const codexLayout = useStore($codexLayout)
   const backdrop = useStore($backdrop)
   const introSplash = useStore($introSplash)
   const installs = useStore($marketplaceInstalls)
@@ -923,6 +925,24 @@ export function AppearanceSettings() {
             }
             description={a.vibeHeartsDesc}
             title={a.vibeHeartsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setCodexLayout(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={codexLayout ? 'on' : 'off'}
+              />
+            }
+            description={a.codexLayoutDesc}
+            title={a.codexLayoutTitle}
           />
 
           <ListRow

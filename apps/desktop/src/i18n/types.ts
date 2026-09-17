@@ -642,6 +642,8 @@ export interface Translations {
       composerPopoutDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
+      codexLayoutTitle: string
+      codexLayoutDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

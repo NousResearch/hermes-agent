@@ -3349,7 +3349,8 @@ class GatewayTurnMixin:
 
         if _agent_timeout is not None:
             threading.Thread(
-                target=_watch_gateway_turn_inactivity,
+                target=copy_context().run,
+                args=(_watch_gateway_turn_inactivity,),
                 kwargs={
                     "agent_holder": agent_holder, "timeout": _agent_timeout, "poll_interval": 5.0,
                     **self._reaper_kwargs(worker),
@@ -3470,7 +3471,8 @@ class GatewayTurnMixin:
                     await self._run_agent_inactivity_warning(worker, turn_ctx.source, turn_ctx._status_thread_metadata)
                 if _idle_secs >= worker.agent_timeout:
                     threading.Thread(
-                        target=_abandon_timed_out_gateway_turn,
+                        target=copy_context().run,
+                        args=(_abandon_timed_out_gateway_turn,),
                         kwargs={"agent_holder": agent_holder, **self._reaper_kwargs(worker)},
                         name=f"gateway-turn-reaper-{worker.task_id[:12]}", daemon=True,
                     ).start()

@@ -87,44 +87,46 @@ SessionDB messages, Trello imports or journals are deleted.
 
 ## Coverage and remaining implementation
 
-`work100.py` catalogs the 30 required scenarios and launches real pytest node IDs.
-25 cases have contract/replay tests, with some sharing an existing regression.
-Cases 4/5/6/8/9 remain explicit coverage gaps. `--run` returns nonzero while these
-gaps remain; they are not skipped to claim green.
+`work100.py` catalogs all 30 required scenarios and launches real pytest and
+Electron-platform regressions. All catalog cases now have replayable coverage;
+some share an existing owner regression. The catalog gate passed with 35 Python
+tests and 36 Electron-platform tests. This is not packaged-release E2E evidence.
 
-Remaining program work: provenance at every actual human/connector/delegation
-ingress; WorkIntent propagation to all browser/worker/risk consumers; operational
-live-handle publisher parity and execution-environment identity; compiler event
-wait adoption for internal resources (polling still exists); universal mutation
+Remaining program work: provenance at secondary connector/delegation ingress;
+WorkIntent propagation to all browser/worker/risk consumers; operational
+live-handle publisher parity and execution-environment identity; actual internal
+publishers wired to the scoped compiler bus (external polling still exists); universal mutation
 reconciliation; resume of a diagnosed existing circuit with a new verification
 generation; capability-specific result schemas; live semantic browser observation
-adapter and automatic handoff; full worker/process lineage; automatic compatible
-candidate validation and replay savings; cron creation-policy/CLI/UI affordances;
-concurrent Trello migration admission; incremental Desktop cockpit wiring; full
-Work100 required seed and native release evidence.
+adapter beyond supplied preflight observations; full worker/process lineage;
+automatic compatible candidate validation and replay savings; complete cockpit
+live-handle/usage/next-action presentation; and native packaged release evidence.
 
-No Desktop source was changed. Native Electron/minimized-window/multi-web-session
-validation was not run in this change; Python contracts do not replace
-it. The existing authorized red-team harness and profile isolation are preserved.
+Desktop typecheck, focused UI Vitest and Electron-platform contracts ran on
+Windows. The platform tests exercise lifecycle owners with Electron bindings and
+stubs; native renderer/packaged E2E remains a separate release gate. The existing
+authorized red-team harness and profile isolation are preserved.
 
 ## Changed files
 
 Validation completed on this working tree:
 
-- Workstation full suite: **422 passed, 2 pre-existing skips** (417.93s).
-  Later changes were validated with focused runs below; this is not a new full
-  suite result for every subsequent edit.
+- Workstation full suite, after the continued ingress/outcome/handoff/Trello
+  changes: **452 passed, 2 skips** (259.00s).
 - Upstream owners (guardrails, verification evidence/FD leak, cron drift,
   session search/slow logging, Hybrid, review completion): **124 passed**.
 - Post-suite integrated policy/provenance/compiler contracts: **98 passed**.
 - Final canonical/continuity/Hybrid/report contracts after recorded-verifier
   admission and multiwriter journal proof: **49 passed**.
 - Latest P0 and actual read_file/preflight integration proofs: **29 passed**.
-- Work100 covered seed: **31 passed**; catalog gate exit **1**, because five
-  required scenarios remain uncovered. This is an incomplete program gate.
+- Continued Work100 seed: **35 Python + 36 Electron-platform passed**, exit **0**;
+  all 30 catalog cases are linked to real owner regressions.
+- Continued upstream/API/finalizer/plugin gate: **150 passed**; candidate
+  acceptance integration: **27 passed**; focused UI Vitest: **29 passed**;
+  Desktop typecheck: PASS.
 - `git diff --check`: PASS. No red-team harness changes; no second task/session/
-  browser/memory/approval/artifact/recipe store. Native Electron/platform/E2E,
-  Desktop typecheck and Vitest were not run; Desktop source was not changed.
+  browser/memory/approval/artifact/recipe store. Packaged/native renderer E2E was
+  not run. The focused Electron platform gate, typecheck and UI Vitest ran.
 
 Initial sandbox test attempt failed with WinError 5 before useful validation.
 Native Python escalation with disposable homes passed. One intermediate cron
@@ -137,8 +139,7 @@ Residual implementation risks: journal append currently verifies the full prior
 chain, so large journals need measured incremental verification optimization;
 legacy manual upstream completion remains outside the Workstation acceptance
 gate; caller-supplied structured envelopes/verifier results require trusted
-ingress/callbacks; Trello migration is sequentially idempotent but concurrent
-admission is not yet serialized; read-file artifact access remains profile-scoped.
+ingress/callbacks; read-file artifact access remains profile-scoped.
 These are tracked boundaries, not claims of completed global hardening.
 
 - `agent/tool_guardrails.py`

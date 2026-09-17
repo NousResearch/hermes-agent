@@ -253,4 +253,5 @@ The canonical execution reliability gate resolved and verified the identified ca
 ### KI-010 — O(N^2) ExecutionJournal append scaling degradation [RESOLVED]
 **Resolved behavior:** `ExecutionJournal.append()` utilizes `_get_last_record()` to achieve $O(1)$ streaming hash chaining without parsing the full journal file on each append. Verified under 120-event stress test in `test_journal_100_events_streaming_hash_integrity`.
 
-All 30 seed cases in `work100.py` pass with 0 coverage gaps, and all 446 workstation tests pass green.
+All 30 seed cases in `work100.py` pass with 0 coverage gaps, and all 452
+Workstation tests pass with 2 expected skips.

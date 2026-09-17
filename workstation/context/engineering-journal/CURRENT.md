@@ -21,7 +21,11 @@ read without rewriting; hash chain and interprocess append lock. Artifact
 experiment: JSON in .data resolves structurally; binary remains metadata;
 changed bytes must fail integrity. Full program remains IN PROGRESS.
 
-Observed final evidence: 422 Workstation PASS / 2 pre-existing skips; upstream
+Observed continued evidence: 452 Workstation PASS / 2 expected skips after the
+real two-process Trello import regression was corrected (the original test passed
+a string to a Path-only database API); Work100 35 Python + 36 Electron platform
+contracts PASS / 0 gaps; focused Electron owner tests 36 PASS; Desktop typecheck
+and UI Vitest 29 PASS. Earlier evidence: 422 Workstation PASS / 2 pre-existing skips; upstream
 owner gate 124 PASS; subsequent integrated gate 98 PASS; final policy/ledger/
 multiwriter/continuity contracts 49 PASS; latest actual artifact read_file and
 semantic recipe preflight plus P0 29 PASS. Work100 executes 31 covered tests PASS

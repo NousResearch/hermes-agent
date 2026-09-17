@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -77,6 +78,12 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+# After the first identical ``respawn_guarded`` event, suppress duplicates
+# until this cooldown elapses, then persist one heartbeat. Fingerprint
+# changes (reason or the PR URL set) always persist immediately. The guard
+# check itself still runs every dispatch interval.
+DEFAULT_RESPAWN_GUARD_EVENT_COOLDOWN_SECONDS = 3600  # 1 hour
 
 
 @dataclass
@@ -1444,15 +1451,92 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    if _recent_pr_urls(conn, task_id, now=now):
+        return "active_pr"
+
+    return None
+
+
+def _recent_pr_urls(
+    conn: sqlite3.Connection, task_id: str, *, now: Optional[int] = None,
+) -> list[str]:
+    """Sorted unique GitHub PR URLs in comments inside the active_pr window."""
+    if now is None:
+        now = int(time.time())
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    urls: set[str] = set()
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        body = c["body"] or ""
+        urls.update(_RESPAWN_GUARD_PR_URL_RE.findall(body))
+    return sorted(urls)
 
-    return None
+
+def _respawn_guard_event_fingerprint(
+    conn: sqlite3.Connection, task_id: str, reason: str, *, now: Optional[int] = None,
+) -> dict[str, Any]:
+    """Material identity of a guard decision: reason plus PR URLs for ``active_pr``."""
+    fingerprint: dict[str, Any] = {"reason": reason}
+    if reason == "active_pr":
+        fingerprint["pr_urls"] = _recent_pr_urls(conn, task_id, now=now)
+    return fingerprint
+
+
+def _fingerprint_tuple(payload: Mapping[str, Any]) -> tuple[Any, tuple[str, ...]]:
+    urls = payload.get("pr_urls") or []
+    if not isinstance(urls, list):
+        urls = []
+    return (payload.get("reason"), tuple(str(u) for u in urls))
+
+
+def _respawn_guarded_event_payload(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reason: str,
+    *,
+    now: Optional[int] = None,
+    cooldown_seconds: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Payload to persist for this tick, or ``None`` to suppress a duplicate.
+
+    Fail-closed: unreadable last-event state returns a fresh payload so a
+    changed or newly actionable decision cannot be hidden.
+    """
+    if now is None:
+        now = int(time.time())
+    if cooldown_seconds is None:
+        cooldown_seconds = DEFAULT_RESPAWN_GUARD_EVENT_COOLDOWN_SECONDS
+    fingerprint = _respawn_guard_event_fingerprint(conn, task_id, reason, now=now)
+    try:
+        row = conn.execute(
+            "SELECT payload, created_at FROM task_events "
+            "WHERE task_id = ? AND kind = 'respawn_guarded' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    except Exception:
+        return fingerprint
+    if row is None:
+        return fingerprint
+    try:
+        raw = row["payload"]
+        last_payload = json.loads(raw) if raw else {}
+        if not isinstance(last_payload, dict):
+            return fingerprint
+        if _fingerprint_tuple(last_payload) != _fingerprint_tuple(fingerprint):
+            return fingerprint
+        last_at = int(row["created_at"] or 0)
+        quiet = max(0, now - last_at)
+        if quiet < int(cooldown_seconds):
+            return None
+        heartbeat = dict(fingerprint)
+        heartbeat["heartbeat"] = True
+        heartbeat["quiet_seconds"] = quiet
+        return heartbeat
+    except Exception:
+        return fingerprint
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
@@ -1815,16 +1899,13 @@ def _dispatch_lane_task(
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
-        # Event so ``hermes kanban tail`` shows why the task looks stuck.
-        # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
-        # operator-configured fallback exists, persist the assignment and proceed. This removes the
-        # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
-        # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
-        # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
-        # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
+        # Coalesce identical guard events: persist the first, then a heartbeat
+        # after cooldown. DispatchResult still records every skip this tick.
         if not dry_run:
-            with _kb.write_txn(conn):
-                _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+            payload = _respawn_guarded_event_payload(conn, task_id, guard_reason)
+            if payload is not None:
+                with _kb.write_txn(conn):
+                    _kb._append_event(conn, task_id, "respawn_guarded", payload)
         return False
 
     def _count_spawn(name: str) -> None:

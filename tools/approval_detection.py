@@ -1413,12 +1413,29 @@ def _command_detection_variants(command: str):
         yield faithful
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
-    for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
-        deobfuscated = _deobfuscate_shell_word_for_detection(word)
-        if deobfuscated and deobfuscated != word:
-            variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
-            if fresh(variant):
-                yield variant
+    # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc
+    # body of quoted lines has hundreds of quoted command words, and per-word variants made both
+    # detection passes O(words * len) — minutes of GIL-held regex on a 15 KB command (#113535).
+    # Spans arrive out of order (loop/conditional bodies after their keywords) and can nest (a
+    # backtick word and the command inside it), so apply them sorted; spans overlapping an applied
+    # one wait for the next round, one combined variant per nesting level.
+    pending = sorted(
+        ((word_start, word_end, deobfuscated) for word_start, word_end, word in _iter_shell_command_word_spans(normalized)
+         if (deobfuscated := _deobfuscate_shell_word_for_detection(word)) and deobfuscated != word),
+        key=lambda span: span[:2],
+    )
+    while pending:
+        applied, carry, cursor = [], [], 0
+        for span in pending:
+            if span[0] < cursor:
+                carry.append(span)
+            else:
+                applied.append(span)
+                cursor = span[1]
+        variant = _splice(normalized, applied)
+        if fresh(variant):
+            yield variant
+        pending = carry
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:

@@ -175,9 +175,18 @@ def _repair_tool_call_arguments(
 
     # Pass 0: strict=False accepts literal control chars inside strings (the most common
     # local-model case) and re-serialises to wire-valid JSON.
+    # (CodeRabbit PR #3, Major): strict mode must ALSO gate pass 0 — otherwise a
+    # write-class arg with literal control chars is repaired-and-returned before
+    # the strict guards below ever see it.
     try:
         reserialised = json.dumps(json.loads(raw_stripped, strict=False), separators=(",", ":"))
         if reserialised != raw_stripped:
+            if _strict_repaired_writes_enabled() and tool_name in _WRITE_CLASS_TOOLS:
+                logger.warning(
+                    "Refusing pass-0 repaired write-class tool_call args under strict mode for %s%s",
+                    tool_name, _attr,
+                )
+                return json.dumps({"__hermes_malformed_tool_arguments__": True})
             logger.warning("Repaired unescaped control chars in tool_call arguments for %s", tool_name)
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):

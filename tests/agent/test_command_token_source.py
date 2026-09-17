@@ -351,7 +351,7 @@ class TestAuxiliaryResolverHonoursKeyCmd:
 
 class TestExplicitCallableSurvivesCustomResolution:
     """Callers hand ``resolve_provider_client`` a callable (key_cmd token, or the
-    main runtime's callable credential via ``_route_via_main_provider``) and every
+    main runtime's callable credential via ``_try_main_provider_route``) and every
     resolution branch must pass it through *uncalled*: ``.strip()`` on it raised
     AttributeError (#88667); ``str()`` sent the object repr as the bearer.
     Adapted from SiaoZeng's #107344.

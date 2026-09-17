@@ -3237,8 +3237,8 @@ _OPEN_DICT_TOP_LEVEL_KEYS = frozenset({
     "secrets", "goals", "loops",
     # Toolset-registry dicts keyed by a user-chosen platform name; written by the setup wizard,
     # hermes_cli/tools_config.py and config_migrations.py, and listed in _EXTRA_KNOWN_ROOT_KEYS
-    # (absent from DEFAULT_CONFIG), so without this their sub-key paths fell through to the
-    # difflib near-miss suggestion (e.g. ``platform_hints``) from #113658.
+    # (absent from DEFAULT_CONFIG), so registering them here keeps their sub-key paths from
+    # falling through to the difflib near-miss suggestion (e.g. ``platform_hints``).
     "platform_toolsets", "known_builtin_toolsets", "known_plugin_toolsets"})
 
 # Top-level keys whose sub-keys are partially schema-defined (e.g. a PlatformConfig dataclass) but

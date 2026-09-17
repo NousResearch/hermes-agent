@@ -582,7 +582,7 @@ class TestValidateConfigKey:
         """``platform_toolsets.<platform>`` (and its wizard-written siblings) is a first-class
         path: the setup wizard, plugins_cmd and config_migrations all write it, and the value
         is honored downstream. It must not be flagged as unrecognized with the meaningless
-        difflib near-miss ``platform_hints.<platform>`` from #113658."""
+        difflib near-miss ``platform_hints.<platform>``."""
         from hermes_cli.config import _validate_config_key
         for key in ("platform_toolsets.cli", "known_builtin_toolsets.telegram"):
             is_known, suggestion = _validate_config_key(key)
@@ -593,6 +593,7 @@ class TestValidateConfigKey:
         ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        ("platform_toolset.cli", "platform_toolsets.cli"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key

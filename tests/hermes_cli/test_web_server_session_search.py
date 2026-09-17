@@ -1,7 +1,9 @@
 import asyncio
 
 from hermes_cli import web_server
+import hermes_cli.web_server_sessions as _web_server_sessions
 import hermes_cli.web_routers.sessions as _rt_sessions
+from hermes_state import SessionDB
 
 
 class _FakeSessionDB:
@@ -142,3 +144,67 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
         ]
     }
     assert _FakeSessionDB.opened_read_only is True
+
+
+# ── Real-DB egress: /api/sessions/search must honour the delegate marker ──
+#
+# The fake above implements its OWN source filtering, so it can prove plumbing
+# but never the SQL predicate (#51855: a gateway-sourced delegate child leaked
+# into search while hidden from listings). These tests drive the endpoint
+# against a real SessionDB; the DB opener is patched at the seam the router's
+# late-binding proxy resolves (web_server_sessions, per-test monkeypatch — the
+# fake above is installed inside its own test only, so it cannot shadow this).
+
+_EXCLUDES = "kanban,subagent,tool"
+
+
+def _seed_real_db(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    # Control: an ordinary session; nothing identifies it as a child.
+    db.create_session("control-sess", source="telegram")
+    # delegate_task child spawned under a gateway turn: carries the gateway's
+    # source and is recognisable only by the _delegate_from marker.
+    db.create_session(
+        "marker-kid", source="telegram", parent_session_id="control-sess",
+        model_config={"_delegate_from": "control-sess"},
+    )
+    db.append_message("control-sess", role="user", content="egress token control")
+    db.append_message("marker-kid", role="assistant", content="egress token child")
+    return db
+
+
+def _search_result_ids(response) -> set:
+    return {row["session_id"] for row in response["results"]}
+
+
+def _patch_opener(monkeypatch, db):
+    monkeypatch.setattr(
+        _web_server_sessions, "_open_session_db_for_profile", lambda profile, *, read_only: db
+    )
+
+
+def test_http_search_hides_marker_child_with_exclude_sources(monkeypatch, tmp_path):
+    """`?exclude_sources=kanban,subagent,tool` reaches the shared SQL filter
+    end-to-end: the marker child's transcript is absent, the control is present."""
+    db = _seed_real_db(tmp_path)
+    _patch_opener(monkeypatch, db)
+    try:
+        response = asyncio.run(_rt_sessions.search_sessions(q="egress", limit=20, exclude_sources=_EXCLUDES))
+    finally:
+        db.close()
+    ids = _search_result_ids(response)
+    assert "control-sess" in ids
+    assert "marker-kid" not in ids
+
+
+def test_http_search_bare_query_still_reaches_marker_child(monkeypatch, tmp_path):
+    """Parity arm: without exclude_sources the v30 contract holds — the same
+    endpoint and query still surface the child's transcript."""
+    db = _seed_real_db(tmp_path)
+    _patch_opener(monkeypatch, db)
+    try:
+        response = asyncio.run(_rt_sessions.search_sessions(q="egress", limit=20))
+    finally:
+        db.close()
+    ids = _search_result_ids(response)
+    assert {"control-sess", "marker-kid"} <= ids

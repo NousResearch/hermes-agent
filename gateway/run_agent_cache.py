@@ -407,6 +407,14 @@ class GatewayAgentCacheMixin:
             logger.info("Invalidated run generation for %s → %d (%s)", session_key, generation, reason)
         return generation
 
+    def _current_session_run_generation(self, session_key: str) -> int:
+        """Current run generation for ``session_key`` (0 when the key tracks no run). Callers that
+        read it before an await and compare after can tell whether a boundary fired meanwhile."""
+        if not session_key:
+            return 0
+        state = self._peek_session_state(session_key)
+        return int(state.persistent.run_generation or 0) if state is not None else 0
+
     def _is_session_run_current(self, session_key: str, generation: int) -> bool:
         """Return True when ``generation`` is still current for ``session_key``."""
         if not session_key:

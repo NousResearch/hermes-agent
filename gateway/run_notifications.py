@@ -199,12 +199,18 @@ class GatewayNotificationsMixin:
 
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str,
+        run_generation: Optional[int] = None, run_session_key: Optional[str] = None,
     ) -> Optional[SessionEntry]:
         """Resolve an async completion to its verified owning gateway session.
 
         Follow compression-rotation lineage (parent row ended, child continues), but never let a
         late completion override an unrelated /new or restored route. Unknown ownership fails
         closed; the result stays in the delegation records.
+
+        The row lookup awaits, so the route can move while it is in flight (/new, a concurrent
+        resume) and the run can be revoked (/stop). Both are re-checked against the snapshot the
+        caller resolved before any route mutation: a pinned session identified before the boundary
+        must not be able to publish it after.
         """
         from gateway.run import _USER_BOUNDARY_END_REASONS
         session_db = cast(Any, self._session_db)
@@ -214,11 +220,26 @@ class GatewayNotificationsMixin:
                 "dropping injection (#55578 fail-closed)."
             )
             return None
+        # Snapshot the run token before the await. Callers that know the turn's own generation
+        # pass it; otherwise the key's current value stands in, so a revocation landing during the
+        # lookup still changes it.
+        generation_key = run_session_key or session_entry.session_key
+        expected_generation = (
+            run_generation if run_generation is not None
+            else self._current_session_run_generation(generation_key)
+        )
         pinned_row = None
         try:
             pinned_row = await session_db.get_session(pinned_session_id)
         except Exception:
             logger.debug("Async-delegation parent lookup failed for %s", pinned_session_id, exc_info=True)
+        if not self._is_session_run_current(generation_key, expected_generation):
+            logger.warning(
+                "Async-delegation completion for %s was revoked while resolving pinned session "
+                "%s; dropping injection instead of moving the route.", generation_key,
+                pinned_session_id,
+            )
+            return None
         if pinned_row is None:
             logger.warning(
                 "Async-delegation completion has unknown spawning session %s; "
@@ -259,7 +280,10 @@ class GatewayNotificationsMixin:
                 session_entry.session_key, prior_session_id, target_session_id,
             )
         else:
-            switched = await self.async_session_store.switch_session(session_entry.session_key, target_session_id)
+            switched = await self.async_session_store.switch_session(
+                session_entry.session_key, target_session_id,
+                expected_session_id=prior_session_id,
+            )
         if switched is None:
             logger.warning(
                 "Async-delegation completion could not bind routing key %s to "

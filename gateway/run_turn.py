@@ -320,10 +320,13 @@ class GatewayTurnMixin:
         except Exception:
             return False
 
-    async def _hmwa_resolve_session(self, event, source):
+    async def _hmwa_resolve_session(self, event, source, run_session_key=None, run_generation=None):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
-        the event."""
+        the event.
+
+        ``run_session_key``/``run_generation`` are the caller's own turn token, forwarded so a
+        delegation-completion re-bind cannot move the route after a boundary revoked the run."""
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
@@ -366,7 +369,10 @@ class GatewayTurnMixin:
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
-            resolved_entry = await self._resolve_async_delegation_session(session_entry, pinned_session_id)
+            resolved_entry = await self._resolve_async_delegation_session(
+                session_entry, pinned_session_id,
+                run_generation=run_generation, run_session_key=run_session_key,
+            )
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
@@ -2062,7 +2068,9 @@ class GatewayTurnMixin:
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
 
-        resolved = await self._hmwa_resolve_session(event, source)
+        resolved = await self._hmwa_resolve_session(
+            event, source, run_session_key=_quick_key, run_generation=run_generation,
+        )
         if resolved is None:
             return
         source, session_entry, session_key = resolved

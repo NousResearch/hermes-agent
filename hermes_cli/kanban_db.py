@@ -232,7 +232,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_self_review",
 )
 
 
@@ -3298,6 +3298,27 @@ def request_review(
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
         raise
     return _ret(True)
+
+
+def review_implementer(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Implementer recorded by the latest ``review_requested`` event, else
+    ``None``.
+
+    ``request_review`` stamps the row's assignee at handoff time as
+    ``implementer`` on that event (see its docstring), so for a card sitting
+    in ``review`` this is the durable "who wrote this" provenance — read back
+    from the event log rather than trusted from the current ``assignee``,
+    which a reviewer round-trip or a hand reassign moves. The review-lane
+    dispatch guard uses this to refuse to spawn an implementer as its own
+    reviewer (:func:`kanban_db_dispatch._self_review_reason`). ``None`` means
+    the card never recorded one — no ``review_requested`` event, or a payload
+    without a usable string — and callers must treat that as "unknown", never
+    as "distinct from the current assignee".
+    """
+    review_event = _latest_event(conn, task_id, "review_requested")
+    handoff = _json_dict(_row_get(review_event, "payload"))
+    implementer = handoff.get("implementer")
+    return implementer if isinstance(implementer, str) and implementer.strip() else None
 
 
 def _prior_reviewer(conn: sqlite3.Connection, task_id: str):

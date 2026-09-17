@@ -320,7 +320,7 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     return [python_exe, str(path)], env_overlay, None
 
 
-def _onepassword_service_token_env() -> dict[str, str]:
+def _onepassword_service_token_env() -> tuple[str, dict[str, str]]:
     """Return the owning profile's 1Password bootstrap token for a script-only job.
 
     Cron scripts are user-authored workloads running for the profile that owns the job, so they may
@@ -351,7 +351,7 @@ def _onepassword_service_token_env() -> dict[str, str]:
         # A supervisor may provide the launch profile's bootstrap token directly.  Routed profiles
         # must never fall back to that process-global value.
         token = os.environ.get(token_env, "")
-    return {"OP_SERVICE_ACCOUNT_TOKEN": token} if token else {}
+    return token_env, ({"OP_SERVICE_ACCOUNT_TOKEN": token} if token else {})
 
 
 def _run_job_script(
@@ -392,7 +392,9 @@ def _run_job_script(
                 "errors": "replace"}
         env = build_subprocess_env()
         if include_onepassword_service_token:
-            env.update(_onepassword_service_token_env())
+            token_env, token_overlay = _onepassword_service_token_env()
+            env.pop(token_env, None)
+            env.update(token_overlay)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

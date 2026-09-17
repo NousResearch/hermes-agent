@@ -42,9 +42,30 @@ _READINESS_FALLBACK_EXPECT = [{"window": {"exists": True}}]
 
 # SOM index (the ``element`` arg, bound to the snapshot taken before the run)
 # -> (label, role) of the target element from that snapshot's capture.
-# Threaded in by the caller; absent means every element-keyed expectation
-# degrades to the window.exists fallback.
+# Threaded in by the caller, or pulled from the backend's last capture
+# snapshot when the caller passes none; absent means every element-keyed
+# expectation degrades to the window.exists fallback.
 SomLabels = Dict[int, Tuple[Optional[str], Optional[str]]]
+
+
+def som_labels_of(backend: Any) -> Optional[SomLabels]:
+    """The SOM labels (element_index -> (label, role)) the backend's last capture saw.
+
+    None when the backend never captured or the snapshot is empty. Never
+    invents labels: entries with neither label nor role are dropped, malformed
+    entries skipped.
+    """
+    raw = getattr(backend, "_snapshot_labels", None)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    labels: SomLabels = {}
+    for idx, pair in raw.items():
+        if not isinstance(idx, int) or not isinstance(pair, (tuple, list)) or len(pair) != 2:
+            continue
+        label, role = pair
+        if label or role:
+            labels[idx] = (label or None, role or None)
+    return labels or None
 
 
 def backend_for_session(session_id: str):
@@ -158,7 +179,8 @@ def confirm_run_step(
 
     Returns the ``ReadinessResult``, or None when no check applies (no sticky
     target, or the backend has no readiness entry point) — the caller then
-    degrades to verdict-only behavior.
+    degrades to verdict-only behavior. ``som_labels`` defaults to the labels
+    from the backend's last capture snapshot; an explicit map wins.
     """
     verify = getattr(backend, "verify_readiness", None)
     if not callable(verify):
@@ -167,6 +189,11 @@ def confirm_run_step(
     if target is None:
         return None
     pid, window_id = target
+    # Production never threads labels in: pull them from the backend's last
+    # capture snapshot (the same snapshot the run's element indices bind to).
+    # An explicit caller-supplied map still wins.
+    if som_labels is None:
+        som_labels = som_labels_of(backend)
     return verify(
         pid=pid,
         window_id=window_id,

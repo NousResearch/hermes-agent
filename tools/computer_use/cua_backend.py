@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import uuid
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from tools.computer_use.readiness import ReadinessResult
@@ -237,7 +237,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
-        # cua-driver reports "stale" instead of silently re-resolving).
+        # cua-driver reports "stale" instead of silently re-resolving), `_snapshot_labels` (element_index ->
+        # (label, role) from the same snapshot, used by guarded-run readiness confirmation so per-action
+        # predicates can name the element without a fresh capture).
         self._clear_active_target()
         # Public session label (one per Hermes run) sent as `session` on every call: owns the cursor color and
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
@@ -312,11 +314,15 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
         # context.
         self._snapshot_tokens: Dict[int, str] = {}
+        # Same snapshot lifecycle as the tokens: element_index -> (label, role) of the elements the model
+        # just saw, so readiness predicates can name a target without another capture.
+        self._snapshot_labels: Dict[int, Tuple[str, str]] = {}
 
     def _set_active_target(self, target: Dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_labels = {}  # prior snapshot's labels: same disarm, same pairing hazard
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,

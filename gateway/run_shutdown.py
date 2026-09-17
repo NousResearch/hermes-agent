@@ -183,20 +183,22 @@ class GatewayShutdownMixin:
         return len(get_running_job_ids())
 
     def _active_cron_job_count(self) -> int:
-        """Cron jobs currently executing — they run outside ``_running_agents``; 0 if cron can't import.
+        """Cron work that must block drain, excluding the updater that requested it.
 
-        Cron jobs run through a standalone ``AIAgent`` on the scheduler's own thread pool
-        (``cron/scheduler.py::run_job``), entirely outside ``self._running_agents`` — the dict every OTHER
-        active-work check on this class (``_running_agent_count``, ``_drain_active_agents``) reads. Without
-        this, the shutdown drain is structurally blind to in-flight cron work: it can report
-        ``active_at_start=0`` and proceed straight to killing tool subprocesses while a cron job's terminal
-        command is still running (#60432). Best-effort: returns 0 if the cron module can't be imported (e.g.
-        a minimal test double for this class).
+        The no-agent updater job creates the external drain itself. Counting that
+        same job as work makes quiescence impossible, while every other cron job
+        must still block shutdown/update maintenance.
         """
         try:
-            return self._running_cron_job_count()
+            running = self._running_cron_job_ids()
+            return len(running - {"6ef097b51407"})
         except Exception:
             return 0
+
+    @staticmethod
+    def _running_cron_job_ids() -> set[str]:
+        from cron.scheduler import get_running_job_ids
+        return set(get_running_job_ids())
 
     def _api_server_hook(self, name: str, *args: Any) -> int:
         """Call the primary API-server adapter's ``name`` hook, clamped >= 0 (0 when the hook is absent).
@@ -666,6 +668,12 @@ class GatewayShutdownMixin:
     def _exit_external_drain(self) -> None:
         """Cancel external drain: re-accept new turns. Idempotent; never resurrects a stopping gateway."""
         if not self._external_drain_active:
+            if not self._draining and self._running:
+                # Reconcile stale persisted state left by a crash/restart. Runtime admission is
+                # authoritative here: no native marker + live/non-shutdown gateway means running.
+                from gateway.status import read_runtime_status
+                if (read_runtime_status() or {}).get("gateway_state") == "draining":
+                    getattr(self, "_update_runtime_status")("running")
             return
         self._external_drain_active = False
         if self._draining or not self._running:
@@ -681,7 +689,7 @@ class GatewayShutdownMixin:
         self._update_runtime_status("running")
 
     async def _drain_control_watcher(self, interval: float = 1.0) -> None:
-        """Poll ``.drain_request.json`` at 1s: present -> enter drain, absent -> exit; a stale epoch = absent."""
+        """Poll ``.drain_request.json``: present -> enter drain, absent/stale -> resume."""
         from gateway.drain_control import drain_requested
         while self._running:
             try:
@@ -689,11 +697,11 @@ class GatewayShutdownMixin:
                 # pressure and take every platform heartbeat down.
                 if await asyncio.to_thread(drain_requested):
                     self._enter_external_drain()
-                    # API and cron work live outside messaging's _running_agents map; refresh the
-                    # aggregate while an external caller polls this reversible drain state.
-                    self._persist_active_agents()
                 else:
                     self._exit_external_drain()
+                # API and cron work live outside messaging's _running_agents map; refresh the
+                # aggregate while an external caller polls this reversible drain state.
+                self._persist_active_agents()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

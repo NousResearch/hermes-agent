@@ -26,6 +26,23 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 
 
 # ---------------------------------------------------------------------------
+# Maintenance cron accounting
+# ---------------------------------------------------------------------------
+
+
+def test_full_idle_updater_cron_does_not_block_its_own_drain():
+    runner = object.__new__(GatewayRunner)
+    runner._running_cron_job_ids = lambda: {"6ef097b51407"}
+    assert runner._active_cron_job_count() == 0
+
+
+def test_other_cron_work_still_blocks_maintenance_drain():
+    runner = object.__new__(GatewayRunner)
+    runner._running_cron_job_ids = lambda: {"6ef097b51407", "other-job"}
+    assert runner._active_cron_job_count() == 1
+
+
+# ---------------------------------------------------------------------------
 # Marker contract (drain_control.py)
 # ---------------------------------------------------------------------------
 
@@ -264,6 +281,22 @@ class TestDrainStateMachine:
         runner._enter_external_drain()  # second call — no-op
         runner._update_runtime_status.assert_not_called()
 
+    def test_idle_exit_reconciles_stale_persisted_draining(self, monkeypatch):
+        runner, _ = _drain_runner()
+        runner._update_runtime_status = MagicMock()
+        monkeypatch.setattr('gateway.status.read_runtime_status',
+                            lambda: {'gateway_state': 'draining'})
+        runner._exit_external_drain()
+        runner._update_runtime_status.assert_called_once_with('running')
+
+    def test_idle_exit_preserves_non_draining_persisted_state(self, monkeypatch):
+        runner, _ = _drain_runner()
+        runner._update_runtime_status = MagicMock()
+        monkeypatch.setattr('gateway.status.read_runtime_status',
+                            lambda: {'gateway_state': 'running'})
+        runner._exit_external_drain()
+        runner._update_runtime_status.assert_not_called()
+
 
     def test_exit_during_shutdown_does_not_revert_to_running(self):
         runner, _ = _drain_runner()
@@ -282,6 +315,63 @@ class TestDrainStateMachine:
 
 
 class TestDrainWatcher:
+
+    @pytest.mark.asyncio
+    async def test_marker_removal_releases_after_gateway_restart(self, home):
+        runner, _ = _drain_runner()
+        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
+            runner, GatewayRunner
+        )
+        runner._persist_active_agents = MagicMock()
+        runner._external_drain_identity = None
+        dc.write_drain_request(principal="ziva-full-idle-updater")
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
+        await asyncio.sleep(0.03)
+        assert runner._external_drain_active is True
+        dc.clear_drain_request()
+        await asyncio.sleep(0.03)
+        assert runner._external_drain_active is False
+        runner._running = False
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_obsolete_custom_latches_do_not_hold_native_drain(self, home):
+        runner, _ = _drain_runner()
+        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
+            runner, GatewayRunner
+        )
+        runner._persist_active_agents = MagicMock()
+        (home / ".drain_release.lock").write_text("")
+        (home / ".drain_release_ack.json").write_text("{}")
+        (home / ".drain_release_claim.json").write_text("{}")
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
+        await asyncio.sleep(0.03)
+        assert runner._external_drain_active is False
+        runner._running = False
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_watcher_refreshes_runtime_status_while_idle(self, home):
+        runner, _ = _drain_runner()
+        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
+            runner, GatewayRunner
+        )
+        runner._persist_active_agents = MagicMock()
+        dc.clear_drain_request()
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
+        await asyncio.sleep(0.03)
+        runner._running = False
+        await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        runner._persist_active_agents.assert_called()
 
     @pytest.mark.asyncio
     async def test_watcher_enters_then_exits_with_marker(self, home):

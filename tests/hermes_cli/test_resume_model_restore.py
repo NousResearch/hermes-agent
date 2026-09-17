@@ -82,6 +82,33 @@ def test_restore_session_model_restores_model_and_provider():
     assert stub._explicit_base_url == "https://f/v1"
 
 
+def test_restore_llamacpp_session_follows_live_managed_endpoint(monkeypatch):
+    """Managed llama.cpp owns its live port. A snapshot of last boot's loopback
+    URL must not pin the resumed client to a dead ephemeral endpoint."""
+    live = {
+        "provider": "custom",
+        "base_url": "http://127.0.0.1:18434/v1",
+        "api_key": "sk-live-managed",
+        "api_mode": "chat_completions",
+    }
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kw: live)
+    stub = _make_stub()
+    stub._restore_session_model(_row(
+        model="Qwen3.8-27B-UD-IQ3_XXS",
+        model_config={
+            "provider": "llamacpp",
+            "base_url": "http://127.0.0.1:51489/v1",
+            "api_mode": "chat_completions",
+        }))
+    assert stub.provider == "llamacpp"
+    assert stub.requested_provider == "llamacpp"
+    assert stub.base_url == live["base_url"]
+    assert stub._explicit_base_url in (None, "")
+    assert stub.api_key == live["api_key"]
+
+
 def test_restore_session_model_explicit_cli_flag_wins():
     stub = _make_stub(model="cli-flag-model", _explicit_model_override=True)
     stub._restore_session_model(_row())

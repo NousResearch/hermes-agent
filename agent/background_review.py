@@ -811,7 +811,9 @@ def _warn_ignored_reasoning_effort(agent: Any, task_cfg: Optional[Dict[str, Any]
     if callable(emit):
         with suppress(Exception):
             emit(message)
-    logger.warning("%s", message)
+    logger.warning(
+        "background review reasoning_effort is ignored for the inherited main-model fork"
+    )
 
 
 def _detach_fork_compression(review_agent: Any) -> None:
@@ -854,12 +856,11 @@ def _routed_reasoning_config(task_cfg: Optional[Dict[str, Any]]) -> Optional[Dic
     effort = _background_review_task_config(task_cfg).get("reasoning_effort")
     if effort is None or effort == "":
         return None
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         logger.warning(
-            "auxiliary.background_review.reasoning_effort %r is not a valid level (none, %s) — using "
-            "the routed provider's default", effort, ", ".join(VALID_REASONING_EFFORTS),
+            "auxiliary.background_review.reasoning_effort is invalid; using the routed provider's default"
         )
     return parsed
 

@@ -47,4 +47,4 @@ def test_routed_review_falls_back_to_provider_default(caplog):
     assert "reasoning_config" not in _routed_fork_kwargs({})
     with caplog.at_level(logging.WARNING):
         assert "reasoning_config" not in _routed_fork_kwargs({"reasoning_effort": "ludicrous"})
-    assert "ludicrous" in caplog.text
+    assert "reasoning_effort is invalid" in caplog.text

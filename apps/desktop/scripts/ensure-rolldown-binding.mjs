@@ -3,14 +3,16 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-const appDir = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const rootDir = resolve(appDir, '..', '..')
+const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
-export function selectRolldownBinding(optionalDependencies, platform, arch) {
-  const suffix = `binding-${platform}-${arch}`
-  const matches = Object.entries(optionalDependencies ?? {}).filter(([name]) => name.endsWith(suffix))
-
-  return matches.length === 1 ? matches[0] : null
+// Rolldown's loader already resolves platform, arch and libc; when the native
+// package is absent, its load-error chain names the exact `@rolldown/binding-*`
+// it wanted, followed by the wasm fallback it also tried. Reuse that verdict
+// instead of re-deriving it from `process.platform` (Windows bindings carry a
+// `-msvc` suffix, Linux ones `-gnu`/`-musl`).
+export function missingRolldownBinding(stderr) {
+  const names = [...String(stderr ?? '').matchAll(/@rolldown\/binding-[a-z0-9-]+/g)].map(m => m[0])
+  return names.find(name => !name.includes('wasm32')) ?? null
 }
 
 function probeRolldown(root) {
@@ -21,57 +23,46 @@ function probeRolldown(root) {
 }
 
 function installBinding(root, spec) {
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-  return spawnSync(npm, ['install', '--no-save', '--package-lock=false', '--include=optional', spec], {
+  // npm.cmd needs a shell on Windows (Node refuses to spawn .cmd directly).
+  return spawnSync('npm', ['install', '--no-save', '--package-lock=false', '--include=optional', spec], {
     cwd: root,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    shell: process.platform === 'win32'
   })
+}
+
+function installedRolldownVersion(root) {
+  const packagePath = [
+    join(root, 'node_modules', 'rolldown', 'package.json'),
+    join(root, 'apps', 'desktop', 'node_modules', 'rolldown', 'package.json')
+  ].find(existsSync)
+  return packagePath ? JSON.parse(readFileSync(packagePath, 'utf8')).version : null
 }
 
 export function ensureRolldownBinding({
   root = rootDir,
-  platform = process.platform,
-  arch = process.arch,
   probe = probeRolldown,
   install = installBinding,
-  findPackage = rootPath =>
-    [
-      join(rootPath, 'node_modules', 'rolldown', 'package.json'),
-      join(rootPath, 'apps', 'desktop', 'node_modules', 'rolldown', 'package.json')
-    ].find(existsSync),
-  readPackage = path => JSON.parse(readFileSync(path, 'utf8'))
+  rolldownVersion = installedRolldownVersion
 } = {}) {
   const initial = probe(root)
   if (initial.status === 0) return true
 
-  let rolldownPackage
-  try {
-    const packagePath = findPackage(root)
-    if (!packagePath) throw new Error('package.json was not found')
-    rolldownPackage = readPackage(packagePath)
-  } catch (error) {
-    console.error(`Could not inspect the installed Rolldown package: ${error.message}`)
+  const name = missingRolldownBinding(initial.stderr)
+  const version = rolldownVersion(root)
+  if (!name || !version) {
+    console.error(initial.stderr?.trim() || 'Rolldown could not load.')
     return false
   }
 
-  const binding = selectRolldownBinding(rolldownPackage.optionalDependencies, platform, arch)
-  if (!binding) {
-    console.error(`Rolldown has no unambiguous native binding for ${platform}/${arch}.`)
-    return false
-  }
-
-  const [name, version] = binding
-  console.warn(`Rolldown could not load; repairing ${name}@${version}...`)
-  const installed = install(root, `${name}@${version}`)
-  if (installed.status !== 0) return false
+  console.warn(`Rolldown could not load; installing ${name}@${version}...`)
+  if (install(root, `${name}@${version}`).status !== 0) return false
 
   const repaired = probe(root)
   if (repaired.status !== 0) {
-    const detail = repaired.stderr?.trim() || repaired.stdout?.trim()
-    console.error(detail || `Rolldown still cannot load after installing ${name}.`)
+    console.error(repaired.stderr?.trim() || `Rolldown still cannot load after installing ${name}.`)
     return false
   }
-
   return true
 }
 

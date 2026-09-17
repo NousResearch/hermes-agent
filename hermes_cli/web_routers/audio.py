@@ -212,22 +212,26 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     Only non-secret voice metadata is returned; the API key stays server-side.
     """
     # Config-only scope (await-safe): the key lookup reads the requested
-    # profile's .env, matching the profile the settings UI writes to.
+    # profile's .env, matching the profile the settings UI writes to. The
+    # env-only fallback below must run INSIDE this same scope too — it exits
+    # (and resets get_secret's installed scope) as soon as the `with` block
+    # ends, so a fallback placed after it would resolve against whatever
+    # scope was ambient before this request, not the requested `profile`.
     with _config_profile_scope(profile):
         api_key = (load_env().get("ELEVENLABS_API_KEY") or "").strip()
-    if not api_key:
-        # Fallback for env-only deployments — scope-aware: under multiplex
-        # os.environ may hold another profile's key, so honor the installed
-        # scope's verdict before touching the env.
-        try:
-            from agent.secret_scope import UnscopedSecretError, get_secret
-
+        if not api_key:
+            # Fallback for env-only deployments — scope-aware: under multiplex
+            # os.environ may hold another profile's key, so honor the installed
+            # scope's verdict before touching the env.
             try:
-                api_key = (get_secret("ELEVENLABS_API_KEY") or "").strip()
-            except UnscopedSecretError:
+                from agent.secret_scope import UnscopedSecretError, get_secret
+
+                try:
+                    api_key = (get_secret("ELEVENLABS_API_KEY") or "").strip()
+                except UnscopedSecretError:
+                    api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
+            except Exception:
                 api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
-        except Exception:
-            api_key = (os.environ.get("ELEVENLABS_API_KEY") or "").strip()
     if not api_key:
         return {"available": False, "voices": []}
 

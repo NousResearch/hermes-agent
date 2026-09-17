@@ -241,21 +241,26 @@ def test_protected_provider_daemon_inherits_the_host_deadline():
     (protected + hard-cancel source installed).
     """
     seen: dict[str, object] = {}
+    deadline_source: dict[str, float | None] = {}
 
     def _callback(_kwargs):
-        seen["deadline"] = aux._current_aux_stream_deadline()
+        seen["deadline_before_progress"] = aux._current_aux_stream_deadline()
+        deadline_source["value"] = None
+        seen["deadline_after_progress"] = aux._current_aux_stream_deadline()
         seen["thread"] = threading.current_thread().name
         return "ok"
 
     deadline = time.monotonic() + 42.0
+    deadline_source["value"] = deadline
     cancel_event = threading.Event()
     with aux.aux_progress_hook(lambda: None), aux.aux_interrupt_protection(
         cancel_event=cancel_event
-    ), aux.aux_stream_deadline(deadline):
+    ), aux.aux_stream_deadline(lambda: deadline_source["value"]):
         assert aux._run_protected_sync_provider_call(_callback, {}) == "ok"
 
     assert seen["thread"] == "hermes-protected-aux-provider"
-    assert seen["deadline"] == deadline
+    assert seen["deadline_before_progress"] == deadline
+    assert seen["deadline_after_progress"] is None
 
 
 # ── The compression worker must actually install it ──────────────────────

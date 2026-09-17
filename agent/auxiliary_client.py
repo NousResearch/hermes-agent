@@ -358,7 +358,6 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
     """Per-event callback for the Anthropic aux wire: progress only for substantive payloads
     (keepalives must not keep a stalled summary alive), stop at the host deadline or explicit
     cancel. The ``TimeoutError`` text must say "timed out" so ``_is_timeout_error`` classifies it."""
-    host_deadline = _current_aux_stream_deadline()
     started = time.monotonic()
 
     def _on_event(event: Any) -> None:
@@ -368,6 +367,7 @@ def _anthropic_aux_stream_event_hook() -> Callable[[Any], None]:
             _notify_aux_timing_response()
         if _aux_interrupt_cancel_requested():
             raise AuxiliaryExplicitCancellation()
+        host_deadline = _current_aux_stream_deadline()
         if host_deadline is not None and time.monotonic() >= host_deadline:
             raise TimeoutError(
                 "Anthropic auxiliary stream timed out at the host compression "
@@ -401,11 +401,14 @@ def aux_progress_hook(hook):
 
 def _current_aux_stream_deadline() -> Optional[float]:
     """The waiting host's absolute monotonic deadline, if one is installed."""
-    return getattr(_aux_stream_deadline, "value", None)
+    source = getattr(_aux_stream_deadline, "value", None)
+    if callable(source):
+        source = source()
+    return float(source) if isinstance(source, (int, float)) else None
 
 
 @contextlib.contextmanager
-def aux_stream_deadline(deadline: Optional[float]):
+def aux_stream_deadline(deadline: Any):
     """Publish the host's absolute ``time.monotonic()`` deadline to the stream consumer.
 
     ``None`` is a passthrough; re-entrant-safe. Host->worker return leg of the progress hook:
@@ -419,7 +422,7 @@ def aux_stream_deadline(deadline: Optional[float]):
     session that compression never managed to shrink. See #99692.
     """
     previous = getattr(_aux_stream_deadline, "value", None)
-    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) else previous
+    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) or callable(deadline) else previous
     try:
         yield
     finally:
@@ -447,7 +450,9 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
     progress_hook = getattr(_aux_progress, "hook", None)
     dispatch_hook = getattr(_aux_dispatch, "hook", None)
     provider_response_hook = getattr(_aux_provider_response, "hook", None)
-    host_deadline = _current_aux_stream_deadline()
+    # Preserve the dynamic source so a compression fence can retire its
+    # pre-stream deadline after first semantic output (#113646).
+    host_deadline = getattr(_aux_stream_deadline, "value", None)
     # #99692: the stream is consumed on the daemon below, and thread-locals do not cross that boundary — an
     # owner-thread-only deadline would leave the fix inert on exactly the path large-session compression
     # takes (protected call + hard-cancel source installed).
@@ -1141,12 +1146,6 @@ class _CodexStreamGuard:
         if total_timeout is not None:
             self.no_progress_timeout = min(self.no_progress_timeout, float(total_timeout))
         self.hard_deadline = self._start + _aux_stream_total_ceiling(total_timeout)
-        # The waiting host's absolute deadline clamps the ceiling so the watchdog Timer severs
-        # the socket the instant the host stops waiting — a stream blocked between events
-        # can't be stopped by a per-event check.
-        host_deadline = _current_aux_stream_deadline()
-        if isinstance(host_deadline, (int, float)) and host_deadline < self.hard_deadline:
-            self.hard_deadline = float(host_deadline)
         self._deadline_lock = threading.Lock()
         self._progress_deadline = self._start + self.no_progress_timeout
         self.saw_content = threading.Event()
@@ -1167,7 +1166,9 @@ class _CodexStreamGuard:
 
     def effective_deadline(self) -> float:
         with self._deadline_lock:
-            return min(self.hard_deadline, self._progress_deadline)
+            deadline = min(self.hard_deadline, self._progress_deadline)
+            host_deadline = _current_aux_stream_deadline()
+            return min(deadline, host_deadline) if host_deadline is not None else deadline
 
     def cancel_requested(self) -> bool:
         """True when the frozen hard-cancel source says the owner already cancelled."""

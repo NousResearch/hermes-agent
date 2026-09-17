@@ -272,6 +272,32 @@ class TestRunCompressContextWithProgressTimeout:
         assert result_prompt == "ok-prompt"
         assert "fence" in fence_holder
 
+    def test_active_stream_can_finish_after_pre_stream_ceiling(self):
+        """Regression for #113646: a healthy slow stream owns its hard ceiling."""
+        original = [{"role": "user", "content": "a"}]
+        compressed = [{"role": "user", "content": "summarized"}]
+
+        def worker(fence: CompressionCommitFence):
+            for _ in range(6):
+                time.sleep(0.03)
+                fence.touch_progress()
+            assert fence.begin_commit()
+            try:
+                return compressed, "ok-prompt"
+            finally:
+                fence.finish_commit()
+
+        result = run_compress_context_with_progress_timeout(
+            worker=worker,
+            messages=original,
+            system_prompt_fallback="fallback",
+            idle_timeout_seconds=0.1,
+            total_ceiling_seconds=0.1,
+            stall_fallback=False,
+        )
+
+        assert result == (compressed, "ok-prompt")
+
     def test_commit_started_before_timeout_returns_worker_result(self):
         original = [{"role": "user", "content": "a"}]
         compressed = [{"role": "assistant", "content": "done"}]

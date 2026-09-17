@@ -64,6 +64,13 @@ completion and triggers a new agent turn. Verbosity: `display.background_process
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
 
+The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
+_register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
+is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
+while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
+receipt (the agent's next turn is the report) unless the launching turn is still running at exit
+— then the injection only queues a follow-up, so the concise receipt goes out immediately.
+
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
 required. Notify-off drains these without waking. Transport failures are retried; unavailable
 durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
@@ -158,6 +165,14 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
   from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
   wrote a secondary profile's memories into the default profile's store, silently.
+- **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
+  profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
+  activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
+  standalone entry point (`run_turn.py::_profile_scope_for_source`, the primary adapter's message /
+  busy / platform-event handlers via `run_adapters.py::_standalone_scoped`) then binds the launch
+  profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
+  activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
+  `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
 - **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
   register_from_config` and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call

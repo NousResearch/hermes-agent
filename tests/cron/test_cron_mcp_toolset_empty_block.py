@@ -75,6 +75,9 @@ def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
     assert agent_built is False
     assert success is False
     assert error is not None and "[blocked_config]" in error and "notion" in error
+    # The reason is operator-facing copy: it must say the block re-evaluates itself so a
+    # transient outage is not mistaken for a config error to repair by hand (#112871).
+    assert "clears by itself" in error
 
 
 def test_requested_mcp_server_with_tools_runs(tmp_path):

@@ -39,10 +39,6 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "no new content was produced this turn; showing recovered "
         "prior context. Send `continue` to retry."
     ),
-    "interrupted_during_api_call": (
-        "the request was interrupted mid-call before a reply was "
-        "received. Send `continue` to retry."
-    ),
     "redirect_restart_limit_exceeded": (
         "the request was cancelled by a new correction on every attempt, "
         "so the turn stopped instead of retrying forever. Your last "
@@ -70,6 +66,11 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
 
 # Parameterised reasons (``max_iterations_reached(3/3)`` …) matched by prefix.
 _EXIT_REASON_PREFIX_EXPLANATIONS = (
+    # ``interrupted_during_api_call(<issuer>)`` names a system watchdog (#112647).
+    ("interrupted_during_api_call", (
+        "the request was interrupted mid-call before a reply was "
+        "received. Send `continue` to retry."
+    )),
     ("max_iterations_reached", (
         "the maximum tool-iteration limit was reached before a "
         "final answer. Send `continue` to keep going, or raise "
@@ -117,15 +118,16 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
     "replaced": (
         "the session database file was replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes gateway stop`), run `hermes doctor` — not `hermes doctor --fix`, which "
-        "would repair the wrong file in place — then start it again and send your message "
-        "once more. Advanced recovery steps are in the log."
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
+        "`hermes {profile_arg}doctor --fix`, which would repair the wrong file in place — "
+        "then start it again and send your message once more. Advanced recovery steps are "
+        "in the log."
     ),
     "deleted_wal": (
         "the session database was changed or replaced while Hermes was running, so this "
         "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes gateway stop`), run `hermes doctor`, then start it again and send your "
-        "message once more. Advanced recovery steps are in the log."
+        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor`, then start "
+        "it again and send your message once more. Advanced recovery steps are in the log."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -163,9 +165,31 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
 _PERSISTENCE_DEFAULT_EXPLANATION = (
     "Hermes couldn't save this conversation, so it stopped rather than lose your messages. "
     "Possible causes: the drive is out of room, or another Hermes process is holding the "
-    "database. Close other Hermes windows, run `hermes doctor` to check storage, then send "
-    "your message again."
+    "database. Close other Hermes windows, run `hermes {profile_arg}doctor` to check "
+    "storage, then send your message again."
 )
+
+
+def _file_mutation_identity(path: str, task_id: Optional[str]) -> str:
+    """One key per on-disk target: the file tools' task-resolved absolute path, case-folded
+    on case-insensitive hosts. A failure recorded as ``notes.md`` and the write that later
+    lands as ``/repo/notes.md`` (or ``Notes.md`` on Windows) must meet on the same key."""
+    try:
+        from tools.file_tools_paths import _resolve_path_for_task
+
+        resolved = str(_resolve_path_for_task(path, task_id or "default"))
+    except Exception:
+        resolved = os.path.abspath(os.path.expanduser(path))
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def _file_stat_signature(identity: str) -> Optional[tuple]:
+    """``(mtime_ns, size)`` of the target, ``None`` when it does not exist (or cannot be read)."""
+    try:
+        st = os.stat(identity)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
 
 
 def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: str) -> bool:
@@ -201,11 +225,14 @@ class TurnExplainersMixin:
     """File-mutation failure footer + turn-completion explainer (see module docstring)."""
 
     def _record_file_mutation_result(
-        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool
+        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool,
+        *, task_id: Optional[str] = None,
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool}}``; a later success on the same path removes the entry.
+        Failures store ``{path: {error_preview, tool, identity, stat}}`` keyed by the model's
+        spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
+        failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
@@ -233,10 +260,33 @@ class TurnExplainersMixin:
             # Keep the FIRST error per path unless a later success replaces it.
             preview = _extract_error_preview(result)
             for path in targets:
-                state.setdefault(path, {"tool": tool_name, "error_preview": preview})
+                identity = _file_mutation_identity(path, task_id)
+                state.setdefault(path, {
+                    "tool": tool_name, "error_preview": preview,
+                    "identity": identity, "stat": _file_stat_signature(identity),
+                })
         else:
-            for path in targets:
-                state.pop(path, None)
+            cleared = {
+                _file_mutation_identity(p, task_id)
+                for p in (landed_paths if landed else targets)
+            }
+            for path, info in list(state.items()):
+                if info.get("identity", _file_mutation_identity(path, task_id)) in cleared:
+                    state.pop(path, None)
+
+    @staticmethod
+    def _file_mutations_still_failed(failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Drop entries whose target changed on disk since the failed call.
+
+        The recorder only sees write_file/patch receipts; a terminal redirect or an
+        execute_code write leaves none. Re-checking the stat signature at turn end keeps
+        the footer from listing a file that was in fact modified later this turn. Entries
+        without a snapshot (hand-built dicts) are kept as-is.
+        """
+        return {
+            path: info for path, info in failed.items()
+            if "stat" not in info or _file_stat_signature(info["identity"]) == info["stat"]
+        }
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
@@ -280,9 +330,9 @@ class TurnExplainersMixin:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
+            f"{len(failed)} file edit(s) FAILED this turn despite any "
             "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            "`read_file` to confirm what actually landed."
         ]
         shown = list(failed.items())[:10]
         for path, info in shown:
@@ -318,19 +368,22 @@ class TurnExplainersMixin:
         if body is not None and "{model}" in body:
             body = body.format(model=model or "The model")
         if body is None and reason == "session_persistence_failed":
-            from hermes_constants import display_hermes_home
+            from hermes_constants import display_hermes_home, profile_cli_selector
 
-            body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
-                persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            ).replace("{home}", display_hermes_home())
+            # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
+            # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
+            # process default, and a bare `hermes` follows active_profile (#105887).
+            body = (
+                _PERSISTENCE_CAUSE_EXPLANATIONS.get(
+                    persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
+                )
+                .replace("{home}", display_hermes_home())
+                .replace("{profile_arg}", profile_cli_selector())
+            )
             if persistence_cause in ("corrupt", "fts_index"):
-                # Copy-pasteable, so name the store that actually failed and pin the profile:
-                # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
-                # the process default, and a bare `hermes` follows active_profile (#105887).
-                from hermes_constants import get_default_hermes_root, profile_cli_selector
+                from hermes_constants import get_default_hermes_root
                 from hermes_state import _default_db_path
 
-                body = body.replace("{profile_arg}", profile_cli_selector())
                 body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")

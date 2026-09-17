@@ -789,8 +789,12 @@ def _task_prefers_fast_model(task: Optional[str]) -> bool:
         _get_auxiliary_task_config(task).get("prefer_fast_model"), default=False)
 
 
-# Dedicated vision models for direct providers whose main chat model differs.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5v-turbo"}
+# Dedicated vision models for direct providers whose main chat model differs. zai: glm-5.3-flash
+# is the only image-capable GLM id served on every Z.AI surface (pay-as-you-go and Coding Plan,
+# global and CN); the former glm-5v-turbo pin 404s / 1211 "Unknown Model" on the coding endpoints
+# (#111429). ZaiProfile has no default_vision_model(), so dropping the pin would route vision to
+# the user's text-only chat model and skip Z.AI entirely.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
 
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:
@@ -1485,9 +1489,10 @@ class _CodexCompletionsAdapter:
         guard = _CodexStreamGuard(self._client, total_timeout)
         try:
             guard.start()
-            from agent.codex_runtime import _bypass_sdk_request_transform, _consume_codex_event_stream
+            from agent.codex_runtime import _consume_codex_event_stream
+            from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
-            stream_kwargs = _bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -2238,14 +2243,6 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Cross-session rate guard: another session's 429 means skip Nous rather than pile onto the tapped RPH bucket.
-    with contextlib.suppress(Exception):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-        _remaining = nous_rate_limit_remaining()
-        if _remaining is not None and _remaining > 0:
-            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", _remaining)
-            _mark_provider_unhealthy("nous", ttl=_remaining)
-            return None, None
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
@@ -2268,6 +2265,18 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = str(
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
+    with contextlib.suppress(Exception):
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        from hermes_cli.anon_auth import is_anonymous_request
+        anonymous = is_anonymous_request("nous", api_key)
+        remaining = nous_rate_limit_remaining(anonymous=anonymous)
+        if remaining is not None and remaining > 0:
+            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", remaining)
+            # The health marker is provider-wide, so a full-length anonymous cooldown would
+            # outlive signing in mid-cooldown; bound it instead of re-resolving credentials
+            # (auth store lock, pool read) on every auxiliary call for the cooldown's duration.
+            _mark_provider_unhealthy("nous", ttl=min(remaining, 60.0) if anonymous else remaining)
+            return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
     # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.
@@ -2646,8 +2655,15 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint like the main CLI (env OPENAI_BASE_URL or config-saved)."""
     try:
+        from hermes_cli.auth import AuthError
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested="custom")
+    except AuthError as exc:
+        # Bare 'custom' with nothing configured fails fast in the main resolver: there is no
+        # custom endpoint, so do NOT fall through to a stale env OPENAI_BASE_URL that the main
+        # resolver deliberately never consults.
+        logger.debug("Auxiliary client: no custom endpoint configured: %s", exc)
+        return None, None, None
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
@@ -2909,7 +2925,9 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "cache_scope",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3214,6 +3232,49 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     return retry_kwargs if changed else None
 
 
+def _is_reasoning_field_rejection(exc: Exception) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``). Chat-only models behind OpenAI-compatible relays reject the top-level
+    ``reasoning_effort: none`` a disabled ``reasoning_config`` projects on the custom profile
+    ("Unrecognized request argument supplied: reasoning_effort", #112781); the route default is
+    the right answer for such a model, so the reaction is one retry without any reasoning field."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    if not any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think")):
+        return False
+    # The reasoning token must be a standalone wire-field name: not a model-id segment ("The model
+    # kimi-k2-thinking is not supported when using this account" is route gating that belongs to the
+    # provider-fallback rung) and not the adjective in "... not supported with reasoning models".
+    return _REASONING_FIELD_TOKEN.search(str(exc).lower()) is not None
+
+
+# Reasoning wire-field names (the ``_PROFILE_REASONING_KEYS`` controls minus ``verbosity``), longest first.
+_REASONING_FIELD_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
+
+
+def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without reasoning wire controls (top-level ``reasoning_effort``, the adapter's
+    private ``_reasoning_config`` and every ``extra_body`` reasoning key); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("reasoning_effort", None) is not None
+    changed = retry_kwargs.pop("_reasoning_config", None) is not None or changed
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict):
+        remaining = {k: v for k, v in extra_body.items() if str(k).strip().lower() not in _PROFILE_REASONING_KEYS}
+        if len(remaining) != len(extra_body):
+            if remaining:
+                retry_kwargs["extra_body"] = remaining
+            else:
+                retry_kwargs.pop("extra_body", None)
+            changed = True
+    return retry_kwargs if changed else None
+
+
 def _is_model_not_found_error(exc: Exception) -> bool:
     """"Requested model doesn't exist" (404 / invalid model) — typically a long-lived process pinned a
     since-dropped model. Excludes billing keywords, which :func:`_is_payment_error` owns."""
@@ -3285,13 +3346,20 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
 
 
 def _evict_cached_clients(provider: str) -> None:
-    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
+
+    Scoped to the calling profile (``hermes_home_key()`` is the first key slot): a rotation in
+    one profile must not drop another profile's client for the same provider in a multiplexing
+    gateway, since that profile's credentials did not change. Entries are popped, not closed:
+    a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
+    "client has been closed" for them); the dropped client is retired by GC like the FIFO
+    overflow path in ``_get_cached_client``.
+    """
     normalized = _normalize_aux_provider(provider)
+    home = hermes_home_key()
     with _client_cache_lock:
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]:
-            client = _client_cache.get(key, (None, None, None))[0]
-            if client is not None:
-                _close_cached_client(client)
+        for key in [key for key in _client_cache
+                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
             _client_cache.pop(key, None)
 
 
@@ -4839,6 +4907,30 @@ def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
                           "runtime resolution failed (run: hermes doctor for diagnostics)")
 
 
+def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
+    """Registered profile's own client for an ``api_key`` aux route, or ``None``.
+
+    Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
+    and the ``external_process`` branch below: a profile whose wire protocol is not
+    OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
+    A profile that raises is logged and skipped — a third-party plugin can only fail to
+    provide a client, never take the auxiliary resolution down."""
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+    except Exception:
+        return None
+    if profile is None:
+        return None
+    try:
+        return profile.create_client(**client_kwargs)
+    except Exception:
+        logger.warning("resolve_provider_client: provider profile %r failed to create an "
+                       "auxiliary client; falling back to the standard client path",
+                       provider, exc_info=True)
+        return None
+
+
 def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: Callable) -> _ResolveResult:
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
@@ -4883,6 +4975,11 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     if req.explicit_base_url and provider != "actual":
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
+    # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
+    if profile_client is not None:
+        logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
+        return _route_client(req, profile_client, final_model)
     if provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
         if is_native_gemini_base_url(base_url):
@@ -6150,7 +6247,14 @@ def _merge_aux_extra_body(
         if reasoning_config.get("enabled") is False:
             merged_extra["reasoning"] = {"enabled": False}
         else:
+            # ``reasoning_config`` is already clamped to the OpenAI-compat wire by _build_call_kwargs.
             merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+    # Caller/task ``extra_body.reasoning`` (``auxiliary.<task>.reasoning_effort`` folds in here via
+    # _get_task_extra_body) takes the same wire clamp: Hermes-only ``ultra`` never reaches the
+    # OpenAI-compat wire from any aux task (#112010).
+    if isinstance(merged_extra.get("reasoning"), dict):
+        from agent.reasoning_effort import clamp_reasoning_config
+        merged_extra["reasoning"] = clamp_reasoning_config(merged_extra["reasoning"])
     # Portal tags + sticky session_id fallback when the profile didn't supply them; session_id
     # keeps aux calls on the main turn's upstream instance (cache warmth) — tags alone are not
     # enough on /v1/messages.
@@ -6195,7 +6299,11 @@ def _build_call_kwargs(
         kwargs["tools"] = _dedupe_tool_names(tools, provider, model)
     # Provider profiles are the source of truth for reasoning wire shapes (top-level, nested body,
     # or extra_body.reasoning); providers without a reasoning-aware profile keep the generic
-    # ``extra_body.reasoning`` fallback.
+    # ``extra_body.reasoning`` fallback. Clamp Hermes-internal levels (``ultra``) to the
+    # OpenAI-compat wire ONCE here, before either path sees the config — the same entry clamp the
+    # main transport applies (#89503); MoA aggregator/reference and aux calls 400'd without it (#112010).
+    from agent.reasoning_effort import clamp_reasoning_config
+    reasoning_config = clamp_reasoning_config(reasoning_config)
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
     if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
@@ -6901,7 +7009,11 @@ def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
+            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
+            # Parameter rungs chain (temperature-strip retry 400s on reasoning_effort / response_format),
+            # and a route-gating 400 after a strip still reaches the provider-fallback rung.
+            or _is_reasoning_field_rejection(exc) or _is_structured_output_rejection(exc)
+            or _is_model_incompatible_error(exc))
 
 
 def _credential_rung_accepts(exc: Exception) -> bool:
@@ -6921,7 +7033,7 @@ _LadderRoute = NamedTuple("_LadderRoute", [
 def _ladder_parameter_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], max_tokens: Optional[int],
 ):
-    """Rungs 1-3: retry without temperature / structured-output format / max_tokens.
+    """Rungs 1-4: retry without temperature / structured-output format / reasoning field / max_tokens.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
     client, task, tag = route.client, route.task, route.tag
     if "temperature" in kwargs and _is_unsupported_parameter_error(first_err, "temperature"):
@@ -6939,6 +7051,19 @@ def _ladder_parameter_rungs(
             logger.info("Auxiliary %s%s: provider rejected the structured-output "
                         "format field; retrying once without it (schema "
                         "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
+            resp, first_err = yield from _rung(
+                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
+            if first_err is None:
+                return resp, None, retry_kwargs
+            kwargs = retry_kwargs
+    # A chat-only model on an OpenAI-compatible relay rejects the profile's thinking-off encoding
+    # (top-level ``reasoning_effort: none``); the caller only wanted "no thinking", which is what
+    # such a model does anyway, so retry once with every reasoning field omitted (#112781).
+    if _is_reasoning_field_rejection(first_err):
+        retry_kwargs = _without_reasoning_fields(kwargs)
+        if retry_kwargs is not None:
+            logger.info("Auxiliary %s%s: provider rejected the reasoning field; retrying once "
+                        "without it (route default applies): %s", task or "call", tag, first_err)
             resp, first_err = yield from _rung(
                 _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
             if first_err is None:
@@ -7289,6 +7414,7 @@ def call_llm(
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
         with (
+            scoped_runtime_main(main_runtime),
             aux_progress_hook(
                 prior_progress_hook
                 if callable(prior_progress_hook)
@@ -7578,12 +7704,13 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
-            task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-            main_runtime=main_runtime, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-            reasoning_config=reasoning_config, route_info=route_info,
-        )
+        with scoped_runtime_main(main_runtime):
+            return await _async_call_llm_impl(
+                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                main_runtime=main_runtime, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                reasoning_config=reasoning_config, route_info=route_info,
+            )
     finally:
         if semaphore is not None:
             semaphore.release()

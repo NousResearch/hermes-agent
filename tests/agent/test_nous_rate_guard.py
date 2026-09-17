@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from tests.hermes_cli.anon_portal import make_jwt
+
 
 @pytest.fixture
 def rate_guard_env(tmp_path, monkeypatch):
@@ -164,6 +166,7 @@ class TestAuxiliaryClientIntegration:
             "inference_base_url": "https://api.nous.test/v1",
         })
 
+        monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: None)
         result = aux._try_nous()
         assert result == (None, None)
 
@@ -174,6 +177,7 @@ class TestAuxiliaryClientIntegration:
         # (will return None because no real creds, but won't be blocked
         # by the rate guard)
         monkeypatch.setattr(aux, "_read_nous_auth", lambda: None)
+        monkeypatch.setattr(aux, "_resolve_nous_runtime_api", lambda **kw: None)
         result = aux._try_nous()
         assert result == (None, None)
 
@@ -268,11 +272,12 @@ class TestWelcomeRouteCopy:
         from agent import nous_rate_guard
         from agent.turn_api_call import nous_rate_limit_guard
 
-        monkeypatch.setattr(nous_rate_guard, "nous_rate_limit_remaining", lambda: 600)
+        monkeypatch.setattr(nous_rate_guard, "nous_rate_limit_remaining", lambda **kw: 600)
         buffered = []
         statuses = []
         agent = SimpleNamespace(
             provider="nous",
+            api_key=make_jwt(account_tier="anonymous" if "welcome-api" in base_url else "paid"),
             base_url=base_url,
             log_prefix="",
             _buffer_vprint=buffered.append,

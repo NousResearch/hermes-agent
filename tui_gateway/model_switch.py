@@ -51,19 +51,16 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _launch_profile_scope_needed() -> bool:
-    """A launch-profile body must run scoped once this process multiplexes (``get_secret`` fails
-    closed and ambient ``os.environ`` may carry a secondary's residue); a single-profile process
-    stays unscoped so systemd / ``op run`` credential injection keeps its ``os.environ`` fallthrough."""
-    from agent.secret_scope import is_multiplex_active
-    return is_multiplex_active()
-
-
-def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes | None":
+def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
-    return the reset tokens; None when nothing needs binding (unscoped single-profile launch body).
-    The launch profile's scope is its ``.env`` over the env frozen at activation (never live
-    ``os.environ``: a secondary context may have written to it since, #107422)."""
+    return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
+    the launch env (live while single-profile, frozen at activation afterwards; never live
+    ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
+    source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
+    activation instead of hitting ``UnscopedSecretError`` mid-request. Its terminal policy is bound
+    only once multiplexing is active: single-profile terminal execution keeps the standalone
+    ``os.environ`` bridge."""
+    from agent.secret_scope import is_multiplex_active
     scopes = _TurnScopes()
     if profile_home:
         home = Path(profile_home)
@@ -73,16 +70,18 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes | None":
         secrets = build_profile_secret_scope(home)
         overlay = None
         scopes.home = set_hermes_home_override(str(home))
-    elif _launch_profile_scope_needed():
+    else:
         # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
-        # "already the launch profile"); only its secrets + terminal policy need binding.
+        # "already the launch profile"); only its secrets (+ terminal policy under multiplex) need binding.
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         home = Path(_hermes_home)
         secrets = launch_secret_scope(home)
+        scopes.secret = set_secret_scope(secrets)
+        if not is_multiplex_active():
+            return scopes
         overlay = launch_terminal_env()
-    else:
-        return None
-    scopes.secret = set_secret_scope(secrets)
+    if scopes.secret is None:
+        scopes.secret = set_secret_scope(secrets)
     # Same terminal policy the gateway binds per turn: a docker-configured profile
     # must never resolve the launch process's pinned env. Failure → refusal scope.
     from tools.terminal_scope import install_profile_terminal_scope
@@ -91,15 +90,24 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes | None":
 
 
 def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
+    """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
+    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
+    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
+    every scope has been released."""
     if scopes is None:
         return
     from tools.terminal_scope import reset_terminal_scope
-    if scopes.terminal is not None:
-        reset_terminal_scope(scopes.terminal)
-    if scopes.secret is not None:
-        reset_secret_scope(scopes.secret)
-    if scopes.home is not None:
-        reset_hermes_home_override(scopes.home)
+    first_error: BaseException | None = None
+    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
+                         (scopes.home, reset_hermes_home_override)):
+        if token is None:
+            continue
+        try:
+            reset(token)
+        except Exception as exc:  # noqa: BLE001 — keep releasing the remaining scopes
+            first_error = first_error or exc
+    if first_error is not None:
+        raise first_error
 
 
 @contextlib.contextmanager

@@ -1316,6 +1316,7 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
         CREATE TABLE tasks (
             id INTEGER PRIMARY KEY,
             title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '',
             tenant TEXT,
             result TEXT,
             idempotency_key TEXT,
@@ -1352,6 +1353,49 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
     conn.close()
 
 
+def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_home):
+    """A board whose ``tasks`` table was created by an external harness without
+    the nullable/defaulted v1 columns (body, assignee, priority, ..., claim_lock,
+    claim_expires) but which already has ``task_runs`` must connect: the
+    connect-time in-flight backfill SELECTs ``claim_lock`` from ``tasks`` and
+    used to raise ``no such column`` on every call (#112953), before
+    ``_INITIALIZED_PATHS`` cached anything, so the dispatcher failed every tick.
+    """
+    db_path = kanban_home / "foreign.db"
+    seed = sqlite3.connect(db_path)
+    seed.execute(
+        "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL,"
+        " status TEXT NOT NULL, created_at INTEGER NOT NULL)"
+    )
+    seed.execute(kbc._REBUILD_SPECS["task_runs"][0])
+    seed.commit()
+    seed.close()
+
+    healed = {
+        "body", "assignee", "priority", "created_by", "started_at", "completed_at",
+        "workspace_kind", "workspace_path", "claim_lock", "claim_expires",
+    }
+    conn = kbc.connect(db_path)
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+        assert healed <= cols
+        # Healed DDL matches the fresh schema (NOT NULL DEFAULT 'scratch' etc.).
+        fresh = sqlite3.connect(":memory:")
+        fresh.executescript(kb.SCHEMA_SQL)
+        fresh_info = {r[1]: r[2:] for r in fresh.execute("PRAGMA table_info(tasks)")}
+        healed_info = {r["name"]: tuple(r)[2:] for r in conn.execute("PRAGMA table_info(tasks)")}
+        assert {c: healed_info[c] for c in healed} == {c: fresh_info[c] for c in healed}
+    finally:
+        conn.close()
+    # Second connect (the next dispatcher tick) is a no-op, not a re-raise, and
+    # the healed board is queryable (SELECT * reads every v1 column).
+    conn = kbc.connect(db_path)
+    try:
+        assert kb.list_tasks(conn) == []
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher spawn invocation — _resolve_hermes_argv()
 #
@@ -1360,9 +1404,27 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # launchd jobs, and other detached processes routinely run with a stripped
 # $PATH that doesn't include the venv's bin/, so a bare `["hermes", ...]`
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
-# prefers the PATH shim (familiar `ps` output) but falls back to the module
-# form so the spawn keeps working when PATH is missing the shim.
+# prefers the interpreter-bound module form (exactly this install; a PATH
+# shim could be attacker-planted or belong to another install, #111569) and
+# only falls back to the PATH shim when ``hermes_cli`` is not importable.
 # ---------------------------------------------------------------------------
+
+
+def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
+    """A `hermes` on PATH must not shadow the running install (#111569):
+    the module argv wins whenever ``hermes_cli`` is importable; only an
+    explicit ``$HERMES_BIN`` overrides it."""
+    import shutil
+    import sys
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+    monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
+    assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
 def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
@@ -1853,6 +1915,8 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         t = kb.create_task(conn, title="x", assignee="a")
         host = kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
+        # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
 
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)

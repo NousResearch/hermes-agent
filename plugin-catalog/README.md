@@ -26,13 +26,24 @@ meaningful:
 4. **SHA bumps are new PRs.** Updating an entry's pin is a new PR whose diff
    (old SHA → new SHA) is re-reviewed like any other change — reviewers are
    expected to look at the upstream commit range being adopted.
-5. **Owner-or-major-contributor submissions only.** An entry may only be
-   submitted by the plugin repository's owner or a major contributor to it.
-   Drive-by submissions of third-party repos are declined.
+5. **Owner-or-major-contributor submissions, or a maintainer-curated sweep.**
+   An entry may be submitted by the plugin repository's owner or a major
+   contributor to it; drive-by submissions of third-party repos are declined.
+   Hermes maintainers may also add entries in batches from a reviewed sweep
+   of community plugins (every pin validated and scanned at the pinned
+   commit, self-updater and credential-store checks run, English-first UI).
+   Authors of swept-in entries keep control: a PR from the owner adjusting
+   or removing their entry is accepted on request, and SHA bumps stay
+   owner-or-maintainer PRs under rule 4.
 6. **Declared capabilities must match reality.** The `capabilities:` block
    (tools, hooks, middleware, env vars) must match what the plugin actually
    registers at the pinned commit. Validation fails the entry otherwise —
    undeclared capability creep is treated as a security issue.
+7. **The install scanner runs at admission.** `hermes plugins validate` includes
+   the `security scan` check: `dangerous` fails the entry; `caution` findings
+   appear as warnings in the CI log and the reviewer reads them before merging.
+   In exchange, installs at the pinned SHA accept `caution` without a prompt
+   (`dangerous` still blocks). Review the warnings; do not merge past them.
 
 ## Entry schema
 
@@ -48,6 +59,9 @@ category: memory            # desktop | memory | platform | web | tools | voice 
                             # (default desktop) — the shelf the entry sits on at /docs/plugins
 requires_hermes: ">=0.19"   # optional
 docs_url: ""                # optional
+version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
+image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
+                            # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
 platforms: []               # optional, e.g. [linux, macos]; empty = all
 capabilities:
   provides_tools: []
@@ -55,6 +69,13 @@ capabilities:
   provides_middleware: []
   requires_env: []
 ```
+
+`version` and `image` are cosmetic: neither is parsed or used to pick what
+installs. The sha stays the release; bump `version` in the same PR that bumps
+`sha` so the label on the card matches the code. Images must live on
+`raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com` so
+the Desktop catalog never fetches from third-party hosts; pin the raw URL to
+the entry's commit and the picture is as immutable as the code.
 
 ## removed.yaml — the blocklist
 

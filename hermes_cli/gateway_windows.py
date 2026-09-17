@@ -1457,9 +1457,8 @@ def _force_terminate_known_gateway_pids(
 
     own_pid = os.getpid()
     killed = 0
-    seen: set[int] = set()
     for pid, expected_start_time in pid_identities.items():
-        if pid <= 0 or pid == own_pid or pid in seen:
+        if pid <= 0 or pid == own_pid:
             continue
         try:
             if not _pid_exists(pid):
@@ -1504,9 +1503,13 @@ def stop() -> None:
     pid = get_running_pid()
     stop_pids = _collect_gateway_stop_pids(pid)
     pid_identities = _capture_gateway_pid_identities(stop_pids)
-    drained = pid is not None and _drain_gateway_pid(
-        pid, _windows_stop_drain_timeout(), pid_identities.get(pid)
-    )
+    drain_timeout = _windows_stop_drain_timeout()
+    drained = False
+    for candidate, expected_start_time in pid_identities.items():
+        drained = (
+            _drain_gateway_pid(candidate, drain_timeout, expected_start_time)
+            or drained
+        )
 
     stopped_any = drained
     if is_task_registered():
@@ -1520,7 +1523,12 @@ def stop() -> None:
     # No generic process sweep: starts are profile-scoped and stop must stay bounded even if wedged.
     for candidate in _collect_gateway_stop_pids():
         if candidate not in pid_identities:
-            pid_identities[candidate] = get_process_start_time(candidate)
+            expected_start_time = get_process_start_time(candidate)
+            pid_identities[candidate] = expected_start_time
+            drained = (
+                _drain_gateway_pid(candidate, drain_timeout, expected_start_time)
+                or drained
+            )
     killed = _force_terminate_known_gateway_pids(pid_identities)
     if killed:
         stopped_any = True

@@ -781,6 +781,48 @@ class TestStopProfileGateway:
             ("force", {pid: 77}),
         ]
 
+    @pytest.mark.windows_only
+    def test_windows_installed_stop_drains_each_scanned_pid_without_pidfile(
+        self, monkeypatch
+    ):
+        import hermes_cli.gateway_windows as gateway_windows
+
+        pids = [12345, 23456]
+        identities = {pids[0]: 77, pids[1]: 88}
+        events = []
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(
+            "gateway.status.get_process_start_time", lambda pid: identities[pid]
+        )
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "_clear_start_attestation", lambda: None)
+        monkeypatch.setattr(
+            gateway_windows, "_collect_gateway_stop_pids", lambda primary=None: pids
+        )
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_drain_gateway_pid",
+            lambda pid, timeout, identity: events.append(
+                ("drain", pid, timeout, identity)
+            ) or False,
+        )
+        monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_force_terminate_known_gateway_pids",
+            lambda captured: events.append(("force", captured)) or len(captured),
+        )
+
+        gateway_windows.stop()
+
+        assert events == [
+            ("drain", pids[0], 7.0, 77),
+            ("drain", pids[1], 7.0, 88),
+            ("force", identities),
+        ]
+
 
 class TestReapUnsupervisedGatewayOrphansMacOS:
     """Tests that the orphan reaper excludes launchd-managed PIDs on macOS.

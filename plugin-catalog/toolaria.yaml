@@ -1,0 +1,19 @@
+name: toolaria
+repo: https://github.com/Sahil-SS9/Toolaria
+sha: 7ce41a7399de9e7f6174e6ddc61c067024c488dd
+description: Rescues oversized MCP and web tool results before they flood context.
+maintainer: Sahil-SS9
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/Sahil-SS9/Toolaria
+platforms: []
+capabilities:
+  provides_tools:
+    - rescuer_fetch
+  provides_hooks:
+    - transform_tool_result
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

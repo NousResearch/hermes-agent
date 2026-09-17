@@ -131,7 +131,11 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window, ready lane only), ``"active_pr"`` (GitHub PR URL in a
+    recent comment, ready lane only), ``"self_review"`` (review-lane row whose
+    ``assignee`` equals the implementer recorded on the latest
+    ``review_requested`` event — spawning would hand the card's own author back
+    to review it; review-lane only, see :func:`check_respawn_guard`)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -148,12 +152,12 @@ class DispatchResult:
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
 
-    ``active_pr=1, recent_success=2, rate_limited=1, skipped_locked=1,
-    memory_pressure=critical`` — the respawn-guard reasons counted per task
-    plus the tick-level holds. Feeds the "dispatcher stuck" warnings of the
-    CLI daemon and the embedded gateway dispatcher, which otherwise report a
-    bare zero-spawn count while ``hermes kanban tail`` is the only place the
-    guard reason is written (#111910).
+    ``active_pr=1, recent_success=2, self_review=1, rate_limited=1,
+    skipped_locked=1, memory_pressure=critical`` — the respawn-guard reasons
+    counted per task plus the tick-level holds. Feeds the "dispatcher stuck"
+    warnings of the CLI daemon and the embedded gateway dispatcher, which
+    otherwise report a bare zero-spawn count while ``hermes kanban tail`` is
+    the only place the guard reason is written (#111910).
     """
     counts: dict[str, int] = {}
     pressure: Optional[str] = None
@@ -1372,17 +1376,20 @@ def check_respawn_guard(
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
     path never increments ``consecutive_failures``), ``"blocker_auth"``
-    (quota/auth pattern; the breaker still trips eventually), then for the
-    ready lane only ``"recent_success"`` (completed run within the window, unless
+    (quota/auth pattern; the breaker still trips eventually), then LANE-SPECIFIC
+    checks: for the review lane only, ``"self_review"`` (row ``assignee``
+    equals the implementer recorded on the latest ``review_requested`` event —
+    spawning would hand the card back to its own author); for the ready lane
+    only, ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    PR). The review lane skips those last two: they are the *inputs* to a
+    review handoff. Stale / dead claim locks are NOT a guard reason — the
+    reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1417,9 +1424,30 @@ def check_respawn_guard(
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
 
-    # Review-lane spawns stop here: a recent completed run and a fresh PR URL
-    # are the canonical *inputs* to a review handoff, not duplicate-work signals.
+    # Review-lane spawns stop here for recent-success/active-pr: a recent
+    # completed run and a fresh PR URL are the canonical *inputs* to a review
+    # handoff, not duplicate-work signals. But the review lane gets its OWN
+    # check no ready row needs: assignee must not be the implementer who
+    # requested the review. request_review()'s first-review path best-effort
+    # routes to kanban.default_reviewer when set (never refuses — see its
+    # docstring: "NOT a blocker"), so a row still lands here self-assigned
+    # whenever that config is unset (the common default) or names no live
+    # profile, plus any row hand-edited (CLI reassign, direct DB write, an
+    # older Hermes version) to point assignee back at the implementer. This
+    # is the actual enforcement point, not a backstop for one. Both sides are
+    # raw ``tasks.assignee`` column values — already canonical (every write
+    # path normalizes via _canonical_assignee before persisting) — so a plain
+    # string compare is enough; no need to re-normalize (and risk a stray
+    # ValueError on a value that predates a tightened profile-name rule) in
+    # this per-row dispatch hot path.
     if lane == "review":
+        implementer = _kb._nonblank_str(
+            _kb._json_dict(_kb._row_get(_kb._latest_event(conn, task_id, "review_requested"), "payload")).get(
+                "implementer"
+            )
+        )
+        if implementer is not None and implementer == row["assignee"]:
+            return "self_review"
         return None
 
     # 3. Completed run within guard window. Exception: an explicit re-queue

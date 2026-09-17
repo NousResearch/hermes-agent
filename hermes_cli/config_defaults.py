@@ -1779,6 +1779,14 @@ DEFAULT_CONFIG = {
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Reviewer for a first `kanban_request_review` call that names none explicitly (#self-review).
+        # Unset assignee on the review row would otherwise equal the implementer, so the review-lane
+        # dispatcher would hand the card back to its own author (see check_respawn_guard's
+        # "self_review" reason, the actual enforcement point). request_review best-effort falls back to
+        # this on a first review and never refuses; "" = no fallback configured (the review row is then
+        # left self-assigned and withheld from dispatch instead). Must name a real, live (non-tombstoned)
+        # installed profile or it is treated as unset.
+        "default_reviewer": "",
         # Global cap: positive int = the HOST never has more than N tasks 'running' across all
         # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
         # MemTotal is unreadable (macOS/Windows) None means no cap.

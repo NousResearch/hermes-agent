@@ -393,8 +393,13 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="park", assignee="worker")
         kb.claim_task(conn, tid)
+        # Explicit reviewer distinct from the implementer ("worker"): this
+        # test exercises the review_dispatch gate, not self-review handling
+        # (see test_kanban_dispatch_self_review_guard.py) — a same-identity
+        # handoff would trip check_respawn_guard's self_review reason and the
+        # gate-off/gate-on assertions below would no longer isolate the gate.
         kb.request_review(
-            conn, tid, summary="done",
+            conn, tid, summary="done", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -444,13 +449,18 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
     pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
 
     with kbc.connect() as conn:
-        # Review-lane task with a fresh PR comment.
+        # Review-lane task with a fresh PR comment. assignee="reviewer" here
+        # is just this test's implementer label (matches the file's
+        # convention); pass reviewer= explicitly so implementer != reviewer —
+        # otherwise this is a self-review setup and check_respawn_guard's
+        # self_review reason (not the active_pr guard) would hold the row
+        # back, which is a different code path than the one under test.
         review_id = kb.create_task(conn, title="review me", assignee="reviewer")
         claimed = kb.claim_task(conn, review_id)
         assert claimed is not None
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
         assert kb.request_review(
-            conn, review_id, summary="PR ready",
+            conn, review_id, summary="PR ready", reviewer="second-reviewer",
             expected_run_id=claimed.current_run_id,
         )
         # Ready-lane task with the same fresh PR comment.
@@ -746,10 +756,15 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
             task_id = kb.create_task(conn, title=title, assignee="reviewer")
             implementation = kb.claim_task(conn, task_id)
             assert implementation is not None
+            # reviewer= must differ from the "reviewer" implementer label
+            # above or this is a self-review setup and check_respawn_guard
+            # withholds the spawn for reason="self_review" instead of the
+            # global/per-profile cap this test exercises.
             assert kb.request_review(
                 conn,
                 task_id,
                 summary="ready",
+                reviewer="second-reviewer",
                 expected_run_id=implementation.current_run_id,
             )
             review_ids.append(task_id)

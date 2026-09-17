@@ -3219,6 +3219,23 @@ def request_review(
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+                if reviewer is None:
+                    # First review, no reviewer named: fall back to the
+                    # operator-configured kanban.default_reviewer so the row
+                    # doesn't land in the review lane self-assigned (assignee
+                    # stays == implementer). Purely additive — when unset
+                    # (the common case; every pre-existing caller relies on
+                    # this), behavior is unchanged from before this guard:
+                    # reviewer stays None and assignee is left as the
+                    # implementer. request_review has never blocked here and
+                    # must keep not blocking (see module docstring: "NOT a
+                    # blocker"); the review-lane dispatcher's
+                    # check_respawn_guard is the actual enforcement point for
+                    # a row that ends up self-assigned — it withholds the
+                    # respawn (reason="self_review") instead of handing the
+                    # card back to its own author, visibly, without ever
+                    # failing this handoff.
+                    reviewer = _resolve_default_reviewer()
             reviewer = _canonical_assignee(reviewer)
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
@@ -3282,6 +3299,34 @@ def _prior_reviewer(conn: sqlite3.Connection, task_id: str):
     changes_event = _latest_event(conn, task_id, "changes_requested", changes_run["id"])
     reviewer = _json_dict(_row_get(changes_event, "payload")).get("reviewer")
     return reviewer if isinstance(reviewer, str) and reviewer.strip() else False
+
+
+def _resolve_default_reviewer() -> Optional[str]:
+    """``kanban.default_reviewer`` when set and it names a real, live profile;
+    otherwise ``None``. Only :func:`request_review`'s first-review path calls
+    this, and only when no explicit ``reviewer=`` was given — it is the last
+    resort before refusing outright, so a nonexistent or tombstoned name is
+    treated the same as unset rather than written to the row.
+
+    Local import + fail-open on any config error, mirroring
+    ``kanban_db_dispatch.review_dispatch_enabled``: ``kanban_db.py`` has no
+    module-level config dependency, and a broken/missing config file must not
+    crash a review handoff — it just means no fallback reviewer exists.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("default_reviewer")
+    except Exception:
+        return None
+    name = raw.strip() if isinstance(raw, str) else ""
+    if not name:
+        return None
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        canon = normalize_profile_name(name)
+    except Exception:
+        return None
+    return canon if profile_exists(canon) else None
 
 
 def _nonblank_str(value: Any) -> Optional[str]:

@@ -157,6 +157,90 @@ describe('GeminiLiveSession', () => {
     expect(onDelegation).toHaveBeenCalledWith('call_123', 'run test script')
   })
 
+  it('sendToolResponse includes function name and id in functionResponses payload', () => {
+    const sentMessages: string[] = []
+    const mockWs = {
+      close: vi.fn(),
+      readyState: 1,
+      send: vi.fn((data: string) => sentMessages.push(data))
+    }
+
+    const session = new GeminiLiveSession(
+      {
+        onClosed: vi.fn(),
+        onDelegation: vi.fn(),
+        onError: vi.fn()
+      },
+      { apiKey: 'test-key' }
+    )
+
+    ;(session as any).ws = mockWs
+    ;(session as any).started = true
+
+    const ok = session.sendToolResponse('call_xyz', 'task output', 'ask_hermes')
+    expect(ok).toBe(true)
+    expect(sentMessages.length).toBe(1)
+
+    const parsed = JSON.parse(sentMessages[0])
+    expect(parsed.toolResponse.functionResponses[0]).toEqual({
+      id: 'call_xyz',
+      name: 'ask_hermes',
+      response: {
+        output: {
+          result: 'task output'
+        }
+      }
+    })
+  })
+
+  it('tears down mic tracks if cancelled while getUserMedia is pending', async () => {
+    const mockTrack = { stop: vi.fn() }
+    const mockStream = { getTracks: () => [mockTrack] }
+
+    let resolveGetUserMedia: (stream: any) => void
+    const getUserMediaPromise = new Promise(resolve => {
+      resolveGetUserMedia = resolve
+    })
+
+    const originalMediaDevices = navigator.mediaDevices
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getUserMedia: vi.fn(() => getUserMediaPromise)
+      },
+      configurable: true
+    })
+
+    const session = new GeminiLiveSession(
+      {
+        onClosed: vi.fn(),
+        onDelegation: vi.fn(),
+        onError: vi.fn()
+      },
+      { apiKey: 'test-key' }
+    )
+
+    // Start mic capture
+    const capturePromise = (session as any).startMicrophoneCapture()
+
+    // User closes session before getUserMedia resolves
+    session.finish('cancelled')
+    expect((session as any).finalized).toBe(true)
+
+    // Now getUserMedia resolves
+    resolveGetUserMedia!(mockStream)
+    await capturePromise
+
+    // Invariant: track.stop() must be called to avoid leaking mic
+    expect(mockTrack.stop).toHaveBeenCalled()
+    expect((session as any).micStream).toBeNull()
+    expect((session as any).started).toBe(false)
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: originalMediaDevices,
+      configurable: true
+    })
+  })
+
   it('resolveGeminiLiveApiKey resolves GEMINI_API_KEY from gateway environment', async () => {
     vi.mocked(revealEnvVar).mockImplementation(async (key: string) => {
       if (key === 'GEMINI_API_KEY') return { key, value: 'gemini-secret-123' }

@@ -115,20 +115,37 @@ def test_connect_one_time_password_field_is_announced_and_minted(monkeypatch):
         assert code is not None and code.isdigit() and len(code) == 8
         meta = backend.get_meta(handle)
         assert meta.has_otp is True, 'a stored authenticator seed must be announced as automatic'
-        assert OTP_URI not in repr(meta)
-        assert seed not in repr(meta), 'the bare seed must not surface in metadata either'
+        # The canonical form is "seed|digits|period|algo"; the BARE base32 component must also be
+        # checked separately or the assertion would still pass if only the bare seed leaked.
+        bare_seed = OTP_URI.split('secret=', 1)[1].split('&', 1)[0]
+        assert bare_seed == 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+        for leaked in (OTP_URI, seed, bare_seed):
+            assert leaked not in repr(meta), f'{leaked!r} must not surface in item metadata'
     finally:
         reset_secret_scope(scope); set_multiplex_active(False)
         server.shutdown(); server.server_close(); thread.join()
 
 
 def test_connect_without_usable_seed_stays_single_factor(monkeypatch):
-    """No OTP field, or an unusable one, must not be announced as automatic nor mint a code."""
+    """Anything that cannot actually be minted must stay single-factor: no claim, no code.
+
+    Covers an absent field, an alphabet-invalid value, an ALLOWED-alphabet value that the base32
+    decoder rejects (raw and otpauth:// form), and an otpauth:// parameter the runtime mint cannot
+    consume (a period too large for the timestamp division).
+    """
+    undecodable = 'A'
     cases = [
         [{'purpose': 'USERNAME', 'value': 'synthetic@example.com'},
          {'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE}],
         [{'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
          {'type': 'OTP', 'value': 'not-a-seed!!'}],
+        [{'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
+         {'type': 'OTP', 'value': undecodable}],
+        [{'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
+         {'type': 'OTP', 'value': f'otpauth://totp/Example:me?secret={undecodable}'}],
+        [{'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
+         {'type': 'OTP', 'value': 'otpauth://totp/Example:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+                                   '&period=' + '1' + '0' * 400}],
     ]
     for fields in cases:
         server, thread = _connect_server(fields)

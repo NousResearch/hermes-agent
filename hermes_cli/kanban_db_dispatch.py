@@ -974,7 +974,7 @@ def _classify_dead_worker(
     in the event payload, appended to the error text) so the board and the retry
     worker see WHY instead of a bare label; a rate-limited requeue does not need it.
     """
-    dead = _classify_dead_worker_exit(pid, claimer)
+    dead = _classify_dead_worker_exit(pid, claimer, task_id=task_id, board=board)
     if task_id and not dead.rate_limited:
         worker_output = _worker_final_output(task_id, board=board)
         if worker_output:
@@ -983,9 +983,35 @@ def _classify_dead_worker(
     return dead
 
 
-def _classify_dead_worker_exit(pid: int, claimer: Optional[str]) -> _DeadWorker:
+def _worker_log_clean_exit(task_id: str, board: Optional[str] = None) -> bool:
+    """True when the dead worker's log tail proves a clean CLI exit.
+
+    A fresh-process dispatcher (``hermes kanban dispatch`` from a timer) never
+    reaped the worker, so ``_recent_worker_exits`` has no exit status for it.
+    The CLI's exit epilogue prints the resume summary only after ``app.run()``
+    returned with exit code 0 (or a Ctrl-C 130), so the marker in the log is a
+    durable, process-independent witness of a clean exit: the work ran and the
+    worker still left the task ``running`` — the protocol violation class the
+    registry hit books for the gateway-embedded dispatcher.
+    """
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+    except Exception:
+        return False
+    return bool(raw) and _EXIT_SUMMARY_MARKER in raw
+
+
+def _classify_dead_worker_exit(
+    pid: int,
+    claimer: Optional[str],
+    *,
+    task_id: Optional[str] = None,
+    board: Optional[str] = None,
+) -> _DeadWorker:
     """Exit status -> reclaim bookkeeping, before the worker's own words are folded in."""
     kind, code = _classify_worker_exit(pid)
+    if kind == "unknown" and task_id and _worker_log_clean_exit(task_id, board=board):
+        kind, code = "clean_exit", 0
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry

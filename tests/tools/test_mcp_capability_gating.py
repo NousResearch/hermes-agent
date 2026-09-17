@@ -147,16 +147,20 @@ class TestKeepaliveInterval:
     the session alive instead of hitting an expired session on every idle call.
     """
 
-    async def _captured_interval(self, config):
-        """Run one keepalive cycle and capture the ``asyncio.wait`` timeout."""
+    async def _run_lifecycle_cycles(self, config):
+        """Run two lifecycle cycles on a server with the *full* ``config``: the first
+        ``asyncio.wait`` times out (no event fired), the second is ended by shutdown.
+        Returns ``(task, [timeout_of_cycle_1, timeout_of_cycle_2])``."""
         task = MCPServerTask("test")
-        task._config = {"url": "https://example.test/mcp", **config}
+        task._config = config
         task.session = SimpleNamespace(send_ping=AsyncMock())
-        captured = {}
+        timeouts = []
         real_wait = asyncio.wait
 
         async def fake_wait(tasks, timeout=None, return_when=None):
-            captured["timeout"] = timeout
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                return set(), set(tasks)  # simulate the timeout firing
             task._shutdown_event.set()
             return await real_wait(
                 tasks, timeout=0.5, return_when=return_when or asyncio.FIRST_COMPLETED
@@ -166,10 +170,16 @@ class TestKeepaliveInterval:
         orig = mcp_mod.asyncio.wait
         mcp_mod.asyncio.wait = fake_wait
         try:
-            await task._wait_for_lifecycle_event()
+            assert await task._wait_for_lifecycle_event() == "shutdown"
         finally:
             mcp_mod.asyncio.wait = orig
-        return captured["timeout"]
+        return task, timeouts
+
+    async def _captured_interval(self, config):
+        """Capture the first ``asyncio.wait`` timeout of a remote (HTTP) server."""
+        _task, timeouts = await self._run_lifecycle_cycles(
+            {"url": "https://example.test/mcp", **config})
+        return timeouts[0]
 
     @pytest.mark.asyncio
     async def test_default_interval_when_unset(self):
@@ -188,29 +198,14 @@ class TestKeepaliveInterval:
 
     @pytest.mark.asyncio
     async def test_default_stdio_connection_waits_without_keepalive(self):
-        """A healthy local pipe must not be probed solely because it is idle."""
-        task = MCPServerTask("test")
-        task._config = {"command": "example-mcp"}
-        task.session = SimpleNamespace(send_ping=AsyncMock())
-        captured = {}
-        real_wait = asyncio.wait
+        """A healthy local pipe must not be probed solely because it is idle — but surviving a
+        full default interval idle must still prove the session (clears the rapid-drop budget);
+        once proven, the loop waits without any timeout."""
+        from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
+        task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"})
 
-        async def fake_wait(tasks, timeout=None, return_when=None):
-            captured["timeout"] = timeout
-            task._shutdown_event.set()
-            return await real_wait(
-                tasks, timeout=0.5, return_when=return_when or asyncio.FIRST_COMPLETED
-            )
-
-        import tools.mcp_tool as mcp_mod
-        orig = mcp_mod.asyncio.wait
-        mcp_mod.asyncio.wait = fake_wait
-        try:
-            assert await task._wait_for_lifecycle_event() == "shutdown"
-        finally:
-            mcp_mod.asyncio.wait = orig
-
-        assert captured["timeout"] is None
+        assert timeouts == [_DEFAULT_KEEPALIVE_INTERVAL, None]
+        assert task._session_proven is True
         task.session.send_ping.assert_not_called()
 
     @pytest.mark.asyncio

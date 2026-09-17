@@ -79,6 +79,10 @@ class MCPServerRunMixin:
                 if self._recycle_if_due():
                     return "recycle"
                 timeout = keepalive_interval
+                if timeout is None and not self._session_proven:
+                    # No keepalive, but an unproven stdio session must still get its chance to
+                    # prove itself: wake once after the default interval (no ping) — see below.
+                    timeout = float(_core._DEFAULT_KEEPALIVE_INTERVAL)
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
                     recycle_timeout = max(0.0, recycle_deadline - time.monotonic())
@@ -103,6 +107,11 @@ class MCPServerRunMixin:
                 if self._recycle_if_due():
                     return "recycle"
                 if keepalive_interval is None:
+                    # Stdio without a keepalive: idling a full default interval with the child
+                    # still alive is the proof of health a successful ping gives remote
+                    # transports — clear the rapid-drop budget without pinging (#62212).
+                    if not self._session_proven and not self._stdio_children_dead():
+                        self._mark_session_proven()
                     continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a
                 # concurrent ping can wedge the stdio stream; a busy server is alive anyway).

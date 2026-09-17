@@ -203,6 +203,12 @@ def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
+    # Lone surrogates reach the outbound body via surrogateescape-decoded argv
+    # (`hermes send` MESSAGE) and crash the UTF-8 marshal inside platform SDK
+    # request bodies (feishu/lark, #113799). Every outbound send (CLI, cron
+    # delivery, kanban notifier) assembles its body here, so scrub at the source.
+    from agent.message_sanitization import _sanitize_surrogates
+    message = _sanitize_surrogates(message)
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
         return tool_error(resolution_error)

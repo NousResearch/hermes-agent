@@ -376,13 +376,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
-    # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
-    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
+    # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
+    # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
+    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
-    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); NVIDIA Nemotron (128K
+    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
+    # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
     # except 3.5 Lightning); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
-    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576,
+    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576, "union-alpha": 262144,
     "nemotron-3.5-lightning": 1_000_000, "nemotron": 131072,
     "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
@@ -536,9 +538,23 @@ def _server_root(base_url: str) -> str:
     return server_url[:-3] if server_url.endswith("/v1") else server_url
 
 
+# Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
+# match only on an id boundary, after folding aggregator slugs (``solar-pro-3``) into the native form.
+_BOUNDARY_MATCHED_KEY_PREFIXES = ("solar-",)
+_HYPHENATED_GENERATION_RE = re.compile(
+    rf"((?:{'|'.join(map(re.escape, _BOUNDARY_MATCHED_KEY_PREFIXES))})[a-z]+)-(\d{{1,2}})(?=[-:.@]|$)")
+
+
 def _catalog_key_matches(key: str, model_lower: str) -> bool:
     """Substring match with version separators normalised on both sides, so a relay slug like
-    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398)."""
+    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398).
+    Boundary-matched families: a key must be followed by ``-:.@`` or the end, and a key ending in
+    ``-`` is the family default for bare names (``org/`` allowed) continuing with a lineup letter."""
+    if key.startswith(_BOUNDARY_MATCHED_KEY_PREFIXES):
+        model_lower = _HYPHENATED_GENERATION_RE.sub(r"\1\2", model_lower)
+        if key.endswith("-"):
+            return re.match(re.escape(key) + "[a-z]", model_lower.rsplit("/", 1)[-1]) is not None
+        return re.search(re.escape(key) + r"(?:[-:.@]|$)", model_lower) is not None
     return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
 
 
@@ -789,6 +805,33 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
     return int(raw) if isinstance(raw, (int, float)) and int(raw) > 0 else None
 
 
+# Generic ``/models`` pricing: an explicit ``unit`` beside the rates wins; without one, a token rate
+# at or above $0.001/token ($1,000/MTok — no real model charges that) can only be a per-million quote.
+_PRICING_UNIT_DIVISORS = {
+    "per_token": 1, "per_1k_tokens": 1_000, "per_thousand_tokens": 1_000,
+    "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
+}
+_PER_MILLION_QUOTE_MIN = 0.001
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+
+
+def _normalize_token_rates(pricing: Dict[str, Any], unit: Any) -> Dict[str, Any]:
+    """Rescale the generic path's token rates to per-token strings (the contract usage_pricing
+    multiplies by 1e6), the way the Novita/DeepInfra branches already do for their known units."""
+    rates: Dict[str, float] = {}
+    for key in _TOKEN_RATE_FIELDS:
+        try:
+            rates[key] = float(pricing[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    divisor = _PRICING_UNIT_DIVISORS.get(str(unit or "").strip().lower())
+    if divisor is None:
+        divisor = 1_000_000 if any(v >= _PER_MILLION_QUOTE_MIN for v in rates.values()) else 1
+    if divisor != 1:
+        pricing.update({key: str(value / divisor) for key, value in rates.items()})
+    return pricing
+
+
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     def _per_token(source: Dict[str, Any], fields: Dict[str, str], scale) -> Dict[str, Any]:
         # Provider $/MTok (or Novita's 1/10_000-$ per M) -> per-token strings, the same path usage_pricing uses for OpenRouter.
@@ -818,7 +861,7 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
-            return pricing
+            return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}
 
 

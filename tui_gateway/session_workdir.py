@@ -195,6 +195,10 @@ def _session_source(session: dict | None) -> str:
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
+    # Workspace moves must reach lazy/restarted runtimes, not just terminal tools.
+    # Do not reinitialize memory providers or invalidate the cached system prompt.
+    if hasattr(agent := session.get("agent"), "session_cwd"):
+        agent.session_cwd = session.get("cwd") or None
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
@@ -331,6 +335,61 @@ def _persist_branch_seed(session: dict) -> None:
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
+
+
+def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
+    """Write the submitted user turn at send time, before the agent build and turn: the agent's own
+    crash persist only runs once the build finished, so quitting a frozen app during a slow first build
+    left a session row with no message (#111868). The dict is staged on the session already stamped
+    durable (the shape ``quiet_single_query`` re-stages an unanswered DM in) so the turn adopts it via
+    ``_stage_turn_user_message`` and the flush writes no second row. A failed write stages nothing:
+    the turn's crash persist then writes the row as before."""
+    key = session.get("session_key")
+    if not key or not isinstance(text, str) or not text.strip():
+        return
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.message_metadata import stamp_message_timestamp
+    staged = stamp_message_timestamp({"role": "user", "content": text})
+    if display_kind:
+        staged["display_kind"] = display_kind
+    with _session_db(session) as db:
+        if db is None:
+            return
+        try:
+            staged["_row_id"] = db.append_message(
+                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
+        except Exception as exc:
+            _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
+            return
+    staged[_DB_PERSISTED_MARKER] = True
+    session["_submit_user_row"] = staged
+
+
+def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text: Any) -> None:
+    """Hand the row written at submit to the turn as its user dict (``agent._pending_cli_user_message``,
+    adopted by ``_stage_turn_user_message`` when the content matches). A prompt the prologue rewrote
+    (@-expansion, image parts) first updates that row so the durable transcript replays what the model
+    was sent and the ``api_content`` sidecar can address it; ``_row_id`` rides along for that stamp.
+    ``text`` is THIS turn's raw submit: a staged row from an earlier send (its turn ended before the agent
+    ran) is discarded untouched, so the DB row stays the user's message and never a synthesized turn's text."""
+    staged = session.pop("_submit_user_row", None)
+    if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
+        return
+    if staged["content"] != persist_user_message:
+        from agent.session_persistence import _durable_content
+        with _session_db(session) as db:
+            if db is None:
+                return
+            try:
+                db.set_user_message_content(
+                    session["session_key"], staged["_row_id"], _durable_content(persist_user_message))
+            except Exception:
+                logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
+                return
+        staged["content"] = persist_user_message
+    from agent.session_persistence import _persist_lock
+    with _persist_lock(agent):
+        agent._pending_cli_user_message = staged
 
 
 # Yielded by _workdir_owner_db when the profile db failed to OPEN (vs "no store in this context"); row creation fails loud.

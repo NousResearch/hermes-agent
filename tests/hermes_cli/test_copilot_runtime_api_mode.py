@@ -82,7 +82,7 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
         )
         pool = SimpleNamespace(
             has_credentials=lambda: True,
-            select=lambda: entry,
+            select=lambda **_kw: entry,
         )
         monkeypatch.setattr(rp, "load_pool", lambda _provider: pool)
     elif credential_source == "explicit":

@@ -908,10 +908,10 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = (
+        want_stream_deltas = not ctx.scheduled_heartbeat and (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
-        want_interim_messages = ctx.interim_assistant_messages_enabled
+        want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -1294,19 +1294,67 @@ class TurnRunner:
             logger.warning("%s boundary timed out or failed: %s", reason, err)
             return False
 
-    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False) -> str:
+    def _clarify_callback_sync(self, question: str, choices, multi_select: bool = False,
+                               questions=None) -> str:
         """Present a clarify prompt and block on a response (clarify_tool's synchronous contract):
         schedule send_clarify on the gateway loop, block on the primitive's threading.Event with a
-        timeout. Returns the response string, or a sentinel when none arrived."""
-        from gateway.run import _clarify_send_then_wait
+        timeout. Returns the response string, or a sentinel when none arrived.
+
+        ``questions`` (clarify_tool's batch form) is answered here, one card per question, because
+        this surface knows whether an answer arrived: the loop that would otherwise call this
+        callback once per question can only recognize "no answer" from the returned sentinel text,
+        and treated that text as the question's answer.
+        """
+        if questions:
+            return self._clarify_batch_sync(questions)
+        response, _answered = self._ask_clarify_question(question, choices, multi_select)
+        return response
+
+    def _clarify_batch_sync(self, questions) -> str:
+        """Answer a batch: one card per question, stop at the first the user never answers.
+        Returns the JSON shape clarify_tool's batch path reads. The stream/typing re-arm waits for
+        the last question — between two cards it only opens a bubble the next boundary closes."""
+        answers: Dict[str, Any] = {}
+        payload: Dict[str, Any] = {"answers": answers, "timed_out": False}
+        last = len(questions) - 1
+        for index, entry in enumerate(questions):
+            raw, answered = self._ask_clarify_question(
+                entry.get("question", ""), entry.get("choices"), bool(entry.get("multi_select")),
+                rearm=index == last)
+            if not answered:
+                # The surface's own no-answer text ("could not be delivered", "did not respond
+                # within Nm") rides along as ``notice``: blank answers alone read as user
+                # inactivity, which is the misreport #112684 describes for an undelivered card.
+                payload.update(timed_out=True, notice=raw)
+                break
+            answers[entry.get("qid") or f"q{index}"] = raw
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _ask_clarify_question(self, question, choices, multi_select, rearm: bool = True) -> tuple[str, bool]:
+        """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
+        Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
+        for a single question, the batch's ``timed_out`` flag."""
+        from gateway.run_turn_runner_clarify_delivery import (
+            UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
-            return ""
+            # Nothing can render the question: say so, or the batch's blank answers read as
+            # user inactivity (#112684).
+            return UNDELIVERED_NO_SURFACE, False
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
+        send_kwargs = dict(
+            chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
+            session_key=session_key, metadata=ctx._status_thread_metadata,
+        )
+
+        def _text_fallback():
+            """Schedule the plain-text prompt when the native card cannot render; None = no such path."""
+            coro = text_fallback_coro(ctx._status_adapter, **send_kwargs)
+            return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
         clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
             multi_select=bool(multi_select),
@@ -1328,17 +1376,16 @@ class TurnRunner:
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
         fut = self._schedule(
-            ctx._status_adapter.send_clarify(
-                chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-                session_key=session_key, metadata=ctx._status_thread_metadata,
-            ),
+            ctx._status_adapter.send_clarify(**send_kwargs),
             "Clarify send failed to schedule",
         )
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
-        # ambiguous falls through to the bounded wait so a late reply resolves.
+        # ambiguous falls through to the bounded wait so a late reply resolves. A definitive
+        # failure — immediate or late — retries once as plain text before giving up.
         response, answered = _clarify_send_then_wait(
-            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
+            fallback=_text_fallback)
         # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
         # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
         if not answered:
@@ -1349,7 +1396,7 @@ class TurnRunner:
                 self._schedule(
                     retire(ctx._status_adapter, clarify_id, _CLARIFY_EXPIRED_NOTICE),
                     "Clarify card retire failed to schedule")
-        else:
+        elif rearm:
             # Reopen typing IMMEDIATELY, not on the LLM's first post-answer token (native streaming
             # otherwise re-seeds lazily on the first delta: ~48s of dead air). request_reopen_seed is
             # a no-op outside the reopen-pending native state.
@@ -1363,7 +1410,7 @@ class TurnRunner:
                 ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
             except Exception:
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
-        return response
+        return response, answered
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button

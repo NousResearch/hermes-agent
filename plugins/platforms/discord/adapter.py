@@ -1034,6 +1034,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
+        # A tagged bot may emit one logical response as several Discord
+        # messages. Keep its unmentioned continuation chunks eligible for the
+        # existing text batcher during this short, sender-scoped window.
+        self._bot_tag_debounce_until: Dict[str, float] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -1434,13 +1438,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         role_authorized = False
         if getattr(message.author, "bot", False):
             allow_bots = self._get_allow_bots()
+            bot_tag_continuation = self._is_bot_tag_debounce_continuation(message)
             if allow_bots == "none":
                 return False, False
-            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+            if (
+                allow_bots == "mentions"
+                and not self._self_is_explicitly_mentioned(message)
+                and not bot_tag_continuation
+            ):
                 return False, False
             if (
                 self._discord_bots_require_inline_mention()
                 and not self._self_is_raw_mentioned(message)
+                and not bot_tag_continuation
             ):
                 return False, False
         else:
@@ -1490,6 +1500,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
             return False
+        self._record_bot_tag_debounce(message)
         return await self._handle_message(message, role_authorized=role_authorized)
 
     # --- gateway_platform_event fire-sites ---
@@ -4771,6 +4782,45 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
         return str(raw or "none").lower().strip() or "none"
 
+    @staticmethod
+    def _bot_tag_debounce_key(message: Any) -> str:
+        return (
+            f"{getattr(getattr(message, 'channel', None), 'id', '')}:"
+            f"{getattr(getattr(message, 'author', None), 'id', '')}"
+        )
+
+    def _bot_tag_window_seconds(self) -> float:
+        return max(self._text_batch_delay_seconds, self._text_batch_split_delay_seconds)
+
+    def _record_bot_tag_debounce(self, message: Any) -> None:
+        """Open a short continuation window after a bot-authored tag."""
+        if (
+            self._text_batch_delay_seconds <= 0
+            or not getattr(message.author, "bot", False)
+            or not self._self_is_explicitly_mentioned(message)
+        ):
+            return
+        self._bot_tag_debounce_until[self._bot_tag_debounce_key(message)] = (
+            time.monotonic() + self._bot_tag_window_seconds()
+        )
+
+    def _is_bot_tag_debounce_continuation(self, message: Any) -> bool:
+        """Return whether an unmentioned chunk belongs to a recent bot tag.
+
+        A hit re-arms the window: Discord paces a bot's sends at roughly one per
+        second, so chunk N of a long handoff lands well after the tag itself; each
+        admitted chunk therefore vouches for the next one. The gateway bot loop
+        guard bounds a bot that never stops talking."""
+        if self._text_batch_delay_seconds <= 0 or not getattr(message.author, "bot", False):
+            return False
+        key = self._bot_tag_debounce_key(message)
+        now = time.monotonic()
+        if self._bot_tag_debounce_until.get(key, 0.0) <= now:
+            self._bot_tag_debounce_until.pop(key, None)
+            return False
+        self._bot_tag_debounce_until[key] = now + self._bot_tag_window_seconds()
+        return True
+
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
         raw = self.config.extra.get("free_response_channels")
@@ -4806,14 +4856,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
 
     def _discord_bots_require_inline_mention(self) -> bool:
-        """Whether a bot author must type a literal ``<@thisbot>`` to wake us (off by default).
-        A reply-ping adds us to ``message.mentions`` silently, letting two bots ping-pong forever.
-        Config: ``discord.bots_require_inline_mention`` / ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``."""
+        """Whether another bot must type an inline @mention to trigger us.
+
+        On by default. A bot-authored message only wakes this bot if its
+        content contains a literal ``<@thisbot>`` token. A Discord reply/quote
+        to one of our messages is NOT enough on its own, because Discord's
+        reply-ping silently adds us to ``message.mentions`` even though the
+        author never typed our handle — which otherwise lets two bots ping-pong
+        replies at each other indefinitely. Humans are never affected by this
+        gate; it only applies to bot authors. Set the option to false only for
+        trusted relay integrations that intentionally depend on reply pings or
+        unmentioned bot messages.
+
+        Config: ``discord.bots_require_inline_mention`` (or env
+        ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+        """
         configured = self.config.extra.get("bots_require_inline_mention")
         if isinstance(configured, str):
             return configured.lower() in {"true", "1", "yes", "on"}
         return self._extra_or_env_flag(
-            "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "false", truthy=True)
+            "bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION", "true", truthy=True
+        )
 
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Channel keys (ID, bare name, ``#name``, plus parent for threads) accepted by channel gates."""
@@ -5789,7 +5852,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             in_bot_thread = self._in_bot_thread(message)
             if require_mention and not is_free_channel and not in_bot_thread:
-                if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                if (
+                    not self._self_is_explicitly_mentioned(message)
+                    and not mention_prefix
+                    and not self._is_bot_tag_debounce_continuation(message)
+                ):
                     return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
         auto_threaded_channel = None
@@ -5923,6 +5990,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
+        if (
+            getattr(getattr(message, "author", None), "bot", False)
+            and self._is_bot_tag_debounce_continuation(message)
+        ):
+            event._bot_tag_debounce = True  # type: ignore[attr-defined]
+
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             self._threads.mark(thread_id)
@@ -5932,6 +6005,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
         return True
+
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
+        batch opened by a bot tag waits the split delay regardless of chunk length."""
+        if getattr(pending, "_bot_tag_debounce", False):
+            return self._text_batch_split_delay_seconds
+        return super()._text_batch_delay_for(pending)
 
 
 # ---------------------------------------------------------------------------

@@ -291,8 +291,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
             if get_model_capabilities is not None and slug:
                 try:
                     meta = get_model_capabilities(slug, model)
-                    if meta is not None:
-                        reasoning = bool(meta.supports_reasoning)
+                    if meta is not None and meta.supports_reasoning is not None:
+                        reasoning = meta.supports_reasoning
                 except Exception:
                     reasoning = True
 
@@ -744,6 +744,6 @@ def _moa_provider_row(current_provider: str = "") -> dict | None:
         return _row(
             "moa", "Mixture of Agents", (current_provider or "").lower() == "moa", models=models,
             total_models=len(models), source="virtual", authenticated=True, auth_type="virtual",
-            warning="Aggregator acts as the selected model; references provide analysis before each call.")
+            warning="Aggregator is the acting model billed for the run; references only advise once per user turn by default.")
     except Exception:
         return None

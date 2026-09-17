@@ -77,7 +77,7 @@ def _profile_build_scope(profile_home):
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
     """``_make_agent`` with the session context bound for the build and cleared after."""
-    tokens = _set_session_context(key)
+    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"))
     try:
         return _make_agent(sid, key, session_id=key, **kwargs)
     finally:
@@ -123,8 +123,10 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             "source": row.get("source") or ""}
 
 
-# Hidden from human listings (sub-agent runs, kanban workers); a deny-list so new platforms surface automatically.
-_LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
+from hermes_state_sessions import INTERNAL_LISTING_SOURCES
+
+# Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
+_LISTING_DENY_SOURCES = frozenset(INTERNAL_LISTING_SOURCES)
 
 
 def _denied_source(row: dict) -> bool:
@@ -221,7 +223,7 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False) -> None:
+                    copy_fields=(), compensate: bool = False, title_source: str = "user") -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
@@ -240,7 +242,10 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         db.append_messages_batch(
             new_key, [{"role": msg.get("role", "user"), "content": msg.get("content"),
                        **{field: msg.get(field) for field in copy_fields}} for msg in history], chunk_rows=500)
-        db.set_session_title(new_key, title)
+        if title_source == "user":
+            db.set_session_title(new_key, title)
+        else:
+            db.set_auto_title(new_key, title, source=title_source)
     except Exception as exc:
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
@@ -261,7 +266,8 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
                 return
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
+                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
+                            compensate=True, title_source="derived")
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -795,6 +801,7 @@ def _resume_eager(ctx: _Resume) -> dict:
             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
             agent = _make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
+                cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
         except Exception as e:
@@ -1212,15 +1219,18 @@ def _(rid, params: dict, session: dict) -> dict:
             "model": _metadata_mirror(session).get("model", "")})
     with session["history_lock"]:
         history = list(session.get("history", []))
-    # Bind the session context: on the RPC thread the session cwd is unset, so the prompt build
-    # inside would key its workspace pin on the backend's cwd and overwrite the session's pin.
+    # Bind the session context (on the RPC thread the session cwd is unset, so the prompt build inside
+    # would key its workspace pin on the backend's cwd and overwrite the session's pin) and the session's
+    # profile runtime scope: the build reaches the external memory provider's system_prompt_block(),
+    # whose get_secret read fails closed once this process multiplexes (#112927).
     tokens = _set_session_context(session["session_key"])
     try:
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
-        payload = compute_session_context_breakdown(agent, history)
-        # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
-        payload["context_files"] = context_file_sources_for_agent(agent)
+        with _session_profile_runtime_scope(session):
+            payload = compute_session_context_breakdown(agent, history)
+            # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
+            payload["context_files"] = context_file_sources_for_agent(agent)
         return _ok(rid, payload)
     except Exception as exc:
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
@@ -1931,6 +1941,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
+                                           cwd_override=_session_cwd(session),
                                            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
                                            auth_user_id=parent_user_id)
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
@@ -1991,7 +2002,8 @@ def _(rid, params: dict, session: dict) -> dict:
             home = session.get("profile_home")
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            copy_fields=_BRANCH_COPY_FIELDS)
+                            copy_fields=_BRANCH_COPY_FIELDS,
+                            title_source="user" if params.get("name") else "derived")
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")
     try:

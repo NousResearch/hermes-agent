@@ -1505,6 +1505,15 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             base_url = ""  # the healed identity owns a registered endpoint; the snapshot URL must not override it
         else:
             provider = ""
+    try:
+        from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+        if str(provider or "").strip().lower() in LLAMACPP_ALIASES:
+            # Same contract as a healed named custom entry: the managed
+            # supervisor owns the live endpoint. A snapshot of last boot's
+            # loopback port must not pin resume onto a dead ephemeral URL.
+            base_url = ""
+    except Exception:
+        logger.debug("llamacpp snapshot-url drop failed", exc_info=True)
     if model:
         # Same dict-shaped override live /model switches use, so a DB-restored session keeps custom endpoint
         # metadata across resume and rebuilds (/new). Raw api_key is never persisted/restored.
@@ -2231,6 +2240,9 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
         return resolution.selected_model, resolution.runtime
+    if resolution.runtime.get("source") == "local-runtime":
+        # Live supervisor beat any persisted loopback URL for this identity.
+        overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
     return model, resolution.runtime
 

@@ -1036,3 +1036,71 @@ class TestPromptCacheKeyCapability:
             request_overrides={"prompt_cache_key": "   "},
         )
         assert "prompt_cache_key" not in kwargs
+
+
+class TestSessionMetadataAffinity:
+    """Opt-in body ``metadata.session_id`` for deployment-affinity gateways (#106113)."""
+
+    @staticmethod
+    def _messages():
+        return [
+            {"role": "system", "content": "You are stable."},
+            {"role": "user", "content": "hello"},
+        ]
+
+    def test_flag_off_leaves_body_untouched(self, transport):
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            session_id="session_alice_1",
+        )
+        assert "metadata" not in kwargs
+
+    def test_flag_on_emits_session_id(self, transport):
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            session_id="session_alice_1", send_session_metadata=True,
+        )
+        assert kwargs["metadata"] == {"session_id": "session_alice_1"}
+
+    def test_cache_scope_id_beats_physical_session_id(self, transport):
+        """Affinity survives compression rotation: the lineage root wins."""
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            session_id="session_rotated_2", cache_scope_id="session_root_1",
+            send_session_metadata=True,
+        )
+        assert kwargs["metadata"] == {"session_id": "session_root_1"}
+
+    def test_cron_suffix_is_normalized_away(self, transport):
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            session_id="cron_job_20260715_100000", send_session_metadata=True,
+        )
+        assert kwargs["metadata"] == {"session_id": "cron_job"}
+
+    def test_existing_metadata_keys_are_preserved(self, transport):
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            session_id="session_alice_1", send_session_metadata=True,
+            request_overrides={"metadata": {"promptId": "caller-set"}},
+        )
+        assert kwargs["metadata"]["promptId"] == "caller-set"
+        assert kwargs["metadata"]["session_id"] == "session_alice_1"
+
+    def test_blank_ids_emit_no_metadata(self, transport):
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            send_session_metadata=True,
+        )
+        assert "metadata" not in kwargs
+
+    def test_flag_on_via_provider_profile_path(self, transport):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="affinity-gateway")
+        kwargs = transport.build_kwargs(
+            model="gateway-model", messages=self._messages(),
+            session_id="session_alice_1", send_session_metadata=True,
+            provider_profile=profile,
+        )
+        assert kwargs["metadata"] == {"session_id": "session_alice_1"}

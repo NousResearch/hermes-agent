@@ -1517,7 +1517,7 @@ export default function SessionsPage() {
       showToast(t.sessions.failedToExport ?? "Failed to export session", "error");
       }
     },
-    [showToast, t.sessions.failedToExport],
+    [rowProfile, showToast, t.sessions.failedToExport],
   );
 
   const handlePrune = useCallback(async () => {

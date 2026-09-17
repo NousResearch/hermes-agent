@@ -34,6 +34,15 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   const useMobileSheet = Boolean(dropUp && narrowViewport);
 
   const close = useCallback(() => setOpen(false), []);
+  // Anchor metrics for the drop-up portal, captured in the toggle handler (refs
+  // must not be read during render — react-hooks/refs) and frozen at open time;
+  // the dropdown is closed while the button moves, so a stale rect is fine.
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+
+  const toggleOpen = useCallback(() => {
+    setAnchorRect(wrapperRef.current?.getBoundingClientRect() ?? null);
+    setOpen((o) => !o);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -65,7 +74,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       <Button
         ghost
         size={collapsed ? "icon" : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
         className={cn(
           collapsed
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
@@ -113,7 +122,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = wrapperRef.current?.getBoundingClientRect();
+        const rect = anchorRect;
         const dropdown = (
           <div
             ref={dropdownRef}

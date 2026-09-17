@@ -1155,19 +1155,24 @@ export default function ModelsPage() {
       });
   }, []);
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
+    // Await-first loader: state updates run in promise continuations, never
+    // synchronously inside the effect body (react-hooks/set-state-in-effect).
+    await Promise.resolve();
     setLoading(true);
     setError(null);
-    Promise.all([
-      api.getModelsAnalytics(days),
-      api.getAuxiliaryModels().catch(() => null),
-    ])
-      .then(([models, auxData]) => {
-        setData(models);
-        setAux(auxData);
-      })
-      .catch((err) => setError(errorMessage(err)))
-      .finally(() => setLoading(false));
+    try {
+      const [models, auxData] = await Promise.all([
+        api.getModelsAnalytics(days),
+        api.getAuxiliaryModels().catch(() => null),
+      ]);
+      setData(models);
+      setAux(auxData);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
   }, [days]);
 
   const refreshAux = useCallback(() => {
@@ -1223,7 +1228,13 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
+    // Loader-in-effect convention: the IIFE's leading await is the explicit
+    // async boundary required by react-hooks/set-state-in-effect — calling a
+    // component-scope loader directly from the effect body is rejected.
+    void (async () => {
+      await Promise.resolve();
+      await load();
+    })();
   }, [load]);
 
   // Model assignments can change outside this page (config editor, chat

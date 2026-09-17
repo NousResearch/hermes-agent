@@ -63,7 +63,8 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
+import { gatewayLine } from "@/lib/gateway-line";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -105,7 +106,6 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { latchChatActivation } from "@/lib/chat-activation";
 import { sharedGatewayProfiles, sharedGatewayRestartDescription } from "@/lib/shared-gateway";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -407,9 +407,11 @@ export default function App() {
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
-  useEffect(() => {
-    setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
-  }, [isChatRoute]);
+  // Render-phase latch (docs-recommended instead of setState-in-effect):
+  // once the chat host has mounted it stays mounted for the session.
+  if (isChatRoute && !chatHostMounted) {
+    setChatHostMounted(true);
+  }
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -954,13 +956,18 @@ function SidebarSystemActions({
     useState<UpdateCheckResponse | null>(null);
   const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
 
+  // Reset the payload the moment the dialog closes (render-phase reset — the
+  // docs-recommended pattern instead of setState-in-effect). The check itself
+  // is kicked off by the open handler below; it must not live in an effect,
+  // whose sync body may not setState.
+  if (!updateConfirmOpen && (updateConfirmInfo !== null || updateConfirmChecking)) {
+    setUpdateConfirmInfo(null);
+    setUpdateConfirmChecking(false);
+  }
+
   useEffect(() => {
-    if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
-      return;
-    }
+    if (!updateConfirmOpen) return;
     let cancelled = false;
-    setUpdateConfirmChecking(true);
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -1016,6 +1023,8 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
+      setUpdateConfirmInfo(null);
+      setUpdateConfirmChecking(true);
       setUpdateConfirmOpen(true);
       return;
     }

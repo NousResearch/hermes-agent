@@ -680,7 +680,7 @@ export default function EnvPage() {
     return () => {
       setAfterTitle(null);
     };
-  }, [vars, sections, setAfterTitle]);
+  }, [vars, sections, setAfterTitle, t.env.jumpToSection]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];

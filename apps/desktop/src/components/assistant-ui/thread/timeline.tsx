@@ -27,6 +27,51 @@ const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
+let jumpRaf = 0
+
+export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
+  cancelAnimationFrame(jumpRaf)
+  const start = viewport.scrollTop
+  const delta = top - start
+
+  if (!duration || Math.abs(delta) < 2) {
+    viewport.scrollTop = top
+    return
+  }
+
+  const began = performance.now()
+
+  const step = (now: number) => {
+    const elapsed = now - began
+    const progress = Math.min(1, elapsed / duration)
+    viewport.scrollTop = start + delta * (1 - (1 - progress) ** 3)
+
+    if (progress < 1) {
+      jumpRaf = requestAnimationFrame(step)
+    }
+  }
+
+  jumpRaf = requestAnimationFrame(step)
+}
+
+export function scrollToPrompt(root: HTMLElement | null, id: string): void {
+  const viewport = ownViewport(root)
+  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+
+  if (!node || !viewport) {
+    return
+  }
+
+  const start = viewport.scrollTop
+  const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
+  const destination = Math.max(
+    0,
+    start + turn.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 8
+  )
+
+  jumpScroll(viewport, destination)
+}
+
 /** Hidden panes do not subscribe to streaming messages or measure layout. */
 export const ThreadTimeline: FC = () => (usePaneVisible() ? <ActiveThreadTimeline /> : null)
 

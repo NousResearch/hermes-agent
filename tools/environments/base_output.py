@@ -17,7 +17,7 @@ from typing import IO, Callable, Protocol
 
 from hermes_constants import get_hermes_home
 from tools.tool_output_truncate import head_tail_split, truncation_notice
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import spawn_bash_with_kill_on_exit, windows_hide_flags
 
 # Sentinel capacity for full-fidelity capture: large enough that the collector
 # never evicts, so bounded and unbounded modes share one code path.
@@ -253,13 +253,15 @@ def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subp
     asynchronously via :func:`_pipe_stdin`. Backends with special Popen needs (e.g. local's
     ``preexec_fn``) can bypass this and call :func:`_pipe_stdin` directly."""
     kwargs.setdefault("creationflags", windows_hide_flags())
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-        text=True, encoding="utf-8", errors="replace",
-        **kwargs)
+    proc = spawn_bash_with_kill_on_exit(
+        lambda: subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            **kwargs)
+    )
     if stdin_data is not None:
         _pipe_stdin(proc, stdin_data)
     return proc

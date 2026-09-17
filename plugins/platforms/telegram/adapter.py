@@ -2050,11 +2050,19 @@ class TelegramAdapter(BasePlatformAdapter):
         confirmed ``getUpdates`` round-trip, so a recovered gateway starts from zero on the next
         stall. Callers advance ``_polling_verifier_stall_count`` BEFORE invoking this helper so
         the bound reflects "this stall was observed" regardless of which path the recovery
-        follows (e.g. a chained retry from a start_polling() failure).
+        follows. The helper ALSO advances the counter on its own chained self-invocation path
+        (when ``_start_polling_once`` fails after the stop/drain cycle) for the same reason —
+        otherwise a persistently failing restart would loop 5-second retries at the same counter
+        value forever and never reach the retryable fatal.
         """
         if self._teardown_started or self.has_fatal_error:
             return
         attempt = self._polling_verifier_stall_count
+        # The bound is intentionally ``MAX + 1``: the first ``_MAX_VERIFIER_STALL_RETRIES``
+        # observations get their own restart attempt (the helper's stop/drain/start cycle),
+        # and the (MAX+1)-th observation crosses the threshold and fatals. ``>= MAX`` here
+        # would skip the last legitimate retry; ``> MAX + 1`` would burn one extra
+        # 5-second cycle on a state that has already proven unreachable.
         if attempt > _MAX_VERIFIER_STALL_RETRIES:
             message = (
                 "Telegram polling could not recover a wedged long-poll after %d verifier-stall "
@@ -2096,6 +2104,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt, _MAX_VERIFIER_STALL_RETRIES, _redact_telegram_error_text(retry_err))
             # Polling is dead and no more error callbacks will fire — chain the retry ourselves.
             if not self.has_fatal_error and not self._teardown_started:
+                # Advance the bound BEFORE chaining so the helper's own self-invocation
+                # honours the same escalation contract as the external call sites
+                # (``_check_polling_stall`` and ``_verify_polling_after_reconnect``). Without
+                # this, a persistently failing ``_start_polling_once`` would chain 5-second
+                # retries at the same counter value forever and never reach the retryable
+                # fatal — the same failure mode the network-error ladder avoids by
+                # incrementing inside the helper.
+                self._polling_verifier_stall_count += 1
                 task = asyncio.ensure_future(self._handle_polling_verifier_stall(retry_err))
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)

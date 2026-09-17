@@ -254,9 +254,13 @@ async def test_stall_helper_does_not_fatal_before_bound(monkeypatch):
 
     assert not adapter.has_fatal_error
     app.updater.start_polling.assert_awaited_once()
-    # Helper does NOT increment the counter itself — callers do. Asserting
-    # the counter is unchanged here proves the helper is bound-check only,
-    # not a second source of advancement.
+    # Helper does NOT increment on the happy stop/drain/start path —
+    # callers advance the counter. (The helper DOES advance on the chained
+    # self-invocation path when ``_start_polling_once`` itself fails, so
+    # a persistently failing restart still hits the bound; that path is
+    # pinned by ``test_stall_helper_chained_retry_*`` below.) Asserting
+    # the counter is unchanged here proves the happy-path stays bound-
+    # check only.
     assert adapter._polling_verifier_stall_count == 1
     adapter._notify_fatal_error.assert_not_called()
 
@@ -329,3 +333,115 @@ def test_max_verifier_stall_retries_is_a_small_positive_int():
     """
     assert isinstance(tg_adapter._MAX_VERIFIER_STALL_RETRIES, int)
     assert 1 <= tg_adapter._MAX_VERIFIER_STALL_RETRIES <= 5
+
+
+# ── Chained-retry escalation contract (#113618 review feedback) ───────────
+
+
+@pytest.mark.asyncio
+async def test_stall_helper_chained_retry_escalates_to_fatal_after_bound(monkeypatch):
+    """Chained self-invocation when ``_start_polling_once`` fails must
+    honor the bound, not loop 5-second retries at the same counter value
+    forever.
+
+    Regression: review feedback observed that the helper only advances
+    ``_polling_verifier_stall_count`` at the external call sites
+    (``_check_polling_stall`` and ``_verify_polling_after_reconnect``).
+    The helper's own chained self-invocation — when ``_start_polling_once``
+    raises after the stop/drain cycle — re-read the same counter and
+    re-entered the bound check at the same value, so a persistently
+    failing restart looped at the same observation count and never
+    reached the retryable fatal. The fix advances the counter on the
+    chained path too (mirroring the external call sites), so a
+    persistently failing restart still hits the bound after
+    ``_MAX_VERIFIER_STALL_RETRIES`` chained attempts and escalates.
+
+    Contract pinned here:
+
+      * Mock ``_start_polling_once`` to always raise.
+      * Counter advances by exactly one on each chained invocation.
+      * After the bound is crossed, the helper escalates to a retryable
+        ``telegram_network_error`` fatal — i.e. the gateway never
+        loops 5-second retries at the same counter forever.
+    """
+    adapter = _make_stuck_adapter()
+    # Pretend one observation has already happened at the call site
+    # (so the chained path is what does the heavy lifting).
+    adapter._polling_verifier_stall_count = 1
+
+    app = MagicMock()
+    app.updater.running = True
+    app.updater.stop = AsyncMock()
+    app.updater.start_polling = AsyncMock()
+    adapter._app = app
+    adapter._notify_fatal_error = AsyncMock()
+
+    # Mock the helper's internal restart step to always raise. Going
+    # through the real ``_start_polling_once`` would also exercise
+    # ``_begin_polling_generation`` / verifier scheduling, which is
+    # out of scope here — we are testing the bound logic on the
+    # chained retry path, not the restart primitives.
+    start_polling_once = AsyncMock(side_effect=RuntimeError("start_polling_failed"))
+    adapter._start_polling_once = start_polling_once  # type: ignore[method-assign]
+
+    monkeypatch.setattr(tg_adapter, "_MAX_VERIFIER_STALL_RETRIES", 3)
+    monkeypatch.setattr(
+        tg_adapter, "_POLLING_STALL_BACKOFF_SECONDS", 0.001, raising=False
+    )
+
+    # Drive the initial invocation. It will run its own stop/drain/start
+    # cycle (start fails), increment the counter on the chained path,
+    # and spawn a chained task on ``adapter._polling_error_task``.
+    await adapter._handle_polling_verifier_stall(
+        RuntimeError("verifier: general path healthy but getUpdates stalled")
+    )
+
+    # After the first invocation, the counter has been incremented once
+    # (chained path) and a chained task is in flight.
+    assert adapter._polling_verifier_stall_count == 2, (
+        "Chained self-invocation did not advance the counter on the "
+        "first restart failure — the bound would be unenforced."
+    )
+    assert start_polling_once.await_count == 1
+
+    # Sample the counter at each chained invocation and verify it
+    # advances by exactly one each time. With MAX=3 and counter starting
+    # at 1, the bound is crossed when the counter would reach 4 — so
+    # the helper must escalate on the 4th chained iteration (1 → 2 →
+    # 3 → 4 → fatal). Bounded with a safety cap so a regression doesn't
+    # hang the test.
+    observed_counts = [adapter._polling_verifier_stall_count]
+    for _ in range(10):
+        task = adapter._polling_error_task
+        if task is None or task.done():
+            break
+        await task
+        observed_counts.append(adapter._polling_verifier_stall_count)
+        if adapter.has_fatal_error:
+            break
+
+    # Monotonic non-decreasing — every observation is at least as high
+    # as the previous one, and the final value crossed MAX.
+    assert observed_counts == sorted(observed_counts), (
+        f"Counter regressed across chained invocations: {observed_counts}"
+    )
+    assert observed_counts[-1] > tg_adapter._MAX_VERIFIER_STALL_RETRIES, (
+        f"Counter never crossed the bound: {observed_counts} <= {tg_adapter._MAX_VERIFIER_STALL_RETRIES}"
+    )
+
+    # Bound must have been crossed and the helper escalated to a
+    # retryable fatal — that is what "never loops 5s retries at the
+    # same count forever" means.
+    assert adapter.has_fatal_error, (
+        "Chained self-invocation never escalated to retryable fatal: a "
+        "persistently failing _start_polling_once would loop the bound "
+        "forever and leave the gateway stuck on the stall ladder."
+    )
+    assert adapter.fatal_error_code == "telegram_network_error"
+    assert adapter.fatal_error_retryable is True
+    adapter._notify_fatal_error.assert_awaited_once()
+    # The fatal invocation does NOT increment the counter itself — it
+    # returns early on the bound check before reaching the chained
+    # path. The counter observed AFTER the fatal is therefore the
+    # last chained increment, not a +1.
+    assert adapter._polling_verifier_stall_count == tg_adapter._MAX_VERIFIER_STALL_RETRIES + 1

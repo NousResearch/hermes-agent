@@ -313,14 +313,57 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
     return [python_exe, str(path)], env_overlay, None
 
 
+def _profile_scope_env() -> dict[str, str]:
+    """Scope-resolved credential overlay for cron script children.
+
+    The external-worker path installs the firing profile's secret scope as a
+    ContextVar (``cron.scheduler._run_external_worker_payload``) but never in
+    ``os.environ``: under multiplex + home override ``load_hermes_dotenv``
+    deliberately skips the process-global dotenv install, so
+    ``build_subprocess_env(base=None)`` — an ``os.environ`` snapshot — passed
+    the profile's credentials nowhere and every env-reading no_agent script
+    failed deterministically whenever the gateway claimed the fire (the
+    standalone ticker's process env carried the keys, so ticker-path fires kept
+    succeeding — the job flapped between runners).
+
+    Follows the scope-aware read pattern of ``cron.env_settings.cron_env_setting``:
+    outside multiplex the process env IS the profile's env, so the child env is
+    unchanged; under multiplex the scope is authoritative and falls back to the
+    active profile's ``.env`` when no scope is installed (the tick-loop shape,
+    which runs under the home override only). The overlay never rewrites global
+    settings (``agent.secret_scope._is_global_env`` — those are process values,
+    not profile secrets), and the caller-extras channel it feeds still runs the
+    SECURITY.md §2.3 scrub, so Tier-1/Tier-2 credentials stay stripped.
+    """
+    try:
+        from agent.secret_scope import (
+            _is_global_env, current_secret_scope, is_multiplex_active, load_env_file)
+        from hermes_constants import get_hermes_home
+    except Exception:
+        return {}
+    if not is_multiplex_active():
+        return {}
+    scope = current_secret_scope()
+    if scope is None:
+        scope = load_env_file(get_hermes_home() / ".env")
+    overlay: dict[str, str] = {}
+    for name, value in scope.items():
+        if (isinstance(name, str) and name and isinstance(value, str)
+                and not _is_global_env(name)):
+            overlay[name] = value
+    return overlay
+
+
 def _run_job_script(
     script_path: str, workdir: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None,
 ) -> tuple[bool, str]:
     """Execute a cron job's script and return ``(success, output)``; on failure *output* is the
     error message for the LLM to report. Env goes through ``build_subprocess_env`` (SECURITY.md
-    §2.3). ``workdir`` sets the subprocess cwd only; the Python process cwd is NEVER mutated (an
-    ``os.chdir()`` would leak into concurrent gateway sessions).
+    §2.3) with the active profile secret scope overlaid (``_profile_scope_env``) so no_agent
+    scripts resolve the firing profile's credentials on every runner. ``workdir`` sets the
+    subprocess cwd only; the Python process cwd is NEVER mutated (an ``os.chdir()`` would leak
+    into concurrent gateway sessions).
 
     Args: script_path: Path to the script. Relative paths are resolved against HERMES_HOME/scripts/.
     Absolute and ~-prefixed paths are also validated to ensure they stay within the scripts dir. workdir:
@@ -348,7 +391,7 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        env = build_subprocess_env()
+        env = build_subprocess_env(extra=_profile_scope_env())
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

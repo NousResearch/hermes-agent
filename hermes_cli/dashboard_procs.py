@@ -252,6 +252,79 @@ def _exclude_pids_from_env() -> set[int]:
     return out
 
 
+#: Executables that only *carry* a hermes command line. A process headed by one of these
+#: never serves traffic itself; when its argv matches the dashboard patterns it is a
+#: wrapper around the command (``bash -c 'hermes dashboard --stop'``), not a backend.
+_WRAPPER_HEAD_COMMANDS = frozenset({
+    "ash", "bash", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh",
+    "env", "nohup", "nice", "stdbuf", "timeout", "watch", "xargs",
+    "screen", "tmux", "sudo",
+})
+
+
+def _caller_ancestor_pids() -> set[int]:
+    """PIDs of THIS process's ancestors (self excluded), best-effort; empty on any failure.
+
+    ``--stop`` and the update sweep must never kill the process tree they were invoked
+    from. psutil is primary; the ``/proc`` walk keeps the answer when psutil is unusable.
+    """
+    try:
+        import psutil
+
+        return {p.pid for p in psutil.Process().parents()}
+    except Exception:
+        pass
+    ancestors: set[int] = set()
+    cur = os.getpid()
+    for _ in range(2048):  # cycle / corrupt-PPid guard
+        try:
+            status_text = Path(f"/proc/{cur}/status").read_text(
+                encoding="utf-8", errors="replace")
+            for line in status_text.splitlines():
+                if line.startswith("PPid:"):
+                    cur = int(line.split()[1])
+                    break
+            else:
+                return ancestors
+        except (OSError, ValueError, IndexError):
+            return ancestors
+        if cur <= 1:
+            return ancestors
+        ancestors.add(cur)
+    return ancestors
+
+
+def _argv_head_command(pid: int) -> str | None:
+    """Basename of *pid*'s first argv token, best-effort; ``None`` when unreadable."""
+    try:
+        import psutil
+
+        argv = psutil.Process(pid).cmdline()
+        if argv:
+            return os.path.basename(str(argv[0]))
+    except Exception:
+        pass
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    head = raw.split(b"\x00", 1)[0].decode("utf-8", "replace")
+    return head.rsplit("/", 1)[-1] or None
+
+
+def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
+    """True when *pid* is a caller ancestor headed by a wrapper executable.
+
+    Root selection is a substring match, so the shell a ``--stop`` was typed into (or a
+    ``bash -c 'hermes dashboard --stop'`` wrapper) matches on its own argv. Ancestor alone
+    is not a spare: the backend hosting a shell-escaped TUI is also the caller's ancestor
+    and must stay stoppable — only a wrapper-headed ancestor is spared.
+    """
+    if pid not in ancestors:
+        return False
+    return (_argv_head_command(pid) or "") in _WRAPPER_HEAD_COMMANDS
+
+
 def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
     """``taskkill /F`` each PID after re-verifying its identity."""
     from gateway.status import get_process_start_time

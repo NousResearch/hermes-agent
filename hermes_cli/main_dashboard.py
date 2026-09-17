@@ -20,8 +20,16 @@ _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run bu
 
 def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[int]:
     """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
-    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids,
+        _is_caller_wrapper_shell,
+        _scan_dashboard_processes,
+    )
+    pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
+    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    ancestors = _caller_ancestor_pids()
+    return [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:

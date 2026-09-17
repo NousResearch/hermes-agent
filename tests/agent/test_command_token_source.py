@@ -178,6 +178,36 @@ class TestResolutionYieldsACallable:
         assert callable(api_key), "key_cmd must resolve to a per-request callable"
         assert api_key() == "minted-token"
 
+    def test_key_cmd_callable_survives_auxiliary_main_route(self, monkeypatch):
+        from agent import auxiliary_client as aux
+        from hermes_cli import runtime_provider as rp
+
+        config = {
+            "providers": {
+                "gateway": {
+                    "api": "https://gateway.invalid/anthropic",
+                    "transport": "anthropic_messages",
+                    "default_model": "m1",
+                    "models": {"m1": {}},
+                    "key_cmd": "printf minted-token",
+                }
+            }
+        }
+        monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+        runtime = rp.resolve_runtime_provider(requested="gateway", target_model="m1")
+        client, model, provider = aux._resolve_auto_route(
+            main_runtime=runtime, task="title_generation"
+        )
+
+        assert model == "m1"
+        assert provider == "custom"
+        assert client is not None
+        assert client.api_key is runtime["api_key"]
+        assert callable(client.api_key)
+        client.close()
+
     def test_explicit_api_key_still_wins(self, monkeypatch):
         """``--api-key`` stays the one-off recovery escape hatch."""
         from hermes_cli import runtime_provider as rp

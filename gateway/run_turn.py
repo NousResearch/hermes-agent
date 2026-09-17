@@ -1846,8 +1846,11 @@ class GatewayTurnMixin:
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             silence_adapter = self._adapter_for_source(source)
-            if silence_adapter is not None:
-                silence_adapter.conversation_middleware().output_suppressed(
+            silence_middleware = getattr(
+                silence_adapter, "conversation_middleware", None
+            )
+            if callable(silence_middleware):
+                silence_middleware().output_suppressed(
                     event, response, "host_intentional_silence"
                 )
             response = ""
@@ -2616,9 +2619,12 @@ class GatewayTurnMixin:
             _scfg.enabled and _scfg.transport != "off" if _plat_streaming is None else bool(_plat_streaming)
         )
         _conversation_adapter = self._adapter_for_source(source)
+        _conversation_middleware = getattr(
+            _conversation_adapter, "conversation_middleware", None
+        )
         if (
-            _conversation_adapter
-            and _conversation_adapter.conversation_middleware().buffers_output
+            callable(_conversation_middleware)
+            and _conversation_middleware().buffers_output
         ):
             _streaming_enabled = False
         if not _streaming_enabled:

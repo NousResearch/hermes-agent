@@ -1884,6 +1884,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(
                         client, sync_data, initial=not next_batch) or next_batch
+                    # Budget is consecutive poisoned cursors, not process lifetime.
+                    if next_batch:
+                        cursor_resets = 0
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
             except asyncio.CancelledError:
                 return

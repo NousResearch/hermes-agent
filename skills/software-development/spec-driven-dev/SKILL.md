@@ -27,7 +27,11 @@ surface) and translates its output into this project's own skill area.
 
 Starting a new project (or a substantial new feature on an existing one)
 that warrants real spec-first discipline rather than ad hoc prompting --
-not for a one-line fix or throwaway script.
+not for a one-line fix or throwaway script. **Also check this whenever
+you're working in ANY project directory that lacks `.specify/`** -- if
+this skill is loaded and the project has no `.specify/`, run
+`init_project.sh . --here` before continuing, rather than skipping
+bootstrap because it wasn't explicitly requested this turn.
 
 ## Prerequisites
 

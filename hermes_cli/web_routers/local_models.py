@@ -741,20 +741,26 @@ async def local_models_set_mtp(model_id: str, body: MtpOverrideBody):
             debug="mtp-override clear skipped",
         )
     else:
-        forced = body.enabled
-        _quiet(
-            lambda: growth.save_mtp_override(model_id, forced),
-            None,
-            warn="mtp-override save failed",
-            debug="mtp-override save skipped",
-        )
+        # The whole point of the call is the persisted posture: a failed write must
+        # answer with an error, not ok — otherwise the next start silently runs the
+        # old launch policy while the dashboard believes it changed.
+        try:
+            growth.save_mtp_override(model_id, body.enabled)
+        except Exception as exc:
+            logger.warning("mtp-override save failed for %s: %s", model_id, exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"could not persist the MTP override for {model_id}",
+            ) from exc
     threading.Thread(
         target=_refresh_runtime,
         args=("post-mtp-override runtime refresh skipped",),
         daemon=True,
         name="lr-post-mtp",
     ).start()
-    return {"ok": True, "model_id": model_id, "mtp_override": body.enabled}
+    # Report what the store actually holds, not what the caller asked for.
+    effective = growth.load_mtp_overrides().get(model_id)
+    return {"ok": True, "model_id": model_id, "mtp_override": effective}
 
 
 # ── quickstart: one click from nothing to a working default ──

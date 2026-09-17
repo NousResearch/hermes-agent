@@ -74,3 +74,67 @@ def test_mtp_override_false_disables_catalog_mtp_model(tmp_path, monkeypatch):
     assert off is not None and off.keys is not None
     assert off.keys.get("spec-type") != "draft-mtp"
     assert "backend-sampling" not in off.keys
+
+
+# ── route: forced MTP posture ─────────────────────────────────
+
+
+def _route_client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli import web_server
+
+    c = TestClient(web_server.app)
+    c.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    return c
+
+
+def test_mtp_override_route_roundtrips_effective_value(tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import growth
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    client = _route_client(tmp_path, monkeypatch)
+    gguf = models_dir() / "Forced-MTP.gguf"
+    gguf.parent.mkdir(parents=True, exist_ok=True)
+    gguf.write_bytes(b"GGUF" + b"\x00" * 64)
+
+    r = client.post(
+        "/api/local-models/models/Forced-MTP/mtp",
+        json={"model_id": "Forced-MTP", "enabled": True},
+    )
+    assert r.status_code == 200
+    # The response reports what the store holds, not what the caller asked for.
+    assert r.json()["mtp_override"] is True
+    assert growth.load_mtp_overrides().get("Forced-MTP") is True
+
+    r = client.post(
+        "/api/local-models/models/Forced-MTP/mtp",
+        json={"model_id": "Forced-MTP", "enabled": None},
+    )
+    assert r.status_code == 200
+    assert r.json()["mtp_override"] is None
+    assert "Forced-MTP" not in growth.load_mtp_overrides()
+
+
+def test_mtp_override_route_fails_loud_when_store_write_fails(tmp_path, monkeypatch):
+    from hermes_cli.local_runtime import growth
+    from hermes_cli.local_runtime.bootstrap import models_dir
+
+    client = _route_client(tmp_path, monkeypatch)
+    gguf = models_dir() / "Unwritable-MTP.gguf"
+    gguf.parent.mkdir(parents=True, exist_ok=True)
+    gguf.write_bytes(b"GGUF" + b"\x00" * 64)
+
+    def _boom(*args, **kwargs):
+        raise OSError("store is unwritable")
+
+    monkeypatch.setattr(growth, "save_mtp_override", _boom)
+    r = client.post(
+        "/api/local-models/models/Unwritable-MTP/mtp",
+        json={"model_id": "Unwritable-MTP", "enabled": True},
+    )
+    # A save that never landed must not answer ok — the caller would believe
+    # the launch posture changed while the next start still runs the old one.
+    assert r.status_code == 500
+    assert "could not persist" in r.json()["detail"]

@@ -116,6 +116,95 @@ def test_auth_add_api_key_persists_manual_entry(tmp_path, monkeypatch):
     assert entry["access_token"] == "sk-or-manual"
 
 
+@pytest.mark.parametrize(
+    ("provider", "api_key", "base_url_override", "expected_base_url"),
+    [
+        ("kimi-coding", "sk-kimi-test", None, "https://api.kimi.com/coding"),
+        ("kimi-coding-cn", "sk-kimi-test", None, "https://api.kimi.com/coding"),
+        ("kimi-coding", "sk-kimi-test", "https://kimi-proxy.example/v1", "https://kimi-proxy.example/v1"),
+        ("kimi-coding", "legacy-moonshot-key", None, "https://api.moonshot.ai/v1"),
+    ],
+)
+def test_auth_add_kimi_key_persists_key_resolved_endpoint(
+    tmp_path, monkeypatch, provider, api_key, base_url_override, expected_base_url
+):
+    """A manual Kimi Code credential must not be persisted at Moonshot's endpoint."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for key in ("KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    if base_url_override:
+        monkeypatch.setenv("KIMI_BASE_URL", base_url_override)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(
+        type(
+            "Args",
+            (),
+            {
+                "provider": provider,
+                "auth_type": "api-key",
+                "api_key": api_key,
+                "label": "Kimi Code",
+            },
+        )()
+    )
+
+    payload = json.loads((hermes_home / "auth.json").read_text(encoding="utf-8"))
+    entry = payload["credential_pool"][provider][0]
+    assert entry["base_url"] == expected_base_url
+
+
+@pytest.mark.parametrize(
+    ("provider", "stored_base_url", "api_key", "base_url_override", "expected_base_url"),
+    [
+        ("kimi-coding", "https://api.moonshot.ai/v1", "sk-kimi-test", None, "https://api.kimi.com/coding"),
+        ("kimi-coding-cn", "https://api.moonshot.cn/v1", "sk-kimi-test", None, "https://api.kimi.com/coding"),
+        ("kimi-coding", "https://api.kimi.com/coding/v1", "sk-kimi-test", None, "https://api.kimi.com/coding"),
+        ("kimi-coding", "https://kimi-proxy.example/v1", "sk-kimi-test", None, "https://kimi-proxy.example/v1"),
+        ("kimi-coding", "https://kimi-proxy.example/v1", "sk-kimi-test", "https://env-override.example/v1", "https://env-override.example/v1"),
+        ("kimi-coding", "https://api.moonshot.ai/v1", "legacy-moonshot-key", None, "https://api.moonshot.ai/v1"),
+    ],
+)
+def test_load_pool_repairs_only_stale_kimi_code_routes(
+    tmp_path, monkeypatch, provider, stored_base_url, api_key, base_url_override, expected_base_url
+):
+    """Existing Kimi Code pool rows self-heal without replacing custom routes."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for key in ("KIMI_API_KEY", "KIMI_CODING_API_KEY", "KIMI_BASE_URL"):
+        monkeypatch.delenv(key, raising=False)
+    if base_url_override:
+        monkeypatch.setenv("KIMI_BASE_URL", base_url_override)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                provider: [
+                    {
+                        "id": "kimi-1",
+                        "label": "Kimi Code",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": api_key,
+                        "base_url": stored_base_url,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    entry = load_pool(provider).select()
+    assert entry is not None
+    assert entry.base_url == expected_base_url
+
+
 def test_auth_add_configured_provider_uses_canonical_pool_key(tmp_path, monkeypatch):
     """A keyed providers row must keep its runtime slug in the auth pool."""
     hermes_home = tmp_path / "hermes"

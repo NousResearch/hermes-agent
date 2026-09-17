@@ -474,12 +474,19 @@ def _extract_docx(path: str) -> str:
     return _joined(lines, "DOCX contains no extractable text")
 
 
+def _xlsx_string_text(item: ET.Element, s: str) -> str:
+    """Base text of an si/is, excluding rPh phonetic annotations."""
+    return "".join(
+        (child.text or "") if child.tag == f"{s}t" else child.findtext(f"{s}t") or ""
+        for child in item if child.tag in {f"{s}t", f"{s}r"})
+
+
 def _extract_xlsx(path: str) -> str:
     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
     with _open_zip(path, "XLSX") as zf:
         names = set(zf.namelist())
         sst = _zip_xml(zf, "xl/sharedStrings.xml", optional=True)
-        shared = ["".join(t.text or "" for t in item.iter(f"{s}t")) for item in sst.iter(f"{s}si")]
+        shared = [_xlsx_string_text(item, s) for item in sst.iter(f"{s}si")]
         rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True)
         rels = {rel.get("Id", ""): rel.get("Target", "")
                 for rel in rels_root.iter(f"{pr}Relationship") if rel.get("Id")}
@@ -531,7 +538,7 @@ def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
             return ""
     if typ == "inlineStr":
         inline = cell.find(f"{s}is")
-        return "" if inline is None else "".join(t.text or "" for t in inline.iter(f"{s}t"))
+        return "" if inline is None else _xlsx_string_text(inline, s)
     if typ == "b":
         return "TRUE" if value.strip() in {"1", "true", "TRUE"} else "FALSE"
     return (value or "#ERROR") if typ == "e" else value

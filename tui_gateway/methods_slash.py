@@ -18,6 +18,16 @@ _registry = HandlerRegistry()
 # Answered from the live session ONLY when the agent lives on a compute host.
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
+# /context on a LOCAL session is answered in-process: the slash worker is a CLI
+# subprocess whose ``self.agent`` is built lazily by the first chat prompt and
+# never by a slash command, so its /context answers "(._.) No active agent" for
+# any local session, active or idle (#93280). With a live agent we render the
+# full Cursor-style breakdown (the desktop gauge's engine); without one we fall
+# back to the persisted-state view. ``tools``/``help`` keep the old routing:
+# ``_format_live_tools_output`` reads ``session["agent"]``, so serving it here
+# for an agentless session would answer worse, not better.
+_CONTEXT_LOCAL_IN_PROCESS = frozenset({"context"})
+
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
 
@@ -134,6 +144,34 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if not messages:
         with session["history_lock"]:
             messages = _history_to_messages(list(session.get("history", [])))
+
+    breakdown_lines: list[str] = []
+    if (agent := session.get("agent")) is not None:
+        # Live agent: the desktop gauge's engine (session.context_breakdown) —
+        # full Cursor-style breakdown, provider-anchored, no provider calls.
+        # `all` expands per-skill / per-toolset costs, matching the CLI.
+        with session["history_lock"]:
+            live_messages = list(session.get("history", []))
+        try:
+            # Bind the session context: on the RPC thread the session cwd is unset, so the
+            # prompt build inside would key its workspace pin on the backend's cwd.
+            tokens = _set_session_context(session["session_key"])
+            try:
+                from agent.context_breakdown import (
+                    compute_context_details,
+                    compute_session_context_breakdown,
+                    render_context_breakdown_lines)
+                payload = compute_session_context_breakdown(agent, live_messages)
+                details = None
+                if (arg or "").strip().lower() in {"all", "full", "details"}:
+                    with contextlib.suppress(Exception):
+                        details = compute_context_details(agent)
+                breakdown_lines = render_context_breakdown_lines(payload, details=details, grid=False)
+            finally:
+                _clear_session_context(tokens)
+        except Exception:
+            breakdown_lines = []  # fall back to the persisted-state view below
+
     usage = _session_usage_snapshot(session)
     mirror = _metadata_mirror(session)
     lines = [f"Conversation: {len(messages)} messages" if messages else "Conversation is empty (no messages yet)."]
@@ -142,6 +180,9 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if model := mirror.get("model") or usage.get("model") or "":
         lines.append(f"Model: {model}")
     lines.append(f"Provider: {mirror.get('provider') or 'auto'}")
+    if breakdown_lines:
+        lines.extend(["", *breakdown_lines])
+        return "\n".join(lines)
     context_used = int(usage.get("context_used") or 0)
     mark = "~" if usage.get("context_estimated") else ""
     context_max = int(usage.get("context_max") or 0)
@@ -229,6 +270,12 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     arg = arg or ""
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
+    if (
+        name in _CONTEXT_LOCAL_IN_PROCESS
+        and session is not None
+        and not _session_uses_compute_host(session)
+    ):
+        return _format_live_context_output(sid, session, arg)
     if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):
         return None
     entry = _LIVE_SLASH_OUTPUT.get(name)

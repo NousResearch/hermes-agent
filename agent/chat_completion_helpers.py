@@ -2413,7 +2413,7 @@ class _BedrockStream:
             def _stream_created(_stream: Any) -> None:
                 writer_token["value"] = claim_stream_writer(agent)
 
-            def _accept_event(_event: Any) -> bool:
+            def _writer_is_current() -> bool:
                 token = writer_token["value"]
                 return token is None or stream_writer_is_current(agent, token)
 
@@ -2427,18 +2427,34 @@ class _BedrockStream:
                 logger.debug("plugin reasoning stream observer check failed", exc_info=True)
                 plugin_reasoning_observer = False
 
+            # NOT wired as Relay's ``accept_chunk``: that gate would break the RAW provider
+            # iteration in relay_llm.py's ``_provider_stream`` the instant a newer stream claims
+            # the writer, truncating ``intercepted_events`` — the finalizer then rebuilds
+            # ``content`` from only the chunks accepted before that point, silently dropping the
+            # rest of the response even though the provider delivered it in full (#110402). The
+            # single-writer fence exists to stop DUPLICATE UI emission across superseded stream
+            # attempts, not to cut the buffer the persisted message is built from; gate the delta
+            # callbacks below instead, exactly like the chat_completions path's
+            # ``_writer_still_current`` (never wired into Relay's own chunk gate either).
             stream = relay_llm.stream(dict(self.api_kwargs), self._open_stream,
                 **_relay_stream_identity(agent, "bedrock"),
                 finalizer=lambda: stream_converse_with_callbacks({"stream": list(intercepted_events)}),
                 on_stream_created=_stream_created, on_chunk=intercepted_events.append,
-                chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
+                chunk_adapter=lambda chunk: chunk,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
                 metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
             wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
+
+            def _gated(fire):
+                def _on(value):
+                    if _writer_is_current():
+                        fire(value)
+                return _on
+
             streamed_response = stream_converse_with_callbacks({"stream": stream},
-                on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
-                on_tool_start=self._after_first(agent._fire_tool_gen_started),
-                on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
+                on_text_delta=self._after_first(_gated(agent._fire_stream_delta)) if agent._has_stream_consumers() else None,
+                on_tool_start=self._after_first(_gated(agent._fire_tool_gen_started)),
+                on_reasoning_delta=self._after_first(_gated(agent._fire_reasoning_delta)) if wants_reasoning else None,
                 on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
             self.result["response"] = stream.final_response or streamed_response
         except Exception as e:

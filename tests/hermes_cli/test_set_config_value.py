@@ -6,6 +6,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     config_command,
@@ -521,6 +522,21 @@ class TestSchemaValidation:
         err = capsys.readouterr().err
         assert "nothing was written" in err
         assert "discord.gateway_restart_notification" in err
+
+    @pytest.mark.parametrize("key,value,expected", [
+        ("skills.creation_nudge_interval", "50", 50),
+        ("display.tool_progress", "all", "all"),
+        ("stt.provider", "whisper", "whisper"),
+    ])
+    def test_runtime_read_subkeys_are_written_without_force(
+        self, key, value, expected, _isolated_hermes_home
+    ):
+        """Unseeded runtime settings are not proven typos merely by a schema walk."""
+        set_config_value(key, value)
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        section, name = key.split(".")
+        assert saved[section][name] == expected
 
     def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
         set_config_value("brand_new_future_key", "value")

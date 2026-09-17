@@ -3327,6 +3327,26 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def _is_wrong_prefix_suggestion(key: str, suggestion: Optional[str]) -> bool:
+    """Whether *suggestion* proves that *key* has only an extra prefix.
+
+    ``DEFAULT_CONFIG`` is not a complete registry of runtime-read settings, so a
+    sibling spelling suggestion alone cannot prove an unseeded path is a typo.
+    A known suffix, such as ``gateway.discord.gateway_restart_notification``
+    -> ``discord.gateway_restart_notification``, is the narrow case where the
+    pre-write refusal is safe.
+    """
+    if not suggestion:
+        return False
+    key_segments = _split_key_path(key)
+    suggestion_segments = _split_key_path(suggestion)
+    return (
+        len(suggestion_segments) < len(key_segments)
+        and key_segments[-len(suggestion_segments):] == suggestion_segments
+        and _validate_config_key(suggestion)[0]
+    )
+
+
 def _looks_structured_value(value: str) -> bool:
     """True when *value* plausibly encodes a YAML/JSON list or mapping. Deliberately conservative:
     a bare leading ``-`` is not a trigger (``-5``, ``--flag`` must stay strings)."""
@@ -3569,12 +3589,10 @@ def set_config_value(key: str, value: str, force: bool = False):
     if _redirect_note:
         print(_redirect_note)
     is_known, suggestion = _validate_config_key(key)
-    # Unknown-key handling (#34067, #112003): an unknown path UNDER a known section can only be a
-    # typo (``gateway.discord.gateway_restart_notification``), so it is refused before anything is
-    # written. Unknown lowercase TOP-LEVEL keys stay writable with a post-write notice — their
-    # scalars are bridged into os.environ for skills/external apps, so that namespace is open by
-    # design (UPPER_SNAKE names were already routed to .env above).
-    if not is_known and not force and _split_key_path(key)[0] in _known_top_level_keys():
+    # DEFAULT_CONFIG is an incomplete schema: runtime-read settings may deliberately have no
+    # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
+    # paths keep the post-write warning so valid runtime settings remain configurable.
+    if not is_known and not force and _is_wrong_prefix_suggestion(key, suggestion):
         _exit_invalid(_unknown_subkey_refusal(key, suggestion))
 
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.

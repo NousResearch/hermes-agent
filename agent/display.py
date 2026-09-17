@@ -16,7 +16,6 @@ from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from utils import safe_json_loads
-from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 logger = logging.getLogger(__name__)
@@ -302,19 +301,28 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}" if isinstance(limit, int) and limit > 1 else f"L{offset}"
 
 
+_HIDDEN_BROWSER_TEXT = "[hidden text]"
+# Echo replacement swaps every needle occurrence across whole payloads; for a very
+# short needle that would mangle ordinary output far beyond any leak surface (a
+# single search character), so such echoes pass through. Full-arg masking in
+# redact_tool_args_for_display carries no threshold.
+_MIN_BROWSER_ECHO_NEEDLE_LEN = 4
+
+
 def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
-    """Replace every occurrence of a secret-looking browser_type value with its redacted form.
+    """Replace every occurrence of a browser_type value with a fixed mask.
 
     Backends echo the attempted input in error strings/metadata, so it is swapped before
-    reaching logs, callbacks, the model, or chat history. Forced regardless of
+    reaching logs, callbacks, the model, or chat history — with a fixed placeholder
+    rather than a pattern match: a human vault credential matches no secret pattern
+    (#72298), so secret-shape detection must not be the gate. Forced regardless of
     ``security.redact_secrets``: a leaked typed credential is a security boundary.
     """
     needle = "" if typed_text is None else str(typed_text)
-    redacted = redact_sensitive_text(needle, force=True) if needle else needle
-    if redacted == needle:
+    if not needle or len(needle) < _MIN_BROWSER_ECHO_NEEDLE_LEN:
         return value
     if isinstance(value, str):
-        return value.replace(needle, redacted)
+        return value.replace(needle, _HIDDEN_BROWSER_TEXT)
     if isinstance(value, dict):
         return {key: redact_browser_typed_text_for_display(item, typed_text) for key, item in value.items()}
     if isinstance(value, list):
@@ -325,11 +333,17 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
 
 
 def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
-    """Return a copy of tool args safe for logs/progress UI (masks ``browser_type`` secrets)."""
+    """Return a copy of tool args safe for logs/progress UI (masks ``browser_type`` text).
+
+    The ``browser_type`` text arg is replaced with a fixed placeholder: form-field
+    values are frequently vault credentials that match no secret pattern (#72298),
+    and an element's input kind is not knowable at display time, so masking is
+    fail-closed rather than pattern-gated. Idempotent under repeated application.
+    """
     if not isinstance(args, dict):
         return args
     if tool_name == "browser_type" and isinstance(args.get("text"), str):
-        return {**args, "text": redact_sensitive_text(args["text"], force=True)}
+        return {**args, "text": _HIDDEN_BROWSER_TEXT}
     return args
 
 

@@ -2243,12 +2243,12 @@ class TestConcurrentToolExecution:
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
         agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
 
-        with patch("model_tools.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+        with patch("model_tools.handle_function_call", return_value='{"success": true, "typed": "[hidden text]"}'):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
-        assert starts[0][2]["text"].startswith("sk-pro")
-        assert completes[0][2]["text"].startswith("sk-pro")
-        assert progress[0][2].startswith("sk-pro")
+        assert starts[0][2]["text"] == "[hidden text]"
+        assert completes[0][2]["text"] == "[hidden text]"
+        assert progress[0][2] == "[hidden text]"
         assert secret not in repr(starts + completes + progress)
 
 

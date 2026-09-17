@@ -175,7 +175,7 @@ class TestCamofoxInteractions:
         result = json.loads(camofox_type("@apikey", secret, task_id="t5b"))
         assert result["success"] is True
         assert secret not in json.dumps(result)
-        assert result["typed"].startswith("sk-pro")
+        assert result["typed"] == "[hidden text]"
 
     @patch("tools.browser_camofox.requests.post")
     def test_type_failure_redacts_api_key(self, mock_post, monkeypatch):
@@ -191,7 +191,7 @@ class TestCamofoxInteractions:
 
         assert result["success"] is False
         assert secret not in raw_result
-        assert "sk-pro" in raw_result
+        assert "[hidden text]" in raw_result
 
 
     @patch("tools.browser_camofox.requests.post")

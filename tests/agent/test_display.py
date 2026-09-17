@@ -60,13 +60,25 @@ class TestBuildToolPreview:
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": secret})
         assert result is not None
         assert secret not in result
-        assert "sk-pro" in result and "..." in result
+        assert "[hidden text]" in result
 
-    def test_browser_type_preview_keeps_normal_text(self):
+    def test_browser_type_preview_hides_normal_text(self):
         text = "hello world search query"
         result = build_tool_preview("browser_type", {"ref": "@e3", "text": text})
         assert result is not None
-        assert text in result
+        assert text not in result
+        assert "[hidden text]" in result
+
+    def test_browser_type_display_args_hides_plain_human_value(self):
+        # #72298: a vault-sourced human credential matches no secret pattern;
+        # the typed value must still be masked (fail-closed).
+        typed_value = "dummy-vault-pass-42"
+        safe_args = redact_tool_args_for_display(
+            "browser_type", {"ref": "@e3", "text": typed_value}
+        )
+        assert typed_value not in str(safe_args)
+        assert safe_args["ref"] == "@e3"
+        assert safe_args["text"] == "[hidden text]"
 
     def test_browser_type_display_args_redact_api_key(self):
         secret = "ghp_ABCDEFGHIJ1234567890"
@@ -75,7 +87,7 @@ class TestBuildToolPreview:
         )
         assert secret not in str(safe_args)
         assert safe_args["ref"] == "@e3"
-        assert safe_args["text"].startswith("ghp_AB")
+        assert safe_args["text"] == "[hidden text]"
 
 
 
@@ -186,18 +198,19 @@ class TestCuteToolMessagePreviewLength:
         )
 
         assert secret not in line
-        assert "sk-pro" in line
+        assert "[hidden text]" in line
 
-    def test_browser_type_cute_message_keeps_normal_text(self):
+    def test_browser_type_cute_message_hides_normal_text(self):
         text = "hello world"
         line = get_cute_tool_message(
             "browser_type",
             {"ref": "@search", "text": text},
             0.1,
-            result='{"success": true, "typed": "hello world"}',
+            result='{"success": true, "typed": "[hidden text]"}',
         )
 
-        assert text in line
+        assert text not in line
+        assert "[hidden text]" in line
 
 
 class TestEditDiffPreview:

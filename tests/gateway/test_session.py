@@ -1,5 +1,7 @@
 """Tests for gateway session management."""
 import json
+import logging
+import time
 import pytest
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -1387,7 +1389,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "parent", {"role": "assistant", "content": "routed to child"}
@@ -1426,7 +1428,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "root", {"role": "assistant", "content": "routed to tip"}
@@ -1462,7 +1464,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = False
+        store._fts_rebuild_last_attempt_at = None
 
         store.append_to_transcript(
             "root", {"role": "assistant", "content": "must not land"}
@@ -1499,7 +1501,7 @@ class TestGatewaySessionDbRecovery:
             ]
         }
         store._transcript_append_failures = {"parent": 2}
-        store._fts_rebuild_attempted = True
+        store._fts_rebuild_last_attempt_at = time.monotonic()
         child_attempts = []
         failed_old_2 = False
 
@@ -1572,6 +1574,70 @@ class TestGatewaySessionDbRecovery:
             RuntimeError("gifts received")
         )
 
+    def test_rebuild_fts_once_retries_after_cooldown_and_escalates_log(self, caplog, monkeypatch):
+        """_rebuild_fts_once must block retries until the cooldown window elapses, then allow
+        one more attempt (#114266: a permanent one-shot flag disabled recovery forever after a
+        single failed rebuild). Once the append-failure count crosses the escalation threshold,
+        the append-failure logging must escalate from WARNING to ERROR."""
+        import threading
+        from types import SimpleNamespace
+
+        class FakeDb:
+            def __init__(self):
+                self.rebuild_calls = 0
+
+            def rebuild_fts(self):
+                self.rebuild_calls += 1
+                return 1
+
+        fake_db = FakeDb()
+        store = object.__new__(SessionStore)
+        store._db = fake_db
+        store._fts_rebuild_last_attempt_at = None
+
+        # Fake clock so the cooldown boundary is exact and not flaky under real time.
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+        assert store._rebuild_fts_once() is True
+        assert fake_db.rebuild_calls == 1
+
+        # Still within the cooldown window: blocked, no second rebuild call.
+        clock["now"] += store._FTS_REBUILD_COOLDOWN_SECONDS - 1
+        assert store._rebuild_fts_once() is False
+        assert fake_db.rebuild_calls == 1
+
+        # Cooldown has elapsed: retry is allowed again.
+        clock["now"] += 2
+        assert store._rebuild_fts_once() is True
+        assert fake_db.rebuild_calls == 2
+
+        # --- Escalation logging on _append_to_transcript_serialized ---
+        db_fail = SimpleNamespace(
+            append_message=lambda **kwargs: (_ for _ in ()).throw(
+                RuntimeError("database disk image is malformed")
+            )
+        )
+        log_store = object.__new__(SessionStore)
+        log_store._db = db_fail
+        log_store._transcript_retry_lock = threading.Lock()
+        log_store._dirty_transcripts = {}
+        log_store._transcript_append_failures = {}
+        log_store._fts_rebuild_last_attempt_at = time.monotonic()
+
+        threshold = log_store._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD
+        with caplog.at_level(logging.WARNING, logger="gateway.session_transcript"):
+            for i in range(threshold - 1):
+                caplog.clear()
+                log_store.append_to_transcript("s-esc", {"role": "user", "content": f"m{i}"})
+                assert any(r.levelno == logging.WARNING for r in caplog.records)
+                assert not any(r.levelno == logging.ERROR for r in caplog.records)
+
+            caplog.clear()
+            log_store.append_to_transcript("s-esc", {"role": "user", "content": "trigger"})
+            assert any(r.levelno == logging.ERROR for r in caplog.records)
+            assert log_store._transcript_append_failures["s-esc"] == threshold
+
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap
         to prevent unbounded memory growth on persistent DB failure."""
@@ -1593,7 +1659,7 @@ class TestGatewaySessionDbRecovery:
         store._transcript_retry_lock = threading.Lock()
         store._dirty_transcripts = {}
         store._transcript_append_failures = {}
-        store._fts_rebuild_attempted = True
+        store._fts_rebuild_last_attempt_at = time.monotonic()
 
         # Fill beyond the cap
         for i in range(store._MAX_PENDING_PER_SESSION + 10):

@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from agent.turn_context import extract_api_content_sidecar
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -47,6 +48,14 @@ class SessionTranscriptMixin:
     compression-reroute following, FTS corruption recovery, rewrite/rewind/load."""
 
     _MAX_PENDING_PER_SESSION = 200  # in-memory pending messages per session (DB broken)
+    # Cooldown between FTS5 rebuild attempts (see _rebuild_fts_once); avoids permanently
+    # disabling recovery after one failed attempt while still avoiding a rebuild storm against
+    # a database that is corrupt on every write.
+    _FTS_REBUILD_COOLDOWN_SECONDS = 300
+    # Consecutive transcript-append failures for one session before escalating from WARNING to
+    # ERROR (see _append_to_transcript_serialized); a session stalled past this many attempts is
+    # no longer a transient blip and needs operator attention.
+    _TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD = 3
 
     def _compression_tip_for_session_id(self, session_id: Optional[str]) -> Optional[str]:
         """Latest compression continuation for *session_id* (heals a mapping left pointing at a
@@ -285,9 +294,15 @@ class SessionTranscriptMixin:
                 with self._transcript_retry_lock:
                     failures = self._transcript_append_failures.get(session_id, 0) + 1
                     self._transcript_append_failures[session_id] = failures
-                logger.warning(
-                    "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
-                    "will retry: %s", session_id, failures, len(pending), exc)
+                if failures >= self._TRANSCRIPT_APPEND_FAILURE_ESCALATION_THRESHOLD:
+                    logger.error(
+                        "Session DB transcript append failed for %s (failure_count=%d, "
+                        "pending=%d); session is stalled and needs operator attention: %s",
+                        session_id, failures, len(pending), exc)
+                else:
+                    logger.warning(
+                        "Session DB transcript append failed for %s (failure_count=%d, pending=%d); "
+                        "will retry: %s", session_id, failures, len(pending), exc)
                 return
             else:
                 with self._transcript_retry_lock:
@@ -365,10 +380,20 @@ class SessionTranscriptMixin:
         return isinstance(exc, sqlite3.DatabaseError) and SessionDB._is_fts_write_corruption_error(exc)
 
     def _rebuild_fts_once(self) -> bool:
-        """Attempt FTS5 ``rebuild`` once per store lifetime; True if any index was rebuilt."""
-        if self._fts_rebuild_attempted:
+        """Attempt FTS5 ``rebuild``, at most once per ``_FTS_REBUILD_COOLDOWN_SECONDS`` window;
+        True if any index was rebuilt.
+
+        A permanent one-shot flag meant a single rebuild failure (e.g. a transient WAL
+        split-brain guard hit) permanently disabled recovery for the life of the process, even
+        though later corruption on the same store could be fixable. Retrying on a cooldown lets
+        the store try again after the underlying condition (e.g. a foreign holder) has likely
+        cleared, without hammering a database that is corrupt on every write.
+        """
+        now = time.monotonic()
+        last_attempt = self._fts_rebuild_last_attempt_at
+        if last_attempt is not None and (now - last_attempt) < self._FTS_REBUILD_COOLDOWN_SECONDS:
             return False
-        self._fts_rebuild_attempted = True
+        self._fts_rebuild_last_attempt_at = now
         db = self._db
         if db is None or not hasattr(db, "rebuild_fts"):
             return False

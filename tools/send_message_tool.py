@@ -941,6 +941,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
+def _telegram_rich_messages_opt_in() -> bool:
+    """True when ``platforms.telegram.extra.rich_messages`` is enabled in gateway config."""
+    try:
+        from gateway.config import Platform, load_gateway_config
+        cfg = load_gateway_config()
+        pconfig = cfg.platforms.get(Platform.TELEGRAM) if cfg else None
+        extra = getattr(pconfig, "extra", None) or {}
+        raw = extra.get("rich_messages", False)
+    except Exception:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return raw != 0
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
 def _is_telegram_thread_not_found(error: Exception) -> bool:
     """Check if a Telegram error is a thread-not-found failure.
 
@@ -1048,14 +1067,19 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         try:
             from gateway.platforms.telegram import (
                 _rich_has_crash_shape,
+                _rich_has_cjk_content,
                 _rich_is_fallback_error,
+                _rich_needs_qualifying_constructs,
                 _RICH_MESSAGE_MAX_CHARS,
             )
             _should_try_rich = (
                 not _has_html
+                and _telegram_rich_messages_opt_in()
                 and message.strip()
                 and len(message) <= _RICH_MESSAGE_MAX_CHARS
+                and _rich_needs_qualifying_constructs(message)
                 and not _rich_has_crash_shape(message)
+                and not _rich_has_cjk_content(message)
                 and inspect.iscoroutinefunction(getattr(bot, "do_api_request", None))
             )
         except ImportError:
@@ -1083,6 +1107,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 else:
                     rich_msg_id = getattr(rich_result, "message_id", None)
                 if rich_msg_id is not None:
+                    try:
+                        from gateway import rich_sent_store
+                        rich_sent_store.record(str(int_chat_id), str(rich_msg_id), message)
+                    except Exception:
+                        pass
                     last_msg = _RichMsg(rich_msg_id)
                     _rich_ok = True
             except Exception as _rich_exc:

@@ -2872,6 +2872,7 @@ class TestSendTelegramRichMessage:
     def test_rich_bot_skips_legacy_send_on_success(self, monkeypatch):
         """A rich-capable bot + eligible content → uses sendRichMessage, not send_message."""
         bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
         _install_telegram_mock(monkeypatch, bot)
 
         result = asyncio.run(_send_telegram("tok", "123", "| col1 | col2 |\n|------|------|\n| a    | b    |"))
@@ -2897,6 +2898,7 @@ class TestSendTelegramRichMessage:
     def test_crash_shape_skips_rich(self, monkeypatch):
         """Content with math inside <details> bypasses rich (Telegram Desktop crash shape)."""
         bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
         _install_telegram_mock(monkeypatch, bot)
 
         crash_msg = "<details><summary>Proof</summary>\n$$E = mc^2$$\n</details>"
@@ -2911,6 +2913,7 @@ class TestSendTelegramRichMessage:
             pass
 
         bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
         bot.do_api_request = AsyncMock(side_effect=BadRequest("Bad Request: invalid rich payload"))
         _install_telegram_mock(monkeypatch, bot)
 
@@ -2926,6 +2929,7 @@ class TestSendTelegramRichMessage:
             pass
 
         bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
         bot.do_api_request = AsyncMock(side_effect=_TimedOut("timed out"))
         _install_telegram_mock(monkeypatch, bot)
 
@@ -2938,6 +2942,7 @@ class TestSendTelegramRichMessage:
     def test_html_message_skips_rich(self, monkeypatch):
         """HTML messages always use the HTML parse-mode path, never sendRichMessage."""
         bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
         _install_telegram_mock(monkeypatch, bot)
 
         asyncio.run(_send_telegram("tok", "123", "<b>bold</b> text"))
@@ -2946,9 +2951,44 @@ class TestSendTelegramRichMessage:
         bot.send_message.assert_awaited_once()
         assert bot.send_message.call_args.kwargs["parse_mode"] == "HTML"
 
+    def test_plain_text_skips_rich(self, monkeypatch):
+        """Plain text without qualifying constructs stays on MarkdownV2 even with opt-in."""
+        bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "Just a plain status update"))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_cjk_content_skips_rich(self, monkeypatch):
+        """CJK content skips rich to avoid overlapping glyph artifacts."""
+        bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
+        _install_telegram_mock(monkeypatch, bot)
+
+        cjk_table = "| 日付 | 値 |\n|------|------|\n| 月曜 | 80 |"
+        asyncio.run(_send_telegram("tok", "123", cjk_table))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_opt_out_keeps_legacy_for_tables(self, monkeypatch):
+        """When rich_messages opt-in is False, tables use legacy MarkdownV2."""
+        bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: False)
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "| a | b |\n|---|---|\n| 1 | 2 |"))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
     def test_rich_payload_includes_link_preview_options_when_disabled(self, monkeypatch):
         """disable_link_previews=True adds link_preview_options to the rich payload."""
         bot = self._make_rich_bot()
+        monkeypatch.setattr("tools.send_message_tool._telegram_rich_messages_opt_in", lambda: True)
         _install_telegram_mock(monkeypatch, bot)
 
         asyncio.run(_send_telegram("tok", "123", "| a | b |\n|---|---|\n| 1 | 2 |", disable_link_previews=True))

@@ -236,6 +236,30 @@ def _rich_has_crash_shape(content: str) -> bool:
     return False
 
 
+_RICH_CJK_RE_MOD = re.compile(
+    "[぀-ヿ㐀-䶿一-鿿가-힯豈-﫿\U00020000-\U000323af]"
+)
+
+
+def _rich_has_cjk_content(content: str) -> bool:
+    """True for CJK text — overlapping glyph artifacts on Telegram Mac/Desktop."""
+    return bool(content and _RICH_CJK_RE_MOD.search(content))
+
+
+def _rich_needs_qualifying_constructs(content: str) -> bool:
+    """True when content has constructs MarkdownV2 degrades: pipe tables, task lists,
+    <details> blocks, or block math. Plain prose stays on MarkdownV2."""
+    if not content:
+        return False
+    if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
+        return True
+    if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
+        return True
+    if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
+        return True
+    return "$$" in content
+
+
 def _rich_is_capability_error(exc: Exception) -> bool:
     """True when the rich API endpoint itself is unavailable (old PTB/server)."""
     name = exc.__class__.__name__.lower()

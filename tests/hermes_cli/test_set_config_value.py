@@ -569,11 +569,25 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "platform_toolsets.cli",
+        "known_builtin_toolsets.telegram",
+        "known_plugin_toolsets.discord",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
         is_known, _ = _validate_config_key(key)
         assert is_known, f"Expected {key!r} to validate as known"
+
+    def test_toolset_registry_roots_do_not_suggest_platform_hints(self):
+        """``platform_toolsets.<platform>`` (and its wizard-written siblings) is a first-class
+        path: the setup wizard, plugins_cmd and config_migrations all write it, and the value
+        is honored downstream. It must not be flagged as unrecognized with the meaningless
+        difflib near-miss ``platform_hints.<platform>`` from #113658."""
+        from hermes_cli.config import _validate_config_key
+        for key in ("platform_toolsets.cli", "known_builtin_toolsets.telegram"):
+            is_known, suggestion = _validate_config_key(key)
+            assert is_known, f"{key!r} must validate as known (open dict keyed by platform name)"
+            assert suggestion is None, f"Known key must not carry a suggestion, got {suggestion!r}"
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
         ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),

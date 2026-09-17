@@ -6616,8 +6616,50 @@ class TestStreamingApiCall:
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 1
         assert tc[0].function.name == "write_file"
-        assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
+        # FAIL-CLOSED (RCA 2026-09-17): unrepairable args become the sentinel object
+        # (wire-valid JSON, dropped from execution with a re-issue error in
+        # run_tool_round) instead of passing raw malformed bytes downstream.
+        # Provider said 'length' (genuine output cap) → preserved as 'length' so the
+        # truncation-retry path applies (S3: only provider-GIVEN reasons survive).
+        assert tc[0].function.arguments == '{"__hermes_malformed_tool_arguments__": true}'
         assert resp.choices[0].finish_reason == "length"
+
+    def test_unrepairable_args_with_tool_calls_finish_reason_not_shadowed(self, agent):
+        # POLARITY (RCA 2026-09-17, S3 follow-up): an emission defect (unrepairable
+        # args) while the provider reported finish_reason='tool_calls' must NOT be
+        # shadowed as 'length' — that routed sentinel responses into the truncation
+        # retry loop (4 boosted retries that cannot fix an emission defect; prod
+        # receipt 19a39d117bb1). The provider's real reason is preserved so the
+        # response reaches run_tool_round, where the sentinel call is dropped and
+        # the model gets the in-band re-issue error.
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1
+        assert tc[0].function.arguments == '{"__hermes_malformed_tool_arguments__": true}'
+        assert resp.choices[0].finish_reason == "tool_calls"
+
+    def test_unrepairable_args_with_stop_finish_reason_not_shadowed(self, agent):
+        # POLARITY (S3 follow-up): same for finish_reason='stop' — preserved, not
+        # rewritten to 'length'; the sentinel call is still dropped downstream.
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "memory", '{"action": "li')]),
+            _make_chunk(finish_reason="stop"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1
+        assert tc[0].function.arguments == '{"__hermes_malformed_tool_arguments__": true}'
+        assert resp.choices[0].finish_reason == "stop"
 
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.

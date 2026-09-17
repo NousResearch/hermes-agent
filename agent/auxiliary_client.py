@@ -11,7 +11,6 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 import contextlib
 import contextvars
 import functools
-import hashlib
 import inspect
 import json
 import logging
@@ -5316,7 +5315,8 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     if field == "api_key" and callable(value):
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
-        return ("api-key-digest", hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest())
+        from agent.secure_fingerprint import stable_fingerprint
+        return ("api-key-digest", stable_fingerprint(value, length=32))
     return value
 
 

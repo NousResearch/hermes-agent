@@ -7,7 +7,6 @@ lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and 
 from __future__ import annotations
 
 import logging
-import hashlib
 from typing import Dict, Optional
 from hermes_cli.auth_constants import httpx
 
@@ -108,7 +107,8 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if not api_key:
         return default_url
 
-    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    from agent.secure_fingerprint import stable_fingerprint
+    key_hash = stable_fingerprint(api_key)
     state = _load_provider_state(_load_auth_store(), "zai") or {}
     cached = state.get("detected_endpoint")
     if isinstance(cached, dict) and cached.get("base_url") and cached.get("key_hash", "") == key_hash:

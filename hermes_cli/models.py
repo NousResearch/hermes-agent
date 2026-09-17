@@ -1578,7 +1578,7 @@ def _credential_fingerprint(provider: str) -> str:
     """Short hash of the credentials ``provider_model_ids(provider)`` would see right now: api-key /
     base-url env vars from ``PROVIDER_REGISTRY`` plus the mtimes of ``auth.json`` and external
     credential files (OAuth re-auth busts the cache without parsing every file shape)."""
-    import hashlib
+    from agent.secure_fingerprint import stable_fingerprint
 
     # Keyless providers serve the catalog anonymously: nothing the user rotates should invalidate
     # the entry, so a stable fingerprint keeps the SWR cache alive and busts only on TTL expiry.
@@ -1644,10 +1644,10 @@ def _credential_fingerprint(provider: str) -> str:
         path = os.path.expanduser(rel)
         _mtime_part(path, path)
 
-    blob = "|".join(parts).encode("utf-8", errors="replace")
-    # blake2b, not sha256: fingerprint only (collisions = a harmless cache miss), and CodeQL's
-    # weak-sensitive-data-hashing rule flags sha256 over env vars named *API_KEY*/*TOKEN*.
-    return hashlib.blake2b(blob, digest_size=8).hexdigest()
+    blob = "|".join(parts)
+    # This is a cache identity, not a password verifier. Keep it stable across
+    # processes while preventing raw credential material from becoming a cache key.
+    return stable_fingerprint(blob)
 
 
 def _load_provider_models_cache() -> dict:
@@ -2567,13 +2567,12 @@ def _custom_endpoint_fingerprint(
     api_key: Any, api_mode: Optional[str], headers: Optional[dict[str, str]]) -> str:
     """Custom endpoints have no ``PROVIDER_REGISTRY`` slug, so hash exactly what callers pass to
     :func:`fetch_api_models`: a rotated ``api_key``, changed ``api_mode`` or edited ``extra_headers``
-    each bust the cache entry. blake2b for the same CodeQL rationale as ``_credential_fingerprint``."""
-    import hashlib
-
+    each bust the cache entry. It is a stable fingerprint, not a password verifier."""
     from agent.command_token_source import CommandTokenSource
+    from agent.secure_fingerprint import stable_fingerprint
     identity = api_key.cache_identity if isinstance(api_key, CommandTokenSource) else api_key
     blob = "|".join((identity or "", api_mode or "", json.dumps(headers or {}, sort_keys=True)))
-    return hashlib.blake2b(blob.encode("utf-8", errors="replace"), digest_size=8).hexdigest()
+    return stable_fingerprint(blob)
 
 
 def _cache_entry_valid(

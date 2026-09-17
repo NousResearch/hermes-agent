@@ -8,7 +8,6 @@ intercepting.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -54,6 +53,7 @@ def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
     from plugins.memory.honcho.client import _host_block
 
     try:
+        from agent.secure_fingerprint import stable_fingerprint
         if config is not None:
             basis = _fingerprint_basis(_host_block(config.raw or {}, config.host), lambda: config.api_key)
         else:
@@ -63,7 +63,7 @@ def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
                 return ""
             from agent.secret_scope import get_secret
             basis = _fingerprint_basis(block, lambda: block.get("apiKey") or raw.get("apiKey") or get_secret("HONCHO_API_KEY") or "")
-        return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16] if basis else ""
+        return stable_fingerprint(basis) if basis else ""
     except Exception:
         return ""
 

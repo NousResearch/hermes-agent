@@ -23,6 +23,7 @@ from agent.retry_utils import reset_delay_from_message
 from agent.credential_persistence import (
     fingerprint_secret_value,
     is_borrowed_credential_source,
+    matches_secret_fingerprint,
     sanitize_borrowed_credential_payload,
 )
 import hermes_cli.auth as auth_mod
@@ -2179,7 +2180,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         # previous process had just persisted. Compare fingerprints instead.
         known_fingerprint = existing.extra.get("secret_fingerprint")
         if isinstance(known_fingerprint, str) and known_fingerprint:
-            token_changed = fingerprint_secret_value(incoming_token) != known_fingerprint
+            token_changed = not matches_secret_fingerprint(incoming_token, known_fingerprint)
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None or (key == "label" and existing.label):
             continue

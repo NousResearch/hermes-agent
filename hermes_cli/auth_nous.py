@@ -7,7 +7,6 @@ so ``hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
 from __future__ import annotations
 
 import logging
-import hashlib
 import json
 import os
 import threading
@@ -47,7 +46,8 @@ def _unusable_invoke_jwt_error(reason: str, *, no_refresh_token: bool = False) -
 def _token_fingerprint(token: Any) -> Optional[str]:
     """Return a short hash fingerprint for telemetry without leaking token bytes."""
     cleaned = token.strip() if isinstance(token, str) else ""
-    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:12] if cleaned else None
+    from agent.secure_fingerprint import stable_fingerprint
+    return stable_fingerprint(cleaned, length=12) if cleaned else None
 
 
 def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any) -> None:

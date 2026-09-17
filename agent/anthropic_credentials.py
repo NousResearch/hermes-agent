@@ -173,13 +173,25 @@ def mark_rotation_consumed_uncommitted(*secrets: Any, source_path: Optional[Path
 
 def is_rotation_consumed_uncommitted(secret: Any, *, source_path: Optional[Path] = None) -> bool:
     """True when *secret* belongs to a rotation that was spent but not committed."""
+    from agent.credential_persistence import matches_secret_fingerprint
+
     fingerprint = _fingerprint(secret)
     if not fingerprint:
         return False
     with _SPENT_ROTATION_LOCK:
         if fingerprint in _SPENT_ROTATION_FINGERPRINTS:
             return True
-    return fingerprint in _read_spent_rotation_sidecar(source_path)
+        recorded = set(_SPENT_ROTATION_FINGERPRINTS)
+    recorded.update(_read_spent_rotation_sidecar(source_path))
+    if fingerprint in recorded:
+        return True
+    # Existing sidecars predate the fingerprint format upgrade. The unchanged
+    # spent token must remain quarantined, including after a process restart.
+    return any(
+        matches_secret_fingerprint(str(secret).strip(), old)
+        for old in recorded
+        if not old.startswith("pbkdf2-sha256:")
+    )
 
 
 # ── Claude Code credentials (Keychain / ~/.claude/.credentials.json) ──

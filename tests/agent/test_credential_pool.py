@@ -603,7 +603,7 @@ def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatc
     assert persisted["auth_type"] == "api_key"
     assert persisted["priority"] == 0
     assert "access_token" not in persisted
-    assert persisted["secret_fingerprint"].startswith("sha256:")
+    assert persisted["secret_fingerprint"].startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
 
 
 def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypatch):
@@ -737,7 +737,7 @@ def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_
     persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
     assert persisted["id"] == "legacy-env"
     assert "access_token" not in persisted
-    assert persisted["secret_fingerprint"].startswith("sha256:")
+    assert persisted["secret_fingerprint"].startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
 
 
 
@@ -789,7 +789,7 @@ def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
     assert payload["request_count"] == 7
     assert payload["token_type"] == "Bearer"
     assert payload["scope"] == "inference"
-    assert payload["secret_fingerprint"].startswith("sha256:")
+    assert payload["secret_fingerprint"].startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
 
 
 
@@ -824,7 +824,7 @@ def test_borrowed_source_variants_strip_secret_fields(source):
     assert "access_token" not in payload
     assert "refresh_token" not in payload
     assert payload["source"] == source
-    assert payload["secret_fingerprint"].startswith("sha256:")
+    assert payload["secret_fingerprint"].startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
 
 
 
@@ -871,7 +871,7 @@ def test_write_credential_pool_sanitizes_borrowed_payload_at_disk_boundary(tmp_p
     assert "refresh_token" not in borrowed
     assert "agent_key" not in borrowed
     assert "api_key" not in borrowed
-    assert borrowed["secret_fingerprint"].startswith("sha256:")
+    assert borrowed["secret_fingerprint"].startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
     assert manual["access_token"] == manual_secret
 
 
@@ -900,7 +900,7 @@ def test_write_credential_pool_treats_unowned_oauth_source_as_borrowed(tmp_path,
     assert persisted["source"] == "oauth"
     assert "access_token" not in persisted
     assert "refresh_token" not in persisted
-    assert persisted["secret_fingerprint"].startswith("sha256:")
+    assert persisted["secret_fingerprint"].startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
 
 
 

@@ -129,7 +129,7 @@ def test_persisted_claude_code_row_carries_no_token_material(
     assert len(rows) == 1
     assert not rows[0].get("access_token")
     assert not rows[0].get("refresh_token")
-    assert str(rows[0].get("secret_fingerprint", "")).startswith("sha256:")
+    assert str(rows[0].get("secret_fingerprint", "")).startswith(("sha256:", "hmac-sha256:", "sha3-256:", "pbkdf2-sha256:"))
     assert sanitize_borrowed_credential_payload(rows[0], "anthropic") == rows[0]
 
 

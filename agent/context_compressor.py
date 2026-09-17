@@ -4,7 +4,6 @@ tail are protected (iterative summaries, token-budget tail, tool-output pruning 
 import contextlib
 import contextvars
 import copy
-import hashlib
 import json
 import logging
 import sqlite3
@@ -2648,7 +2647,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # Non-string/multimodal-envelope shapes can't be hashed by text.
             if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
-            h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
+            from agent.secure_fingerprint import stable_fingerprint
+            h = stable_fingerprint(content, length=12)
             if h in content_hashes:
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1

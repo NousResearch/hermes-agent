@@ -109,6 +109,25 @@ def test_restore_llamacpp_session_follows_live_managed_endpoint(monkeypatch):
     assert stub.api_key == live["api_key"]
 
 
+def test_restore_llamacpp_session_keeps_launch_base_url_for_same_provider(monkeypatch):
+    """`hermes --provider llamacpp --base-url X --resume` is user intent for the SAME provider the
+    session ran on; the live-endpoint re-resolution must not re-point it at the local supervisor."""
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: calls.append(kw) or {"base_url": "http://127.0.0.1:18434/v1"})
+    user_url = "http://gpu-box:8080/v1"
+    stub = _make_stub(provider="llamacpp", requested_provider="llamacpp", base_url=user_url,
+                      _explicit_base_url=user_url)
+    stub._restore_session_model(_row(
+        model="Qwen3.8-27B-UD-IQ3_XXS",
+        model_config={"provider": "llamacpp", "base_url": "http://127.0.0.1:51489/v1"}))
+    assert stub.model == "Qwen3.8-27B-UD-IQ3_XXS"
+    assert stub.base_url == user_url
+    assert stub._explicit_base_url == user_url
+    assert calls == []
+
+
 def test_restore_session_model_explicit_cli_flag_wins():
     stub = _make_stub(model="cli-flag-model", _explicit_model_override=True)
     stub._restore_session_model(_row())

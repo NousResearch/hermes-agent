@@ -430,14 +430,15 @@ class CLIModelSwitchMixin:
                 self.base_url = stored_base_url
             if stored_api_mode:
                 self.api_mode = stored_api_mode
-        if managed:
-            # The supervisor owns the live port. Pinning last boot's loopback URL
-            # as explicit_base_url strands resume on a dead ephemeral endpoint.
+        if managed and not (getattr(self, "_explicit_base_url", None) and not provider_changed):
+            # The supervisor owns the live port: last boot's loopback URL (an ephemeral fallback when
+            # 18434 was busy) must not pin the resume onto a dead endpoint. A launch-time --base-url
+            # for this same provider is user intent and keeps winning.
             self._explicit_api_key = None
             self._explicit_base_url = None
             try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider)
+                resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
                     self._credential_pool = resolved.get("credential_pool")

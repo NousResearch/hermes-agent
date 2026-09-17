@@ -15,8 +15,9 @@ import './store/user-bubble-transparency'
 // counters nor bippy reach a shipped renderer.
 import '@/debug/dev-only'
 
+import { useStore } from '@nanostores/react'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { StrictMode } from 'react'
+import { type ReactNode, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
@@ -29,6 +30,7 @@ import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
 import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
+import { $activeGatewayProfile } from './store/profile'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
@@ -72,6 +74,22 @@ if (winParam && TRANSPARENT_WINDOWS.has(winParam)) {
   document.head.appendChild(transparent)
 }
 
+/**
+ * Feeds the window's active profile into the i18n provider.
+ *
+ * `display.language` lives in a profile's config.yaml, and `$activeGatewayProfile`
+ * boots as `'default'` until the backend pool reports the profile this window is
+ * actually on. A provider that reads at mount reads that placeholder scope, so a
+ * language picked later (which persists against the settled profile) is never the
+ * value the next launch reads back (#113980). The provider re-reads when this
+ * changes, so both ends stay on one profile.
+ */
+function LocaleScopedI18nProvider({ children }: { children: ReactNode }) {
+  const profile = useStore($activeGatewayProfile)
+
+  return <I18nProvider profile={profile}>{children}</I18nProvider>
+}
+
 if (winParam === 'overlay') {
   void import('./app/pet-overlay/overlay-root').then(({ mountPetOverlay }) => mountPetOverlay())
 } else if (winParam === 'quick') {
@@ -90,7 +108,7 @@ if (winParam === 'overlay') {
     <StrictMode>
       <RootErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <I18nProvider>
+          <LocaleScopedI18nProvider>
             <ThemeProvider>
               <HapticsProvider>
                 {/* ONE tooltip provider for the whole app. Every `Tip` used to
@@ -114,7 +132,7 @@ if (winParam === 'overlay') {
                 </RootTooltipProvider>
               </HapticsProvider>
             </ThemeProvider>
-          </I18nProvider>
+          </LocaleScopedI18nProvider>
         </QueryClientProvider>
       </RootErrorBoundary>
     </StrictMode>

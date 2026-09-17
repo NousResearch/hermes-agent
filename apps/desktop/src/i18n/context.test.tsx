@@ -178,10 +178,13 @@ describe('I18nProvider', () => {
     fireEvent.click(screen.getByRole('button', { name: 'switch' }))
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
-    expect(saveConfig).toHaveBeenCalledWith({
-      display: { language: 'zh', skin: 'slate' },
-      terminal: { cwd: '/new' }
-    })
+    expect(saveConfig).toHaveBeenCalledWith(
+      {
+        display: { language: 'zh', skin: 'slate' },
+        terminal: { cwd: '/new' }
+      },
+      undefined
+    )
   })
 
   it('saves newly supported locales to display.language', async () => {
@@ -205,7 +208,7 @@ describe('I18nProvider', () => {
     fireEvent.click(screen.getByRole('button', { name: 'switch' }))
 
     await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
-    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'mono' } })
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'ja', skin: 'mono' } }, undefined)
     expect(screen.getByTestId('locale').textContent).toBe('ja')
   })
 
@@ -347,5 +350,91 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('ja')
 
     vi.useRealTimers()
+  })
+
+  // #113980: `display.language` lives in a profile's config.yaml, and the
+  // window's profile scope settles AFTER mount (`$activeGatewayProfile` boots
+  // as 'default' while the backend pool resolves the real one). A read that
+  // never follows the settled scope can never agree with the write an explicit
+  // pick performs against that scope, so the pick is invisible at next launch.
+  it('scopes the locale read and write to the given profile', async () => {
+    const getConfig = vi.fn().mockResolvedValue({ display: { language: 'en' } })
+    const saveConfig = vi.fn().mockResolvedValue({ ok: true })
+
+    const configClient: I18nConfigClient = { getConfig, saveConfig }
+
+    render(
+      <I18nProvider configClient={configClient} profile="coder">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(getConfig).toHaveBeenCalledWith('coder'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledTimes(1))
+    expect(saveConfig).toHaveBeenCalledWith({ display: { language: 'zh' } }, 'coder')
+  })
+
+  it('re-reads the locale when the profile scope settles after mount', async () => {
+    const configs: Record<string, HermesConfigRecord> = {
+      default: { display: { language: 'en' } },
+      coder: { display: { language: 'zh' } }
+    }
+
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn(async (profile?: string | null) => configs[String(profile)] ?? {}),
+      saveConfig: vi.fn()
+    }
+
+    const { rerender } = render(
+      <I18nProvider configClient={configClient} profile="default">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // Boot: the window's profile scope is still the placeholder.
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+
+    // The window's real profile lands — the locale must follow it.
+    rerender(
+      <I18nProvider configClient={configClient} profile="coder">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('zh'))
+    expect(configClient.getConfig).toHaveBeenLastCalledWith('coder')
+  })
+
+  it('keeps an explicit pick when the profile scope changes afterwards', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'en' } }),
+      saveConfig: vi.fn().mockResolvedValue({ ok: true })
+    }
+
+    const { rerender } = render(
+      <I18nProvider configClient={configClient} profile="default">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+
+    await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('zh'))
+
+    rerender(
+      <I18nProvider configClient={configClient} profile="coder">
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    // The scope change re-runs the read, but the explicit pick still wins.
+    await act(async () => {})
+
+    expect(screen.getByTestId('locale').textContent).toBe('zh')
   })
 })

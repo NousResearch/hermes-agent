@@ -162,7 +162,7 @@ def _transcribe_groq(
 def _transcribe_openai(
     file_path: str, model_name: str, *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, provider_label: str = "openai", language: Optional[str] = None,
-    prompt: Optional[str] = None) -> Dict[str, Any]:
+    prompt: Optional[str] = None, config_section: str = "openai") -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape, shared by every
     OpenAI-compatible endpoint (DeepInfra etc.): explicit ``api_key``/``base_url`` skip the
     OpenAI-only auth chain; ``provider_label`` names the response's provider."""
@@ -217,7 +217,7 @@ def _transcribe_openai(
         logger.info("Transcribed %s via %s (%s, %d chars)",
                     Path(file_path).name, provider_label, model_name, len(transcript_text))
         return _ok_result(transcript_text, provider_label)
-    return _with_openai_client(api_key, base_url, file_path, provider_label, _run)
+    return _with_openai_client(api_key, base_url, file_path, provider_label, _run, config_section=config_section)
 
 
 def _transcribe_mistral(
@@ -399,7 +399,8 @@ def _transcribe_deepinfra(
             "No DeepInfra STT model available. Pin one in config.yaml under stt.deepinfra.model, "
             "or check connectivity to api.deepinfra.com so the live catalog can be fetched.")
     return _transcribe_openai(file_path, model_name, api_key=api_key, base_url=base_url,
-                              provider_label="deepinfra", language=language, prompt=prompt)
+                              provider_label="deepinfra", language=language, prompt=prompt,
+                              config_section="deepinfra")
 
 
 # ---- OpenAI audio credential resolution -----------------------------------

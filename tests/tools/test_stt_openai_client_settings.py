@@ -66,6 +66,28 @@ def test_transport_settings_matrix(monkeypatch, tmp_path, stt_config, want_timeo
     assert kwargs["max_retries"] == want_retries
 
 
+def test_deepinfra_section_governs_the_deepinfra_rider(monkeypatch, tmp_path):
+    """The deepinfra delegate threads its own config section (#112975 review): stt.deepinfra.timeout
+    wins over stt.openai for that rider, like groq's own section does."""
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "di-test")
+    import wave, struct
+    wav_path = tmp_path / "d.wav"
+    with wave.open(str(wav_path), "wb") as fh:
+        fh.setnchannels(1); fh.setsampwidth(2); fh.setframerate(16000)
+        fh.writeframes(struct.pack("<16000h", *([0] * 16000)))
+    mock_client = MagicMock()
+    mock_client.audio.transcriptions.create.return_value = "hi"
+    openai_cls = MagicMock(return_value=mock_client)
+    with patch("tools.transcription_tools._HAS_OPENAI", True), \
+         patch("openai.OpenAI", openai_cls), \
+         patch("tools.transcription_tools._load_stt_config",
+               return_value={"deepinfra": {"timeout": 90}, "openai": {"timeout": 15}}):
+        from tools.transcription_cloud import _transcribe_deepinfra
+        result = _transcribe_deepinfra(str(wav_path), "whisper-tiny")
+    assert result["success"] is True
+    assert openai_cls.call_args.kwargs["timeout"] == 90
+
+
 def test_booleans_are_rejected_with_the_previous_value_kept(monkeypatch, tmp_path, caplog):
     kwargs = _client_kwargs(
         monkeypatch, tmp_path, {"openai": {"timeout": True, "max_retries": False}})

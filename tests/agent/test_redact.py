@@ -1809,3 +1809,25 @@ class TestLooksLikeRedactedSecretSentinel:
         redacted = redact_sensitive_text(raw, force=True, file_read=True)
         assert "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U" not in redacted
         assert looks_like_redacted_secret(redacted) is not None
+
+    def test_vault_secret_marker_detected(self):
+        from agent.redact import looks_like_redacted_secret
+        hit = looks_like_redacted_secret("password: «redacted-vault-secret»")
+        assert hit == "«redacted-vault-secret»"
+
+    def test_vault_redaction_roundtrip_detected(self):
+        """END-TO-END: a registered vault value scrubbed by
+        ``redact_sensitive_text`` must be flagged when written back."""
+        from agent.redact import (
+            clear_vault_redaction_values,
+            looks_like_redacted_secret,
+            redact_sensitive_text,
+            register_vault_redaction_value,
+        )
+        register_vault_redaction_value("correct-horse-battery-staple")
+        try:
+            redacted = redact_sensitive_text("DB_PASS=correct-horse-battery-staple\n")
+        finally:
+            clear_vault_redaction_values()
+        assert "correct-horse-battery-staple" not in redacted
+        assert looks_like_redacted_secret(redacted) is not None

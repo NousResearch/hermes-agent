@@ -533,6 +533,20 @@ class TestShellFileOpsWriteDenied:
         assert result.error is not None
         assert "denied" in result.error.lower()
 
+    def test_write_file_rejects_vault_redaction_marker(self, file_ops, mock_env):
+        result = file_ops.write_file("/tmp/test/.env", "DB_PASS=«redacted-vault-secret»\n")
+        assert result.error is not None
+        assert "«redacted-vault-secret»" in result.error
+        mock_env.execute.assert_not_called()
+
+    def test_patch_replace_rejects_vault_redaction_marker(self, file_ops, mock_env):
+        result = file_ops.patch_replace(
+            "/tmp/test/.env", "DB_PASS=old", "DB_PASS=«redacted-vault-secret»"
+        )
+        assert result.error is not None
+        assert "«redacted-vault-secret»" in result.error
+        mock_env.execute.assert_not_called()
+
 
     def test_move_file_failure_path(self, mock_env):
         mock_env.execute.return_value = {"output": "No such file or directory", "returncode": 1}

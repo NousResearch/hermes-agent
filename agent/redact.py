@@ -1402,6 +1402,10 @@ _LITERAL_REDACTED_MARKERS = (
     # Prefix-matched credential with no recognised vendor prefix label,
     # as emitted by ``_mask_token_nonreusable`` (file_read=True reads).
     "«redacted-secret»",
+    # Registered vault secret values, scrubbed by
+    # ``redact_registered_vault_values`` on every ``redact_sensitive_text``
+    # call regardless of the redact_secrets preference.
+    "«redacted-vault-secret»",
 )
 
 # Non-reusable sentinel emitted by ``_mask_token_nonreusable`` for
@@ -1424,6 +1428,8 @@ def looks_like_redacted_secret(text: Optional[str]) -> Optional[str]:
         emitted by :func:`_mask_token_nonreusable` for prefix-matched
         credentials in file reads (``file_read=True``). This is the shape an
         agent copies out of ``read_file`` / ``search_files`` output today.
+      * the vault marker ``«redacted-vault-secret»``, emitted by
+        :func:`redact_registered_vault_values` for registered vault values.
       * prefix-based masked tokens — ``{known-prefix}…...{tail}`` for values
         carrying a recognised vendor prefix (``sk-``, ``ghp_``, ``eyJ``, …).
         File reads still emit this ASCII mask for JWTs, Authorization /

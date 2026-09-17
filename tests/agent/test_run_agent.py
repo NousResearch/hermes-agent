@@ -6616,7 +6616,11 @@ class TestStreamingApiCall:
         tc = resp.choices[0].message.tool_calls
         assert len(tc) == 1
         assert tc[0].function.name == "write_file"
-        assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
+        # FAIL-CLOSED (RCA 2026-09-17): unrepairable args become the sentinel object
+        # (wire-valid JSON, dropped from execution with a re-issue error in
+        # run_tool_round) instead of passing raw malformed bytes downstream.
+        # finish_reason still upgrades to 'length' so the truncation-retry path applies.
+        assert tc[0].function.arguments == '{"__hermes_malformed_tool_arguments__": true}'
         assert resp.choices[0].finish_reason == "length"
 
     def test_ollama_reused_index_separate_tool_calls(self, agent):

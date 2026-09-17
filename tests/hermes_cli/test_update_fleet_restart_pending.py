@@ -710,6 +710,50 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     assert not update_cmd._fleet_restart_pending_marker_path().exists()
 
 
+def test_startup_warn_discharged_when_historical_receipt_precedes_marker(monkeypatch, capsys):
+    """A receipt for an older pull cannot restrict proof of this marker's target SHA."""
+    prior_sha = "a" * 40
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "partial",
+                "exit_code": 1,
+                "post_update": {"sha": prior_sha},
+                "plan": {
+                    "expected_sha": prior_sha,
+                    "runtimes": [
+                        {"kind": "gateway", "profile": "default", "code_sha": prior_sha},
+                        {
+                            "kind": "dashboard",
+                            "profile": "default",
+                            "supervisor": "manual-serve",
+                            "code_sha": prior_sha,
+                        },
+                    ],
+                },
+                "fleet": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
 @pytest.mark.parametrize(
     "disk_sha, fleet",
     [
@@ -744,6 +788,7 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
             {
                 "outcome": "partial",
                 "exit_code": 1,
+                "post_update": {"sha": disk_sha},
                 "plan": {"runtimes": [{"kind": "gateway", "profile": p, "code_sha": "o" * 40, "pid": 1} for p in ("alpha", "beta")]},
                 "fleet": [
                     {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "state": "current"},
@@ -758,6 +803,68 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
         lambda **kwargs: [
             {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+@pytest.mark.parametrize("receipt_sha", [None, "", 7, "not-a-git-sha"])
+def test_startup_warn_kept_when_receipt_identity_is_ambiguous(monkeypatch, capsys, receipt_sha):
+    """An untrusted receipt identity cannot discard an owed, absent gateway."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "post_update": {"sha": receipt_sha},
+                "plan": {
+                    "runtimes": [
+                        {"kind": "gateway", "profile": p, "code_sha": "o" * 40}
+                        for p in ("alpha", "beta")
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [{"profile": "alpha", "code_sha": disk_sha, "state": "current"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_uses_one_receipt_snapshot(monkeypatch, capsys):
+    """Receipt identity and owed gateways must come from the same latest.json read."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    matching_receipt = {
+        "post_update": {"sha": disk_sha},
+        "plan": {
+            "runtimes": [
+                {"kind": "gateway", "profile": p, "code_sha": "o" * 40}
+                for p in ("alpha", "beta")
+            ]
+        },
+    }
+    receipts = iter([matching_receipt, None])
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.read_latest_receipt", lambda: next(receipts)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [{"profile": "alpha", "code_sha": disk_sha, "state": "current"}],
     )
 
     update_cmd._warn_pending_fleet_restart_on_startup()

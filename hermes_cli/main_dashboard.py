@@ -18,10 +18,17 @@ from hermes_cli.cli_output import line_input
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
 
-def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[int]:
-    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
-    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
+                               scope_to_home: str | None = None) -> list[int]:
+    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup.
+
+    *scope_to_home*: when set, keep only PIDs whose process ``HERMES_HOME`` matches —
+    the ``--stop`` path is profile-scoped; the update path leaves this unset and sweeps
+    machine-wide (see #113978).
+    """
+    from hermes_cli.dashboard_procs import _pids_in_hermes_home, _scan_dashboard_processes
+    pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    return _pids_in_hermes_home(pids, scope_to_home) if scope_to_home is not None else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:

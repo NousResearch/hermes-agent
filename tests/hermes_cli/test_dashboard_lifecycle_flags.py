@@ -85,7 +85,7 @@ class TestDashboardStop:
         respawn is not a failed stop (the kill path already warns about it)."""
         scans = iter([[12345, 12346], [12347]])
         with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   side_effect=lambda: next(scans)), \
+                   side_effect=lambda **kw: next(scans)), \
              patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
                    return_value={"matched": [12345, 12346], "killed": [12345, 12346],
                                  "failed": [], "unrecovered": [12345, 12346]}) as mock_kill, \

@@ -122,6 +122,17 @@ def _hermes_home_for_pid(pid: int) -> str | None:
     return None
 
 
+def _pids_in_hermes_home(pids: list[int], own_home: str) -> list[int]:
+    """Keep only PIDs whose process ``HERMES_HOME`` matches *own_home* (#113978).
+
+    ``--stop`` is profile-scoped: unreadable homes fail closed (dropped, never killed).
+    """
+    own_key = _normalized_home_for_compare(own_home)
+    return [pid for pid in pids
+            if (home := _hermes_home_for_pid(pid))
+            and _normalized_home_for_compare(home) == own_key]
+
+
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
     return next((i for i, tok in enumerate(argv) if tok in ("serve", "dashboard")), None)
 
@@ -321,8 +332,13 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
+    scope_to_home: str | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
+
+    *scope_to_home*: when set, only PIDs whose process ``HERMES_HOME`` matches are
+    killed — ``--stop`` is profile-scoped, while the update path sweeps machine-wide
+    (its respawn filter already skips foreign homes). See #113978.
 
     With ``restart_managed`` (update only) systemd-owned PIDs get their unit restarted after the
     kill (systemd treats our SIGTERM as a clean stop, so ``Restart=on-failure`` never fires) and
@@ -349,7 +365,7 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None)
+    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_to_home=scope_to_home)
     if not pids:
         return _empty_result()
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).

@@ -2465,7 +2465,11 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         _report_dashboard_status()
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
-        if not _find_stale_dashboard_pids():
+        # Profile-scoped stop: never kill another install's/profile's dashboards (#113978).
+        # get_hermes_home() respects `-p` via the context-local override main() applied.
+        from hermes_constants import get_hermes_home
+        own_home = str(get_hermes_home())
+        if not _find_stale_dashboard_pids(scope_to_home=own_home):
             print("No hermes dashboard processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`;
@@ -2474,7 +2478,8 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         # its backend on a fresh PID, which is not a failed stop.
         from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 
-        result = _kill_stale_dashboard_processes(reason="requested via --stop")
+        result = _kill_stale_dashboard_processes(reason="requested via --stop",
+                                                 scope_to_home=own_home)
         sys.exit(1 if result["failed"] else 0)
 
 

@@ -151,6 +151,11 @@ import { SidebarFilterMenu } from './filter-menu'
 import { useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
+import {
+  nextPinnedSession,
+  PINNED_SESSION_NAV_EVENT,
+  type PinnedSessionDirection
+} from './pinned-session-navigation'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
@@ -605,6 +610,35 @@ export function ChatSidebar({
       ),
     [pinnedSessionIds, sessionByAnyId, visibleSessions, cronSessions, messagingSessions, unconfirmedPinWrites]
   )
+
+  // The sidebar is the authority for which pins are actually visible and in
+  // what order. Keybind dispatch stays global, but resolution happens here so
+  // profile/project filters, local pin ordering, and lineage aliases are all
+  // honored exactly as painted. A collapsed/search-hidden section has no
+  // displayed pins to navigate.
+  useEffect(() => {
+    const onNavigatePinned = (event: Event) => {
+      if (!pinsOpen || trimmedQuery) {
+        return
+      }
+
+      const direction = (event as CustomEvent<PinnedSessionDirection>).detail
+
+      if (direction !== 1 && direction !== -1) {
+        return
+      }
+
+      const target = nextPinnedSession(pinnedSessions, activeSidebarSessionId, direction)
+
+      if (target) {
+        onResumeSession(target.id, target)
+      }
+    }
+
+    window.addEventListener(PINNED_SESSION_NAV_EVENT, onNavigatePinned)
+
+    return () => window.removeEventListener(PINNED_SESSION_NAV_EVENT, onNavigatePinned)
+  }, [activeSidebarSessionId, onResumeSession, pinnedSessions, pinsOpen, trimmedQuery])
 
   // Every id a pin is reachable under: the raw stored ids, plus BOTH identities
   // of each session we resolved one to. A pin is stored on the durable lineage

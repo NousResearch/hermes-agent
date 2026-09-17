@@ -727,7 +727,7 @@ export default function SkillsPage() {
                 URL
               </label>
               <Input
-                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                placeholder={t.skills?.learnUrlPlaceholder ?? "https://docs.example.com/api  (fetched with web_extract)"}
                 value={learnUrl}
                 onChange={(e) => setLearnUrl(e.target.value)}
               />
@@ -739,7 +739,7 @@ export default function SkillsPage() {
               </label>
               <textarea
                 className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="e.g. how I file an expense report: open the portal, …"
+                placeholder={t.skills?.learnTextPlaceholder ?? "e.g. how I file an expense report: open the portal, …"}
                 value={learnText}
                 onChange={(e) => setLearnText(e.target.value)}
               />
@@ -771,6 +771,7 @@ function SkillRow({
   onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
+  const { t } = useI18n();
   return (
     <div className="group flex items-start gap-3 px-3 py-2.5 transition-colors hover:bg-muted/40">
       <div className="pt-0.5 shrink-0">
@@ -798,7 +799,7 @@ function SkillRow({
         ghost
         size="icon"
         className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-        title="Edit SKILL.md"
+        title={t.skills?.editSkillMd ?? "Edit SKILL.md"}
         aria-label={`Edit ${skill.name}`}
         onClick={onEdit}
       >
@@ -894,6 +895,7 @@ function HubBrowser({
   /** Optional profile scoping installs + installed-state badges. */
   profile?: string;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -1089,7 +1091,7 @@ function HubBrowser({
                   size="xs"
                   className="ml-auto text-muted-foreground"
                   onClick={() => setAction(null)}
-                  aria-label="Dismiss"
+                  aria-label={t.app?.dismiss ?? "Dismiss"}
                 >
                   <X className="h-3.5 w-3.5" />
                 </Button>

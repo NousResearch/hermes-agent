@@ -512,8 +512,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Rename session"
-        title="Rename session"
+        aria-label={t.sessions.renameSession}
+        title={t.sessions.renameSession}
         onClick={(e) => {
           e.stopPropagation();
           setRenameValue(
@@ -531,8 +531,8 @@ function SessionRow({
         ghost
         size="icon"
         className="text-muted-foreground hover:text-foreground"
-        aria-label="Export session"
-        title="Export session JSON"
+        aria-label={t.sessions.exportSession}
+        title={t.sessions.exportSessionTooltip}
         onClick={(e) => {
           e.stopPropagation();
           onExport(session.id);
@@ -614,16 +614,15 @@ function SessionRow({
                         if (e.key === "Enter") void submitRename();
                         else if (e.key === "Escape") setRenaming(false);
                       }}
-                      placeholder="Session title"
+                      placeholder={t.sessions.sessionTitlePlaceholder}
                       className="h-7 min-w-0 flex-1 py-0 text-sm"
                       disabled={renameSaving}
                     />
                     <Button
                       ghost
                       size="icon"
-                      className="text-muted-foreground hover:text-success"
-                      aria-label="Save title"
-                      title="Save title"
+                      className="text-muted-foreground hover:text-success"aria-label={t.sessions.saveTitle}
+        title={t.sessions.saveTitle}
                       disabled={renameSaving}
                       onClick={() => void submitRename()}
                     >
@@ -636,9 +635,8 @@ function SessionRow({
                     <Button
                       ghost
                       size="icon"
-                      className="text-muted-foreground hover:text-foreground"
-                      aria-label="Cancel rename"
-                      title="Cancel rename"
+                      className="text-muted-foreground hover:text-foreground"aria-label={t.sessions.cancelRename}
+        title={t.sessions.cancelRename}
                       disabled={renameSaving}
                       onClick={() => setRenaming(false)}
                     >

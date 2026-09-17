@@ -1945,7 +1945,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                     outlined
                     onClick={reconnectPty}
                     prefix={<RotateCcw className="h-4 w-4" />}
-                    aria-label="Reconnect chat"
+                    aria-label={t.chat?.reconnect}
                   >
                     Reconnect now
                   </Button>
@@ -1991,7 +1991,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 <Button
                   onClick={startFreshPty}
                   prefix={<RotateCcw className="h-4 w-4" />}
-                  aria-label="Start a new chat session"
+                  aria-label={t.chat?.newSession}
                 >
                   Start new session
                 </Button>
@@ -2003,16 +2003,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   >
                     Open logs
                   </Button>
-                )}
+                )}                </div>
               </div>
-            </div>
           )}
 
           <Button
             ghost
             onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+        title={t.chat?.copyLastTooltip}
+        aria-label={t.chat?.copyLast}
             className={cn(
               "absolute z-10",
               "normal-case tracking-normal font-normal",
@@ -2037,8 +2036,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <Button
               ghost
               onClick={toggleChatPanel}
-              title="Show side panel (model + sessions)"
-              aria-label="Show chat side panel"
+              title={t.chat?.showSidePanelTitle ?? "Show side panel (model + sessions)"}
+              aria-label={t.chat?.showSidePanel}
               className={cn(
                 "absolute z-10",
                 "normal-case tracking-normal font-normal",
@@ -2072,8 +2071,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 ghost
                 size="icon"
                 onClick={toggleChatPanel}
-                aria-label="Collapse chat side panel"
-                title="Collapse side panel"
+        aria-label={t.chat?.collapseSidePanel}
+        title={t.chat?.collapseSidePanelTitle}
                 className="text-text-secondary hover:text-midground"
               >
                 <X />

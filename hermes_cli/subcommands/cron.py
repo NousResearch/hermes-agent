@@ -84,6 +84,11 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     _flag(cron_create, "--paused", default=False,
         help="Create disabled in one write; resume to schedule, or explicitly run now.")
     cron_create.add_argument("--paused-reason", help="Auditable reason; requires --paused.")
+    cron_create.add_argument(
+        "--allow-dead-store", dest="allow_dead_store", action="store_true", default=False,
+        help="Create the job even when no gateway is running. The built-in ticker lives in the "
+            "gateway process, so without this flag the create is refused rather than storing a "
+            "job that can never fire.")
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")

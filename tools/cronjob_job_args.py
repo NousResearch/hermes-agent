@@ -399,6 +399,16 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+# Single source of the dead-store wording (#87033). Shared verbatim by the advisory notice below
+# and by the create refusal (``cronjob_tools._dead_store_refusal``) so the warning path and the
+# refusal path can never drift apart.
+_DEAD_STORE_WARNING = (
+    "The Hermes gateway is not running — {subject} "
+    "but will NOT fire until the gateway is started "
+    "(hermes gateway install / hermes gateway start)."
+)
+
+
 def _gateway_liveness_notice(plural: bool = False) -> dict:
     """``gateway_running``/``warning`` payload via the shared CLI helper so CLI and tool agree
     on "scheduler active". False -> warning (no gateway process), None -> probe failed.
@@ -417,9 +427,7 @@ def _gateway_liveness_notice(plural: bool = False) -> dict:
         return {
             "gateway_running": False,
             "warning": (
-                f"The Hermes gateway is not running — {subject} "
-                "but will NOT fire until the gateway is started "
-                "(hermes gateway install / hermes gateway start). "
-                "Tell the user the task is scheduled but not active yet."),
+                _DEAD_STORE_WARNING.format(subject=subject)
+                + " Tell the user the task is scheduled but not active yet."),
         }
     return {"gateway_running": None if _gw is None else True}

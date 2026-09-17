@@ -602,8 +602,24 @@ def _print_job_details(job_data: Dict[str, Any]) -> None:
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
+    #
+    # The dead-store guard (#87033) is the same shared decision, taken here so the message can
+    # name this surface's escape hatch (--allow-dead-store) rather than the tool's
+    # allow_dead_store=True. Having decided, the call below passes allow_dead_store=True so the
+    # tool does not re-run the gate (and never soft-warns its way past a human's refusal).
+    from tools.cronjob_tools import _dead_store_refusal, _gateway_liveness_notice
+
+    refusal = _dead_store_refusal(
+        _gateway_liveness_notice(),
+        getattr(args, "allow_dead_store", False),
+        override_hint="re-run with --allow-dead-store",
+    )
+    if refusal:
+        print(color(f"Failed to create job: {refusal}", Colors.RED))
+        return 1
+
     result = _cron_api(
-        action="create", schedule=args.schedule, prompt=args.prompt,
+        action="create", allow_dead_store=True, schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         no_agent=getattr(args, "no_agent", False) or None,

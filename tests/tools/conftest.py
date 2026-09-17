@@ -145,3 +145,21 @@ def disable_lazy_stt_install():
     """
     with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _cron_create_sees_a_live_gateway():
+    """Pretend a gateway is running for every test in this directory.
+
+    ``cronjob(action="create")`` refuses to store a job when the builtin
+    ticker has no gateway process to run it (#87033) — a job saved then is
+    dead on arrival. These suites create jobs to exercise other behaviour,
+    so without this they would pass or fail depending on whether the machine
+    running them happens to have a gateway up. The refusal itself is pinned
+    in ``tests/cron/test_87033_cronjob_gateway_liveness.py``, which patches
+    the same probe inside each test and so overrides this fixture.
+    """
+    from unittest.mock import patch
+
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[4242]):
+        yield

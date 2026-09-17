@@ -1069,6 +1069,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
               codexLayout ? 'max-w-(--conversation-width)' : 'max-w-(--composer-width)'
             )}
             data-slot="aui_thread-content"
+            style={
+              {
+                '--thread-content-max-width': codexLayout ? 'var(--conversation-width)' : 'var(--composer-width)'
+              } as CSSProperties
+            }
           >
             {emptyPlaceholder}
           </div>
@@ -1081,6 +1086,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
             )}
             data-slot="aui_thread-content"
             ref={contentRef as React.RefCallback<HTMLDivElement>}
+            style={
+              {
+                '--thread-content-max-width': codexLayout ? 'var(--conversation-width)' : 'var(--composer-width)'
+              } as CSSProperties
+            }
           >
             {(hiddenCount > 0 || olderAvailable) && (
               <button

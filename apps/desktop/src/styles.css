@@ -1657,7 +1657,7 @@ body.guest-pointer-lock :is(webview, iframe) {
 }
 
 [data-slot='aui_thread-content'] {
-  max-width: var(--conversation-width);
+  max-width: var(--thread-content-max-width, var(--conversation-width));
   padding-inline: 1.5rem;
 }
 

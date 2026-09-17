@@ -183,14 +183,15 @@ def build_model_options_payload(
     ctx: ConfigContext, *, explicit_only: bool = False, include_unconfigured: bool = False,
     refresh: bool = False,
 ) -> dict:
-    """Shared API-server/dashboard/TUI payload. Normal open probes only the current custom provider so
-    offline saved endpoints don't block the picker; explicit refresh probes all and busts the cache."""
+    """Shared API-server/dashboard/TUI payload. Normal opens are cache-only and start scoped
+    background refreshes; explicit refresh probes every provider and busts the cache."""
     refresh = bool(refresh)
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
         capabilities=True, featured=True,
-        refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
+        refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=False,
+        for_picker=not refresh,
     )
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,

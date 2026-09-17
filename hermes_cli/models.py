@@ -1710,9 +1710,10 @@ def _model_requires_account_discovery(provider: Optional[str], model: str) -> bo
 
 def cached_provider_model_ids(
     provider: Optional[str], *, force_refresh: bool = False,
-    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> list[str]:
+    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL, cache_only: bool = False) -> list[str]:
     """Disk-cached :func:`provider_model_ids`: fresh cache hit, else live fetch persisting a non-empty
-    result. Always returns a list."""
+    result. ``cache_only`` never performs provider/auth I/O on the caller's thread; stale data is
+    served while a scoped background refresh runs. Always returns a list."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
         return []
@@ -1735,6 +1736,13 @@ def cached_provider_model_ids(
         if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             _spawn_swr_refresh(normalized)
             return list(entry["models"])
+
+    if cache_only:
+        # A normal picker open must remain usable even when every configured provider is cold or
+        # degraded. The worker is profile-scoped by _spawn_swr_refresh's copied context; this call
+        # returns the curated fallback immediately and a later open sees the refreshed catalog.
+        _spawn_swr_refresh(normalized)
+        return []
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:

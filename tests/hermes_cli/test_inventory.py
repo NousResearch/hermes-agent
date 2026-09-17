@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 from hermes_cli.inventory import (
     ConfigContext,
+    build_model_options_payload,
     build_models_payload,
     load_picker_context,
 )
@@ -147,6 +148,18 @@ def test_cli_model_picker_forwards_force_refresh_to_probe_flags():
         )
     assert mock_list.call_args.kwargs["probe_custom_providers"] is True
     assert mock_list.call_args.kwargs["probe_current_custom_provider"] is False
+
+
+def test_model_options_normal_open_uses_only_cache_backed_catalogs(monkeypatch):
+    """Desktop/TUI picker opens must not run provider or custom-endpoint probes inline."""
+    monkeypatch.setattr("hermes_cli.inventory._prewarm_pricing_async", lambda *_a, **_k: None)
+    with _list_auth_returning([]) as listing:
+        build_model_options_payload(_empty_ctx())
+
+    assert listing.call_args.kwargs["for_picker"] is True
+    assert listing.call_args.kwargs["refresh"] is False
+    assert listing.call_args.kwargs["probe_custom_providers"] is False
+    assert listing.call_args.kwargs["probe_current_custom_provider"] is False
 
 
 def test_list_authenticated_providers_force_fresh_is_keyword_only():

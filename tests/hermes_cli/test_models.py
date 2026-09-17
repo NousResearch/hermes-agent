@@ -1407,6 +1407,19 @@ class TestLocalOllamaModelDiscovery:
         finally:
             models._OLLAMA_LOCAL_PROBE_REACHABLE.pop(probe_key, None)
 
+    def test_cache_only_provider_catalog_miss_refreshes_without_inline_probe(self):
+        import hermes_cli.models as models
+
+        with patch.object(models, "_load_provider_models_cache", return_value={}), patch.object(
+            models, "_credential_fingerprint", return_value="same"
+        ), patch.object(models, "_spawn_swr_refresh") as refresh, patch.object(
+            models, "provider_model_ids"
+        ) as live:
+            assert models.cached_provider_model_ids("zai", cache_only=True) == []
+
+        live.assert_not_called()
+        refresh.assert_called_once_with("zai")
+
     def test_ollama_native_request_uses_redirect_safe_catalog_helper(self):
         import hermes_cli.models as models
         from hermes_cli import models_local

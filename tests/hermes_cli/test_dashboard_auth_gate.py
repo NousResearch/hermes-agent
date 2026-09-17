@@ -537,3 +537,19 @@ def test_should_require_dashboard_auth_truth_table(
     else:
         monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", public_url)
     assert should_require_dashboard_auth(host) is expected
+
+
+def test_trusted_proxy_relaxation_is_opt_in(monkeypatch):
+    """The loopback reverse-proxy escape hatch only fires when the operator opts in."""
+    from hermes_cli.web_server import should_require_dashboard_auth
+
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://dash.example.test")
+    monkeypatch.delenv("HERMES_DASHBOARD_TRUSTED_PROXY_NO_AUTH", raising=False)
+    # Default: a non-loopback public_url still forces the gate.
+    assert should_require_dashboard_auth("127.0.0.1") is True
+
+    monkeypatch.setenv("HERMES_DASHBOARD_TRUSTED_PROXY_NO_AUTH", "1")
+    # Opted in: the trusted proxy owns access control for a loopback backend.
+    assert should_require_dashboard_auth("127.0.0.1") is False
+    # A non-loopback bind is gated regardless of the opt-in.
+    assert should_require_dashboard_auth("0.0.0.0") is True

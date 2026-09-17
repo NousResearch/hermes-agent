@@ -1340,6 +1340,9 @@ async def test_run_agent_queued_message_delivers_first_response_media(monkeypatc
 
     assert result["final_response"] == "follow-up processed"
     assert isinstance(adapter, MediaCaptureProgressAdapter)
+    from urllib.parse import quote as _quote
+    expected_media_uri = f"file://{_quote(str(media_path))}"
+
     assert {
         "sent_texts": [call["content"] for call in adapter.sent],
         "image_batches": adapter.image_batches,
@@ -1348,7 +1351,7 @@ async def test_run_agent_queued_message_delivers_first_response_media(monkeypatc
         "image_batches": [
             {
                 "chat_id": "discord-thread",
-                "images": [(media_path.as_uri(), "")],
+                "images": [(expected_media_uri, "")],
                 "metadata": {"thread_id": "discord-thread"},
             }
         ],
@@ -1386,10 +1389,13 @@ async def test_run_agent_queued_message_delivers_streamed_first_response_media(
     assert isinstance(adapter, MediaCaptureProgressAdapter)
     all_text = [call["content"] for call in adapter.sent + adapter.edits]
     assert all("MEDIA:" not in text for text in all_text)
+    from urllib.parse import quote as _quote
+    expected_media_uri = f"file://{_quote(str(media_path))}"
+
     assert adapter.image_batches == [
         {
             "chat_id": "discord-thread",
-            "images": [(media_path.as_uri(), "")],
+            "images": [(expected_media_uri, "")],
             "metadata": {"thread_id": "discord-thread"},
         }
     ]

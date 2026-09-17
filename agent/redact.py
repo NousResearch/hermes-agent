@@ -915,7 +915,7 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
-def _redact_assignments(text: str, *, force: bool = False) -> str:
+def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
     params are intentionally passed through, see redact_sensitive_text).
@@ -927,7 +927,7 @@ def _redact_assignments(text: str, *, force: bool = False) -> str:
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
         _redact_env = _assignment_sub(
-            lambda g: f"{g[0]}={g[1] or ''}{_mask_token(g[2])}{g[1] or ''}",
+            lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}",
             check_keyword=True,
         )
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
@@ -1062,7 +1062,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     if not code_file:
-        text = _redact_assignments(text, force=force)
+        text = _redact_assignments(text, mask_nonreusable=file_read)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)

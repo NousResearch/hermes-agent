@@ -12,14 +12,15 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_state_common import _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS_SQL, _sql_session_last_active
+from hermes_state_common import (
+    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS_SQL, _sql_json_extract, _sql_session_last_active)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
 
 # Recursive CTE naming a session plus its compression ancestors (rows a
 # resume must keep on one routing peer); branch/delegate/tool rows stop it.
-_COMPRESSION_LINEAGE_CTE = """
+_COMPRESSION_LINEAGE_CTE = f"""
                     WITH RECURSIVE compression_lineage(id) AS (
                         SELECT ?
                         UNION
@@ -28,14 +29,8 @@ _COMPRESSION_LINEAGE_CTE = """
                         JOIN sessions child ON child.id = lineage.id
                         JOIN sessions parent ON parent.id = child.parent_session_id
                         WHERE parent.end_reason = 'compression'
-                          AND json_extract(
-                              COALESCE(child.model_config, '{}'),
-                              '$._branched_from'
-                          ) IS NULL
-                          AND json_extract(
-                              COALESCE(child.model_config, '{}'),
-                              '$._delegate_from'
-                          ) IS NULL
+                          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                           AND COALESCE(child.source, '') != 'tool'
                     )
                 """
@@ -108,10 +103,8 @@ _ORPHANS_SQL = f"""
                   AND EXISTS (SELECT 1 FROM messages m
                                WHERE m.session_id = o.id)
                   AND COALESCE(o.source, '') != 'tool'
-                  AND json_extract(COALESCE(o.model_config, '{{}}'),
-                                   '$._branched_from') IS NULL
-                  AND json_extract(COALESCE(o.model_config, '{{}}'),
-                                   '$._delegate_from') IS NULL
+                  AND {_sql_json_extract('o.model_config', '$._branched_from')} IS NULL
+                  AND {_sql_json_extract('o.model_config', '$._delegate_from')} IS NULL
                 ORDER BY o.started_at ASC
                 """
 _ORPHAN_LINEAGE_DONOR_SQL = f"""
@@ -319,6 +312,18 @@ class SessionGatewayMixin:
             (cutoff,),
         )
         return [dict(r) for r in rows]
+
+    def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives
+        only inside ``entry_json``, so matching is done in Python; an archived/rotated row has none."""
+        for row in self._read_all("SELECT entry_json FROM gateway_routing"):
+            try:
+                entry = json.loads(row["entry_json"] or "{}")
+            except Exception:
+                continue
+            if isinstance(entry, dict) and entry.get("session_id") == session_id:
+                return entry
+        return None
 
     def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
         """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id
@@ -541,6 +546,176 @@ class SessionGatewayMixin:
             return
         self._write_sql("DELETE FROM gateway_hygiene_state WHERE session_key = ?", (session_key,))
 
+    def rekey_profile_state(self, old_name: str, new_name: str) -> Dict[str, int]:
+        """Atomically rewrite exact profile identity in this state database."""
+        old, new = (old_name or "").strip(), (new_name or "").strip()
+        counts: Dict[str, int] = {}
+        if not old or not new or old == new:
+            return counts
+        old_ns, new_ns = f"agent:{old}:", f"agent:{new}:"
+        ns_len = len(old_ns)
+
+        def _do(conn):
+            existing = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            collision = conn.execute(
+                "SELECT old.scope, ? || substr(old.session_key, ?) "
+                "FROM gateway_routing AS old JOIN gateway_routing AS target "
+                "ON target.scope = old.scope "
+                "AND target.session_key = ? || substr(old.session_key, ?) "
+                "WHERE substr(old.session_key, 1, ?) = ? LIMIT 1",
+                (new_ns, ns_len + 1, new_ns, ns_len + 1, ns_len, old_ns),
+            ).fetchone()
+            if collision is not None:
+                raise ValueError(
+                    f"profile routing collision in scope {collision[0]!r}: {collision[1]!r}")
+            for table, columns in (
+                ("telegram_dm_topic_mode", ("chat_id",)),
+                ("telegram_dm_topic_bindings", ("chat_id", "thread_id")),
+            ):
+                if table not in existing:
+                    continue
+                equality = " AND ".join(
+                    f"target.{column} = old.{column}" for column in columns)
+                collision = conn.execute(
+                    f"SELECT 1 FROM {table} AS old JOIN {table} AS target "
+                    f"ON target.profile_name = ? AND {equality} "
+                    "WHERE old.profile_name = ? LIMIT 1", (new, old)).fetchone()
+                if collision is not None:
+                    raise ValueError(f"profile identity collision in {table}")
+
+            counts["sessions_profile_name"] = conn.execute(
+                "UPDATE sessions SET profile_name = ? WHERE profile_name = ?", (new, old)).rowcount
+            counts["gateway_heartbeats_profile"] = conn.execute(
+                "UPDATE gateway_heartbeats SET profile = ? WHERE profile = ?", (new, old)).rowcount
+            counts["sessions_session_key"] = conn.execute(
+                "UPDATE sessions SET session_key = ? || substr(session_key, ?) "
+                "WHERE substr(session_key, 1, ?) = ?",
+                (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
+
+            origin_count = 0
+            for session_id, origin_json in conn.execute(
+                    "SELECT id, origin_json FROM sessions WHERE origin_json IS NOT NULL").fetchall():
+                try:
+                    payload = json.loads(origin_json)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("profile") == old:
+                    payload["profile"] = new
+                    conn.execute("UPDATE sessions SET origin_json = ? WHERE id = ?",
+                                 (json.dumps(payload, ensure_ascii=False), session_id))
+                    origin_count += 1
+            counts["sessions_origin_json"] = origin_count
+
+            if "delivery_obligations" in existing:
+                counts["delivery_obligations_adapter_profile"] = conn.execute(
+                    "UPDATE delivery_obligations SET adapter_profile = ? WHERE adapter_profile = ?",
+                    (new, old)).rowcount
+                counts["delivery_obligations_session_key"] = conn.execute(
+                    "UPDATE delivery_obligations SET session_key = ? || substr(session_key, ?) "
+                    "WHERE substr(session_key, 1, ?) = ?",
+                    (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
+            for table in ("telegram_dm_topic_mode", "telegram_dm_topic_bindings"):
+                if table in existing:
+                    counts[f"{table}_profile_name"] = conn.execute(
+                        f"UPDATE {table} SET profile_name = ? WHERE profile_name = ?",
+                        (new, old)).rowcount
+            if "telegram_dm_topic_bindings" in existing:
+                counts["telegram_dm_topic_bindings_session_key"] = conn.execute(
+                    "UPDATE telegram_dm_topic_bindings "
+                    "SET session_key = ? || substr(session_key, ?) "
+                    "WHERE substr(session_key, 1, ?) = ?",
+                    (new_ns, ns_len + 1, ns_len, old_ns)).rowcount
+
+            routing = conn.execute(
+                "SELECT rowid, session_key, entry_json FROM gateway_routing "
+                "WHERE substr(session_key, 1, ?) = ?", (ns_len, old_ns)).fetchall()
+            for rowid, session_key, entry_json in routing:
+                new_session_key = new_ns + session_key[ns_len:]
+                new_json = entry_json
+                if entry_json:
+                    try:
+                        payload = json.loads(entry_json)
+                    except (ValueError, TypeError):
+                        payload = None
+                    if isinstance(payload, dict):
+                        if isinstance(payload.get("session_key"), str) and payload["session_key"].startswith(old_ns):
+                            payload["session_key"] = new_ns + payload["session_key"][ns_len:]
+                        origin = payload.get("origin")
+                        if isinstance(origin, dict) and origin.get("profile") == old:
+                            origin["profile"] = new
+                        new_json = json.dumps(payload, ensure_ascii=False)
+                conn.execute(
+                    "UPDATE gateway_routing SET session_key = ?, entry_json = ? WHERE rowid = ?",
+                    (new_session_key, new_json, rowid))
+            counts["gateway_routing"] = len(routing)
+
+        self._execute_write(_do)
+        return counts
+
+    def purge_profile_state(self, profile: str) -> Dict[str, int]:
+        """Delete exact profile identity from this state database (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_state`: a rename must rekey a profile's identity, a
+        delete must purge it. ``agent:<name>:*`` routing keys, ``gateway_heartbeats.profile``,
+        ``delivery_obligations`` and the telegram topic tables are bookkeeping for a profile that
+        no longer exists — left behind, every inbound event on a chat keyed to the deleted name
+        enters the routing index, resolves a profile whose directory is gone, and logs
+        ``Profile '<name>' does not exist`` on each event for the life of the store.
+
+        What each store gets, and why:
+
+        * Routing keys and heartbeat rows are hard-deleted — pure bookkeeping for a dead name.
+        * ``delivery_obligations`` rows are **terminalized** (``state='abandoned'``), not deleted:
+          a pending obligation is delivery state that should not vanish silently, and the ledger's
+          own retention prunes abandoned rows. Delivered history is left as it was.
+        * ``sessions`` rows are not deleted here: this helper settles identity, not history, and it
+          does not decide what a delete leaves of a profile's conversation record — ``delete_profile``
+          removes the profile's own home, ``state.db`` included, with the directory. Rows in a shared
+          store keep whatever ownership they had; re-binding or archiving them belongs to the flow
+          that recreates the name, not to this purge.
+
+        Idempotent.
+        """
+        name = (profile or "").strip()
+        counts: Dict[str, int] = {}
+        if not name:
+            return counts
+        ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
+
+        def _do(conn):
+            existing = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "gateway_routing" in existing:
+                counts["gateway_routing"] = conn.execute(
+                    "DELETE FROM gateway_routing WHERE substr(session_key, 1, ?) = ?",
+                    (ns_len, ns)).rowcount
+            if "gateway_heartbeats" in existing:
+                counts["gateway_heartbeats"] = conn.execute(
+                    "DELETE FROM gateway_heartbeats WHERE profile = ?", (name,)).rowcount
+            if "delivery_obligations" in existing:
+                # Terminalize, never hard-delete: a pending obligation is delivery state someone may
+                # still care about, and the ledger's own retention prunes abandoned rows. Only
+                # non-terminal rows are touched — delivered history is left exactly as it was.
+                counts["delivery_obligations"] = conn.execute(
+                    "UPDATE delivery_obligations SET state='abandoned', updated_at=? "
+                    "WHERE (adapter_profile = ? OR substr(session_key, 1, ?) = ?) "
+                    "AND state NOT IN ('delivered', 'abandoned')",
+                    (time.time(), name, ns_len, ns)).rowcount
+            if "telegram_dm_topic_mode" in existing:
+                counts["telegram_dm_topic_mode"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount
+            if "telegram_dm_topic_bindings" in existing:
+                # A rename rewrites a binding's session_key namespace as well as its profile_name
+                # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
+                counts["telegram_dm_topic_bindings"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings "
+                    "WHERE profile_name = ? OR substr(session_key, 1, ?) = ?",
+                    (name, ns_len, ns)).rowcount
+
+        self._execute_write(_do)
+        return counts
+
     @staticmethod
     def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as
@@ -660,6 +835,10 @@ class SessionGatewayMixin:
             "UPDATE sessions SET handoff_state = 'running' WHERE id = ? AND handoff_state = 'pending'",
             (session_id,),
         ) > 0
+
+    def has_pending_handoffs(self) -> bool:
+        """Bounded existence probe for the handoff watcher's idle gate (the gate fails open on error)."""
+        return self._read_one("SELECT 1 FROM sessions WHERE handoff_state = 'pending' LIMIT 1") is not None
 
     def complete_handoff(self, session_id: str) -> None:
         """Mark a handoff as completed."""

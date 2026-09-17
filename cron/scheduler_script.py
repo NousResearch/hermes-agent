@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from cron.env_settings import cron_env_setting
 from cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
@@ -41,7 +42,7 @@ def _timeout_from_env_or_config(
     env_var: str, config_key: str, parse: Callable[[Any], Any], label: str):
     """Shared env → ``cron.<config_key>`` resolution. ``parse`` returns the value or None to keep
     looking; a parse error on the env var WARNs, on config DEBUGs. None when neither yields."""
-    env_value = os.getenv(env_var, "").strip()
+    env_value = cron_env_setting(env_var).strip()
     if env_value:
         try:
             value = parse(env_value)
@@ -287,7 +288,13 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
             f"({scripts_dir_resolved}): {script_path!r}"
         )
     if not path.exists():
-        return None, f"Script not found: {path}"
+        # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
+        # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
+        return None, (
+            f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
+            f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
+            f"there too, or edit the job with `hermes cron edit`."
+        )
     if not path.is_file():
         return None, f"Script path is not a file: {path}"
     return path, None

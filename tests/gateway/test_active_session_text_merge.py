@@ -32,10 +32,9 @@ sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 

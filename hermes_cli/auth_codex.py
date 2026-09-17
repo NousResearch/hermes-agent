@@ -143,15 +143,17 @@ def _sync_codex_pool_entries(
 
 
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
-    from hermes_cli.auth import (
-        _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
-        _save_provider_state, _utc_now_z)
+    """Save Codex OAuth tokens (singleton AND ``credential_pool`` aliases) to the active auth store.
+
+    Codex refresh tokens are single-use with rotation-family reuse detection, so the pool rows that
+    alias the singleton must rotate with it or the next process replays the consumed token and
+    OpenAI revokes the whole family (#87503).
+    """
+    from hermes_cli.auth import _provider_state_transaction, _save_auth_store, _store_provider_state, _utc_now_z
     if last_refresh is None:
         last_refresh = _utc_now_z()
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "openai-codex") or {}
+    with _provider_state_transaction("openai-codex") as (auth_store, state, _source_path):
+        state = dict(state) if state else {}
         # Capture the previous singleton tokens BEFORE overwriting: the pool sync uses them to
         # tell legacy singleton-aliases (refresh) from independent ``auth add`` accounts (keep).
         previous_singleton_tokens = (
@@ -159,7 +161,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
         if label and str(label).strip():
             state["label"] = str(label).strip()
-        _save_provider_state(auth_store, "openai-codex", state)
+        _store_provider_state(auth_store, "openai-codex", state, set_active=True)
         _sync_codex_pool_entries(
             auth_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
         _save_auth_store(auth_store)
@@ -212,13 +214,42 @@ def _refresh_payload_access_token(
     return payload, access
 
 
+_SSL_TROUBLE_MARKERS = ("[SSL:", "_ssl.c", "UNEXPECTED_EOF")
+
+
+def _ssl_interop_hint(exc: BaseException) -> str:
+    """Actionable hint for device-login transport errors that look like TLS middlebox interference.
+
+    OpenSSL 3.5+ advertises post-quantum hybrid groups (e.g. X25519MLKEM768) by default, and some
+    intercepting middleboxes reject the resulting larger TLS 1.3 ClientHello — while curl, using a
+    different TLS stack, still works, so the failure masquerades as a Codex outage (#106384).
+    httpx wraps the ``ssl.SSLError`` in a ``ConnectError``/``ConnectTimeout`` whose text usually
+    repeats the OpenSSL message; the cause chain is checked too in case it doesn't.
+    """
+    import ssl
+
+    chain = (exc, exc.__cause__, exc.__context__)
+    if not any(
+        isinstance(err, ssl.SSLError) or any(marker in str(err) for marker in _SSL_TROUBLE_MARKERS)
+        for err in chain if err is not None
+    ):
+        return ""
+    return (
+        " This looks like a TLS handshake failure rather than a Codex outage: some networks reject"
+        " the larger TLS 1.3 ClientHello that OpenSSL 3.5+ sends by default (post-quantum hybrid"
+        " groups). Workaround: point OPENSSL_CONF at a config restricting Groups to classic curves"
+        " (x25519:secp256r1:secp384r1:x448), or test with TLS 1.2 — see the Codex note in"
+        " https://hermes-agent.nousresearch.com/docs/integrations/providers"
+    )
+
+
 def _codex_login_post(url: str, *, failure: Tuple[str, str], **kwargs: Any) -> "httpx.Response":
     """One 15s POST for the device-login flow; transport errors become ``_codex_err(*failure)``."""
     try:
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             return client.post(url, **kwargs)
     except Exception as exc:
-        raise _codex_err(f"{failure[0]}: {exc}", failure[1])
+        raise _codex_err(f"{failure[0]}: {exc}{_ssl_interop_hint(exc)}", failure[1]) from exc
 
 
 def _codex_http_client(**kwargs: Any) -> "httpx.Client":
@@ -328,29 +359,46 @@ def refresh_codex_oauth_pure(
 
 
 def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -> Dict[str, str]:
-    """Refresh Codex access token using the refresh token."""
-    from hermes_cli.auth import _save_codex_tokens, refresh_codex_oauth_pure
-    try:
-        refreshed = refresh_codex_oauth_pure(
-            str(tokens.get("access_token", "") or ""), str(tokens.get("refresh_token", "") or ""),
-            timeout_seconds=timeout_seconds)
-    except AuthError as exc:
-        # Self-heal cross-store rotation: refresh_tokens are single-use, so when the Codex CLI (or
-        # another Hermes process) rotates the shared token this frozen copy fails with a
-        # relogin-required error (invalid_grant / refresh_token_reused / 401). Adopt the canonical
-        # fresh token from ~/.codex/auth.json before surfacing a hard 401. Transient failures
-        # (429 quota) keep relogin_required=False — the stored token is still valid — re-raise.
-        if not getattr(exc, "relogin_required", False):
-            raise
-        imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
-        if not imported:
-            raise
-        return imported
-    updated_tokens = {
-        **tokens, "access_token": refreshed["access_token"],
-        "refresh_token": refreshed["refresh_token"]}
-    _save_codex_tokens(updated_tokens)
+    """Refresh Codex access token using the refresh token.
+
+    The whole re-read -> endpoint POST -> write-back runs inside the SOURCE store's transaction:
+    two processes of one profile otherwise both submit the same single-use refresh token and OpenAI
+    revokes the family. A waiter that finds the store already rotated by its peer adopts the stored
+    pair instead of replaying the consumed token. The lock waits out a full endpoint timeout so the
+    waiter adopts, not times out.
+    """
+    from hermes_cli.auth import _provider_state_transaction, _save_codex_tokens, refresh_codex_oauth_pure
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 5.0)
+    with _provider_state_transaction("openai-codex", lock_timeout) as (_store, state, _source):
+        stored = (state or {}).get("tokens")
+        stored = stored if isinstance(stored, dict) else {}
+        stored_at, stored_rt = _stripped(stored.get("access_token")), _stripped(stored.get("refresh_token"))
+        if stored_at and stored_rt and stored_rt != _stripped(tokens.get("refresh_token")):
+            logger.info("Codex refresh token already rotated by a peer — adopting the stored pair.")
+            return {**tokens, "access_token": stored_at, "refresh_token": stored_rt}
+        try:
+            refreshed = refresh_codex_oauth_pure(
+                str(tokens.get("access_token", "") or ""), str(tokens.get("refresh_token", "") or ""),
+                timeout_seconds=timeout_seconds)
+        except AuthError as exc:
+            # Self-heal cross-store rotation: refresh_tokens are single-use, so when the Codex CLI
+            # (or another Hermes process) rotates the shared token this frozen copy fails with a
+            # relogin-required error (invalid_grant / refresh_token_reused / 401). Adopt the
+            # canonical fresh token from ~/.codex/auth.json before surfacing a hard 401. Transient
+            # failures (429 quota) keep relogin_required=False — the stored token is still valid —
+            # re-raise.
+            if not getattr(exc, "relogin_required", False):
+                raise
+            imported = _recover_codex_tokens_from_cli(
+                f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
+            if not imported:
+                raise
+            return imported
+        updated_tokens = {
+            **tokens, "access_token": refreshed["access_token"],
+            "refresh_token": refreshed["refresh_token"]}
+        # Nested transaction: the per-path lock is reentrant, and it re-reads under the held lock.
+        _save_codex_tokens(updated_tokens)
     return updated_tokens
 
 
@@ -407,6 +455,11 @@ def resolve_codex_runtime_credentials(
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
         pool_token = _pool_codex_access_token()
+        if pool_token and force_refresh:
+            # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
+            from agent.credential_pool import load_pool
+            refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
+            pool_token = refreshed.runtime_api_key if refreshed is not None else ""
         if pool_token:
             return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None)
         pool_rate_limit = _codex_pool_rate_limit_status()
@@ -555,10 +608,7 @@ def clear_codex_pool_quota_cooldowns(access_token: Optional[str] = None) -> int:
     try:
         with _auth_store_lock():
             auth_store = _load_auth_store()
-            entries = _pool_entries(auth_store, "openai-codex")
-            if entries is None:
-                return 0
-            for entry in _codex_pool_dicts(entries):
+            for entry in _codex_pool_dicts(_pool_entries(auth_store, "openai-codex")):
                 if access_token and str(entry.get("access_token") or "") != access_token:
                     continue
                 if _entry_is_rate_limit_exhausted(entry):
@@ -577,21 +627,13 @@ def _codex_pool_dicts(entries: Optional[List[Any]]) -> Iterator[Dict[str, Any]]:
             yield entry
 
 
-def _read_codex_pool_entries() -> Optional[List[Any]]:
-    """Locked read of ``credential_pool.openai-codex`` from auth.json (None when absent)."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-    return _pool_entries(auth_store, "openai-codex")
-
-
 def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
     """Return metadata for a pool-only Codex credential in quota cooldown."""
-    from hermes_cli.auth import _nonempty_str
+    from hermes_cli.auth import _nonempty_str, read_credential_pool
     from agent.credential_pool import _parse_absolute_timestamp
     try:
         now = time.time()
-        for entry in _codex_pool_dicts(_read_codex_pool_entries()):
+        for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token = entry.get("access_token")
             if not _nonempty_str(token) or not _entry_is_rate_limit_exhausted(entry):
                 continue
@@ -619,9 +661,9 @@ def _pool_codex_access_token() -> str:
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds.
     """
-    from hermes_cli.auth import _nonempty_str
+    from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
-        for entry in _codex_pool_dicts(_read_codex_pool_entries()):
+        for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token, reset_at = entry.get("access_token"), entry.get("last_error_reset_at")
             in_cooldown = isinstance(reset_at, (int, float)) and reset_at > time.time()
             if _nonempty_str(token) and not in_cooldown:
@@ -729,10 +771,15 @@ def _codex_poll_authorization_code(
         with _codex_http_client(timeout=httpx.Timeout(15.0)) as client:
             while time.monotonic() - start < max_wait:
                 time.sleep(poll_interval)
-                poll_resp = client.post(
-                    f"{issuer}/api/accounts/deviceauth/token",
-                    json={"device_auth_id": device_auth_id, "user_code": user_code},
-                    headers={"Content-Type": "application/json"})
+                try:
+                    poll_resp = client.post(
+                        f"{issuer}/api/accounts/deviceauth/token",
+                        json={"device_auth_id": device_auth_id, "user_code": user_code},
+                        headers={"Content-Type": "application/json"})
+                except Exception as exc:
+                    raise _codex_err(
+                        f"Device auth polling request failed: {exc}{_ssl_interop_hint(exc)}",
+                        "device_code_poll_error") from exc
                 if poll_resp.status_code == 200:
                     code_resp = poll_resp.json()
                     break

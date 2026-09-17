@@ -296,17 +296,22 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     from hermes_constants import get_hermes_home
     raw = script.strip()
+    scripts_dir = get_hermes_home() / "scripts"
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to {scripts_dir}/. "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename.")
+            f"Place scripts in {scripts_dir}/ and use just the filename.")
 
     from tools.path_security import validate_within_dir
-    scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    if validate_within_dir(scripts_dir / raw, scripts_dir):
+    resolved_script = scripts_dir / raw
+    if validate_within_dir(resolved_script, scripts_dir):
         return f"Script path escapes the scripts directory via traversal: {raw!r}"
+    if not resolved_script.is_file():
+        return (
+            f"Script file not found: {resolved_script}. "
+            f"Create it in {scripts_dir}/ first.")
     return None
 
 
@@ -344,6 +349,8 @@ _FORMAT_JOB_OPTIONAL_KEYS = (
 
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    from agent.redact import redact_sensitive_text
+
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -366,6 +373,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_delivery_error": job.get("last_delivery_error"),
         "last_delivery_unverified": job.get("last_delivery_unverified"),
         "last_fire_error": job.get("last_fire_error"),
+        "last_error": redact_sensitive_text(
+            job["last_error"], force=True, redact_url_credentials=True,
+        ) if job.get("last_error") else job.get("last_error"),
         "enabled": job.get("enabled", True),
         # Derive from enabled so half-paused records never render as paused.
         "state": effective_job_state(job),

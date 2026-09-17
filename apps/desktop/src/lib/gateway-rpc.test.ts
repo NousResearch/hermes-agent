@@ -1,9 +1,16 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
 import { isMissingPendingPromptRequest, isMissingRpcMethod } from './gateway-rpc'
 
 describe('isMissingRpcMethod', () => {
-  it('detects JSON-RPC method-not-found errors', () => {
+  it('trusts the JSON-RPC code over the message when the frame survived', () => {
+    expect(isMissingRpcMethod(new JsonRpcGatewayError('unknown method: projects.create', { code: -32601 }))).toBe(true)
+    // A tool result that merely mentions the phrase must not read as a capability verdict.
+    expect(isMissingRpcMethod(new JsonRpcGatewayError('unknown method in user script', { code: -32000 }))).toBe(false)
+  })
+
+  it('falls back to the message for codeless (IPC-flattened) errors', () => {
     expect(isMissingRpcMethod(new Error('unknown method: projects.create'))).toBe(true)
     expect(isMissingRpcMethod(new Error('Method not found'))).toBe(true)
     expect(isMissingRpcMethod(new Error('RPC failed: -32601'))).toBe(true)

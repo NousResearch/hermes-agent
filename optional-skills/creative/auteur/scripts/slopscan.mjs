@@ -293,13 +293,51 @@ function checkCardCloneGrid(blocks, findings) {
 // authority; and the old remediation ("use &mdash;") renders the identical character, so
 // following it changed nothing the rule claimed to detect.
 const PROSE_EXT = new Set(['.html', '.htm', '.md', '.jsx', '.tsx', '.vue', '.svelte']);
+
+function isHtmlTagNameBoundary(char) {
+  return char === undefined || char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '>' || char === '/';
+}
+
+// Remove element contents without trying to parse HTML with a regular expression.
+// The scanner accepts browser-tolerated end tags such as </script\t\n bar>.
+function stripHtmlElementContents(text, tagName) {
+  const source = text.toLowerCase();
+  const opening = `<${tagName}`;
+  const closing = `</${tagName}`;
+  const kept = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    let start = source.indexOf(opening, cursor);
+    while (start !== -1 && !isHtmlTagNameBoundary(source[start + opening.length])) {
+      start = source.indexOf(opening, start + opening.length);
+    }
+    if (start === -1) {
+      kept.push(text.slice(cursor));
+      break;
+    }
+
+    kept.push(text.slice(cursor, start));
+    let end = source.indexOf(closing, start + opening.length);
+    while (end !== -1 && !isHtmlTagNameBoundary(source[end + closing.length])) {
+      end = source.indexOf(closing, end + closing.length);
+    }
+    if (end === -1) break;
+    const endTag = text.indexOf('>', end + closing.length);
+    if (endTag === -1) break;
+    cursor = endTag + 1;
+  }
+
+  return kept.join('');
+}
+
 function checkEmDashCopy(text, ext, findings) {
   if (!PROSE_EXT.has(ext)) return;
   // Keep only what a visitor actually reads: no script/style, no comments, no <title>/<meta>.
-  const prose = text
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
-    .replace(/<title\b[^>]*>[\s\S]*?<\/title\s*>/gi, ' ')
+  const prose = stripHtmlElementContents(
+    stripHtmlElementContents(stripHtmlElementContents(text, 'script'), 'style'),
+    'title',
+  )
     .replace(/<meta[^>]*>/gi, ' ')
     // Headings, terms and captions are LABELS, not sentences. "-200m — The Blue" is a dash doing
     // exactly the job a dash should do, and counting it made the rule argue against good typography.

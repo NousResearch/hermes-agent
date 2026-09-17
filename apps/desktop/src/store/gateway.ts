@@ -391,7 +391,7 @@ interface GatewayRegistryState {
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
   /** Routed prompt sockets held until their terminal turn event arrives. */
-  turnLeases: Map<string, () => void>
+  turnLeases: Map<string, { release: () => void }>
   /** Debounced releases so an immediate chained turn can reuse its lease. */
   turnLeaseReleaseTimers: Map<string, ReturnType<typeof setTimeout>>
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
@@ -412,7 +412,7 @@ function createRegistryState(): GatewayRegistryState {
     activationHandoffs: new WeakMap(),
     secondaries: new Map<string, Secondary>(),
     openedSecondaryScopes: new Set<string>(),
-    turnLeases: new Map<string, () => void>(),
+    turnLeases: new Map<string, { release: () => void }>(),
     turnLeaseReleaseTimers: new Map<string, ReturnType<typeof setTimeout>>(),
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
@@ -1766,9 +1766,9 @@ function releaseTurnLeasesForScope(scope: string): void {
     }
   }
 
-  for (const [key, release] of [...g.turnLeases]) {
+  for (const [key, lease] of [...g.turnLeases]) {
     if (key.startsWith(prefix)) {
-      release()
+      lease.release()
     }
   }
 }
@@ -1810,28 +1810,30 @@ export async function retainGatewayForSessionTurn(
   const releaseRoute = await retainGatewayForAgent(connectionId, profile)
   let released = false
 
-  const release = () => {
-    if (released) {
-      return
-    }
+  const lease = {
+    release: () => {
+      if (released) {
+        return
+      }
 
-    released = true
+      released = true
 
-    if (g.turnLeases.get(key) === release) {
-      g.turnLeases.delete(key)
-    }
+      if (g.turnLeases.get(key) === lease) {
+        g.turnLeases.delete(key)
+      }
 
-    cancelTurnLeaseRelease(key)
-    // Another session on the same scope may still hold a lease; report the
-    // scope's state, not this lease's.
-    publishTurnLease(scope, scopeHasTurnLease(scope))
-    releaseRoute()
+      cancelTurnLeaseRelease(key)
+      // Another session on the same scope may still hold a lease; report the
+      // scope's state, not this lease's.
+      publishTurnLease(scope, scopeHasTurnLease(scope))
+      releaseRoute()
+    },
   }
 
-  g.turnLeases.set(key, release)
+  g.turnLeases.set(key, lease)
   publishTurnLease(scope, true)
 
-  return release
+  return lease.release
 }
 
 function scopeHasTurnLease(scope: string): boolean {
@@ -1847,10 +1849,14 @@ function scopeHasTurnLease(scope: string): boolean {
 }
 
 function releaseTurnLease(key: string): void {
-  const release = g.turnLeases.get(key)
+  if (!g.turnLeases.has(key)) {
+    return
+  }
 
-  if (release) {
-    release()
+  const lease = g.turnLeases.get(key)
+
+  if (lease && typeof lease.release === 'function') {
+    lease.release()
   }
 }
 
@@ -2635,8 +2641,8 @@ export function closeSecondaryGateways(): void {
 
   g.turnLeaseReleaseTimers.clear()
 
-  for (const release of [...g.turnLeases.values()]) {
-    release()
+  for (const lease of [...g.turnLeases.values()]) {
+    lease.release()
   }
 
   g.turnLeases.clear()

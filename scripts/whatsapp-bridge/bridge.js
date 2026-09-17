@@ -21,6 +21,7 @@
 
 import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
@@ -105,45 +106,35 @@ const BRIDGE_MEDIA_ROOTS = [IMAGE_CACHE_DIR, DOCUMENT_CACHE_DIR, AUDIO_CACHE_DIR
 const MAX_MEDIA_BYTES = 100 * 1024 * 1024;
 const MEDIA_RATE_WINDOW_MS = 60 * 1000;
 const MEDIA_RATE_LIMIT = 30;
-let mediaRateWindow = { startedAt: 0, count: 0 };
-
-function rateLimitSendMedia(_req, res, next) {
-  const now = Date.now();
-  if (now - mediaRateWindow.startedAt >= MEDIA_RATE_WINDOW_MS) {
-    mediaRateWindow = { startedAt: now, count: 0 };
-  }
-  if (mediaRateWindow.count >= MEDIA_RATE_LIMIT) {
-    res.set('Retry-After', String(Math.max(1, Math.ceil((MEDIA_RATE_WINDOW_MS - (now - mediaRateWindow.startedAt)) / 1000))));
-    return res.status(429).json({ error: 'Media send rate limit exceeded' });
-  }
-  mediaRateWindow.count += 1;
-  return next();
-}
-
-function isInsideMediaRoot(candidate) {
-  const resolvedRoots = BRIDGE_MEDIA_ROOTS.flatMap(root => {
-    try {
-      return [realpathSync(root)];
-    } catch {
-      return [];
-    }
-  });
-
-  return resolvedRoots.some(root => {
-    const relative = path.relative(root, candidate);
-    return relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-  });
-}
+const rateLimitSendMedia = rateLimit({
+  windowMs: MEDIA_RATE_WINDOW_MS,
+  max: MEDIA_RATE_LIMIT,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Media send rate limit exceeded' },
+});
 
 function resolveAllowedMediaPath(candidate) {
   if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) return null;
-  try {
-    const resolved = realpathSync(candidate);
-    const metadata = statSync(resolved);
-    return metadata.isFile() && metadata.size <= MAX_MEDIA_BYTES && isInsideMediaRoot(resolved) ? resolved : null;
-  } catch {
-    return null;
+  const absoluteCandidate = path.resolve(candidate);
+
+  for (const root of BRIDGE_MEDIA_ROOTS) {
+    const normalizedRoot = path.resolve(root);
+    if (absoluteCandidate !== normalizedRoot && !absoluteCandidate.startsWith(`${normalizedRoot}${path.sep}`)) continue;
+
+    try {
+      const resolvedRoot = realpathSync(normalizedRoot);
+      const resolved = realpathSync(absoluteCandidate);
+      const metadata = statSync(resolved);
+      if (metadata.isFile() && metadata.size <= MAX_MEDIA_BYTES && resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
+        return resolved;
+      }
+    } catch {
+      // Try the next configured cache root when a path or cache is unavailable.
+    }
   }
+
+  return null;
 }
 
 // Self-hash of this script file.  Reported in /health so the Python gateway

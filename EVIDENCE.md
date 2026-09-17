@@ -84,9 +84,7 @@ Not in the Slack adapter. Prompt-cache / role-alternation untouched (same conver
 
 ## Commit
 
-See `git -C /home/axel/wt/t_30987c2a rev-parse HEAD` after the commit in this worktree (filled below).
-
-- commit: PLACEHOLDER
+Fix commit: `8c4ac9817cb6378c4f9a6a2ddf8037835972bcab` (`git -C /home/axel/wt/t_30987c2a rev-parse HEAD` after the evidence-note commit may be later; the production change is this sha).
 
 ## PR command (print only — do not run)
 

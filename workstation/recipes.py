@@ -41,7 +41,7 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
-def recipe_fingerprint(graph, scope, preflight=()):
+def recipe_fingerprint(graph, scope, preflight=(), mutation_target=None):
     from tools.registry import registry
     from tools.effects import tool_contract
     tools = {}
@@ -60,7 +60,7 @@ def recipe_fingerprint(graph, scope, preflight=()):
             return "[ENTITY]"
         return value
     return digest({"graph": stable(sanitize(graph)), "scope": sanitize(scope), "tools": tools,
-                   "preflight": sanitize(list(preflight))})
+                   "preflight": sanitize(list(preflight)), "mutation_target": sanitize(mutation_target)})
 
 
 def require_browser_scope(args, scope):
@@ -158,10 +158,10 @@ class RecipeStore:
             body.setdefault("stats", {})["failures"] = body.get("stats", {}).get("failures", 0) + 1
             self.put(key, body)
 
-    def promote(self, key, graph, scope, preflight, verifier_ids, fingerprint):
+    def promote(self, key, graph, scope, preflight, verifier_ids, fingerprint, mutation_target=None):
         old = self.get(key)
         return self.put(key, {"operation_signature": digest(sanitize(graph)), "scope": scope,
-            "graph": graph, "verification": {"verifier_step_ids": verifier_ids},
+            "graph": graph, "mutation_target": mutation_target, "verification": {"verifier_step_ids": verifier_ids},
             "preflight": preflight, "fingerprint": fingerprint, "status": "VERIFIED",
             "verified_at": datetime.now(timezone.utc).isoformat(),
             "stats": {"successes": (old or {}).get("stats", {}).get("successes", 0) + 1,

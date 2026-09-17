@@ -45,8 +45,8 @@ def user_constraints(prompt):
         if isinstance(parsed, dict):
             parsed = parsed.get("constraints", parsed)
             if isinstance(parsed, dict):
-                constraints.update({k: parsed[k] for k in ("allowed_routes", "forbidden_routes") if k in parsed})
-    for key, raw in re.findall(r'\b(allowed_routes|forbidden_routes)\s*=\s*(\[[^\n]*?\])', prompt):
+                constraints.update({k: parsed[k] for k in ("allowed_routes", "forbidden_routes", "mutation_allowed_routes", "mutation_forbidden_routes") if k in parsed})
+    for key, raw in re.findall(r'\b((?:mutation_)?allowed_routes|(?:mutation_)?forbidden_routes)\s*=\s*(\[[^\n]*?\])', prompt):
         constraints[key] = json.loads(raw)
     for values in constraints.values():
         if not isinstance(values, list) or len(values) > 64 or any(not isinstance(v, str) or not v or len(v) > 256 for v in values):

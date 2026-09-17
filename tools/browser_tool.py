@@ -2315,7 +2315,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_extract_items",
-        "description": "Batch extract structured items or cards (products, search results, list entries, articles, places) from the current page. Automatically detects repetitive cards or uses a CSS selector, extracting titles, links, prices, ratings, and snippets in one single call. Avoids multiple browser_console/snapshot calls.",
+        "description": "Read-only structured DOM discovery. mode=inspect on Workstation reads selector presence, text, attributes, URL/title without arbitrary JavaScript, clicks or network requests. Default cards mode extracts repetitive cards. Use instead of browser_console for durable preflight; inspection text can support independent persisted-state readback.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2323,6 +2323,8 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "string",
                     "description": "Optional CSS selector targeting the repeating item container (e.g., 'div[data-component-type=\"s-search-result\"]', 'li.ui-search-layout__item', 'div[role=\"feed\"] > div'). If omitted, automatically selects common product/result cards."
                 },
+                "mode": {"type": "string", "enum": ["cards", "inspect"], "default": "cards"},
+                "attributes": {"type": "array", "maxItems": 16, "items": {"type": "string", "maxLength": 128}},
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of items to extract (default: 20, max: 100).",
@@ -5909,6 +5911,17 @@ def _process_extracted_items_durably(raw_result: Any, args: dict, kw: dict) -> s
 
 
 def _handle_browser_extract_items(args: dict, **kw) -> str:
+    if args.get("mode") == "inspect":
+        # Inspection requires the isolated-world Workstation implementation.
+        # Fail closed rather than silently falling back to arbitrary evaluation.
+        if not args.get("selector"):
+            return json.dumps({"error": "inspection_requires_selector"})
+        return workstation_routed_browser_handler(
+            "browser_extract_items", {**args, "output_artifact": False},
+            fallback=lambda: json.dumps({"error": "readonly_inspection_requires_workstation",
+                                        "alternative": "browser_snapshot"}),
+            task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+            kanban_card_id=kw.get("kanban_card_id"), run_id=kw.get("run_id"))
     raw = _workstation_or_legacy(
         "browser_extract_items",
         args,

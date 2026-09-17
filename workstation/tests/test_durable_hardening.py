@@ -36,7 +36,7 @@ def graph_request(n=100):
     return {"operation_key": "graph", "items": [{"id": i} for i in range(n)],
             "setup_steps": [{"id": "resolve_board", "tool": "trello_search_board", "args": {"name": "ACIRV"}}],
             "steps": [{"id": "create", "tool": "trello_create_card", "args": {"board": "$setup.resolve_board.board_id", "id": "$item.id"}, "expect": {"ok": True}},
-                      {"id": "verify", "tool": "trello_verify_card", "verifies": ["create"], "args": {"id": "$item.id"}, "expect": {"ok": True}}],
+                      {"id": "verify", "tool": "trello_verify_card", "verifies": ["create"], "args": {"id": "$item.id"}, "expect": {"id": "$item.id"}}],
             "finalize_steps": [{"id": "summary", "depends_on": ["create"], "tool": "trello_search_cards", "args": {"results": "$items_ref"}}]}
 
 
@@ -74,7 +74,7 @@ def test_graph_setup_once_finalize_after_items_reference_first(compiler):
             assert args["board"] == "B"
             return {"ok": True, "large": "x" * 10000}
         if name == "trello_verify_card":
-            return {"ok": True}
+            return {"id": args["id"]}
         assert calls.count("trello_create_card") == 100
         assert args["results"].startswith("artifact://")
         return {"ok": True}
@@ -105,6 +105,8 @@ def test_restart_shared_and_fan_out(compiler, crash_at):
             raise KeyboardInterrupt()
         if name == "trello_create_card":
             writes.append(args["id"])
+        if name == "trello_verify_card":
+            return {"id": args["id"]}
         return {"ok": True}
     with pytest.raises(KeyboardInterrupt):
         if crash_at == 37:
@@ -117,6 +119,8 @@ def test_restart_shared_and_fan_out(compiler, crash_at):
     def resume(name, args, *rest):
         if name == "trello_create_card":
             writes.append(args["id"])
+        if name == "trello_verify_card":
+            return {"id": args["id"]}
         return {"ok": True, "board_id": "B"}
     result = execute(compiler, request, resume)
     assert len(reads) == 1
@@ -170,6 +174,8 @@ def test_dynamic_fan_out_blocks_third_and_adopts_completed(compiler):
             return execute_compiled_work(args, task_id=task)
         if name == "trello_create_card":
             writes.append(args["id"])
+        if name == "trello_verify_card":
+            return json.dumps({"id": args["id"]})
         return json.dumps({"ok": True})
     with patch("run_agent.handle_function_call", side_effect=handler):
         for i in range(3):
@@ -178,7 +184,7 @@ def test_dynamic_fan_out_blocks_third_and_adopts_completed(compiler):
         assert json.loads(messages[-1]["content"])["code"] == "durable_compile_required"
         # Deliberately include all items: adopted verified results prevent replay.
         req = {"operation_key": "remaining", "items": [{"id": i} for i in range(5)], "steps": [{"id": "create", "tool": "trello_create_card", "args": {"id": "$item.id"}, "expect": {"ok": True}},
-               {"id": "verify", "tool": "trello_verify_card", "verifies": ["create"], "args": {"id": "$item.id"}, "expect": {"ok": True}}]}
+               {"id": "verify", "tool": "trello_verify_card", "verifies": ["create"], "args": {"id": "$item.id"}, "expect": {"id": "$item.id"}}]}
         agent._execute_tool_calls(SimpleNamespace(tool_calls=[call("work_execute", req)]), messages, "task")
     assert writes == list(range(5))
     assert json.loads(messages[-1]["content"])["completed"] == 5
@@ -257,6 +263,8 @@ def test_finalize_checkpoint_and_failure_barrier(compiler):
             parent_writes.append(args)
         if name == "trello_search_cards":
             raise KeyboardInterrupt()
+        if name == "trello_verify_card":
+            return {"id": args["id"]}
         return {"ok": True, "board_id": "B"}
     with pytest.raises(KeyboardInterrupt):
         execute(compiler, req, dispatch)

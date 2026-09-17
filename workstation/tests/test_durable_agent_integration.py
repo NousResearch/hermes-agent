@@ -85,7 +85,8 @@ def test_quantified_request_cannot_enter_item_mutation_loop(tmp_path, monkeypatc
         assert not dispatch.called
         assert json.loads(messages[0]["content"])["code"] == "durable_compile_required"
         agent._execute_tool_calls(SimpleNamespace(tool_calls=[call]), messages, "task")
-        assert agent._tool_guardrail_halt_decision.code == "durable_compile_failed"
+        assert agent._tool_guardrail_halt_decision is None
+        assert json.loads(messages[-1]["content"])["preflight_status"] == "PREFLIGHT_REQUIRED"
     assert not batch_intent("Compare 100 arquivos e discuta as diferenças")
 
 

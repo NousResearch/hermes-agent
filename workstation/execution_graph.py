@@ -45,6 +45,8 @@ def prepare_graph(request):
             from tools.effects import READ_EFFECTS, WRITE_EFFECTS, tool_effect
             if tool_effect(step["tool"]) not in READ_EFFECTS or not step.get("expect"):
                 raise ValueError("External verifier requires read/discovery effect and expect")
+            if {path.split(".")[-1] for path in step["expect"]} <= {"ok", "success", "status_code", "http_status", "exit_code", "returncode"}:
+                raise ValueError("Read verifier must compare persisted resource fields, not transport/preparation success")
             for target in step["verifies"]:
                 if target not in nodes or nodes[target][0] != phase or tool_effect(nodes[target][1]["tool"]) not in WRITE_EFFECTS:
                     raise ValueError("Verifier must prove an existing mutation in the same phase")

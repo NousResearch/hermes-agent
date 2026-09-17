@@ -79,6 +79,11 @@ def merge_constraints(user: dict, compiled: dict) -> dict:
                 a if a == b or a.startswith(b + ".") else b
                 for a in user["allowed_routes"] for b in compiled["allowed_routes"]
                 if a == b or a.startswith(b + ".") or b.startswith(a + ".")})
+    for prefix in ("mutation_",):
+        scoped = merge_constraints({k[len(prefix):]: v for k, v in user.items() if k.startswith(prefix)},
+                                   {k[len(prefix):]: v for k, v in compiled.items() if k.startswith(prefix)}) if any(
+            k.startswith(prefix) for k in (*user, *compiled)) else {}
+        combined.update({prefix + k: v for k, v in scoped.items()})
     return combined
 
 
@@ -94,11 +99,32 @@ def requires_compilation(agent: Any, calls: list) -> bool:
     return False
 
 
+def discovery_guidance(agent=None):
+    names = getattr(agent, "valid_tool_names", ()) if agent is not None else (
+        "read_file", "search_files", "browser_snapshot", "browser_extract_items", "tool_describe")
+    allowed = [n for n in sorted(names) if tool_effect(n) in READ_EFFECTS]
+    return {"phase": "DISCOVERING", "preflight_status": "PREFLIGHT_REQUIRED",
+            "allowed_discovery_actions": allowed,
+            "missing_capabilities": ["operation-specific mutation authority"],
+            "missing_selectors": ["resolve with browser_snapshot/browser_extract_items when unknown"],
+            "missing_readback": ["independent persisted-state source"],
+            "missing_verifiers": ["read step with verifies + expected persisted fields"],
+            "recovery_protocol": ["preserve confirmed identities; review uncertain effects",
+                "discover with read/discovery tools or work_execute action=discover",
+                "compile only pending items with real mutation + independent readback",
+                "verify representative canary persistence before fan-out",
+                "checkpoint each item; resume unconfirmed items; never retry uncertain mutations"],
+            "capability_invariant": "Successful read capability does not establish write capability."}
+
+
 @contextmanager
 def execution_context(dispatch: Callable, session_id: str, progress: Callable | None = None,
                       constraints: dict | None = None, provider_usage: dict | None = None,
-                      completed_mutations: dict | None = None, event_bus=None, canonical_task_id=None):
-    token = _dispatch_context.set((dispatch, session_id, {}, [], progress, provider_usage, completed_mutations or {}, event_bus, canonical_task_id))
+                      completed_mutations: dict | None = None, event_bus=None, canonical_task_id=None,
+                      mutation_evidence=None, capabilities=None):
+    token = _dispatch_context.set((dispatch, session_id, {}, [], progress, provider_usage,
+        completed_mutations or {}, event_bus, canonical_task_id, mutation_evidence or {},
+        capabilities if capabilities is not None else {}))
     constraint_token = _constraints.set(constraints or {})
     try:
         yield
@@ -204,6 +230,38 @@ class TaskCompiler:
             handoffs = HumanHandoffManager(get_hermes_home() / "workstation" / "human_handoffs.json")
         self.handoffs = handoffs
 
+    def discover(self, request, *, task_id, session_id, dispatch):
+        """Preparation only: no frozen plan and no caller-provided effect override."""
+        probes = request.get("preflight", [])
+        if not session_id or not isinstance(probes, list) or len(probes) > 8:
+            raise ValueError("Discovery requires owner and at most 8 read-only probes")
+        constraints = merge_constraints(active_constraints(), request.get("constraints", {}))
+        for probe in probes:
+            name = probe["tool"]
+            effect, contract = tool_contract(name)
+            if effect not in READ_EFFECTS or name == "tool_call":
+                return {**discovery_guidance(), "code": "GUARD_BOOTSTRAP_BLOCKED",
+                        "blocked_action": name, "detected_effect": effect.value,
+                        "reason": "Discovery cannot dispatch arbitrary execution or mutations; use structured read tools."}
+            # Mutation route restrictions do not prohibit independent reads.
+            require_allowed_route("native_browser" if name.startswith("browser_") else "tool." + name,
+                                  constraints)
+            for route in contract.get("routes") or []:
+                require_allowed_route(route, constraints)
+        results = []
+        for index, probe in enumerate(probes):
+            raw = dispatch(probe["tool"], probe.get("args", {}), task_id, f"discover_{index}")
+            from tools.effects import observe_capability
+            context = _dispatch_context.get()
+            if context:
+                observe_capability(context[10], probe["tool"], probe.get("args", {}), raw)
+            ref = content_reference(self.artifacts, session_id, blob_references(self.artifacts, session_id, raw))
+            failed = classify_tool_failure(probe["tool"], raw if isinstance(raw, str) else json.dumps(raw))[0]
+            results.append({"tool": probe["tool"], "result_ref": ref["artifact_ref"],
+                            "verified": not failed and (not probe.get("expect") or _validate(raw, probe["expect"]))})
+        return {**discovery_guidance(), "code": "PREFLIGHT_COMPLETE" if probes and all(r["verified"] for r in results)
+                else "PREFLIGHT_REQUIRED", "results": results, "plan_frozen": False}
+
     def execute(self, request: dict, *, task_id: str, session_id: str, dispatch: Callable,
                 progress: Callable | None = None, provider_usage: dict | None = None,
                 environment: str | None = None, event_bus=None, canonical_task_id: str | None = None) -> dict:
@@ -215,9 +273,11 @@ class TaskCompiler:
                 raise ValueError("recipe_stale: supply a corrected explicit graph for a new canary")
             if request.get("recipe_scope", recipe["scope"]) != recipe["scope"]:
                 raise ValueError("recipe_scope_mismatch")
+            if request.get("mutation_target", recipe.get("mutation_target")) != recipe.get("mutation_target"):
+                raise ValueError("recipe_scope_mismatch: intended mutation target differs from verified recipe")
             request = {**request, "setup_steps": recipe["graph"]["setup"], "steps": recipe["graph"]["fan_out"],
                        "finalize_steps": recipe["graph"]["finalize"], "recipe_scope": recipe["scope"],
-                       "preflight": recipe["preflight"]}
+                       "preflight": recipe["preflight"], "mutation_target": recipe.get("mutation_target")}
         if recipe_key and not request.get("operation_key"):
             from workstation.recipes import digest
             request = {**request, "operation_key": recipe_key + "." + digest(request.get("items", request.get("items_ref")))[:16]}
@@ -246,6 +306,22 @@ class TaskCompiler:
         graph = prepare_graph(request) if any(k in request for k in ("setup_steps", "finalize_steps")) or any(
             "depends_on" in s or "id" in s or "verifies" in s for s in steps) else None
         canonical_graph = graph or prepare_graph(request)
+        intended_target = request.get("mutation_target")
+        if intended_target:
+            if not isinstance(intended_target, dict) or intended_target.get("scope") not in {"local", "external"}:
+                raise ValueError("Invalid intended mutation target")
+            if intended_target["scope"] == "external":
+                matching = []
+                for node in canonical_graph["fan_out"]:
+                    effect, owner = tool_contract(node["tool"])
+                    target = owner.get("mutation_target") or {}
+                    if effect in WRITE_EFFECTS and (target.get("scope") == "external" or
+                                                    node["tool"] in {"browser_click", "browser_type", "browser_press"}):
+                        if intended_target.get("provider") and target.get("provider") and target["provider"] != intended_target["provider"]:
+                            continue
+                        matching.append(node["id"])
+                if not matching:
+                    raise ValueError("External mutation target requires a real mutation step; preparation cannot establish persistence verification")
         scope = request.get("recipe_scope", {"route": "native_browser" if kind == WorkClass.BROWSER_TRANSACTION else "tool." + steps[0]["tool"]})
         if not isinstance(scope, dict) or not isinstance(scope.get("route"), str):
             raise ValueError("Invalid recipe scope")
@@ -261,11 +337,29 @@ class TaskCompiler:
                 raise ValueError("Browser recipe requires scoped host/path family and read-only preflight reporting url")
             for record in request["items"]:
                 require_browser_scope(record, scope)
-        recipe_hash = recipe_fingerprint(canonical_graph, scope, preflight)
+        recipe_hash = recipe_fingerprint(canonical_graph, scope, preflight, intended_target)
         if recipe_reused and recipe["fingerprint"] != recipe_hash:
             self.recipes.invalidate(recipe_key)
             raise ValueError("recipe_fingerprint_mismatch: recipe marked STALE; provide corrected graph")
         mutable_batch = len(request["items"]) > 1 and any(tool_effect(s["tool"]) in WRITE_EFFECTS for s in steps)
+        if mutable_batch:
+            mutations = {s["id"] for s in canonical_graph["fan_out"] if tool_effect(s["tool"]) in WRITE_EFFECTS}
+            proved = {target for s in canonical_graph["fan_out"] for target in s.get("verifies", [])}
+            if mutations - proved:
+                raise ValueError("Mutation batch requires an independent persisted-state read verifier for every mutation")
+            for verifier in canonical_graph["fan_out"]:
+                if verifier.get("verifies") and intended_target and intended_target.get("field"):
+                    field = intended_target["field"]
+                    readback = verifier.get("readback", {})
+                    mapped = readback.get("field") == field and readback.get("path") in verifier["expect"]
+                    if not mapped and not any(path.split(".")[-1] == field for path in verifier["expect"]):
+                        raise ValueError("Mutation verifier must compare the intended persisted resource field")
+                for target_id in verifier.get("verifies", []):
+                    mutation = next(s for s in canonical_graph["fan_out"] if s["id"] == target_id)
+                    target = tool_contract(mutation["tool"])[1].get("mutation_target") or {}
+                    if target.get("scope") == "external" or intended_target and intended_target.get("scope") == "external":
+                        if verifier["tool"] in {"read_file", "search_files", "read_terminal"}:
+                            raise ValueError("External mutation verifier must read persisted external state, not preparation files")
         if mutable_batch and graph is None:
             graph = canonical_graph
         # Cached procedures still verify each item. Only a matching recipe plus
@@ -291,6 +385,11 @@ class TaskCompiler:
             require_allowed_route(route, constraints)
             for declared_route in contract.get("routes") or []:
                 require_allowed_route(declared_route, constraints)
+            if effect in WRITE_EFFECTS:
+                mutation_constraints = {k[len("mutation_"):]: v for k, v in constraints.items() if k.startswith("mutation_")}
+                require_allowed_route(route, mutation_constraints)
+                for declared_route in contract.get("routes") or []:
+                    require_allowed_route(declared_route, mutation_constraints)
             if effect not in READ_EFFECTS and not step.get("expect"):
                 raise ValueError(f"Mutation {tool} requires an explicit result verifier")
             if step.get("wait") and (effect not in READ_EFFECTS or not step.get("expect")):
@@ -469,15 +568,26 @@ class TaskCompiler:
                 effect, contract = tool_contract(step["tool"])
                 if effect == ToolEffect.IDEMPOTENT_WRITE and not args.get(contract["idempotency_key"]):
                     return {"valid": False, "code": "idempotency_key_required", "results": results}
-                self.store.update_item_checkpoint(item.id, f"step_{index}_dispatch")
+                from workstation.batch_detection import call_key, mutation_identity
+                from tools.effects import observe_capability, operation_capability
+                context = _dispatch_context.get()
+                evidence = context[9].get(call_key(step["tool"], args), {}) if context else {}
+                capabilities = {**(context[10] if context else {}), **self.store.get_plan(item.plan_id).metadata.get("capabilities", {})}
+                if effect in WRITE_EFFECTS and (evidence.get("status") == "uncertain" or
+                                               operation_capability(capabilities, step["tool"], args) == "REJECTED"):
+                    return {"valid": False, "code": "uncertain_mutation_requires_review", "results": results}
+                identity_record = mutation_identity(step["tool"], args,
+                    task_id=metadata.get("canonical_task_id") or task_id,
+                    run_id=self.store.get_plan(item.plan_id).run_id) if effect in WRITE_EFFECTS else None
+                if identity_record:
+                    identity_record.update({"status": "uncertain", "persisted": None, "verifier_status": "pending"})
+                self.store.update_item_checkpoint(item.id, f"step_{index}_dispatch", metadata={"mutation_identity": identity_record})
                 metrics["tool_calls"] += 1
                 metrics["tool_input_bytes"] += len(json.dumps(args).encode())
                 started = time.monotonic()
                 wait = step.get("wait", {})
                 subscription = event_bus.subscribe() if wait.get("event_type") else None
                 try:
-                    from workstation.batch_detection import call_key
-                    context = _dispatch_context.get()
                     adopted_ref = context[6].get(call_key(step["tool"], args)) if context else None
                     if adopted_ref:
                         raw = self.artifacts.read(adopted_ref)
@@ -533,7 +643,14 @@ class TaskCompiler:
                 metrics["tool_output_bytes"] += output_bytes
                 text = raw if isinstance(raw, str) else json.dumps(raw)
                 failed, _ = classify_tool_failure(step["tool"], text)
+                observe_capability(capabilities, step["tool"], args, raw)
+                if context:
+                    context[10].update(capabilities)
+                self.store.update_plan_metadata(item.plan_id, {"capabilities": capabilities})
                 verified = not failed and (not step.get("expect") or _validate(raw, _bind(step["expect"], payload, bindings)))
+                if identity_record:
+                    identity_record.update({"evidence_ref": ref["artifact_ref"], "status": "executed_unverified" if verified else "uncertain"})
+                    self.store.update_item_checkpoint(item.id, f"step_{index}_dispatch", metadata={"mutation_identity": identity_record})
                 results.append({"artifact_ref": ref["artifact_ref"], "verified": verified})
                 if not verified:
                     metrics["no_progress_calls"] += 1
@@ -555,7 +672,17 @@ class TaskCompiler:
                     bindings["steps"][step["id"]] = decoded
                     bindings[phase if phase != "fan_out" else "steps"][step["id"]] = decoded
                 self.store.update_item_checkpoint(item.id, f"step_{index}", metadata={"result_ref": ref["artifact_ref"],
-                                                  "verified_targets": step.get("verifies", [])})
+                                                  "verified_targets": step.get("verifies", []),
+                                                  "mutation_identity": identity_record})
+                for target in step.get("verifies", []):
+                    target_index = next(i for i, node in enumerate(phase_steps) if node["id"] == target)
+                    checkpoint = f"step_{target_index}"
+                    target_meta = self.store.get_item(item.id).checkpoints.get(checkpoint + "_meta", {})
+                    target_identity = target_meta.get("mutation_identity")
+                    if target_identity:
+                        target_identity.update({"persisted": True, "status": "persisted", "verifier_status": "verified",
+                                                "verification_evidence_ref": ref["artifact_ref"]})
+                        self.store.update_item_checkpoint(item.id, checkpoint, metadata={**target_meta, "mutation_identity": target_identity})
                 metrics["state_transitions"] += 1
                 persist_metrics()
                 if progress is not None and (step.get("verifies") or step["tool"] in {"write_file", "patch"}):
@@ -604,6 +731,10 @@ class TaskCompiler:
             _execution_active.reset(execution_token)
             _constraints.reset(token)
         envelope = summary.to_dict()
+        mutation_records = self.store.mutation_records(summary.plan_id)
+        if mutation_records:
+            mutation_ledger = self.artifacts.store(durable_id, "mutation_ledger.json", mutation_records)
+            self.store.update_plan_metadata(summary.plan_id, {"mutation_ledger_ref": mutation_ledger.ref})
         envelope["results_ref"] = summary.summary_artifact_ref
         envelope["ledger"] = self.store.operational_ledger(durable_id)
         canary = envelope["ledger"].get("canary", {})
@@ -611,7 +742,7 @@ class TaskCompiler:
         metrics["canary_failures"] = int(canary_required and canary.get("status") in {"failed", "uncertain"})
         if recipe_key and canary.get("verified") and all(i.status.value == "completed" for i in self.store.get_work_items(durable_id)):
             verifier_ids = [s["id"] for s in canonical_graph["fan_out"] if s.get("verifies")]
-            self.recipes.promote(recipe_key, canonical_graph, scope, preflight, verifier_ids, recipe_hash)
+            self.recipes.promote(recipe_key, canonical_graph, scope, preflight, verifier_ids, recipe_hash, intended_target)
             self.store.update_plan_metadata(durable_id, {"recipe": {"recipe_id": recipe_key, "status": "VERIFIED", "fingerprint": recipe_hash}})
             envelope["ledger"] = self.store.operational_ledger(durable_id)
         if graph:
@@ -716,7 +847,10 @@ def execute_compiled_work(args: dict, **kwargs) -> str:
 
 
 def _execute_compiled_work(compiler, context, args, kwargs):
-    dispatch, session_id, _, references, progress, usage, _, event_bus, canonical_task_id = context
+    dispatch, session_id, _, references, progress, usage, _, event_bus, canonical_task_id, _, _ = context
+    if args.get("action") == "discover":
+        return json.dumps(compiler.discover(args, task_id=str(kwargs.get("task_id") or session_id),
+                                           session_id=session_id, dispatch=dispatch), ensure_ascii=False)
     if args.get("plan_id"):
         envelope = compiler.resume(args["plan_id"], session_id=session_id, dispatch=dispatch,
                                    progress=progress, provider_usage=usage,

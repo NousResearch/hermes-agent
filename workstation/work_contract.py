@@ -1,6 +1,7 @@
 """Bounded caller contract and actionable compiler corrections."""
 CONTRACT = {
-    "actions": {"execute": "operation_key + items/items_ref + steps, or recipe_key + items/items_ref",
+    "actions": {"discover": "up to 8 read/discovery preflight probes; preparation refs only, no frozen plan or mutation authority",
+                "execute": "operation_key + items/items_ref + steps, or recipe_key + items/items_ref",
                 "resume": "plan_id; confirmed steps are skipped; uncertain mutations require review",
                 "status": "plan_id; reconstruct state without dispatch", "contract": "this guide; no dispatch"},
     "bindings": {"$item.field": "current structured record", "$setup.id.field": "shared setup result",
@@ -10,6 +11,9 @@ CONTRACT = {
     "canary": "Unknown mutable workflow uses item 1 as canary; no extra item. Unverified/uncertain canary blocks remaining items. A VERIFIED recipe with passing read-only preflight can reuse its stored graph.",
     "recipes": "recipe_key optionally saves externally verified graph. recipe_scope describes route/host/path_family. preflight is at most 8 read/discovery steps with expect. STALE recipes need corrected graph and new canary; no silent bulk execution.",
     "constraints": "allowed_routes/forbidden_routes are enforced before dispatch; cannot relax the user's constraints",
+    "discovery": "Discovery may prepare a mutation plan, but discovery may never become an untracked mutation channel. Use browser_snapshot and browser_extract_items inspection; never label browser_console or terminal read-only.",
+    "capabilities": "Successful read capability does not establish write capability. Check provider + channel + method separately. A PUT 403 rejects PUT, never GET. UI-only write policies permit independent API readback.",
+    "persistence": "Fan-out is authorized by verified persistence of a representative canary, not by successful execution of a preparation step.",
     "outputs": "SUMMARY default: refs + bounded ledger. FULL explicit: load output content. Raw outputs remain artifacts.",
     "examples": [
         {"operation_key": "read-records-v1", "items": [{"path": "a.txt"}],
@@ -23,6 +27,10 @@ CONTRACT = {
 
 def correction(error):
     text = str(error)
+    if "decided operation" in text:
+        from workstation.task_compiler import discovery_guidance
+        return {"error": text[:400], "code": "PREFLIGHT_REQUIRED", **discovery_guidance(),
+                "fix": {"discover_before_compile": True}}
     if "recipe_fingerprint" in text:
         code, fix = "recipe_fingerprint_mismatch", {"provide_corrected_graph": True, "run_new_canary": True}
     elif "recipe_stale" in text:

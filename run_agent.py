@@ -8409,11 +8409,8 @@ class AIAgent:
         if requires_compilation(self, tool_calls):
             from agent.tool_dispatch_helpers import make_tool_result_message
             self._work_compile_replans = getattr(self, "_work_compile_replans", 0) + 1
-            if self._work_compile_replans >= 2:
-                self._set_tool_guardrail_halt(ToolGuardrailDecision(
-                    action="halt", code="durable_compile_failed",
-                    message="Repetitive work could not be compiled safely; clarify or repair the plan.",
-                    count=self._work_compile_replans))
+            # Refused writes did not execute. Keep the discovery dispatcher live;
+            # ordinary no-progress/tool-budget guards still bound repeated refusal.
             for call in tool_calls:
                 # Discovery and human clarification remain possible even when
                 # a single provider response also proposes uncompiled writes.
@@ -8421,11 +8418,17 @@ class AIAgent:
                     from types import SimpleNamespace
                     self._execute_tool_calls(SimpleNamespace(tool_calls=[call]), messages, effective_task_id, api_call_count)
                     continue
+                from workstation.task_compiler import discovery_guidance
+                from workstation.batch_detection import mutation_summary
+                from tools.effects import unwrap_call, tool_effect
+                blocked_name, _ = unwrap_call(call)
                 messages.append(make_tool_result_message(call.function.name, json.dumps({
                     "status": "replan", "code": "durable_compile_required",
                     "summary": "Repetitive work requires work_execute. Compile remaining items and verified steps once; these calls did not execute. Prior completed mutations are preserved and must not be replayed.",
-                    "completed_mutation_count": len(getattr(self, "_work_completed_mutations", {})),
-                    "completed_result_refs": list(getattr(self, "_work_completed_mutations", {}).values())[:8],
+                    **discovery_guidance(self), **mutation_summary(self),
+                    "bootstrap_code": "GUARD_BOOTSTRAP_BLOCKED" if blocked_name in {"terminal", "browser_console", "browser_exec"} else None,
+                    "blocked_action": blocked_name, "detected_effect": tool_effect(blocked_name).value,
+                    "reason": "Use structured read/discovery tools to prepare the plan; arbitrary execution cannot assert read-only authority.",
                 }), call.id, effect_disposition="none"))
             return
 
@@ -8457,13 +8460,16 @@ class AIAgent:
             from workstation.task_compiler import take_raw_result
             return take_raw_result(call_id, results[-1]["content"])
 
+        self._work_capabilities = getattr(self, "_work_capabilities", {})
         _work_context = execution_context(_durable_dispatch, self._conversation_root_id() or self.session_id or "",
                                          self._tool_guardrails.mark_verified_progress,
                                          getattr(self, "_work_user_constraints", {}),
                                          getattr(self, "_current_provider_usage", None),
                                          getattr(self, "_work_completed_mutations", {}),
                                          event_bus=getattr(self, "_workstation_event_bus", None),
-                                         canonical_task_id=getattr(self, "_canonical_work_task_id", None))
+                                         canonical_task_id=getattr(self, "_canonical_work_task_id", None),
+                                         mutation_evidence=getattr(self, "_work_mutation_evidence", {}),
+                                         capabilities=getattr(self, "_work_capabilities", {}))
         _work_context.__enter__()
         try:
             if len(tool_calls) <= 1:

@@ -166,3 +166,12 @@ in read_file; cron drift migration metadata; SessionSearchMixin compacted dedup;
 authenticated cockpit route in web_server. Provider schemas/system prompts,
 SessionDB history and authorized red-team harness are unchanged. See
 [implementation scope](context/CANONICAL_WORK_LOOP.md).
+# Read-only durable preflight — 2026-09-17
+
+Core seams: `run_agent.py` keeps discovery alive after refused compilation;
+`agent/turn_constraints.py` parses mutation-scoped route restrictions without
+changing global restrictions; `agent/conversation_loop.py` resets per-conversation
+effect evidence; `tools/effects.py` separates method/channel capability evidence;
+`tools/browser_tool.py` reuses structured extraction for Workstation inspection.
+Canonical compiler/store checkpoints own persistence and restart behavior.
+See `context/READONLY_DURABLE_PREFLIGHT.md` and `test_readonly_preflight.py`.

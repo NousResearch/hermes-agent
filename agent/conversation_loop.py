@@ -1894,6 +1894,7 @@ def run_conversation(
     prepare_turn_work(agent, user_message, message_envelope)
     agent._work_compile_replans = 0
     agent._work_completed_mutations = {}
+    agent._work_mutation_evidence = {}
     agent._work_mutation_shapes = {}
     from agent.turn_constraints import TurnConstraintContext
     from workstation.routing import ConstraintViolation

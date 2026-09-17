@@ -34,7 +34,7 @@ def run(root: Path, n: int = 12, scenario="corrected", capability="description-c
                {"id": "template", "depends_on": ["schema"], "tool": "read_file", "args": {"path": "template.md"}},
                {"id": "create", "depends_on": ["template", "existing"], "tool": "trello_create_card",
                 "args": {"list": "$setup.list.list_id", "index": "$item.index"}, "expect": {"ok": True}},
-               {"id": "verify", "tool": "trello_get_card", "verifies": ["create"], "args": {"card": "$steps.create.card_id"}, "expect": {"ok": True}}],
+               {"id": "verify", "tool": "trello_get_card", "verifies": ["create"], "args": {"card": "$steps.create.card_id"}, "expect": {"persisted": True, "card_id": "$steps.create.card_id"}}],
            "finalize_steps": [{"id": "collect", "depends_on": ["verify"], "tool": "trello_collect_results", "args": {"items": "$items_ref"}}]}
     if scenario.startswith("known") or scenario == "stale":
         req = {"operation_key": "acirv-trello-" + scenario, "recipe_key": req["recipe_key"], "items": [{"index": n+i} for i in range(n)]}
@@ -64,7 +64,7 @@ def run(root: Path, n: int = 12, scenario="corrected", capability="description-c
                 raw = {"ok": True, "card_id": cards[args["index"]], "description": "card data " * 8000}
             elif name == "trello_get_card":
                 assert args["card"] in cards.values()
-                raw = {"ok": not scenario.startswith("broken"), "card_id": args["card"]}
+                raw = {"persisted": not scenario.startswith("broken"), "card_id": args["card"]}
             elif name == "trello_capabilities":
                 raw = {"description_testid": capability}
             elif name == "tool_describe":

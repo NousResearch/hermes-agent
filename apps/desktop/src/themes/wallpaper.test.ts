@@ -1,6 +1,6 @@
+import { contrastRatio } from '@hermes/shared/color'
 import { describe, expect, it } from 'vitest'
 
-import { contrastRatio } from './color'
 import type { DesktopThemeColors } from './types'
 import { adaptThemeColorsToWallpaper } from './wallpaper'
 

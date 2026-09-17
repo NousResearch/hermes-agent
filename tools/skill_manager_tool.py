@@ -522,9 +522,21 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     skills_root = _containing_skills_root(skill_dir)
     if unsafe := _validate_delete_target(skill_dir):  # defense-in-depth before rmtree
         return _err(unsafe)
-    # Curator consolidations must be RECOVERABLE (`hermes curator restore`): archive instead
-    # of rmtree. Foreground deletes keep hard-delete semantics.
+    # Background source-to-destination consolidation is one recoverable operation:
+    # archive, cron forwarding, ledger/report receipt and rollback share the same primitive
+    # as the public CLI. A background delete without a target remains ordinary archival.
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
+    if _is_background_review() and absorbed_target:
+        try:
+            from agent.curator_consolidation import consolidate_skills
+            receipt = consolidate_skills(name, absorbed_target, actor="curator")
+        except Exception as e:
+            return _err(f"failed to consolidate '{name}': {e}")
+        if not receipt.get("success"):
+            return _err(receipt.get("error", f"failed to consolidate '{name}'"), receipt=receipt)
+        return {"success": True,
+                "message": f"Skill '{name}' consolidated into '{absorbed_target}' and archived recoverably.",
+                "_archived": True, "receipt": receipt}
     if _is_background_review():
         try:
             from tools.skill_usage import archive_skill

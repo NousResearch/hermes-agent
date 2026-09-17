@@ -21,14 +21,19 @@ _TASK_DICT_FIELDS = (
     "created_by", "created_at", "started_at", "completed_at", "result",
     "skills", "max_retries", "model_override", "provider_override",
     "session_id", "workflow_template_id", "current_step_key", "completion_contract", "last_failure_error",
+    # Live ownership / liveness (#113004). ``claim_lock`` is the "<host>:<pid>" of the
+    # claimant; ``claim_expires`` is the TTL epoch; ``worker_pid`` is the spawned worker;
+    # ``current_run_id`` ties to ``runs[]``; ``last_heartbeat_at`` is the most recent
+    # worker heartbeat (NULL for pid-less claims).
+    "claim_lock", "claim_expires", "worker_pid", "current_run_id", "last_heartbeat_at",
 )
 _SHOW_RUN_FIELDS = (
     "id", "profile", "step_key", "status", "outcome", "summary", "error",
-    "metadata", "worker_pid", "started_at", "ended_at",
+    "metadata", "worker_pid", "started_at", "ended_at", "closed_by",
 )
 _RUNS_RUN_FIELDS = (
     "id", "profile", "status", "outcome", "started_at", "ended_at",
-    "summary", "error", "metadata", "worker_pid", "step_key",
+    "summary", "error", "metadata", "worker_pid", "step_key", "closed_by",
 )
 _ATTACHMENT_FIELDS = ("id", "filename", "content_type", "size", "uploaded_by", "stored_path", "created_at")
 

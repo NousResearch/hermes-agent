@@ -61,6 +61,17 @@ class MCPServerRunMixin:
         that don't implement the optional ping utility — see :meth:`_keepalive_probe`) to prevent
         TCP/session state from going stale during idle periods (#17003).
         """
+        # LOCAL PATCH: in-dial reconnect coalescing.
+        # Reaching this point means a session was just established and ``_ready`` is set. A
+        # ``_reconnect_event`` STILL set here was raised *during* the dial that produced this
+        # very session (e.g. a tool call failing with a server-expired session signals a
+        # reconnect while the lifecycle loop is already rebuilding). Leaving it set makes the
+        # wait below return "reconnect" instantly and tear down the brand-new session -- while
+        # _wait_for_server_session_ready() has simultaneously certified that same session as
+        # fresh+ready and spent the one session-expired retry on it ("Connection closed").
+        # The request has already been satisfied by this dial, so consume it.
+        self._reconnect_event.clear()
+
         keepalive_interval = max(
             _core._MIN_KEEPALIVE_INTERVAL,
             float(self._config.get("keepalive_interval", _core._DEFAULT_KEEPALIVE_INTERVAL)))

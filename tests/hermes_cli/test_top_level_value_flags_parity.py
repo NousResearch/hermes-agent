@@ -78,3 +78,21 @@ def test_reasoning_forms_do_not_shadow_the_subcommand(monkeypatch, argv):
     assert first not in {"high", "ultra", "low"}, (
         f"a reasoning level leaked through as the positional: {first!r}"
     )
+
+
+def test_help_documents_the_profile_prefix():
+    """`hermes -p <profile> …` must stay visible in `hermes --help` (#114495).
+
+    ``-p/--profile`` is consumed by ``main._apply_profile_override`` before
+    argparse runs (see ``PRE_ARGPARSE_INHERITED_FLAGS``), so it never shows up
+    in the usage line or the options section. The epilogue examples are the
+    only place the prefix is documented — pin them so a rewrite cannot drop
+    the only pointer users have to `hermes -p <profile> gateway start`.
+    """
+    parser, _, _ = build_top_level_parser()
+    help_text = parser.format_help()
+    assert "-p <profile>" in help_text, (
+        "the -p <profile> prefix vanished from `hermes --help`; users have no "
+        "way to discover per-profile gateway start/stop from the help output"
+    )
+    assert "-p coder gateway start" in help_text

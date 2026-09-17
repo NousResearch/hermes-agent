@@ -102,6 +102,8 @@ Examples:
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
     hermes gateway install        Install gateway background service
+    hermes -p <profile> <command> Run any command under a named profile
+    hermes -p coder gateway start Start the `coder` profile's gateway
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
     hermes sessions rename ID T   Rename/title a session

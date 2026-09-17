@@ -1,4 +1,4 @@
-"""TelegramAdapter polling-stall watchdog (#92991).
+"""TelegramAdapter polling-stall watchdog (#92991, #113618).
 
 A wedged getUpdates long-poll can be invisible to every other probe: the
 TCP connection dies mid-read (CLOSE-WAIT behind a TUN/proxy route flip),
@@ -10,10 +10,14 @@ only a full restart recovers it.
 ``_check_polling_stall`` closes that hole: Telegram answers a long-poll
 within ~50s, so a poller with no successful getUpdates round-trip for
 ``_POLLING_STALL_TIMEOUT`` seconds is unambiguously wedged, and the check
-escalates loudly through the existing reconnect ladder
-(``_handle_polling_network_error``). ``_polling_heartbeat_loop`` runs the
-check every probe, so steady-state wedges are caught without any Bot API
-call.
+escalates loudly through the dedicated verifier-stall recovery helper
+(``_handle_polling_verifier_stall`` — #113618). The helper has a tight
+bound (``_MAX_VERIFIER_STALL_RETRIES``) because the same Updater restart
+cannot heal a wedged-but-getMe-OK consumer, so a retryable fatal routes
+the supervisor to rebuild the adapter long before the network-error
+ladder's 10-attempt budget would elapse.
+``_polling_heartbeat_loop`` runs the check every probe, so steady-state
+wedges are caught without any Bot API call.
 """
 import asyncio
 import time as _time
@@ -51,19 +55,21 @@ def _make_adapter(*, stalled_seconds: float) -> TelegramAdapter:
 async def test_recent_progress_does_not_escalate():
     """A healthy poller (fresh round-trip) must never trip the watchdog."""
     adapter = _make_adapter(stalled_seconds=1)
-    with patch.object(adapter, "_handle_polling_network_error", new=AsyncMock()) as rec:
+    with patch.object(adapter, "_handle_polling_verifier_stall", new=AsyncMock()) as rec:
         await adapter._check_polling_stall()
     assert adapter._polling_error_task is None
     rec.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_stalled_long_poll_escalates_to_reconnect_ladder():
+async def test_stalled_long_poll_escalates_to_verifier_stall_ladder():
     """#92991: with an empty queue and healthy get_me(), only the stall
-    timestamp can detect the wedged consumer — and it must."""
+    timestamp can detect the wedged consumer — and it must. The watchdog
+    routes to the dedicated verifier-stall helper (#113618), not the
+    network-error ladder, so the bound can escalate fast."""
     adapter = _make_adapter(stalled_seconds=400)
     recovery = AsyncMock()
-    with patch.object(adapter, "_handle_polling_network_error", new=recovery):
+    with patch.object(adapter, "_handle_polling_verifier_stall", new=recovery):
         await adapter._check_polling_stall()
     task = adapter._polling_error_task
     assert task is not None
@@ -78,7 +84,7 @@ async def test_generation_with_no_progress_ever_uses_generation_age():
     adapter = _make_adapter(stalled_seconds=0)
     adapter._polling_last_progress_monotonic = None
     recovery = AsyncMock()
-    with patch.object(adapter, "_handle_polling_network_error", new=recovery):
+    with patch.object(adapter, "_handle_polling_verifier_stall", new=recovery):
         await adapter._check_polling_stall()
     task = adapter._polling_error_task
     assert task is not None
@@ -93,7 +99,7 @@ async def test_stall_ignored_while_recovery_in_flight():
     inflight = MagicMock()
     inflight.done.return_value = False
     adapter._polling_error_task = inflight
-    with patch.object(adapter, "_handle_polling_network_error", new=AsyncMock()) as rec:
+    with patch.object(adapter, "_handle_polling_verifier_stall", new=AsyncMock()) as rec:
         await adapter._check_polling_stall()
     rec.assert_not_called()
     assert adapter._polling_error_task is inflight
@@ -104,7 +110,7 @@ async def test_stall_check_skipped_in_webhook_mode():
     """Webhook mode has no long-poll socket to wedge."""
     adapter = _make_adapter(stalled_seconds=400)
     adapter._webhook_mode = True
-    with patch.object(adapter, "_handle_polling_network_error", new=AsyncMock()) as rec:
+    with patch.object(adapter, "_handle_polling_verifier_stall", new=AsyncMock()) as rec:
         await adapter._check_polling_stall()
     rec.assert_not_called()
     assert adapter._polling_error_task is None
@@ -116,7 +122,7 @@ async def test_heartbeat_detects_wedged_long_poll_with_empty_queue():
     wedged poller with a healthy general path and an empty queue. Before the
     stall watchdog, this setup produces total silence — no probe fires and
     no recovery is ever scheduled. After it, the first stall observation
-    escalates through the reconnect ladder."""
+    escalates through the verifier-stall helper (#113618)."""
     adapter = _make_adapter(stalled_seconds=400)
     real_sleep = asyncio.sleep
 
@@ -124,7 +130,7 @@ async def test_heartbeat_detects_wedged_long_poll_with_empty_queue():
         await real_sleep(0)
 
     with patch("asyncio.sleep", new=fast_sleep):
-        with patch.object(adapter, "_handle_polling_network_error", new=AsyncMock()) as rec:
+        with patch.object(adapter, "_handle_polling_verifier_stall", new=AsyncMock()) as rec:
             loop_task = asyncio.ensure_future(adapter._polling_heartbeat_loop())
             try:
                 # Run probe cycles until the stall watchdog escalates (the

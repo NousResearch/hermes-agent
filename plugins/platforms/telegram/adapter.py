@@ -356,6 +356,19 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
+# Verifier-stall bounded escalation (#113618): ``getUpdates`` wedged while ``getMe`` on the general
+# request path stays healthy is a distinct failure mode from a transient network error. The watchdog
+# (``_check_polling_stall``) and the post-reconnect verifier
+# (``_verify_polling_after_reconnect``'s "general path healthy but getUpdates stalled" branch) both
+# surface it; restarting the same Updater cannot heal it because the consumer rebuild reuses the
+# wedged state. Bounded retries then a retryable fatal so the supervisor rebuilds the adapter —
+# much tighter than ``_handle_polling_network_error``'s 10-attempt ladder (which fits transient
+# network errors but takes ~7 min for a wedged-but-getMe-OK condition).
+_MAX_VERIFIER_STALL_RETRIES = 3
+# Backoff between verifier-stall retries; short on purpose because the bound is small and a stuck
+# Updater cannot recover on its own. Real recovery comes from the supervisor rebuilding the adapter
+# after the bound fires, not from waiting for the consumer to unstick.
+_POLLING_STALL_BACKOFF_SECONDS = 5.0
 # Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
 # that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
 # backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
@@ -488,6 +501,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
+        # Verifier-stall bound (#113618): consecutive wedged-but-getMe-OK recoveries before retryable
+        # fatal. Reset to zero on the next confirmed getUpdates round-trip.
+        self._polling_verifier_stall_count: int = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
         self._polling_progress_event = asyncio.Event()
         self._polling_progress_accepting = self._polling_teardown_started = False
@@ -1642,6 +1658,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0
+        self._polling_verifier_stall_count = 0
         if generation == self._polling_conflict_recovery_generation:
             self._polling_conflict_recovery_generation = None
         else:
@@ -2016,6 +2033,75 @@ class TelegramAdapter(BasePlatformAdapter):
                 # The chained retry IS the in-flight recovery: it must replace the reentrancy guard.
                 self._polling_error_task = task
 
+    async def _handle_polling_verifier_stall(self, error: Exception) -> None:
+        """Recover a wedged-but-getMe-OK long-poll with a tight bound (#113618).
+
+        Distinct from ``_handle_polling_network_error``: this fires only when the watchdog
+        (``_check_polling_stall``) or the post-reconnect verifier
+        (``_verify_polling_after_reconnect``'s "general path healthy but getUpdates stalled"
+        branch) sees ``getUpdates`` make no progress while ``getMe`` on the general request path
+        stays healthy. That signature indicates a wedged long-poll consumer — the network-error
+        ladder's 10-attempt exponential backoff is the wrong escalation because restarting the
+        same Updater reuses the wedged state, so the gateway stays deaf for ~7 min while the
+        ladder churns through dead cycles (#113618).
+
+        Bounded retries (``_MAX_VERIFIER_STALL_RETRIES``) then a retryable fatal so the supervisor
+        rebuilds the adapter. ``_record_polling_progress`` resets the counter on the next
+        confirmed ``getUpdates`` round-trip, so a recovered gateway starts from zero on the next
+        stall. Callers advance ``_polling_verifier_stall_count`` BEFORE invoking this helper so
+        the bound reflects "this stall was observed" regardless of which path the recovery
+        follows (e.g. a chained retry from a start_polling() failure).
+        """
+        if self._teardown_started or self.has_fatal_error:
+            return
+        attempt = self._polling_verifier_stall_count
+        if attempt > _MAX_VERIFIER_STALL_RETRIES:
+            message = (
+                "Telegram polling could not recover a wedged long-poll after %d verifier-stall "
+                "retries (getMe stayed healthy while getUpdates made no progress). Escalating to "
+                "gateway recovery so the supervisor rebuilds the adapter — the same Updater "
+                "restart cannot heal a wedged-but-getMe-OK consumer (#113618)."
+                % _MAX_VERIFIER_STALL_RETRIES)
+            await self._go_fatal_network(
+                message, "[%s] %s Last stall: %s", self.name, message, _redact_telegram_error_text(error))
+            return
+        logger.warning(
+            "[%s] Telegram polling verifier-stall (attempt %d/%d); getMe healthy while getUpdates "
+            "stalled, rebuilding consumer in %.0fs. Error: %s",
+            self.name, attempt, _MAX_VERIFIER_STALL_RETRIES,
+            _POLLING_STALL_BACKOFF_SECONDS, _redact_telegram_error_text(error))
+        await asyncio.sleep(_POLLING_STALL_BACKOFF_SECONDS)
+        if self._teardown_started:
+            return
+        app = self._app
+        if not await self._stop_updater_or_go_fatal(app, "verifier-stall") or self._teardown_started:
+            return
+        await self._drain_polling_connections()
+        if self._teardown_started:
+            return
+        try:
+            if not app:
+                raise RuntimeError("Telegram application was torn down during verifier-stall reconnect")
+            await self._start_polling_once(app, drop_pending_updates=False, error_callback=self._polling_error_callback_ref)
+            logger.info(
+                "[%s] Telegram polling restarted after verifier-stall (attempt %d); health pending getUpdates progress",
+                self.name, attempt)
+        except _PollingLifecycleAbort:
+            return
+        except Exception as retry_err:
+            if self._teardown_started:
+                return
+            logger.warning(
+                "[%s] Telegram polling verifier-stall retry %d/%d failed: %s",
+                self.name, attempt, _MAX_VERIFIER_STALL_RETRIES, _redact_telegram_error_text(retry_err))
+            # Polling is dead and no more error callbacks will fire — chain the retry ourselves.
+            if not self.has_fatal_error and not self._teardown_started:
+                task = asyncio.ensure_future(self._handle_polling_verifier_stall(retry_err))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                # The chained retry IS the in-flight recovery: it must replace the reentrancy guard.
+                self._polling_error_task = task
+
     async def _polling_heartbeat_loop(self) -> None:
         """Detect dead Telegram TCP sockets (CLOSE-WAIT) by periodic probing.
 
@@ -2225,11 +2311,17 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         logger.error(
             "[%s] Telegram polling stalled: no getUpdates progress for %.0fs "
-            "(generation %d). Rebuilding the long-poll consumer through the reconnect ladder instead of staying silently deaf.",
+            "(generation %d). Rebuilding the long-poll consumer through the verifier-stall ladder "
+            "(#113618) instead of routing through the 10-attempt network-error ladder.",
             self.name, stalled_for, getattr(self, "_polling_generation", 0))
+        # Verifier-stall failure mode (#113618): ``getUpdates`` wedged while ``getMe`` is healthy is
+        # not a transient network error — the same Updater restart cannot heal it. Advance the
+        # bound BEFORE invoking the helper so the counter reflects "this stall was observed"
+        # regardless of which path the recovery follows (chained retry, etc.).
+        self._polling_verifier_stall_count += 1
         self._spawn_polling_recovery(
             asyncio.get_running_loop(),
-            self._handle_polling_network_error(
+            self._handle_polling_verifier_stall(
                 RuntimeError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for)))
 
     def _verifier_stale(self, generation: int, progress: asyncio.Event) -> bool:
@@ -2276,9 +2368,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if self._verifier_stale(generation, progress):
             return
-        self._schedule_polling_recovery(
-            RuntimeError("getUpdates made no progress before verifier deadline"),
-            reason="polling progress verifier: general path healthy but getUpdates stalled")
+        # Verifier-stall failure mode (#113618): ``getMe`` succeeded on the general request path,
+        # ``updater.running`` is True, but no ``getUpdates`` round-trip completed in the verifier
+        # window. That is the same failure mode the watchdog (``_check_polling_stall``) detects,
+        # and the network-error ladder's 10-attempt exponential backoff is the wrong policy for it:
+        # restarting the same Updater cannot heal a wedged-but-getMe-OK long-poll, so the gateway
+        # stays deaf for ~7 min while the ladder churns. Route directly to the dedicated stall
+        # helper (bypassing ``_schedule_polling_recovery``'s reentrancy gate, which is irrelevant
+        # here — this branch only fires after the previous recovery task completed) so the bound
+        # tightens the escalation to a few retries. Advance the bound at the call site so the
+        # counter reflects "this stall was observed" regardless of which path the recovery follows.
+        self._polling_verifier_stall_count += 1
+        await self._handle_polling_verifier_stall(
+            RuntimeError("polling progress verifier: general path healthy but getUpdates stalled"))
 
     def _disarm_ptb_retry_loop(self) -> None:
         """Synchronously stop PTB's internal polling retry loop.

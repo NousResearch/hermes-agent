@@ -143,7 +143,7 @@ class TestRefusalCopy:
 
     @pytest.mark.parametrize("copy_fn, args", [
         (anon_auth.welcome_refusal_copy, ({"reason": r},)) for r in sorted(anon_auth.WELCOME_REFUSAL_REASONS)
-    ] + [(anon_auth.welcome_route_refusal_copy, (k,)) for k in ("anon_on_paid_host", "named_on_welcome_host", "tier_disabled")])
+    ] + [(anon_auth.welcome_route_refusal_copy, (k,)) for k in ("anon_on_paid_host", "tier_disabled")])
     def test_copy_never_says_guest_anonymous_or_claim(self, copy_fn, args):
         text = copy_fn(*args).lower()
         assert not any(word in text for word in ("guest", "anonymous", "claim"))

@@ -639,7 +639,6 @@ WELCOME_TIER_GATE_REASONS = frozenset({"model_not_free", "feature_not_free"})
 # Gateway messages (lowercased substrings) for a request on the wrong host or a dark tier.
 _WELCOME_ROUTE_REFUSALS = (
     ("anonymous accounts must use", "anon_on_paid_host"),
-    ("serves anonymous hermes agent accounts only", "named_on_welcome_host"),
     ("anonymous accounts are not accepted", "tier_disabled"),
 )
 _WELCOME_ROUTE_COPY = {
@@ -647,15 +646,12 @@ _WELCOME_ROUTE_COPY = {
     # the session: the one cause left is a user-set NOUS_INFERENCE_BASE_URL naming the paid host.
     "anon_on_paid_host": "This install is set to use a different Nous server (NOUS_INFERENCE_BASE_URL). "
                          "Unset it to use the free model, or sign in. {signin}",
-    "named_on_welcome_host": "This Nous account needs to reconnect. {model_hint}",
     "tier_disabled": "Using Hermes without signing in is switched off right now. "
                      "Sign in to keep chatting, it's free. {signin}",
 }
 # The sign-in door, phrased for a chat surface (slash command) and for a terminal.
 _SIGNIN_CHAT = "To sign in: /login."
 _SIGNIN_TERMINAL = "To sign in: `hermes auth upgrade`."
-_MODEL_HINT_CHAT = "Run /model and pick the Nous row again."
-_MODEL_HINT_TERMINAL = "Run `hermes model` and pick the Nous row again."
 # Terminal copy for a free-model outage once the retries are spent (5xx, transport failure).
 FREE_TIER_OUTAGE_COPY = ("The free model is having trouble responding right now. "
                          "Try sending your message again in a minute.")
@@ -717,14 +713,15 @@ def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: b
 def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Optional[str]:
     """Which host cross-refusal a gateway 400/403 is; None for any other error.
 
-    ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"named_on_welcome_host"``: an
-    account or API key reached the free tier's host. ``"tier_disabled"``: the tier is dark
-    (``WELCOME_MODE=off``). Each is deterministic for the request: retrying cannot help.
+    ``"anon_on_paid_host"``: a free-tier JWT reached the paid host. ``"tier_disabled"``: the tier is
+    dark (``WELCOME_MODE=off``). Each is deterministic for the request: retrying cannot help. Only
+    consulted for an anonymous request (``error_classifier._nous_welcome_tier``): the gateway's
+    mirror refusal of a named account on the welcome host is that account's ordinary 400.
 
     The dark-tier 403 is keyed on the ROUTE, not the message: the gateway's permission error
     carries only its generic sentence (the detail stays in its logs), so any 403 answered by the
     welcome host means the tier refused this install. The message needles remain for gateways
-    that do spell it out, and for the two wrong-host 400s."""
+    that do spell it out, and for the wrong-host 400."""
     if status not in (400, 403):
         return None
     text = str(message or "").lower()
@@ -737,8 +734,7 @@ def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Op
 def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True, door: bool = True) -> str:
     template = _WELCOME_ROUTE_COPY.get(kind) or "Hermes couldn't reach the free model on this route."
     return template.format(
-        host=DEFAULT_NOUS_WELCOME_URL, signin=(_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL) if door else "",
-        model_hint=_MODEL_HINT_CHAT if in_chat else _MODEL_HINT_TERMINAL).rstrip()
+        host=DEFAULT_NOUS_WELCOME_URL, signin=(_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL) if door else "").rstrip()
 
 
 def note_model_switch(agent: Any, headers: Any) -> Optional[str]:

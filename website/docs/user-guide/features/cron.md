@@ -454,8 +454,8 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
-| `"desktop-session"` | Per-job persistent Desktop chat in the sidebar | Local state.db session |
-| `"desktop-session:Daily Brief"` | Named Desktop delivery session | Explicit title |
+| `"desktop-session"` | Desktop chat for each run, in the sidebar | Local state.db session |
+| `"desktop-session:Daily Brief"` | Same, with an explicit name in the title | Title `<name> · Sep 17 09:05` |
 | `"bot-chat"` | This profile's canonical Bot Chat — the bot reads the output and responds | Machine-local |
 | `"bot-chat:research"` | Another local profile's Bot Chat | Validated at create time |
 | `"all"` | Fan out to every connected home channel | Resolved at fire time |
@@ -491,11 +491,12 @@ error. A delivery failure does not count toward the job's `failure_streak`
 
 ### Desktop-native delivery (`desktop-session`)
 
-`desktop-session` delivers cron output to a **persistent per-job chat in the Hermes Desktop sidebar**. Unlike regular cron run sessions (which are ephemeral and created fresh each time), the delivery session persists across runs and accumulates output. You can click it, read past deliveries, and reply in-context.
+`desktop-session` delivers cron output to a chat in the **Hermes Desktop sidebar** — one session per invocation, the same way a cron run gets its own run session. Nothing accumulates across runs, so replying to today's brief carries today's context instead of every previous day's output and the whole tool trace that produced it.
 
-- `desktop-session` (bare) auto-names the session from the job id.
-- `desktop-session:Daily Brief` (named) sets the session title to "Cron Delivery: Daily Brief".
-- Each run appends its output as a new assistant message in the delivery session.
+- `desktop-session` (bare) names the session after the job.
+- `desktop-session:Daily Brief` (named) uses that name instead of the job name.
+- The title carries the run stamp — `morning-briefing · Sep 17 09:05` — because session titles are unique: without it the second run could not hold the job's name. (A second delivery inside the same minute lands as `… #2`.)
+- Each run's output is appended as an assistant message in that run's own session.
 - The session appears in the sidebar alongside regular chats with a "Cron" source label and receives an unread dot on new output.
 - Composes with other targets (`desktop-session,telegram`) — the job delivers to both the Desktop session and the external platform.
 

@@ -595,16 +595,17 @@ def _resolve_single_delivery_target(
                 return _home_target(platform_name, chat_id, "origin_fallback")
         return None
 
-    # desktop-session[:<job-name>] — deliver to a per-job Desktop chat.
-    # The bare form auto-names from the job id; the explicit form sets the
-    # session title to the given name.
+    # desktop-session[:<job-name>] — deliver to a Desktop chat session, one per
+    # invocation (cron.desktop_delivery).  This pseudo-platform has no chat, so
+    # the optional name rides in chat_id; empty means "no hint — title the
+    # session after the job".
     if deliver_value.lower().startswith("desktop-session"):
         session_name = None
         if ":" in deliver_value:
             session_name = deliver_value.split(":", 1)[1].strip()
         return {
             "platform": "desktop-session",
-            "chat_id": session_name or str(job.get("id", "?")),
+            "chat_id": session_name or "",
             "thread_id": None,
             "_resolved_from": "desktop_session",
         }
@@ -1768,17 +1769,12 @@ def _deliver_result(
 
     delivery_errors = []
     for target in targets:
-        # desktop-session targets don't ride a gateway adapter: the output
-        # gets written to a per-job persistent Desktop delivery session via
-        # the SessionDB (same DB the desktop client queries). Handled before
-        # the Platform enum below, which knows nothing about this
-        # pseudo-platform. The target's chat_id holds the session name hint
-        # (the job id by default).
+        # desktop-session targets don't ride a gateway adapter: the output gets
+        # written to a fresh Desktop delivery session via the SessionDB (same DB
+        # the desktop client queries). Handled before the Platform enum below,
+        # which knows nothing about this pseudo-platform. The target's chat_id
+        # holds the optional name hint from ``desktop-session:<name>``.
         if target["platform"] == "desktop-session":
-            # The target's chat_id holds the name hint from
-            # ``desktop-session:<name>``, or the job id for bare
-            # ``desktop-session``.  Pass it so the session title
-            # reflects the user's naming choice.
             session_name = target.get("chat_id") or None
             desktop_error = _deliver_to_desktop_session(
                 job, delivery_content, session_db,
@@ -1820,9 +1816,9 @@ def _deliver_result(
     delivery_errors.extend(policy_drop_errors)
 
     # Desktop delivery via per-job field (desktop_delivery_enabled=True): deliver
-    # the output to the job's persistent Desktop session in addition to whatever
-    # the deliver= targets resolved.  Skipped when the deliver= targets already
-    # included a desktop-session target (no double-send).
+    # the output to a fresh Desktop session in addition to whatever the deliver=
+    # targets resolved.  Skipped when the deliver= targets already included a
+    # desktop-session target (no double-send).
     if (
         job.get("desktop_delivery_enabled")
         and not any(

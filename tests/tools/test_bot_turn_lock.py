@@ -345,6 +345,16 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
     assert time.monotonic() - start >= 0.2, "deliver should have queued"
 
 
+class _WithReason(RuntimeError):
+    """An exception carrying its own ``reason``. ``reason`` is a stdlib attribute on
+    ``ssl.SSLError`` and ``urllib.error.URLError`` too, so a refusal must not forward whatever
+    it finds there into a channel whose consumers expect a closed vocabulary."""
+
+    def __init__(self, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 @pytest.mark.parametrize(
     ("failure", "code", "reason"),
     [
@@ -352,8 +362,11 @@ def test_relay_deliver_serializes_then_succeeds(tmp_path, monkeypatch):
         (subprocess.TimeoutExpired(["hermes"], 600), 5093, "delivery_timeout"),
         (RuntimeError("Error code: 401 - invalid api key"), 5094, "provider_auth_or_access"),
         (RuntimeError("something nobody has a rule for"), 5094, "unknown"),
+        (_WithReason("CERTIFICATE_VERIFY_FAILED", "ssl handshake failed"), 5094, "unknown"),
+        (_WithReason("provider_quota_limit", "quota exhausted"), 5094, "provider_quota_limit"),
     ],
-    ids=["busy", "turn-timed-out", "classifiable-failure", "unclassifiable-failure"],
+    ids=["busy", "turn-timed-out", "classifiable-failure", "unclassifiable-failure",
+         "reason-outside-the-vocabulary", "reason-inside-the-vocabulary"],
 )
 def test_every_relay_refusal_carries_its_typed_reason(tmp_path, monkeypatch, failure, code, reason):
     """`data.reason` is the only channel the Desktop forwards: it reads `error.data.reason` and puts

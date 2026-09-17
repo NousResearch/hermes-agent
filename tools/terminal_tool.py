@@ -2547,6 +2547,7 @@ def terminal_tool(
     service_outputs: Optional[List[str]] = None,
     service_side_effects: Optional[List[str]] = None,
     service_relationships: Optional[List[Dict[str, str]]] = None,
+    service_source_files: Optional[List[str]] = None,
     service_health: Optional[Dict[str, Any]] = None,
     service_code_control: Optional[Dict[str, Any]] = None,
 ) -> str:
@@ -2568,6 +2569,7 @@ def terminal_tool(
         service_description: REQUIRED whenever service_name is set. Markdown, human-readable — surfaced in the graph's node detail card so expanding the node answers "what is this and what does it do". A bare name is rejected.
         service_inputs/service_outputs/service_side_effects: The service's dataflow as typed 'scheme:value' lists. Input/output resource schemes are declaration-local and open (http, redis, kafka, s3, grpc, or domain-specific schemes); matching refs meet on one graph node. Terminal actions remain in the closed service_side_effects vocabulary. For example, service_outputs=["http://127.0.0.1:8081/v1"] links to a consumer declaring that exact service_input.
         service_relationships: Subject-predicate-object topology facts. The service is the implicit subject; each entry has a machine predicate and typed object ref, for example {"predicate": "runs_in", "object": "runtime:docker"}.
+        service_source_files: The code behind the service — a list of filesystem paths (NOT typed refs) to the scripts/modules it runs, so the graph node is browsable like a cron's. Absolute paths, or paths under a browse root such as the service's repo checkout, become openable in the node's detail card; a path that doesn't exist yet is listed, not rejected. For example, service_source_files=["/repo/app/server.py", "/repo/app/routes"].
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -3052,6 +3054,7 @@ def terminal_tool(
                         outputs=service_outputs,
                         side_effects=service_side_effects,
                         relationships=service_relationships,
+                        source_files=service_source_files,
                         code_control=service_code_control,
                     )
                     health_spec = normalize_service_health(service_health)

@@ -75,10 +75,23 @@ class TestParseSidecar:
             "inputs": ["file:/opt/homebrew/etc/redis.conf"],
             "outputs": [],
             "side_effects": [],
+            "source_files": [],
             "relationships": [
                 {"predicate": "supervised_by", "object": "scheduler:launchd"},
             ],
         }
+
+    def test_source_files_sidecar_becomes_browsable_paths(self):
+        # The launchd sidecar is structured JSON, so `source_files` is a real
+        # list; it rides onto the node so the service's code is browsable.
+        from tools.launchd_services import _parse_sidecar_to_declaration
+
+        path = Path(f"/fake/{_safe_stem('dev.redis')}.json")
+        decl = _parse_sidecar_to_declaration(path, _sidecar(
+            "dev.redis", name="Redis (brew)",
+            source_files=["scripts/redis-wrap.sh", "app/routes/"],
+        ))
+        assert decl["source_files"] == ["app/routes/", "scripts/redis-wrap.sh"]
 
     def test_label_mismatch_is_dropped(self):
         from tools.launchd_services import _parse_sidecar_to_declaration

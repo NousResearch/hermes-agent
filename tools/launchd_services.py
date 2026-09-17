@@ -24,6 +24,8 @@ Sidecar shape (``name`` + ``description`` required; rest optional):
     "inputs":      ["file:~/.hermes/config.yaml"],
     "outputs":     [],
     "side_effects":["https:127.0.0.1:8787"],
+    "source_files":["scripts/gateway.py"],     # code behind the service,
+                                               # browsable like a cron's scripts
     "service_health": {"type": "http", "url": "http://127.0.0.1:8787/health"}
   }
 
@@ -91,6 +93,7 @@ def _parse_sidecar_to_declaration(
             outputs=doc.get("outputs"),
             side_effects=doc.get("side_effects"),
             relationships=doc.get("relationships"),
+            source_files=doc.get("source_files"),
         )
         health_spec = normalize_service_health(doc.get("service_health"))
     except ValueError as exc:
@@ -105,6 +108,7 @@ def _parse_sidecar_to_declaration(
         "inputs": decl["inputs"],
         "outputs": decl["outputs"],
         "side_effects": decl["side_effects"],
+        "source_files": decl["source_files"],
     }
     if decl.get("relationships"):
         service["relationships"] = decl["relationships"]

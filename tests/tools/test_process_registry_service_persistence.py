@@ -51,6 +51,7 @@ def _service_session(sid="proc_dash", pid=4242):
     s.service_relationships = [
         {"predicate": "runs_in", "object": "runtime:docker"},
     ]
+    s.service_source_files = ["dashboard.py", "app/routes/"]
     s.service_code_control = {
         "status": "verified",
         "enforcement": "merged-pull-request",
@@ -224,6 +225,7 @@ class TestServiceDeclarationSurvivesRestart:
             assert entry["service_outputs"] == original.service_outputs
             assert entry["service_side_effects"] == original.service_side_effects
             assert entry["service_relationships"] == original.service_relationships
+            assert entry["service_source_files"] == original.service_source_files
             assert entry["service_code_control"] == original.service_code_control
 
             # Restored into a NEW registry, with the process still alive.
@@ -240,6 +242,7 @@ class TestServiceDeclarationSurvivesRestart:
             assert revived.service_outputs == original.service_outputs
             assert revived.service_side_effects == original.service_side_effects
             assert revived.service_relationships == original.service_relationships
+            assert revived.service_source_files == original.service_source_files
             assert revived.service_code_control == original.service_code_control
 
     def test_recovered_service_still_appears_in_the_graph(self, registry, tmp_path):
@@ -265,6 +268,7 @@ class TestServiceDeclarationSurvivesRestart:
         assert services[0]["inputs"] == ["postgres:agentic_payments.transfers"]
         assert services[0]["description"]  # required by normalize_service_declaration
         assert services[0]["relationships"] == original.service_relationships
+        assert services[0]["source_files"] == original.service_source_files
         assert services[0]["code_control"] == original.service_code_control
 
     def test_declaration_shape_matches_graph_builder(self, registry, tmp_path):
@@ -371,5 +375,6 @@ class TestBackwardCompatibility:
                 assert revived.service_name == ""
                 assert revived.service_inputs == []
                 assert revived.service_relationships == []
+                assert revived.service_source_files == []
                 # Not a service, so it contributes no graph node.
                 assert fresh.collect_service_declarations() == []

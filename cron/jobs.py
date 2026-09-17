@@ -2143,6 +2143,7 @@ def normalize_service_declaration(
     outputs: Any = None,
     side_effects: Any = None,
     relationships: Any = None,
+    source_files: Any = None,
     code_control: Any = None,
 ) -> Dict[str, Any]:
     """Validate & normalize a long-running service's dataflow declaration.
@@ -2157,6 +2158,11 @@ def normalize_service_declaration(
     ``relationships`` adds subject-predicate-object topology facts: the service is
     the implicit subject, each machine predicate is explicit, and each object is a
     typed ref. Relationships never imply data movement or a terminal action.
+    ``source_files`` is the code behind the service — filesystem paths (not typed
+    refs) to the scripts/modules it runs, mirroring a cron's ``source_files`` so
+    the graph node is browsable. Resolved and reported the same way: files under
+    a browse root (typically the service's repo checkout) become openable; a path
+    that doesn't exist yet is listed, not rejected.
     Both a non-empty ``name`` and a non-empty ``description`` are REQUIRED — the
     description is markdown surfaced in Portal's node detail card, so expanding a
     service node always answers "what is this / what does it do" rather than
@@ -2190,6 +2196,9 @@ def normalize_service_declaration(
             side_effects,
             allowed_schemes=_SIDE_EFFECT_SCHEMES,
             field_name="service side_effects",
+        ),
+        "source_files": _normalize_source_files(
+            source_files, field_name="service source_files"
         ),
     }
     normalized_relationships = _normalize_service_relationships(relationships)
@@ -2331,6 +2340,11 @@ def build_cron_graph(
             "type": "service",
             "label": service.get("label") or sid,
             "description": service.get("description") or "",
+            # The code behind the service — same resolver as cron nodes, so a
+            # file under a browse root (its repo checkout) is openable. Node
+            # metadata, not nodes, and — like services themselves — outside the
+            # configuration digest.
+            "source_files": job_source_files(service),
         }
         if isinstance(service.get("health"), dict):
             node["health"] = service["health"]

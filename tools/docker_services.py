@@ -17,6 +17,8 @@ Labels (``hermes.service`` + ``hermes.description`` required; rest optional):
   hermes.outputs       comma/space-separated ``scheme:value`` writes
   hermes.side_effects  comma/space-separated ``scheme:value`` terminal actions
   hermes.relationships JSON array of ``{predicate, object}`` topology facts
+  hermes.source_files  comma/space-separated file paths — the code behind the
+                       service, browsable in the graph like a cron's scripts
 
 Example — a dashboard that reads a table a cron writes converges with that cron
 on the shared ``postgres:analytics.events`` node:
@@ -86,6 +88,7 @@ def _parse_labels_to_declaration(
             outputs=_split_refs(labels.get("hermes.outputs")),
             side_effects=_split_refs(labels.get("hermes.side_effects")),
             relationships=_parse_relationships(labels.get("hermes.relationships")),
+            source_files=_split_refs(labels.get("hermes.source_files")),
         )
     except ValueError as exc:
         logger.warning(
@@ -103,6 +106,7 @@ def _parse_labels_to_declaration(
         "inputs": decl["inputs"],
         "outputs": decl["outputs"],
         "side_effects": decl["side_effects"],
+        "source_files": decl["source_files"],
     }
     if decl.get("relationships"):
         service["relationships"] = decl["relationships"]

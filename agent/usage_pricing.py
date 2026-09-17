@@ -101,10 +101,11 @@ class PricingEntry:
     source_url: Optional[str] = None
     pricing_version: Optional[str] = None
     fetched_at: Optional[datetime] = None
-    # Context-tiered pricing (e.g. Gemini Pro above 200k prompt tokens): when
+    # Context-tiered pricing (e.g. Gemini Pro and GPT-6 Astra): when
     # ``usage.prompt_tokens`` exceeds ``tier_threshold_tokens`` the ``*_above``
-    # rates replace the base rates for the WHOLE request (Google's semantics,
-    # not marginal brackets). A None ``*_above`` falls back to its base rate.
+    # rates replace the base rates for the WHOLE usage unit. This is exact for a
+    # single response; callers must sum per-response costs rather than reprice an
+    # aggregate containing multiple requests. A None ``*_above`` falls back.
     tier_threshold_tokens: Optional[int] = None
     input_cost_per_million_above: Optional[Decimal] = None
     output_cost_per_million_above: Optional[Decimal] = None
@@ -159,6 +160,19 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("openai", "https://openai.com/index/previewing-gpt-5-6-sol/", "openai-gpt-5.6-2026-07", {
         "gpt-5.6-sol": ("5.00", "30.00", "0.50", "6.25"), "gpt-5.6-terra": ("2.50", "15.00", "0.25", "3.125"),
         "gpt-5.6-luna": ("1.00", "6.00", "0.10", "1.25"),
+    }),
+    # Pricing snapshot rates are provider-specific. Azure Foundry publishes its
+    # own GPT-5.6 Global Standard rates, so duplicate those rows instead of
+    # relabeling the Azure route as direct OpenAI pricing. Azure deployment names
+    # are arbitrary; the provider normalizer handles the known ``-internal``
+    # convention conservatively. These are short-context rates; long-context
+    # GPT-5.6 requests remain unmodeled until per-call tier accounting is wired.
+    # The Sol input/output values reflect Microsoft's promotion; refresh this
+    # snapshot when Azure announces the later rate.
+    ("azure-foundry", "https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/", "azure-foundry-gpt-5.6-2026-09", {
+        "gpt-5.6-sol": ("4.00", "20.00", "0.50", "6.25"),
+        "gpt-5.6-terra": ("2.00", "12.00", "0.20", "2.50"),
+        "gpt-5.6-luna": ("0.20", "1.20", "0.02", "0.25"),
     }),
     # Claude 4.5/4.6/4.7/4.8 Opus share $5/$25 (new tokenizer, up to 35% more tokens).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-05", {
@@ -242,9 +256,9 @@ for _provider, _url, _version, _rows in _SNAPSHOTS:
             _OFFICIAL_DOCS_PRICING[(_provider, _model)] = _entry
 del _SNAPSHOTS, _provider, _url, _version, _rows, _models, _rates, _entry, _model
 
-# GPT-6 Astra uses whole-request pricing above the 272K prompt tier.  Keep this
-# account-gated model out of generic static catalogs, but retain published billing
-# metadata for an explicitly selected route.
+# GPT-6 Astra uses whole-request pricing above the 272K input-token tier. Keep
+# this account-gated model out of generic static catalogs, but retain published
+# billing metadata for an explicitly selected route.
 _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
     "10.00", "50.00", "1.00", "12.50",
     url="https://developers.openai.com/api/docs/models/gpt-6-astra",
@@ -255,6 +269,18 @@ _OFFICIAL_DOCS_PRICING[("openai", "gpt-6-astra")] = _snap(
     cache_read_cost_per_million_above=Decimal("2.00"),
     cache_write_cost_per_million_above=Decimal("25.00"),
 )
+
+_OFFICIAL_DOCS_PRICING[("azure-foundry", "gpt-6-astra")] = _snap(
+    "10.00", "50.00", "1.00", "12.50",
+    url="https://azure.microsoft.com/en-us/blog/gpt-6-astra-frontier-intelligence-for-work-now-generally-available-in-microsoft-foundry/",
+    version="azure-foundry-gpt-6-astra-2026-09",
+    tier_threshold_tokens=272_000,
+    input_cost_per_million_above=Decimal("20.00"),
+    output_cost_per_million_above=Decimal("75.00"),
+    cache_read_cost_per_million_above=Decimal("2.00"),
+    cache_write_cost_per_million_above=Decimal("25.00"),
+)
+
 
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
@@ -314,7 +340,8 @@ def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
 # Picker slugs → snapshot provider key ("openai-api" is the slug for direct
 # api.openai.com). Google and Fireworks are matched by name OR host below.
 _SNAPSHOT_PROVIDER_ALIASES = {
-    "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "minimax": "minimax", "minimax-cn": "minimax-cn",
+    "anthropic": "anthropic", "openai": "openai", "openai-api": "openai", "azure-foundry": "azure-foundry",
+    "minimax": "minimax", "minimax-cn": "minimax-cn",
 }
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
@@ -388,9 +415,23 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
 
 
-# Anthropic dot-notation (opus-4.7) and Bedrock region-prefixed ids need
-# normalizing before a second lookup.
-_MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
+def _normalize_azure_foundry_model_name(model: str) -> str:
+    """Map only the organization's known GPT-5.6 ``-internal`` deployments."""
+    name = model.lower().strip()
+    aliases = {
+        f"{canonical}-internal": canonical
+        for canonical in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+    }
+    return aliases.get(name, name)
+
+
+# Provider-specific deployment/profile spellings need normalizing before a
+# second lookup. Exact snapshot IDs are always attempted first.
+_MODEL_NORMALIZERS = {
+    "anthropic": _normalize_anthropic_model_name,
+    "azure-foundry": _normalize_azure_foundry_model_name,
+    "bedrock": _normalize_bedrock_model_name,
+}
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:

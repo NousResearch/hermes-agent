@@ -104,6 +104,7 @@ describe('mergeDelegateRows', () => {
           goal: 'Research Cursor',
           model: 'anthropic/claude-opus-5',
           sessionId: 'child-1',
+          startedAt: 1_789_600_000_000,
           stream: [
             { at: 1, kind: 'tool', text: 'Read File("a.ts")' },
             { at: 2, kind: 'progress', text: 'comparing' }
@@ -117,6 +118,7 @@ describe('mergeDelegateRows', () => {
       activity: ['Read File("a.ts")', 'comparing'],
       model: 'anthropic/claude-opus-5',
       sessionId: 'child-1',
+      startedAt: 1_789_600_000_000,
       status: 'running'
     })
   })

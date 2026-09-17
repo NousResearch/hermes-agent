@@ -17,7 +17,12 @@ import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/ass
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
-import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
+import {
+  formatElapsed,
+  timerOriginFromUnixSeconds,
+  useElapsedSeconds,
+  useMeasuredDuration
+} from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -173,8 +178,9 @@ const ThinkingDisclosure: FC<{
   // `null` = no explicit user toggle yet. Live reasoning remains visible by
   // default, unless the user opts into the low-jitter collapsed presentation.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const elapsed = useElapsedSeconds(pending, timerKey)
-  const thoughtFor = useMeasuredDuration(pending, timerKey)
+  const timerOrigin = timerOriginFromUnixSeconds(timestamp)
+  const elapsed = useElapsedSeconds(pending, timerKey, timerOrigin)
+  const thoughtFor = useMeasuredDuration(pending, timerKey, timerOrigin)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)

@@ -69,7 +69,7 @@ function DelegateRowView({ row }: { row: DelegateRow }) {
   const copy = t.assistant.tool
   const { sessionId } = row
   const live = isDelegateRowLive(row.status)
-  const elapsed = useElapsedSeconds(live, `delegate:${row.id}`)
+  const elapsed = useElapsedSeconds(live, `delegate:${row.id}`, row.startedAt)
   const activity = row.activity.slice(-TICKER_DEPTH)
 
   const statusLabel = live

@@ -36,6 +36,13 @@ export function formatElapsed(seconds: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+/** Convert a backend Unix-seconds timestamp into the millisecond origin used
+ * by the renderer timers. Invalid or absent timestamps deliberately fall back
+ * to the existing mount-time registry behavior. */
+export function timerOriginFromUnixSeconds(timestamp?: number): number | undefined {
+  return typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp * 1000 : undefined
+}
+
 /**
  * Seconds since the timer's origin, reported once a second while `active`.
  *
@@ -89,8 +96,8 @@ export function useElapsedSeconds(active = true, timerKey?: string, since?: numb
  * session, or reasoning that arrived already complete — has no duration and
  * says so, rather than reporting a timer that never ran.
  */
-export function useMeasuredDuration(active: boolean, timerKey: string): null | number {
-  const elapsed = useElapsedSeconds(active, timerKey)
+export function useMeasuredDuration(active: boolean, timerKey: string, since?: number): null | number {
+  const elapsed = useElapsedSeconds(active, timerKey, since)
   const [watching, setWatching] = useState(false)
   const [measured, setMeasured] = useState<null | number>(() => durationByKey.get(timerKey) ?? null)
 
@@ -98,13 +105,13 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
     if (active) {
       setWatching(true)
     } else if (watching) {
-      const finalElapsed = Math.max(elapsed, Math.floor((Date.now() - startedAt(timerKey)) / 1000))
+      const finalElapsed = Math.max(elapsed, Math.floor((Date.now() - (since ?? startedAt(timerKey))) / 1000))
 
       setWatching(false)
       durationByKey.set(timerKey, finalElapsed)
       setMeasured(finalElapsed)
     }
-  }, [active, elapsed, timerKey, watching])
+  }, [active, elapsed, since, timerKey, watching])
 
   return measured
 }

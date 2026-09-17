@@ -467,9 +467,21 @@ def _should_use_native_vision_fast_path() -> bool:
         # not re-open the multimodal-envelope route the profile rejects.
         if _profile_rejects_tool_media(provider, model):
             return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True)
+        # The decisive signal is the MODEL: if the capability lookup resolves the model
+        # as known-blind, the native route must not open even when the PROVIDER's
+        # tool-result channel is capable. `_supports_media_in_tool_results` answers for
+        # the provider (`openrouter` is in _TOOL_RESULT_MEDIA_PROVIDERS), so on its own
+        # it sent the image to a text-only model and the turn died with
+        # `404 No endpoints found that support image input` (aggregators filter by image
+        # support and find no endpoint). Measured 2026-09-17 on
+        # nvidia/nemotron-3-{ultra-550b,super-120b}:free.
+        # The lookup is still allowed to answer None (local/custom models absent from any
+        # catalog): there the provider channel decides, which keeps the documented escape
+        # hatch for custom endpoints.
+        vision_capable = _lookup_supports_vision(provider, model, cfg)
+        if vision_capable is False:
+            return False
+        return _supports_media_in_tool_results(provider, model) or vision_capable is True
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False

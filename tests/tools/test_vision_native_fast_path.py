@@ -421,6 +421,59 @@ class TestHandleVisionAnalyzeFastPath:
         assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
             "Fast path fired for unknown provider; should have fallen through"
 
+    def test_known_blind_model_on_media_capable_provider_stays_off_fast_path(self, tmp_path):
+        """A text-only model routed through a tool-media-capable provider must NOT take
+        the native fast path.
+
+        ``_supports_media_in_tool_results`` answers for the PROVIDER, and ``openrouter``
+        is in ``_TOOL_RESULT_MEDIA_PROVIDERS`` — so on its own it opened the native route
+        for a blind model too. The image was then sent as ``image_url`` content and the
+        turn died with ``404 No endpoints found that support image input`` (the aggregator
+        filters endpoints by image support and finds none).
+        """
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        async def _aux_sentinel(*args, **kwargs):
+            return '{"sentinel": "aux-path"}'
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free")
+        try:
+            with patch.object(image_routing, "decide_image_input_mode", return_value="native"), \
+                 patch.object(image_routing, "_lookup_supports_vision", return_value=False), \
+                 patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert not (isinstance(result, dict) and result.get("_multimodal") is True), \
+            "Fast path fired for a known-blind model; the image would 404 upstream"
+
+    def test_unknown_model_capability_keeps_provider_escape_hatch(self, tmp_path):
+        """A model absent from every catalog resolves to None → the provider channel still
+        decides, preserving the documented escape hatch for custom/local endpoints."""
+        img = tmp_path / "x.png"
+        img.write_bytes(_TINY_PNG)
+
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("openrouter", "anthropic/claude-opus-4.6")
+        try:
+            with patch.object(image_routing, "decide_image_input_mode", return_value="native"), \
+                 patch.object(image_routing, "_lookup_supports_vision", return_value=None):
+                coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
+                result = asyncio.get_event_loop().run_until_complete(coro)
+        finally:
+            clear_runtime_main()
+
+        assert isinstance(result, dict) and result.get("_multimodal") is True, \
+            "Unknown capability must still take the native path on a capable provider"
+
     def test_supports_vision_override_bypasses_provider_allowlist(self, tmp_path):
         """supports_vision=true enables the fast path on an unlisted provider."""
         img = tmp_path / "x.png"

@@ -376,8 +376,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
-    # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
-    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
+    # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
+    # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
+    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
     # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
@@ -537,9 +538,23 @@ def _server_root(base_url: str) -> str:
     return server_url[:-3] if server_url.endswith("/v1") else server_url
 
 
+# Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
+# match only on an id boundary, after folding aggregator slugs (``solar-pro-3``) into the native form.
+_BOUNDARY_MATCHED_KEY_PREFIXES = ("solar-",)
+_HYPHENATED_GENERATION_RE = re.compile(
+    rf"((?:{'|'.join(map(re.escape, _BOUNDARY_MATCHED_KEY_PREFIXES))})[a-z]+)-(\d{{1,2}})(?=[-:.@]|$)")
+
+
 def _catalog_key_matches(key: str, model_lower: str) -> bool:
     """Substring match with version separators normalised on both sides, so a relay slug like
-    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398)."""
+    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398).
+    Boundary-matched families: a key must be followed by ``-:.@`` or the end, and a key ending in
+    ``-`` is the family default for bare names (``org/`` allowed) continuing with a lineup letter."""
+    if key.startswith(_BOUNDARY_MATCHED_KEY_PREFIXES):
+        model_lower = _HYPHENATED_GENERATION_RE.sub(r"\1\2", model_lower)
+        if key.endswith("-"):
+            return re.match(re.escape(key) + "[a-z]", model_lower.rsplit("/", 1)[-1]) is not None
+        return re.search(re.escape(key) + r"(?:[-:.@]|$)", model_lower) is not None
     return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
 
 

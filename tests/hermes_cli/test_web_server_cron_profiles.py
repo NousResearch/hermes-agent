@@ -12,6 +12,24 @@ import hermes_cli.web_routers.cron as _rt_cron
 import hermes_cli.web_server_cron as _web_server_cron
 
 
+@pytest.fixture(autouse=True)
+def _cron_create_sees_a_live_gateway():
+    """Pretend a gateway is running for every test in this module.
+
+    Cron creation refuses to store a job when the builtin ticker has no
+    gateway process to run it (#87033) — a job saved then is dead on
+    arrival. The tests below create jobs to exercise other behaviour, so
+    without this they would pass or fail depending on whether the machine
+    running them happens to have a gateway up (CI never does). Tests that
+    want the gateway-less behaviour re-patch the same probe inside the
+    test, which overrides this fixture.
+    """
+    from unittest.mock import patch
+
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[4242]):
+        yield
+
+
 @pytest.fixture()
 def isolated_profiles(tmp_path, monkeypatch):
     """Give profile discovery an isolated default home with one named profile."""

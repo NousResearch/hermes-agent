@@ -1,9 +1,10 @@
 """Structured-output (``response_format``) handling on auxiliary routes that reject it.
 
-Covers NousResearch/hermes-agent#83390 / #105191 / #113064: a fallback candidate that rejects
-``json_schema`` gets the same retry-without-the-field rung as the primary path instead of aborting
-the task, and a route known to reject a ``response_format`` type (provider profile or a rejection
-already seen in this process) never pays the guaranteed-fail first request.
+Covers NousResearch/hermes-agent#83390 / #105191 / #113064 for the aux callers that attach
+``response_format`` (``agent/title_generator.py`` and ``agent/plugin_llm.py``): a fallback candidate
+that rejects ``json_schema`` gets the same retry-without-the-field rung as the primary path instead of
+aborting the task, and a route+model known to reject a ``response_format`` type (provider profile or a
+capability rejection already seen in this process) never pays the guaranteed-fail first request.
 """
 import asyncio
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from agent.auxiliary_client import (
     _build_call_kwargs,
     _call_fallback_candidate_async,
     _call_fallback_candidate_sync,
+    _is_structured_output_rejection,
 )
 
 _JSON_SCHEMA = {"type": "json_schema", "json_schema": {"name": "t", "strict": True, "schema": {"type": "object"}}}
@@ -92,10 +94,46 @@ def test_known_unsupported_route_skips_response_format_before_first_request():
 
     # A remembered rejection is scoped to the endpoint (host:port), not to every local server.
     structured_output.remember_structured_output_rejection(
-        "custom", "http://127.0.0.1:1234/v1", {"extra_body": {"response_format": dict(_JSON_SCHEMA)}})
+        "custom", "http://127.0.0.1:1234/v1",
+        {"model": "m", "extra_body": {"response_format": dict(_JSON_SCHEMA)}}, _Rejects400(_DEEPSEEK_400))
     same = _build_call_kwargs("custom", "m", messages, extra_body={"response_format": dict(_JSON_SCHEMA)},
                               base_url="http://127.0.0.1:1234/v1")
     other = _build_call_kwargs("custom", "m", messages, extra_body={"response_format": dict(_JSON_SCHEMA)},
                                base_url="http://127.0.0.1:11434/v1")
     assert "response_format" not in same.get("extra_body", {})
     assert other["extra_body"]["response_format"] == _JSON_SCHEMA
+
+    # A custom route pointed at DeepSeek's own host gets DeepSeek's profile.
+    custom_deepseek = _build_call_kwargs(
+        "custom", "deepseek-chat", messages, extra_body={"response_format": dict(_JSON_SCHEMA)},
+        base_url="https://api.deepseek.com/v1")
+    assert "response_format" not in custom_deepseek.get("extra_body", {})
+
+
+def test_rejection_memo_is_per_model_and_ignores_schema_validation_errors():
+    """One model's ``json_schema`` rejection on an aggregator host must not strip the field for every other
+    model on that host, and a schema-VALIDATION 400 from a json_schema-capable provider is retried but
+    never memoised (it says nothing about the next schema)."""
+    messages = [{"role": "user", "content": "hi"}]
+    openrouter = "https://openrouter.ai/api/v1"
+    structured_output.remember_structured_output_rejection(
+        "openrouter", openrouter,
+        {"model": "some/chat-only-model", "extra_body": {"response_format": dict(_JSON_SCHEMA)}},
+        _Rejects400("Error code: 400 - {'error': {'message': 'response_format is not supported by this model'}}"))
+    rejected = _build_call_kwargs("openrouter", "some/chat-only-model", messages,
+                                  extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url=openrouter)
+    sibling = _build_call_kwargs("openrouter", "openai/gpt-5-mini", messages,
+                                 extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url=openrouter)
+    assert "response_format" not in rejected.get("extra_body", {})
+    assert sibling["extra_body"]["response_format"] == _JSON_SCHEMA
+
+    validation_400 = _Rejects400(
+        "Error code: 400 - Invalid schema for response_format 'json_schema': In context=(), "
+        "'additionalProperties' is required to be supplied and to be false.")
+    assert _is_structured_output_rejection(validation_400)  # still drives the one-shot retry ...
+    structured_output.remember_structured_output_rejection(
+        "openai", "https://api.openai.com/v1",
+        {"model": "gpt-5-mini", "extra_body": {"response_format": dict(_JSON_SCHEMA)}}, validation_400)
+    after = _build_call_kwargs("openai", "gpt-5-mini", messages,
+                               extra_body={"response_format": dict(_JSON_SCHEMA)}, base_url="https://api.openai.com/v1")
+    assert after["extra_body"]["response_format"] == _JSON_SCHEMA  # ... but never feeds the memo

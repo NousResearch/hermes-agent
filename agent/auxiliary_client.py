@@ -6307,7 +6307,13 @@ def _build_call_kwargs(
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
     if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
-        kwargs["extra_body"] = merged_extra
+        # Media-carrying aux turns (vision, title/compression on image sessions) must not
+        # reuse a stale llama-server prompt-cache slot (#108659). Guarding at this one
+        # boundary covers every caller — the initial aux call, the same-provider credential
+        # retry, and provider fallback — while the caller's task/override dicts stay untouched.
+        from agent.chat_completion_helpers import _media_safe_extra_body
+
+        kwargs["extra_body"] = _media_safe_extra_body(merged_extra, messages)
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
     # /v1/messages. A profile declaring api_mode=anthropic_messages (commandcode-anthropic) is on

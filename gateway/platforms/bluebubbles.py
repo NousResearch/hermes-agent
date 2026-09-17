@@ -482,7 +482,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data = resp.content
             mime = (att_meta.get("mimeType") or "").lower()
             if mime.startswith("image/"):
-                return await cache_image_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg"))
+                return await cache_image_from_bytes_async(
+                    data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg"),
+                    att_meta.get("transferName") or None,
+                )
             if mime.startswith("audio/"):
                 return await cache_audio_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_AUDIO_EXT_OVERRIDES, ".mp3"))
             # Videos, documents, and everything else

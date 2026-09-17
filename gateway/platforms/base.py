@@ -655,8 +655,11 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string.
+def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes,
+                      filename: str | None = None) -> str:
+    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12>[_<stem>]<ext>``; return the path string.
+
+    A safe stem of the sender-supplied ``filename`` is kept when given.
 
     The file is written owner-only (0600) — inbound media is private user
     content and the cache dir is hardened to 0700 by ``_secure_media_cache_dir``;
@@ -664,7 +667,10 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     platforms where POSIX mode bits are advisory (Windows): falls back to a
     plain write rather than failing the media write.
     """
-    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
+    stem = Path(filename if isinstance(filename, str) else "").stem
+    stem = re.sub(r"[^A-Za-z0-9._-]", "", stem)[:64]
+    suffix = f"_{stem}" if stem else ""
+    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{suffix}{ext}"
     try:
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     except OSError:
@@ -675,19 +681,19 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     return str(filepath)
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
     ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
     validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
-    return _write_cache_file(get_image_cache_dir(), "img", ext, data)
+    return _write_cache_file(get_image_cache_dir(), "img", ext, data, filename)
 
 
-async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Cache image bytes without blocking the caller's event loop."""
-    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext, filename)
 
 
 async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type: str, accept: str,

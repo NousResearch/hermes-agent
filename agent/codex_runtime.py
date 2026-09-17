@@ -4,6 +4,7 @@ AIAgent first: ``run_codex_app_server_turn`` drives one ``codex app-server`` sub
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -13,8 +14,14 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
+from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+from agent.sdk_transform_bypass import bypass_sdk_request_transform
+from agent.usage_anchor import set_usage_anchor
 
 logger = logging.getLogger(__name__)
+_codex_watchdog_state_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "codex_watchdog_state", default=None
+)
 
 
 def _call_guarded(fn: Callable | None, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None):
@@ -72,14 +79,18 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
     try:
         if not agent._session_db_created:
             agent._ensure_db_session()
-        agent._session_db.queue_token_counts(agent.session_id, **counts())
+        from agent.turn_usage import _agent_session_source
+        agent._session_db.queue_token_counts(agent.session_id, source=_agent_session_source(agent), **counts())
     except Exception as exc:
         logger.debug(fail_msg, agent.session_id, *fail_extra, exc)
 
 
-def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
+def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]:
     """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call."""
+    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call.
+    ``messages`` (the transcript mirror) lets real usage anchor the next preflight: this runtime bypasses
+    the main loop's capture, and the mirror is never compacted natively, so without an anchor the rough
+    estimate grows monotonically and hermes-mode fires thread compaction on tiny threads (#100381)."""
     agent.session_api_calls += 1
     usage = getattr(turn, "token_usage_last", None)
     compressor = getattr(agent, "context_compressor", None)
@@ -90,6 +101,8 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
         if compressor is not None and getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage cannot adjudicate the pending compaction; unlatch preflight deferral.
             compressor.update_from_response({})
+        if compressor is not None and callable(getattr(compressor, "note_usage_less_response", None)):
+            compressor.note_usage_less_response()
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
                             counts=lambda: billing(billing_mode="subscription_included"))
         return {}
@@ -113,6 +126,12 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                 compressor.context_length = context_window
         except Exception:
             logger.debug("codex app-server usage update failed", exc_info=True)
+    if isinstance(messages, list):
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+
+        anchor = capture_usage_anchor(prompt_tokens, canonical_usage.output_tokens, messages)
+        if anchor is not None:
+            set_usage_anchor(agent, anchor)
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
     cost_result = estimate_usage_cost(
@@ -157,8 +176,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
             compressor.last_prompt_tokens, compressor.last_completion_tokens = -1, 0
             compressor.awaiting_real_usage_after_compression = True
     # Provider-side context was rewritten; the usage anchor's transcript snapshot no longer matches.
-    agent._usage_anchor = None
-    agent._turn_base_usage_anchor = None
+    set_usage_anchor(agent, None)
     agent._last_compaction_in_place = False
     _call_guarded(getattr(agent, "event_callback", None) or None, "event_callback error on codex session:compress",
                   args=("session:compress", {
@@ -179,7 +197,6 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Internal MCP server wrapping Hermes' native tools: its inner dispatch has no tool_progress_callback, so the
 # codex-level mcpToolCall IS the display event and the mcp.hermes-tools.* prefix is stripped (users see Hermes tools).
-_INTERNAL_MCP_SERVER = "hermes-tools"
 _STATIC_TOOL_NAMES = {"commandExecution": "exec_command", "fileChange": "apply_patch", "webSearch": "web_search"}
 _STABLE_ID_PREFIXES = {"commandExecution": "exec", "fileChange": "apply_patch"}
 _MCP_LIKE_ITEM_TYPES = {"mcpToolCall", "dynamicToolCall"}
@@ -196,7 +213,7 @@ def _codex_item_to_tool_name(item: dict) -> str:
     item_type = item.get("type") or ""
     if item_type == "mcpToolCall":
         server, tool = item.get("server") or "mcp", item.get("tool") or "unknown"
-        return tool if server == _INTERNAL_MCP_SERVER else f"mcp.{server}.{tool}"
+        return tool if server == HERMES_TOOLS_MCP_SERVER_NAME else f"mcp.{server}.{tool}"
     if item_type == "dynamicToolCall":
         return item.get("tool") or "dynamic"
     return _STATIC_TOOL_NAMES.get(item_type) or item_type or "unknown"
@@ -404,7 +421,15 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     if not turn.projected_messages:
         return
     from agent.message_metadata import append_message
-    for projected_message in turn.projected_messages:
+    projected_messages = turn.projected_messages
+    # Turn-start persistence owns the accepted input. Codex's leading user item
+    # only echoes its coerced wire text; later/nonmatching events remain real.
+    submitted_user_text = getattr(turn, "submitted_user_text", None)
+    first = projected_messages[0]
+    if (submitted_user_text is not None and first.get("role") == "user"
+            and first.get("content") == submitted_user_text):
+        projected_messages = projected_messages[1:]
+    for projected_message in projected_messages:
         append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
         return
@@ -425,7 +450,7 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
     agent._iters_since_skill = getattr(agent, "_iters_since_skill", 0) + turn.tool_iterations
     _record_codex_app_server_compaction(agent, turn)
-    usage_result = _record_codex_app_server_usage(agent, turn)
+    usage_result = _record_codex_app_server_usage(agent, turn, messages=messages)
     # Skill nudge check AFTER iters were incremented (same as chat_completions).
     should_review_skills = (0 < agent._skill_nudge_interval <= agent._iters_since_skill
                             and "skill_manage" in agent.valid_tool_names)
@@ -465,7 +490,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
-    # Wedged client (deadline blown, watchdog tripped, OAuth refresh died, subprocess exited): retire it.
+    # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
+    # silence alone no longer retires — it only logs a warning (#112928).
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)
@@ -505,6 +531,29 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
     if value is None and isinstance(event, dict):
         value = event.get(name, default)
     return value if value is not None else default
+
+
+_CODEX_PROGRESS_DELTA_TYPES = frozenset({
+    "response.output_text.delta", "response.reasoning_summary_text.delta", "response.text.delta",
+    "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
+    "response.refusal.delta",
+})
+
+
+def _codex_event_has_content(event: Any) -> bool:
+    """Whether a Codex Responses event carries substantive forward progress.
+
+    Lifecycle/keepalive frames and empty structural deltas prove transport
+    liveness, but do not mean the model has begun producing its response.
+    """
+    event_type = _event_field(event, "type")
+    if event_type in _CODEX_PROGRESS_DELTA_TYPES:
+        return bool(_event_field(event, "delta"))
+    if event_type == "response.output_item.added":
+        item = _event_field(event, "item")
+        return "function_call" in str(_event_field(item, "type") or "") and any(
+            bool(_event_field(item, field)) for field in ("id", "call_id", "name", "arguments"))
+    return False
 
 
 def _raise_stream_error(event: Any) -> None:
@@ -611,6 +660,15 @@ class _CodexResponseAssembler:
                 self._safe(self.on_first_delta, "on_first_delta")
             self._safe(self.on_text_delta, "on_text_delta", delta_text)
 
+    def _on_refusal_delta(self, event: Any, event_type: str) -> None:
+        # ``response.refusal.delta``: the model declined and streams its explanation on the refusal
+        # channel instead of output_text. It is answer text — a refusal-only stream must not end
+        # with zero content and "did not emit a terminal response". The done item's ``refusal``
+        # part is read by the normalizer; the deltas cover backends that omit the done item.
+        refusal_text = _event_field(event, "delta", "")
+        if isinstance(refusal_text, str) and refusal_text:
+            self.text_deltas.append(refusal_text)
+
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
         pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
@@ -678,6 +736,7 @@ class _CodexResponseAssembler:
         "error": lambda self, event, event_type: _raise_stream_error(event),
         "response.output_item.added": _on_item_added, "response.output_item.done": _on_item_done,
         "response.completed": _on_terminal, "response.incomplete": _on_terminal, "response.failed": _on_terminal,
+        "response.refusal.delta": _on_refusal_delta,
     }
     _FUZZY_HANDLERS = (
         (lambda t: "output_text.delta" in t, _on_text_delta), (lambda t: "function_call" in t, _on_function_call),
@@ -783,48 +842,12 @@ def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dic
     return sanitized
 
 
-# Bulk request fields carrying the conversation payload; the rest is scalar config the SDK transform handles fast.
-_SDK_TRANSFORM_BYPASS_FIELDS = ("input", "tools")
-
-
-def _is_plain_json_data(value: Any) -> bool:
-    """True when ``value`` is purely JSON wire types; pydantic models / generators must keep the typed SDK path."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return True
-    if isinstance(value, dict):
-        return all(isinstance(key, str) and _is_plain_json_data(item) for key, item in value.items())
-    if isinstance(value, list):
-        return all(_is_plain_json_data(item) for item in value)
-    return False
-
-
-def _bypass_sdk_request_transform(stream_kwargs: dict) -> dict:
-    """Route bulk payload fields around the SDK's ``maybe_transform``.
-
-    ``responses.create`` re-walks the whole body against the ResponseCreateParams union with the GIL held —
-    multi-MB conversations can wedge for hours, pre-network, where no watchdog socket kill helps. The SDK
-    merges ``extra_body`` AFTER the transform, so moving wire-format bulk fields there yields a byte-identical
-    request without the walk. HERMES_CODEX_SDK_TRANSFORM=1 disables."""
-    if os.environ.get("HERMES_CODEX_SDK_TRANSFORM", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return stream_kwargs
-    moved = {f: stream_kwargs[f] for f in _SDK_TRANSFORM_BYPASS_FIELDS
-             if isinstance(stream_kwargs.get(f), (dict, list)) and _is_plain_json_data(stream_kwargs[f])}
-    if not moved:
-        return stream_kwargs
-    bypassed = {key: value for key, value in stream_kwargs.items() if key not in moved}
-    extra_body = bypassed.get("extra_body")
-    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
-    # An explicit caller-provided extra_body entry keeps precedence (SDK post-transform merge).
-    bypassed["extra_body"] = {**merged, **{f: v for f, v in moved.items() if f not in merged}}
-    return bypassed
-
-
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm
-    transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError)
+    transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries, model = 1, api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
@@ -832,7 +855,12 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     # Retirement token for THIS request (installed by ``interruptible_api_call``). A watchdog that kills the
     # connection clears the agent-level token, so a worker still draining frames can tell it was retired.
     # ``None`` = no watchdog; every check passes.
-    request_token = getattr(agent, "_active_codex_stream_request_token", None)
+    watchdog_state = _codex_watchdog_state_var.get()
+    request_token = (
+        watchdog_state.token
+        if watchdog_state is not None
+        else getattr(agent, "_active_codex_stream_request_token", None)
+    )
     # Delta-sink claim for the CURRENT physical attempt (None until the stream opens).
     writer_token = {"value": None}
 
@@ -847,8 +875,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
-    def _on_event(event: Any) -> None:  # TTFB watchdog and activity touch — once per SSE event.
-        agent._codex_stream_last_event_ts = time.time()
+    def _on_event(event: Any) -> None:  # TTFB/activity touch — once per SSE event.
+        now = time.time()
+        has_progress = _codex_event_has_content(event)
+        if watchdog_state is not None:
+            with watchdog_state.lock:
+                if watchdog_state.retry_started_ts is not None:
+                    watchdog_state.retry_started_ts = None
+                    watchdog_state.last_progress_ts = None
+                watchdog_state.last_event_ts = now
+                if has_progress:
+                    watchdog_state.last_progress_ts = now
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:
@@ -859,9 +896,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         return bool(agent._interrupt_requested)
 
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
+        from hermes_cli.providers import is_actual_route
+
+        if is_actual_route(
+            getattr(agent, "provider", ""),
+            str(getattr(active_client, "base_url", "") or ""),
+        ):
+            raise ValueError(
+                "Actual requests require Chat Completions; refusing to call /responses."
+            )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
-        return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))
+        return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)
@@ -911,8 +957,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     call_role = ("delegated" if getattr(agent, "is_subagent", False)
                  else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
     for attempt in range(max_stream_retries + 1):
+        if not _request_is_current():
+            raise TimeoutError("Codex Responses stream request retired before retry")
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
+        if attempt > 0 and watchdog_state is not None and watchdog_state.phase_aware:
+            # A physical reconnect has its own no-event TTFB phase. Its first parsed
+            # event clears this marker and starts a fresh model-progress phase.
+            with watchdog_state.lock:
+                watchdog_state.retry_started_ts = time.time()
         intercepted_events: list = []
         writer_token["value"] = event_stream = None
         try:

@@ -317,22 +317,26 @@ class TestHostPrefixList:
     refactor that moves the constant.
     """
 
-    def test_all_common_host_prefixes_present_in_constant(self):
-        """The shared prefix constant must list the common host-only roots."""
-        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
-            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
-                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
-                "Container backends need this to avoid using host paths."
-            )
-
     def test_all_common_host_paths_flagged_unusable(self):
-        """A host path under each prefix must be rejected as a container cwd."""
-        for host_path in ("/Users/me/proj", "/home/me/proj",
-                           "C:\\Users\\me", "C:/Users/me"):
+        """A host path under each user root must be rejected as a container cwd; in-sandbox
+        absolute paths pass."""
+        for host_path in ("/Users/me/proj", "/home/me/proj", "C:\\Users\\me", "C:/Users/me"):
             assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
                 f"Host path {host_path!r} should be rejected as a container "
                 "cwd but was accepted."
             )
+        for sandbox_path in ("/workspace", "/root/proj", "/srv/app"):
+            assert _tt_mod._is_unusable_container_cwd(sandbox_path) is False
+
+    def test_any_windows_drive_letter_is_a_host_cwd(self):
+        """The host-shape predicate is platform-independent data: every drive letter, either slash,
+        is a host path (#60962). On POSIX ``D:\\proj`` is also non-absolute so the container guard
+        already rejected it; on a Windows host it IS absolute and only this predicate catches it."""
+        from tools.terminal_tool_config import _is_host_cwd
+        for host_path in ("C:\\Users\\me", "D:\\proj", "e:/work", "Z:\\"):
+            assert _is_host_cwd(host_path) is True, host_path
+        for not_host in ("/workspace", "/srv/app", "relative/dir", "C", "C:"):
+            assert _is_host_cwd(not_host) is False, not_host
 
 
 # =========================================================================
@@ -379,6 +383,57 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("singularity") is True
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
+
+    def test_raising_registry_lookup_keeps_container_guards_on(self, monkeypatch):
+        """A registry that raises during the provider lookup must fail soft to guards-on,
+        not propagate out of the approval predicate."""
+        from agent import terminal_env_registry as R
+        import tools.approval as A
+
+        def boom(*_a, **_k):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr(R._registry, "get_provider", boom)
+        assert A._should_skip_container_guards("p_disposable") is False
+
+    def test_registered_disposable_plugin_skips_container_guards(self):
+        """Plugin classification uses its registered provider, not built-in names only."""
+        from agent import terminal_env_registry
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+        import tools.approval as A
+
+        class DisposablePlugin(TerminalEnvironmentProvider):
+            name = "approval_disposable_plugin"
+            display_name = "Approval disposable plugin"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):
+                raise NotImplementedError
+
+        provider = DisposablePlugin()
+        previous = terminal_env_registry.get_provider(provider.name)
+        terminal_env_registry.register_provider(provider)
+        try:
+            assert A._should_skip_container_guards(provider.name) is True
+            assert A._should_skip_container_guards("unknown_plugin_backend") is False
+        finally:
+            terminal_env_registry.restore_registration(provider.name, provider, previous)
+
+        class BrokenDisposablePlugin(DisposablePlugin):
+            name = "broken_approval_disposable_plugin"
+
+            @property
+            def skip_container_guards(self):
+                raise RuntimeError("broken plugin classification")
+
+        broken_provider = BrokenDisposablePlugin()
+        terminal_env_registry.register_provider(broken_provider)
+        try:
+            assert A._should_skip_container_guards(broken_provider.name) is False
+        finally:
+            terminal_env_registry.restore_registration(broken_provider.name, broken_provider, None)
 
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker still bypasses dangerous-command approval."""

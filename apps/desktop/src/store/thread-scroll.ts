@@ -1,52 +1,87 @@
 import { atom, type WritableAtom } from 'nanostores'
 
+import { activeConnectionScopeSuffix } from '@/lib/connection-scoped'
+import { readKey, writeKey } from '@/lib/storage'
+import { $activeProfile, normalizeProfileKey } from '@/store/profile'
+
 // "Is the thread parked at the bottom" is owned by use-stick-to-bottom inside
 // ThreadMessageList (the scroll container). That state lives only in that
 // subtree, so ThreadMessageList mirrors it into these atoms for the composer,
 // status stack, and floating jump button — all of which render OUTSIDE the thread.
 //
-// `$threadScrolledUp` dims the composer / status stack; `$threadJumpButtonVisible`
-// shows the floating jump control. Both track `!isAtBottom` today, but stay
-// separate so their thresholds can diverge again without touching consumers.
-//
-// Keep-alive tabs stay mounted with a real layout box, so only the on-screen
-// pane may publish or reset this composer-facing mirror. Jump-to-bottom
-// requests are keyed by session so a click (or an input-request snap) cannot
-// scroll every mounted transcript.
-export const $threadScrolledUp = atom(false)
-export const $threadJumpButtonVisible = atom(false)
+// Each session owns its live chrome, including when two split panes are visible.
+// Hidden keep-alive panes may neither publish nor reset a visible pane's state.
+// Keep the flags separate so their thresholds can diverge without changing consumers.
+export const $threadScrolledUpBySession = atom<Record<string, boolean>>({})
+export const $threadJumpButtonVisibleBySession = atom<Record<string, boolean>>({})
+export const $threadMessagesBelowBySession = atom<Record<string, number>>({})
 
-// Skip no-op writes so subscribers don't churn on every scroll tick.
-const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
-  if (target.get() !== value) {
-    target.set(value)
+export const publishThreadMessagesBelow = (
+  count: number,
+  publisher: { paneVisible: boolean; sessionId?: string | null }
+): void => {
+  if (publisher.paneVisible) {
+    setSessionValue($threadMessagesBelowBySession, publisher.sessionId, count, 0)
   }
 }
 
-const setScrolledUp = setter($threadScrolledUp)
-const setJumpButtonVisible = setter($threadJumpButtonVisible)
+// Skip no-op writes and remove default entries so scroll ticks don't churn subscribers.
+// Missing identities are not a shared bucket: callers use their existing surface id
+// until a runtime session exists.
+function setSessionValue<T extends boolean | number>(
+  target: WritableAtom<Record<string, T>>,
+  sessionId: string | null | undefined,
+  value: T,
+  empty: T
+): void {
+  if (!sessionId) {
+    return
+  }
 
-export const setThreadAtBottom = (isAtBottom: boolean) => {
-  setScrolledUp(!isAtBottom)
-  setJumpButtonVisible(!isAtBottom)
+  const current = target.get()
+
+  if ((current[sessionId] ?? empty) === value) {
+    return
+  }
+
+  const next = { ...current }
+
+  if (value === empty) {
+    delete next[sessionId]
+  } else {
+    next[sessionId] = value
+  }
+
+  target.set(next)
 }
 
-export const resetThreadScroll = () => setThreadAtBottom(true)
+export const setThreadAtBottom = (isAtBottom: boolean, sessionId: string | null = null) => {
+  setSessionValue($threadScrolledUpBySession, sessionId, !isAtBottom, false)
+  setSessionValue($threadJumpButtonVisibleBySession, sessionId, !isAtBottom, false)
+}
 
-export const publishThreadAtBottom = (isAtBottom: boolean, publisher: { paneVisible: boolean }): void => {
+export const resetThreadScroll = (sessionId: string | null = null) => {
+  setThreadAtBottom(true, sessionId)
+  setSessionValue($threadMessagesBelowBySession, sessionId, 0, 0)
+}
+
+export const publishThreadAtBottom = (
+  isAtBottom: boolean,
+  publisher: { paneVisible: boolean; sessionId?: string | null }
+): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  setThreadAtBottom(isAtBottom)
+  setThreadAtBottom(isAtBottom, publisher.sessionId)
 }
 
-export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean }): void => {
+export const resetPublishedThreadScroll = (publisher: { paneVisible: boolean; sessionId?: string | null }): void => {
   if (!publisher.paneVisible) {
     return
   }
 
-  resetThreadScroll()
+  resetThreadScroll(publisher.sessionId)
 }
 
 // Cross-component bridge: the jump button lives by the composer, the viewport's
@@ -94,3 +129,219 @@ export const onThreadEditClose = (handler: () => void) => {
 }
 
 export const notifyThreadEditClose = () => editCloseHandlers.forEach(handler => handler())
+
+// ── Per-session scroll position persistence ──────────────────────────────────
+// When the user scrolls up to read history, their distance-from-bottom is
+// saved keyed by sessionKey and profile. On return, the session-switch settle
+// loop restores it instead of pinning to the bottom, so the reading position
+// survives session switches. Offsets are stored as distance-from-bottom, not
+// scrollTop: the render-budget backfill prepends older turns and the switch
+// relayout reshapes content above the on-screen rows, and bottom-anchored math
+// keeps the restored view steady under that churn — the same reason the
+// "Show earlier" flow in list.tsx restores from the bottom edge.
+export type ThreadScrollState = { kind: 'bottom' } | { fromBottom: number; kind: 'offset' }
+
+export const THREAD_SCROLL_BOTTOM: ThreadScrollState = { kind: 'bottom' }
+
+// Within this many pixels of the bottom edge counts as "parked at the bottom".
+// Deliberately tight: use-stick-to-bottom's own near-bottom band re-locks lazy
+// scrollers anyway, and recording a small real offset as `bottom` would yank a
+// reader who stopped just shy of the edge.
+export const THREAD_SCROLL_STICKY_THRESHOLD_PX = 8
+
+export type ThreadScrollMetrics = {
+  clientHeight: number
+  scrollHeight: number
+  scrollTop: number
+}
+
+export function threadScrollDistanceFromBottom(metrics: ThreadScrollMetrics): number {
+  return Math.max(0, metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight)
+}
+
+/** Classify live metrics as sticky-bottom or an exact reading offset. */
+export function threadScrollStateFromMetrics(
+  metrics: ThreadScrollMetrics,
+  threshold = THREAD_SCROLL_STICKY_THRESHOLD_PX
+): ThreadScrollState {
+  const fromBottom = threadScrollDistanceFromBottom(metrics)
+
+  return fromBottom <= threshold ? THREAD_SCROLL_BOTTOM : { fromBottom, kind: 'offset' }
+}
+
+/** The scrollTop that re-applies `state` at the current content height. */
+export function threadScrollTargetTop(
+  state: ThreadScrollState,
+  metrics: Pick<ThreadScrollMetrics, 'clientHeight' | 'scrollHeight'>
+): number {
+  const max = Math.max(0, metrics.scrollHeight - metrics.clientHeight)
+
+  return state.kind === 'bottom' ? max : Math.max(0, max - state.fromBottom)
+}
+
+// Composer metrics write --composer-measured-height onto the chat surface,
+// which grows [data-slot="aui_composer-clearance"] and can shrink the
+// clampToComposer viewport. The post-settle restore ResizeObserver sees that
+// as a content resize and used to re-pin a frozen fromBottom — rewriting
+// scrollTop on every keystroke. Transcript height is scrollHeight minus the
+// clearance spacer, so composer-only layout is distinguishable from real
+// message/prepend/streaming growth.
+export type ThreadScrollRestoreResizeMetrics = {
+  clearanceHeight: number
+  clientHeight: number
+  scrollHeight: number
+}
+
+export function threadScrollTranscriptHeight(
+  metrics: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+): number {
+  return Math.max(0, metrics.scrollHeight - Math.max(0, metrics.clearanceHeight))
+}
+
+/**
+ * Post-settle restore RO may re-pin a frozen offset only when transcript
+ * rows actually changed height. Composer clearance / viewport-box resizes
+ * and no-op RO deliveries must not rewrite scrollTop.
+ */
+export function shouldReapplyFrozenThreadScrollOffset(
+  target: ThreadScrollState,
+  settled: boolean,
+  previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>,
+  next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
+): boolean {
+  if (target.kind !== 'offset' || !settled) {
+    return false
+  }
+
+  return Math.round(threadScrollTranscriptHeight(previous)) !== Math.round(threadScrollTranscriptHeight(next))
+}
+
+// Storage is scoped per profile with the same `.profile.<encoded>` suffix the
+// app's other persisted session state uses (session.ts profileNavigationKey),
+// so two profiles can never read or evict each other's reading positions.
+const SCROLL_POS_KEY_BASE = 'hermes.desktop.threadScroll.v1'
+
+export function threadScrollStorageKey(profile = $activeProfile.get()): string {
+  return `${SCROLL_POS_KEY_BASE}.profile.${encodeURIComponent(normalizeProfileKey(profile))}${activeConnectionScopeSuffix()}`
+}
+
+// Bounded so a marathon runtime that touches hundreds of sessions doesn't grow
+// the map forever. JS object insertion order gives LRU eviction — saving
+// delete-and-re-adds the key, so the front is always the least-recently-used.
+export const THREAD_SCROLL_MEMORY_LIMIT = 120
+
+function isValidState(value: unknown): value is ThreadScrollState {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+
+  if (record.kind === 'bottom') {
+    return true
+  }
+
+  return (
+    record.kind === 'offset' &&
+    typeof record.fromBottom === 'number' &&
+    Number.isFinite(record.fromBottom) &&
+    record.fromBottom >= 0
+  )
+}
+
+function loadPositions(storageKey: string): Record<string, ThreadScrollState> {
+  const raw = readKey(storageKey)
+
+  if (!raw) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, ThreadScrollState] =>
+        isValidState(entry[1])
+      )
+    )
+  } catch {
+    return {}
+  }
+}
+
+function persistPositions(storageKey: string, positions: Record<string, ThreadScrollState>) {
+  const keys = Object.keys(positions)
+
+  while (keys.length > THREAD_SCROLL_MEMORY_LIMIT) {
+    delete positions[keys[0]!]
+    keys.shift()
+  }
+
+  writeKey(storageKey, keys.length === 0 ? null : JSON.stringify(positions))
+}
+
+export function getThreadScrollPosition(
+  sessionKey: string,
+  storageKey = threadScrollStorageKey()
+): ThreadScrollState | undefined {
+  return loadPositions(storageKey)[sessionKey]
+}
+
+export function saveThreadScrollPosition(
+  sessionKey: string,
+  state: ThreadScrollState,
+  storageKey = threadScrollStorageKey()
+) {
+  const positions = loadPositions(storageKey)
+
+  // Delete then re-add to track recency (insertion order = LRU anchor).
+  delete positions[sessionKey]
+  positions[sessionKey] = state
+  persistPositions(storageKey, positions)
+}
+
+export function clearThreadScrollPosition(sessionKey: string, storageKey = threadScrollStorageKey()) {
+  const positions = loadPositions(storageKey)
+
+  if (positions[sessionKey] === undefined) {
+    return
+  }
+
+  delete positions[sessionKey]
+  persistPositions(storageKey, positions)
+}
+
+/**
+ * The restore/record gate for the session-switch settle loop. Pure so the
+ * warm/cold switch lifecycle is testable without a DOM:
+ *
+ * - cold (no transcript yet): forget any in-flight restore, do not record —
+ *   an empty-transcript instance holds the PREVIOUS session's live state and
+ *   must not file it under the new key.
+ * - same key, already settled: the restore is done; keep recording only.
+ * - same key, still settling: a dep identity change re-ran the effect
+ *   mid-loop — re-arm the restore instead of stranding the viewport.
+ * - anything else (first content for this key, or a key change): restore.
+ */
+export type ThreadScrollRestorePlan = { cold: boolean; gate: string | null | undefined; restore: boolean }
+
+export function planThreadScrollRestore(
+  prevGate: string | null | undefined,
+  sessionKey: string | null | undefined,
+  hasGroups: boolean,
+  settled: boolean
+): ThreadScrollRestorePlan {
+  if (!hasGroups) {
+    return { cold: true, gate: null, restore: false }
+  }
+
+  if (prevGate === sessionKey && settled) {
+    return { cold: false, gate: sessionKey, restore: false }
+  }
+
+  return { cold: false, gate: sessionKey, restore: true }
+}

@@ -295,6 +295,9 @@ async def test_send_after_terminal_4401_revocation_fails_fast():
     fake = _DroppingWS(close_code=4401)
     t._ws = fake
     t._handshake_succeeded = True  # prior handshake -> 4401 is a revocation
+    # This socket IS the fresh-token re-dial (the one-shot expired-token retry
+    # already happened), so its 4401 is the terminal second strike.
+    t._auth_retry_generation = t._dial_generation
     await _run_reader_to_exit(t, fake)
 
     assert t._auth_revoked is True

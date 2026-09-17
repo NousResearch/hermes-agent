@@ -48,6 +48,41 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
+# A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
+# a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs), so anything older than
+# this is safe to reclaim; a live transfer is hours younger than the cutoff.
+_SYNC_BACK_STALE_SECONDS = 6 * 60 * 60
+
+
+def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
+    """Remove sync-back tars and staging dirs left behind by a hard-killed process.
+
+    Only entries carrying this module's prefix and older than ``_SYNC_BACK_STALE_SECONDS``
+    are touched. Returns the number of entries removed; a permission error or a race with
+    another sync-back must not prevent the current one.
+    """
+    directory = temp_dir or Path(tempfile.gettempdir())
+    cutoff = time.time() - _SYNC_BACK_STALE_SECONDS
+    removed = 0
+    try:
+        candidates = list(directory.glob(f"{_SYNC_BACK_TEMP_PREFIX}*"))
+    except OSError:
+        logger.debug("sync_back: could not scan temporary directory %s", directory)
+        return 0
+    for candidate in candidates:
+        try:
+            if candidate.is_symlink() or candidate.lstat().st_mtime >= cutoff:
+                continue
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+            removed += 1
+            logger.debug("sync_back: removed stale temporary entry %s", candidate)
+        except OSError:
+            logger.debug("sync_back: could not remove stale temporary entry %s", candidate)
+    return removed
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
@@ -162,10 +197,19 @@ class FileSyncManager:
         prev_files = dict(self._synced_files)
         prev_hashes = dict(self._pushed_hashes)
         try:
-            self._push(to_upload, to_delete)
+            # Hash and upload the same bytes: the original may be saved while
+            # the transport is reading it or waiting for remote acknowledgement.
+            with tempfile.TemporaryDirectory(prefix="hermes-sync-push-") as staging:
+                staged_files = []
+                pushed_hashes = {}
+                for index, (host_path, remote_path) in enumerate(to_upload):
+                    staged_path = os.path.join(staging, str(index))
+                    shutil.copy2(host_path, staged_path)
+                    pushed_hashes[remote_path] = _sha256_file(staged_path)
+                    staged_files.append((staged_path, remote_path))
+                self._push(staged_files, to_delete)
             # Commit (all succeeded).
-            for host_path, remote_path in to_upload:
-                self._pushed_hashes[remote_path] = _sha256_file(host_path)
+            self._pushed_hashes.update(pushed_hashes)
             for p in to_delete:
                 new_files.pop(p, None)
                 self._pushed_hashes.pop(p, None)
@@ -302,12 +346,20 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
-        with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
-            self._bulk_download_fn(Path(tf.name))
+        # A hard kill bypasses the finally below. Reclaim only old entries carrying our
+        # prefix before allocating another full-tree download.
+        _cleanup_stale_sync_back_temp()
+
+        # mkstemp + close: NamedTemporaryFile keeps an exclusive handle on Windows, so the
+        # backend's open(dest, "wb") / write_bytes on the same path raised PermissionError.
+        fd, tar_path = tempfile.mkstemp(prefix=_SYNC_BACK_TEMP_PREFIX, suffix=".tar")
+        os.close(fd)
+        try:
+            self._bulk_download_fn(Path(tar_path))
 
             # A misbehaving sandbox could produce an arbitrarily large tar.
             try:
-                tar_size = os.path.getsize(tf.name)
+                tar_size = os.path.getsize(tar_path)
             except OSError:
                 tar_size = 0
             if tar_size > _SYNC_BACK_MAX_BYTES:
@@ -316,8 +368,8 @@ class FileSyncManager:
                     tar_size, _SYNC_BACK_MAX_BYTES)
                 return
 
-            with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
-                with tarfile.open(tf.name) as tar:
+            with tempfile.TemporaryDirectory(prefix=_SYNC_BACK_TEMP_PREFIX) as staging:
+                with tarfile.open(tar_path) as tar:
                     tar.extractall(staging, filter="data")
 
                 upload_only = self._upload_only_host_paths | _credential_host_paths()
@@ -325,13 +377,19 @@ class FileSyncManager:
                 for dirpath, _dirnames, filenames in os.walk(staging):
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
-                        remote_path = "/" + os.path.relpath(staged_file, staging)
+                        # Remote keys are POSIX; relpath uses host separators (backslashes on Windows).
+                        remote_path = "/" + Path(os.path.relpath(staged_file, staging)).as_posix()
                         applied += self._apply_staged_file(staged_file, remote_path, file_mapping, upload_only)
 
                 if applied:
                     logger.info("sync_back: applied %d changed file(s)", applied)
                 else:
                     logger.debug("sync_back: no remote changes detected")
+        finally:
+            try:
+                os.unlink(tar_path)
+            except OSError:
+                pass
 
     def _apply_staged_file(
         self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str],
@@ -377,9 +435,9 @@ class FileSyncManager:
         for host, remote in file_mapping or []:
             if self._is_upload_only_host_path(host, upload_only_host_paths):
                 continue
-            remote_dir = str(Path(remote).parent)
+            remote_dir = posixpath.dirname(remote)  # remote paths are POSIX even on a Windows host
             if remote_path.startswith(remote_dir + "/"):
-                return str(Path(host).parent) + remote_path[len(remote_dir):]
+                return str(Path(host).parent / remote_path[len(remote_dir) + 1:])
         return None
 
     @staticmethod

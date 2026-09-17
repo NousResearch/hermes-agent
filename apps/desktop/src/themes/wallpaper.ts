@@ -1,6 +1,8 @@
+import { ensureContrast, mix, parseColor, relativeLuminance } from '@hermes/shared/color'
+
 import type { WallpaperPalette } from '@/lib/wallpaper-palette'
 
-import { contrastRatio, ensureContrast, hexToRgb, mix, relativeLuminance } from './color'
+import { readableInk } from './color'
 import type { DesktopThemeColors } from './types'
 
 const ACCENT_TEXT_CONTRAST = 4.5
@@ -10,7 +12,7 @@ interface WallpaperThemeOptions {
 }
 
 function saturation(color: string): number {
-  const rgb = hexToRgb(color)
+  const rgb = parseColor(color)
 
   if (!rgb) {
     return 0
@@ -20,13 +22,6 @@ function saturation(color: string): number {
   const min = Math.min(...rgb)
 
   return max === 0 ? 0 : (max - min) / max
-}
-
-function readableForeground(background: string): string {
-  const dark = '#161616'
-  const light = '#ffffff'
-
-  return contrastRatio(dark, background) >= contrastRatio(light, background) ? dark : light
 }
 
 /**
@@ -39,7 +34,7 @@ export function adaptThemeColorsToWallpaper(
   palette: WallpaperPalette,
   options: WallpaperThemeOptions = {}
 ): DesktopThemeColors {
-  const dark = relativeLuminance(base.background) < 0.4
+  const dark = (relativeLuminance(base.background) ?? 0) < 0.4
   const surfaceMix = dark ? 0.16 : 0.1
   const softMix = dark ? 0.2 : 0.13
   const sidebarBackground = mix(base.sidebarBackground ?? base.background, palette.dominant, surfaceMix)
@@ -69,12 +64,12 @@ export function adaptThemeColorsToWallpaper(
     composerRing: primary,
     input: mix(base.input, palette.dominant, dark ? 0.12 : 0.08),
     midground: primary,
-    midgroundForeground: readableForeground(primary),
+    midgroundForeground: readableInk(primary),
     muted: mix(base.muted, palette.dominant, dark ? 0.1 : 0.06),
     popover,
     popoverForeground: ensureContrast(base.popoverForeground, popover, ACCENT_TEXT_CONTRAST),
     primary,
-    primaryForeground: readableForeground(primary),
+    primaryForeground: readableInk(primary),
     ring: primary,
     secondary,
     secondaryForeground: ensureContrast(base.secondaryForeground, secondary, ACCENT_TEXT_CONTRAST),

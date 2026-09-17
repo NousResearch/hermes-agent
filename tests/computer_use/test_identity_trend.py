@@ -125,12 +125,15 @@ def test_trend_wire_through_shadow_observe():
 
 
 def test_trend_reflects_identity_loss():
+    # A merely relabeled control keeps its identity (relabel pass binds same
+    # role+parent+geometry at 0.5); true loss is a control disappearing while a
+    # different one appears elsewhere — unbound on every pass.
     good = [_el(1, "AXButton", "OK", (10, 10, 50, 20))]
-    renamed = [_el(1, "AXButton", "Confirm", (10, 10, 50, 20))]
+    replaced = [_el(1, "AXButton", "Cancel", (300, 300, 50, 20))]
     cu_tool._shadow_state_observe(_cap(good), "sess-loss")
-    cu_tool._shadow_state_observe(_cap(renamed), "sess-loss")
-    cu_tool._shadow_state_observe(_cap(renamed), "sess-loss")
+    cu_tool._shadow_state_observe(_cap(replaced), "sess-loss")
+    cu_tool._shadow_state_observe(_cap(replaced), "sess-loss")
     s = cu_tool.get_identity_trend("sess-loss")
     assert s["steps"] == 2
     assert s["mean_retention"] < 1.0
-    assert s["trend_direction"] == "improving"  # stable names after the churn
+    assert s["trend_direction"] == "improving"  # stable after the churn

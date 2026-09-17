@@ -52,6 +52,7 @@ def prepare_turn_work(agent, content, envelope: MessageEnvelope | None = None) -
         from hermes_cli import kanban_db
         bridge = WorkstationKanbanBridge()
         current_id = getattr(agent, "_canonical_work_task_id", None)
+        current_run_id = getattr(agent, "_canonical_work_run_id", None)
         if current_id:
             conn = bridge.get_connection()
             try:
@@ -59,10 +60,22 @@ def prepare_turn_work(agent, content, envelope: MessageEnvelope | None = None) -
                 if (current is None or current.session_id != session_id or current.status in {"done", "cancelled"}
                         or current.body != envelope.content):
                     current_id = None
+                    current_run_id = None
+                else:
+                    current_run_id = current.current_run_id
             finally:
                 conn.close()
         if current_id is None:
             current_id = bridge.promote_request_if_multistep(envelope.content, session_id=session_id, envelope=envelope,
                                                            acceptance_contract=intent.acceptance_policy)
+            if current_id:
+                conn = bridge.get_connection()
+                try:
+                    current = kanban_db.get_task(conn, current_id)
+                    if current:
+                        current_run_id = current.current_run_id
+                finally:
+                    conn.close()
         agent._canonical_work_task_id = current_id
+        agent._canonical_work_run_id = current_run_id
     return intent

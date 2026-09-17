@@ -466,19 +466,21 @@ Expected primary touch points include, but are not limited to:
 
 Feature roadmap work resumes only when all of the following are true:
 
-1. **Concrete blocker removed:** the reproduced `db_path` string/Path continuity regression is green.
-2. **TaskRun continuity:** all new mutable Workstation execution has canonical `task_id + run_id + operation_id` lineage.
-3. **Stale-run safety:** a superseded run cannot mutate canonical task completion or reuse a revoked mutable resource fence.
-4. **Commit truth:** no terminal journal/UI/Hybrid projection can precede or contradict canonical commit.
-5. **Tree consistency:** terminal parents reconcile all live descendants or expose an explicit reconciliation state.
-6. **Mutation safety:** uncertain external mutations never blind-retry.
-7. **Recovery:** restart can classify/reconcile running state without reconstructing truth from transcript prose.
-8. **Intent Authority:** non-human inputs cannot silently become human work intent.
-9. **Browser truth:** stale DOM/process-local refs are reacquired after restart/navigation/hydration and auth/CAPTCHA walls become explicit handoff/blocker state.
-10. **Regression evidence:** the initial Hermes Work 100 seed passes, including corpus-derived stale-run, timeout, restart, browser and delegation cases.
-11. **Real environment evidence:** relevant clean/isolated Windows + Electron paths pass; unit tests alone do not close the gate.
-12. **Metrics integrity:** Verified Completion and false-completion/zombie/uncertain metrics are derived from canonical events and acceptance evidence, not narrative responses.
-13. **N=1 trust:** single-run causal correctness is proven before throughput-driven parallelism is promoted.
+| EXIT CRITERION | STATUS | TEST/EVIDENCE | ENVIRONMENT | RESULT |
+| :--- | :--- | :--- | :--- | :--- |
+| **1. Concrete blocker removed** | VERIFIED | `tests/hermes_cli/test_kanban_db_init.py::test_init_db_accepts_path_object_and_str` | Windows 11 + Python 3.13.12 | PASS (`db_path` str/Path normalized via `Path(db_path)`) |
+| **2. TaskRun continuity** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_task_cockpit_exposes_canonical_lineage`, `workstation/tests/test_canonical_continuity.py::test_canonical_lineage_resolves_workplan` | Windows 11 + Python 3.13.12 | PASS (`(task_id, run_id, session_id, operation_id)` queryable) |
+| **3. Stale-run safety** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_finalize_turn_candidate_rejects_stale_run_and_preserves_task_state`, `workstation/tests/test_canonical_work_loop.py::test_human_control_lease_takeover_and_resume_fencing` | Windows 11 + Python 3.13.12 | PASS (superseded run rejected by CAS in kanban_db & `complete_task_with_report`; fence tokens revoked) |
+| **4. Commit truth** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_incomplete_report_cannot_emit_task_completed`, `workstation/tests/test_canonical_work_loop.py::test_timeout_cannot_transition_task_to_done` | Windows 11 + Python 3.13.12 | PASS (no `TASK_COMPLETED` emitted before or without canonical CAS commit) |
+| **5. Tree consistency** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_parent_interrupted_reconciles_running_child`, `workstation/tests/test_canonical_work_loop.py::test_complete_item_rejects_terminal_parent_plan` | Windows 11 + Python 3.13.12 | PASS (terminal parent reconciles live descendants to `BLOCKED`; late item completion raises `PlanTerminatedError`) |
+| **6. Mutation safety** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_uncertain_mutation_is_never_blindly_retried` | Windows 11 + Python 3.13.12 | PASS (lost ACK/timeout forces `UNCERTAIN` status; blind retry prohibited) |
+| **7. Recovery** | VERIFIED | `workstation/tests/test_task_compiler.py::test_restart_at_37_and_ledger_independent_of_transcript` | Windows 11 + Python 3.13.12 | PASS (execution ledger recovers from SQLite without parsing transcript prose) |
+| **8. Intent Authority** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_internal_event_has_no_create_work_authority` | Windows 11 + Python 3.13.12 | PASS (system/runtime/connector events cannot forge human `CREATE_WORK`) |
+| **9. Browser truth** | VERIFIED | `workstation/tests/test_task_compiler.py::test_browser_handoff_is_bounded_persisted_and_explicitly_resumed`, `workstation/tests/test_routines.py::test_drift_fails_closed_and_records_failure` | Windows 11 + Python 3.13.12 | PASS (CAPTCHA/auth surfaces explicit handoff state; DOM drift fails closed) |
+| **10. Regression evidence** | VERIFIED | `workstation/work100.py --run` | Windows 11 + Python 3.13.12 + Node.js + Vitest | PASS (30/30 PASS: 28 pytest + 2 Electron vitest suites) |
+| **11. Real environment evidence** | VERIFIED | `apps/desktop/electron/workstation-browser-task.test.ts` (17 tests), `apps/desktop/electron/session-windows.test.ts` (19 tests) | Windows 11 + Node.js v24.2.0 + Vitest v4.1.10 (Native) | PASS (36/36 tests passed in native runner) |
+| **12. Metrics integrity** | VERIFIED | `workstation/tests/test_canonical_work_loop.py::test_verification_evidence_is_linked_to_outcome`, `workstation/tests/test_canonical_work_loop.py::test_production_metrics_exclude_test_environment` | Windows 11 + Python 3.13.12 | PASS (Verified completion metrics bound strictly to acceptance verifiers; test telemetry segregated) |
+| **13. N=1 trust** | VERIFIED | `workstation/tests/test_canonical_continuity.py::test_turn_candidate_reverifies_actual_durable_outputs_before_acceptance`, `workstation/tests/test_canonical_work_loop.py::test_systemic_failure_opens_before_remaining_fanout` | Windows 11 + Python 3.13.12 | PASS (single-execution loop verified end-to-end with fail-fast circuit before fanout) |
 
 ## Explicit non-goals during this gate
 

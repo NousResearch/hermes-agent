@@ -526,3 +526,121 @@ def test_task_cockpit_exposes_canonical_lineage(tmp_path):
     assert lineage["execution_key"] == "exec_key_cockpit"
     assert lineage["workplan_id"] == plan.id
     assert "acceptance_status" in lineage
+
+
+def test_finalize_turn_candidate_rejects_stale_run_and_preserves_task_state():
+    """P0 / P0.1 integration test: when Run A is superseded by Run B, Run A's
+    finalize_turn_candidate attempt is rejected by CAS, recording acceptance_commit_failed
+    and leaving the task in Run B without emitting TASK_COMPLETED.
+    """
+    bridge = WorkstationKanbanBridge()
+    task_id = create_task(bridge)
+    assert task_id is not None
+
+    with bridge.get_connection() as conn:
+        task = kanban_db.get_task(conn, task_id)
+        run_a_id = task.current_run_id
+        assert run_a_id is not None
+        assert task.status == "running"
+
+        # Simulate Run B taking over / superseding the task
+        conn.execute("UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL WHERE id=?", (task_id,))
+        conn.commit()
+        run_b_task = kanban_db.claim_task(conn, task_id, claimer="workstation:session_superseded")
+        assert run_b_task is not None
+        run_b_id = run_b_task.current_run_id
+        assert run_b_id is not None
+        assert run_b_id != run_a_id
+
+    # Now Run A finishes its turn and attempts to finalize
+    candidate_result = bridge.finalize_turn_candidate(
+        task_id,
+        "session",
+        {"completed": True, "final_response": "Run A completed work"},
+        expected_run_id=run_a_id,
+    )
+
+    # Acceptance MUST be rejected
+    assert candidate_result["acceptance_approved"] is False
+
+    with bridge.get_connection() as conn:
+        current_task = kanban_db.get_task(conn, task_id)
+        # Task must NOT be done; must remain in Run B
+        assert current_task.status == "running"
+        assert current_task.current_run_id == run_b_id
+
+    # Ensure ExecutionJournal did NOT record TASK_COMPLETED
+    journal = ExecutionJournal(task_id, "session")
+    events = journal.read_events()
+    assert all(e.kind != ExecutionEventKind.TASK_COMPLETED for e in events)
+
+    # Ensure acceptance_commit_failed was recorded in journal
+    commit_failed_events = [
+        e for e in events
+        if e.metadata.get("boundary") == "acceptance_commit_failed"
+    ]
+    assert len(commit_failed_events) >= 1
+    assert commit_failed_events[0].metadata["expected_run_id"] == run_a_id
+
+
+def test_complete_item_rejects_terminal_parent_plan():
+    """P0.2 test: complete_item must verify parent WorkPlan status and reject completion
+    if parent is in a terminal/aborted state (interrupted, failed, cancelled, blocked),
+    updating item to blocked with NEEDS_RECONCILIATION.
+    """
+    from workstation.durable_tasks import PlanTerminatedError
+    store = DurableTaskStore()
+    plan = store.create_plan(task_id="task_p02", title="test plan", items=[{"id": 1}])
+    item = store.get_work_items(plan.id)[0]
+
+    # Advance item checkpoints to satisfy verify_can_complete
+    store.mark_item_captured(item.id, raw_output_ref="artifact://raw/1")
+    store.mark_item_persisted(item.id, normalized_output_ref="artifact://norm/1")
+    store.mark_item_validated(item.id, {"valid": True})
+
+    # Terminal state: interrupted
+    store.update_plan_state(plan.id, "interrupted")
+
+    with pytest.raises(PlanTerminatedError, match="NEEDS_RECONCILIATION"):
+        store.complete_item(item.id)
+
+    refetched = store.get_item(item.id)
+    assert refetched.status == WorkItemStatus.BLOCKED
+    assert refetched.last_error == "NEEDS_RECONCILIATION"
+    assert "interrupted" in refetched.error
+
+
+def test_durable_tasks_ensure_tables_fail_closed_on_unexpected_error():
+    """P0.3 test: _ensure_tables must succeed idempotently for existing columns,
+    and fail closed (re-raise) on unexpected operational database errors.
+    """
+    from workstation.durable_tasks import DurableTaskStore
+    import sqlite3
+
+    # Normal initialization succeeds idempotently
+    store = DurableTaskStore()
+    with store.get_connection() as conn:
+        store._ensure_tables(conn)
+
+    # Corrupted / unexpected operational error in ALTER TABLE must raise
+    with store.get_connection() as conn:
+        cols_wp_mock = [("0", "id"), ("1", "task_id")]
+        class MockPragmaConn:
+            def executescript(self, sql):
+                return conn.executescript(sql)
+
+            def execute(self, sql, *args):
+                if "PRAGMA table_info(work_plans)" in sql:
+                    class CursorMock:
+                        def fetchall(self):
+                            return cols_wp_mock
+                    return CursorMock()
+                if "ALTER TABLE" in sql:
+                    raise sqlite3.OperationalError("disk I/O error or database is locked")
+                return conn.execute(sql, *args)
+
+            def commit(self):
+                pass
+
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            store._ensure_tables(MockPragmaConn())

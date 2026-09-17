@@ -58,32 +58,164 @@ SEED = (
 )
 
 
+def run_work100(execute: bool = False):
+    import os
+    import shutil
+    import tempfile
+    import xml.etree.ElementTree as ET
+
+    root = Path(__file__).resolve().parents[1]
+    results = {
+        "PASS": [],
+        "FAIL": [],
+        "COVERAGE_GAP": [],
+        "NOT_RUN_ENVIRONMENT": [],
+    }
+
+    pytest_cases = []
+    electron_cases = []
+    for c in SEED:
+        if c.nodeid is None:
+            results["COVERAGE_GAP"].append({
+                "case_id": c.case_id,
+                "requirement": c.requirement,
+                "reason": "no automated assertion registered",
+            })
+        elif c.runner == "electron":
+            electron_cases.append(c)
+        else:
+            pytest_cases.append(c)
+
+    if not execute:
+        # Static report mode: unexecuted tests are not PASS
+        return results
+
+    if pytest_cases:
+        nodes = sorted({c.nodeid for c in pytest_cases})
+        with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as tf:
+            xml_file = tf.name
+
+        try:
+            cmd = [sys.executable, "-m", "pytest", "-q", "--junitxml=" + xml_file, *nodes]
+            proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+
+            xml_results = {}
+            if os.path.exists(xml_file):
+                try:
+                    tree = ET.parse(xml_file)
+                    for tc in tree.iter("testcase"):
+                        classname = tc.attrib.get("classname", "")
+                        name = tc.attrib.get("name", "").split("[")[0]
+                        file_prefix = classname.replace(".", "/") + ".py"
+                        key = f"{file_prefix}::{name}"
+                        has_fail = tc.find("failure") is not None or tc.find("error") is not None
+                        xml_results[key] = (not has_fail)
+                except Exception:
+                    pass
+
+            for c in pytest_cases:
+                matched_key = None
+                normalized_nodeid = c.nodeid.replace("\\", "/")
+                for k in xml_results:
+                    if k in normalized_nodeid or normalized_nodeid.endswith(k) or k.endswith(normalized_nodeid.split("::")[-1]):
+                        matched_key = k
+                        break
+
+                if matched_key is not None:
+                    passed = xml_results[matched_key]
+                    target_list = results["PASS"] if passed else results["FAIL"]
+                    target_list.append({
+                        "case_id": c.case_id,
+                        "requirement": c.requirement,
+                        "nodeid": c.nodeid,
+                        "runner": "pytest",
+                    })
+                else:
+                    target_list = results["PASS"] if proc.returncode == 0 else results["FAIL"]
+                    target_list.append({
+                        "case_id": c.case_id,
+                        "requirement": c.requirement,
+                        "nodeid": c.nodeid,
+                        "runner": "pytest",
+                    })
+        finally:
+            if os.path.exists(xml_file):
+                try:
+                    os.unlink(xml_file)
+                except Exception:
+                    pass
+
+    if electron_cases:
+        node = shutil.which("node")
+        vitest = root / "node_modules" / "vitest" / "vitest.mjs"
+        if node is None or not vitest.is_file():
+            for c in electron_cases:
+                results["NOT_RUN_ENVIRONMENT"].append({
+                    "case_id": c.case_id,
+                    "requirement": c.requirement,
+                    "nodeid": c.nodeid,
+                    "runner": "electron",
+                    "reason": "node/Vitest unavailable for required Electron lifecycle contracts",
+                })
+        else:
+            native_nodes = sorted({c.nodeid for c in electron_cases})
+            native = subprocess.run(
+                [node, str(vitest), "run", "--project", "electron", *native_nodes],
+                cwd=root / "apps" / "desktop",
+                capture_output=True,
+                text=True,
+            )
+            for c in electron_cases:
+                if native.returncode == 0:
+                    results["PASS"].append({
+                        "case_id": c.case_id,
+                        "requirement": c.requirement,
+                        "nodeid": c.nodeid,
+                        "runner": "electron",
+                    })
+                else:
+                    results["FAIL"].append({
+                        "case_id": c.case_id,
+                        "requirement": c.requirement,
+                        "nodeid": c.nodeid,
+                        "runner": "electron",
+                        "error": (native.stderr or native.stdout or "").strip()[:500],
+                    })
+
+    return results
+
+
 def main():
     import argparse
     import json
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args()
-    gaps = [{"case_id": c.case_id, "requirement": c.requirement} for c in SEED if c.nodeid is None]
-    print(json.dumps({"seed_cases": len(SEED), "coverage_gaps": gaps}, indent=2), flush=True)
+
+    results = run_work100(execute=args.run)
+
+    pass_count = len(results["PASS"])
+    gap_count = len(results["COVERAGE_GAP"])
+    env_count = len(results["NOT_RUN_ENVIRONMENT"])
+    fail_count = len(results["FAIL"])
+
+    print("=== Work100 Execution Summary ===", flush=True)
+    print(f"{pass_count} PASS", flush=True)
+    print(f"{gap_count} COVERAGE_GAP", flush=True)
+    print(f"{env_count} NOT_RUN_ENVIRONMENT", flush=True)
+    print(f"{fail_count} FAIL", flush=True)
+
+    def _fmt(items):
+        return [f"[Case {it['case_id']}] {it['requirement']} ({it.get('nodeid', it.get('reason', ''))})" for it in items]
+
+    print("\n--- Detailed Status ---", flush=True)
+    print("PASS:", json.dumps(_fmt(results["PASS"]), indent=2), flush=True)
+    print("COVERAGE_GAP:", json.dumps(_fmt(results["COVERAGE_GAP"]), indent=2), flush=True)
+    print("NOT_RUN_ENVIRONMENT:", json.dumps(_fmt(results["NOT_RUN_ENVIRONMENT"]), indent=2), flush=True)
+    print("FAIL:", json.dumps(_fmt(results["FAIL"]), indent=2), flush=True)
+
     if args.run:
-        root = Path(__file__).resolve().parents[1]
-        nodes = sorted({c.nodeid for c in SEED if c.nodeid and c.runner == "pytest"})
-        result = subprocess.run([sys.executable, "-m", "pytest", "-q", *nodes], cwd=root)
-        native_nodes = sorted({c.nodeid for c in SEED if c.nodeid and c.runner == "electron"})
-        native_code = 0
-        if native_nodes:
-            import shutil
-            node = shutil.which("node")
-            vitest = root / "node_modules" / "vitest" / "vitest.mjs"
-            if node is None or not vitest.is_file():
-                print("NOT_RUN_ENVIRONMENT: node/Vitest unavailable for required Electron lifecycle contracts", flush=True)
-                native_code = 1
-            else:
-                native = subprocess.run([node, str(vitest), "run", "--project", "electron", *native_nodes],
-                                        cwd=root / "apps" / "desktop")
-                native_code = native.returncode
-        return result.returncode or native_code or int(bool(gaps))
+        return 1 if (fail_count > 0 or gap_count > 0 or env_count > 0) else 0
     return 0
 
 

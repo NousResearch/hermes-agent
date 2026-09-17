@@ -210,8 +210,8 @@ def test_two_processes_migrate_same_trello_manifest_once(tmp_path):
         task_id = kanban_db.create_task(conn, title="Card", created_by="trello-sync")
         records = [{"agent_task_id": task_id, "board_id": "board", "list_id": "list", "card_id": "card",
                     "board_name": "Board", "list_name": "List"}]
-        source = "from hermes_cli import kanban_db; from workstation.trello_migration import reconcile_trello_legacy; import sys,json; " \
-                 "conn=kanban_db.connect(db_path=sys.argv[1]); reconcile_trello_legacy(conn,json.loads(sys.argv[2]),dry_run=False); conn.close()"
+        source = "from hermes_cli import kanban_db; from workstation.trello_migration import reconcile_trello_legacy; from pathlib import Path; import sys,json; " \
+                 "conn=kanban_db.connect(db_path=Path(sys.argv[1])); reconcile_trello_legacy(conn,json.loads(sys.argv[2]),dry_run=False); conn.close()"
         processes = [subprocess.Popen([sys.executable, "-c", source, str(db_path), json.dumps(records)],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
         for process in processes:

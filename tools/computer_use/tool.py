@@ -382,6 +382,81 @@ def _do_capture(backend, action, args, session_id=None, **_):
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
+def _elements_to_candidates(elements: List[UIElement]):
+    from tools.computer_use.decision_lane import ElementCandidate
+    return tuple(
+        ElementCandidate(ref=str(e.index), label=e.label or "", role=e.role or "", enabled=True)
+        for e in elements
+    )
+
+def _persist_decision_packet(packet) -> Optional[str]:
+    return _write_cache_file(
+        "decision packet", "cache/computer_use", "computer_use_cache",
+        f"decision_{uuid.uuid4().hex}.json", "decision_*.json", 50,
+        lambda p: p.write_text(json.dumps(packet.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8"),
+    )
+
+def _decide_hint(decision) -> str:
+    if decision.done:
+        return "Goal appears complete on the current screen."
+    if decision.action == "escalate":
+        return "Hand back to main planner for a broader strategy."
+    if decision.needs_vision:
+        return "Use capture(mode='som') for pixel evidence before acting."
+    if decision.needs_generation:
+        return "Compose text yourself, then type via computer_use."
+    elem = f" element #{decision.target_ref}" if decision.target_ref else ""
+    return (f"Suggested next step: {decision.action}{elem} "
+            f"(backend={decision.backend}, conf={decision.confidence:.2f}).")
+
+def _do_decide(backend, action, args, session_id=None, **_):
+    goal = (args.get("goal") or args.get("goal_hint") or "").strip()
+    if not goal:
+        return json.dumps({"error": "decide requires `goal` (or `goal_hint`)"})
+    from tools.computer_use.decision_lane import SemanticState, jev_available, run_decision_lane
+    from tools.computer_use.decision_stages import jev_stage, reranker_stage
+    cap = backend.capture(mode="ax", app=args.get("app"),
+                          **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
+    candidates = _elements_to_candidates(cap.elements)
+    state = SemanticState(elements=candidates, busy=bool(args.get("busy")), goal_hint=goal)
+    decision, packet = run_decision_lane(state, candidates, reranker=reranker_stage, jev=jev_stage)
+    packet_path = _persist_decision_packet(packet)
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "action": "decide",
+        "fail_open": decision is None,
+        "jev_available": jev_available(),
+        "decision_packet": packet.to_dict(),
+        "decision_packet_path": packet_path,
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "element_count": len(candidates),
+    }
+    if decision is not None:
+        target_element = None
+        if decision.target_ref and str(decision.target_ref).isdigit():
+            target_element = int(decision.target_ref)
+        payload["decision"] = {
+            "action": decision.action,
+            "target_ref": decision.target_ref,
+            "target_element": target_element,
+            "needs_vision": decision.needs_vision,
+            "needs_generation": decision.needs_generation,
+            "done": decision.done,
+            "confidence": decision.confidence,
+            "backend": decision.backend,
+        }
+        payload["verdict"] = {
+            "decision": "done" if decision.done else "suggest_action",
+            "hint": _decide_hint(decision),
+        }
+    else:
+        payload["verdict"] = {
+            "decision": "escalate",
+            "hint": "Decision lane abstained — plan the next step with capture + your usual reasoning.",
+        }
+    return json.dumps(payload)
+
 
 def _summarize_click(action: str, args: Dict[str, Any], fg: str) -> str:
     where = (f" element #{args['element']}" if args.get("element") is not None
@@ -418,6 +493,7 @@ _ACTIONS: Dict[str, _ActionSpec] = {
     "wait": _ActionSpec(lambda backend, action, args, **_: _text_response(backend.wait(float(args.get("seconds", 1.0))))),
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
+    "decide": _ActionSpec(_do_decide),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)

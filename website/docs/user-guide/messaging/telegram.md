@@ -1285,9 +1285,21 @@ telegram:
     "42":  |
       This topic is for creative writing feedback. Be warm and
       constructive.
+    "-1001234567890:77": |
+      This topic is for release planning only.
 ```
 
-Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, topic-level prompts override the group-level prompt:
+Keys are chat IDs (groups/supergroups), forum topic IDs, or composite
+`<chat_id>:<thread_id>` keys. The most specific match wins, in this order:
+
+1. composite topic key `<chat_id>:<thread_id>` (for example `-1001234567890:77`)
+2. topic ID alone (`42`) — legacy form, shared across chats
+3. chat ID alone (`-1001234567890`) — group-level fallback
+
+A thread ID is only unique within one chat, so two forum groups that both use
+topic `42` collide under the legacy form. The composite key scopes the override to
+a single group, so different groups can give the same topic number different
+prompts.
 
 - Message in topic `42` inside group `-1001234567890` → uses topic `42`'s prompt
 - Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt

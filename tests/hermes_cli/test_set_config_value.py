@@ -526,16 +526,12 @@ class TestSchemaValidation:
         assert "discord.gateway_restart_notification" in err
 
     @pytest.mark.parametrize("key,value,expected,suggestion", [
-        # Unseeded runtime-read keys (agent/agent_init.py:1324, cli.py:2568,
-        # tools/transcription_tools.py:241; da942e4483 names more): a stored value is an
-        # explicit user pick, so the schema walk must not refuse them.
-        ("skills.creation_nudge_interval", "50", 50, None),
-        # Honest trade-off: this real runtime key gets a misleading sibling suggestion because
-        # only display.tool_progress_command is seeded. Seeding it is the proper follow-up.
-        ("display.tool_progress", "all", "all", "display.tool_progress_command"),
+        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
+        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
         ("stt.provider", "whisper", "whisper", None),
-        # TRADE-OFF made explicit: a same-section typo is indistinguishable from an unseeded key,
-        # so it is written too — the user gets the sibling suggestion instead of a refusal.
+        # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
+        # from an unseeded key, so it is written too — the user gets the sibling suggestion
+        # (``agent.max_turns``) instead of a refusal.
         ("agent.max_turnz", "50", 50, "agent.max_turns"),
     ])
     def test_unknown_leaf_under_known_section_is_written_with_notice(

@@ -42,6 +42,7 @@ def carrier_session(tmp_path):
                 session_key,
                 message["role"],
                 message.get("content"),
+                display_kind=message.get("display_kind"),
             )
         durable = db.get_messages_as_conversation(session_key)
         agent = SimpleNamespace(
@@ -510,3 +511,69 @@ def test_prompt_row_id_rewind_preserves_scaffold_before_regeneration(
     active = db.get_messages_as_conversation(session_key, include_row_ids=True)
     assert len(active) == 1
     assert active[0]["display_kind"] == "hidden"
+
+
+def test_prompt_row_id_rewind_targets_user_row_hidden_by_sequence_repair(
+    carrier_session, monkeypatch
+):
+    db, install = carrier_session
+    sid, session_key, session = install(
+        [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {
+                "role": "user",
+                "content": "[System: model changed]",
+                "display_kind": "model_switch",
+            },
+            {"role": "user", "content": "keep this turn"},
+            {"role": "user", "content": "restore this turn"},
+            {"role": "assistant", "content": "failed"},
+        ]
+    )
+    physical = db.get_messages_as_conversation(
+        session_key, repair_alternation=False, include_row_ids=True
+    )
+    target_row_id = physical[4]["_row_id"]
+    repaired = db.get_messages_as_conversation(
+        session_key, repair_alternation=True, include_row_ids=True
+    )
+    assert target_row_id not in {message.get("_row_id") for message in repaired}
+    session["history"] = repaired
+
+    class _NoopThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server.threading, "Thread", _NoopThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
+
+    response = server._methods["prompt.submit"](
+        "request-id",
+        {
+            "session_id": sid,
+            "text": "restore this turn",
+            "truncate_before_row_id": target_row_id,
+            "confirm_truncate": True,
+        },
+    )
+
+    assert response.get("error") is None, response
+    assert [message["content"] for message in session["history"]] == [
+        "first",
+        "answer",
+        "[System: model changed]",
+        "keep this turn",
+    ]
+    active = db.get_messages_as_conversation(
+        session_key, repair_alternation=False, include_row_ids=True
+    )
+    assert [message["content"] for message in active] == [
+        "first",
+        "answer",
+        "[System: model changed]",
+        "keep this turn",
+    ]

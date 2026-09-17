@@ -87,39 +87,45 @@ def _load_durable_truncation_history(
 
 
 def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
-    """Resolve ``truncate_before_row_id`` to ``(user_ordinal, history_index)``: in-memory
-    stamps first, else the durable transcript mapped onto the live list by user ordinal.
-    Never falls back to a client-supplied ordinal — unknown row ids refuse.
+    """Resolve ``truncate_before_row_id`` to ``((user_ordinal, history_index), cut_history)``:
+    in-memory stamps first, else the durable transcript. Never falls back to a
+    client-supplied ordinal — unknown row ids refuse.
 
     Prefer in-memory ``_row_id`` / ``row_id`` stamps. When a live turn rewrote ``session["history"]``
     without stamps (provider-format messages), load the session's durable transcript with
-    ``include_row_ids=True`` and map the matched user-turn ordinal onto the live list. See #82959.
+    ``include_row_ids=True`` and map the matched user-turn ordinal onto the live list. When
+    alternation repair merged away the addressed physical row, use the un-repaired durable
+    transcript only after its repaired projection exactly matches the live list. See #82959.
     """
     if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
-        return hit
+        return hit, history
     db_history = _load_durable_truncation_history(session)
     if db_history is None:
-        return None
+        return None, None
     # Heal missing stamps only when EVERY pair agrees: the durable copy is alternation-
     # repaired while the live list can carry optimistic/marker rows, and a stamp on a
     # misaligned pair is sticky (re-aims every later rewind at the wrong durable row).
-    if len(db_history) == len(history) and all(
-            _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
+    aligned = len(db_history) == len(history) and all(
+        _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history))
+    if aligned:
         for mem, db_msg in zip(history, db_history):
             if (db_rid := _message_row_id(db_msg)) is not None and _message_row_id(mem) is None:
                 mem["_row_id"] = db_rid
         if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
-            return hit
-    if (db_hit := _find_user_turn_by_row_id(db_history, target_row_id)) is None:
-        return None
-    db_ord, db_idx = db_hit
-    mem_user_indices = _history_user_indices(history)
-    # Same-ordinal mapping across lists that can diverge (repair may merge a user;user
-    # pair): trust it only when the mapped live turn shows the durable target's content.
-    if db_ord >= len(mem_user_indices) or not _mem_db_pair_agrees(
-            history[mem_user_indices[db_ord]], db_history[db_idx]):
-        return None
-    return db_ord, mem_user_indices[db_ord]
+            return hit, history
+    if (db_hit := _find_user_turn_by_row_id(db_history, target_row_id)) is not None:
+        db_ord, db_idx = db_hit
+        mem_user_indices = _history_user_indices(history)
+        # Same-ordinal mapping across lists that can diverge: trust it only when the
+        # mapped live turn shows the durable target's content.
+        if db_ord < len(mem_user_indices) and _mem_db_pair_agrees(
+                history[mem_user_indices[db_ord]], db_history[db_idx]):
+            return (db_ord, mem_user_indices[db_ord]), history
+    if not aligned:
+        return None, None
+    raw_history = _load_durable_truncation_history(session, repair_alternation=False)
+    raw_hit = None if raw_history is None else _find_user_turn_by_row_id(raw_history, target_row_id)
+    return (raw_hit, raw_history) if raw_hit is not None else (None, None)
 
 
 def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
@@ -268,13 +274,13 @@ def _parse_truncation_params(rid, sid, session, params, history):
 
 
 def _resolve_truncation_ordinal(rid, sid, session, params, history):
-    """Resolve the truncation target to ``(ordinal, cut_index, err)``: unresolvable target
+    """Resolve the truncation target to ``(ordinal, cut_index, cut_history, err)``: unresolvable target
     (4018, fail closed — never degrade a missing row_id/message_id into an ordinal cut) ->
     ordinal drift (4030) -> ordinal-only on a durable session (4004)."""
     target_row_id, client_ordinal, err = _parse_truncation_params(
         rid, sid, session, params, history)
     if err is not None:
-        return None, None, err
+        return None, None, history, err
     truncate_message_id = params.get("truncate_before_message_id")
     # Client ordinals count the full displayed lineage; after compression ancestors live in
     # display_history_prefix, so count their user turns once to translate ordinals.
@@ -285,14 +291,20 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
         # Recovery fields: Desktop resyncs + retries, "compressed away" when segment < 0.
         segment = (
             client_ordinal - prefix_user_count if client_ordinal is not None else resolved_ordinal)
-        return None, None, _err(rid, 4018, _STALE_TARGET_MSG, data={
+        return None, None, history, _err(rid, 4018, _STALE_TARGET_MSG, data={
             "user_turn_count": len(user_indices), "ordinal": client_ordinal,
             "segment_ordinal": segment, "prefix_user_count": prefix_user_count})
 
+    cut_history = history
+    cut_user_indices = user_indices
     if target_row_id is not None or truncate_message_id is not None:
         if target_row_id is not None:
             param_name, target_repr = "truncate_before_row_id", target_row_id
-            found_match = _resolve_truncate_row_id(session, history, target_row_id)
+            found_match, resolved_history = _resolve_truncate_row_id(
+                session, history, target_row_id)
+            if resolved_history is not None:
+                cut_history = resolved_history
+                cut_user_indices = _history_user_indices(cut_history)
             not_found = "target row_id %d not found for session %s (in-memory + durable)"
         else:
             param_name = "truncate_before_message_id"
@@ -320,7 +332,7 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
                 "Stale truncate_before_user_ordinal detected.",
                 sid, client_ordinal, param_name, ordinal, param_name, target_repr,
                 prefix_user_count)
-            return None, None, _err(
+            return None, None, history, _err(
                 rid, 4030,
                 f"truncate_before_user_ordinal ({client_ordinal}) does not match "
                 f"{param_name} target turn ({ordinal})")
@@ -339,14 +351,14 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
                 "prompt.submit: REFUSED ordinal-only truncation of durable "
                 "session %s (ordinal=%d); truncate_before_row_id required",
                 sid, client_ordinal)
-            return None, None, _err(
+            return None, None, history, _err(
                 rid, 4004,
                 "ordinal-only truncation is unsafe for durable session history; "
                 "include truncate_before_row_id")
     # BOTH ends: a negative ordinal would index user_indices[-1] and persist the loss.
-    if ordinal < 0 or ordinal >= len(user_indices):
+    if ordinal < 0 or ordinal >= len(cut_user_indices):
         return _stale(resolved_ordinal=ordinal)
-    return ordinal, user_indices[ordinal], None
+    return ordinal, cut_user_indices[ordinal], cut_history, None
 
 
 def _row_ids_of(messages) -> set:
@@ -357,11 +369,12 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
-    ordinal, cut_index, err = _resolve_truncation_ordinal(rid, sid, session, params, history)
+    ordinal, cut_index, cut_history, err = _resolve_truncation_ordinal(
+        rid, sid, session, params, history)
     if err is not None:
         return err, {}
     from agent.context_compressor import history_before_user_originated_turn
-    truncated, _live_view = history_before_user_originated_turn(history, cut_index)
+    truncated, _live_view = history_before_user_originated_turn(cut_history, cut_index)
     # Second gate: ordinal 0 would DELETE every durable row; wiping needs its own opt-in.
     if not truncated and history and not is_truthy_value(params.get("confirm_empty_truncate")):
         logger.warning(

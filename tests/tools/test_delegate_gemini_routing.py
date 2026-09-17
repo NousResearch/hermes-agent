@@ -395,6 +395,51 @@ def test_receipt_initialization_failure_without_fallback_is_structured(
     assert stops[0]["route_receipt_id"] is None
 
 
+@pytest.mark.parametrize(
+    "receipt_error",
+    [
+        RuntimeError("receipt unavailable"),
+        sqlite3.OperationalError("database unavailable"),
+        OSError("filesystem unavailable"),
+    ],
+)
+def test_ordinary_frontier_receipt_initialization_failure_is_structured_and_does_not_execute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_error: Exception,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    sol = fake_child("must not execute")
+    parent_agent = parent()
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value={}),
+        patch("tools.delegate_tool._active_profile_name", return_value="default"),
+        patch("tools.delegate_tool._resolve_delegation_credentials", return_value={
+            "model": None, "provider": None, "base_url": None, "api_key": None,
+            "api_mode": None, "request_overrides": {}, "max_output_tokens": None,
+            "command": None, "args": [],
+        }),
+        patch("tools.delegate_tool._build_child_preserving_parent_tools", return_value=sol),
+        patch(
+            "agent.route_receipts.RouteReceiptStore",
+            side_effect=receipt_error,
+        ),
+    ):
+        result = json.loads(
+            delegate_task(goal="summarize", parent_agent=parent_agent)
+        )
+
+    public = result["results"][0]
+    assert public["status"] == "failed"
+    assert public["error"] == "Delegation receipt initialization failed"
+    assert public["worker_route"] == "sol"
+    assert public["route_receipt_id"] is None
+    sol.run_conversation.assert_not_called()
+    sol.close.assert_called_once()
+    assert parent_agent._active_children == []
+
+
 def test_omitted_single_task_metadata_uses_standard_profile_defaults():
     routed = fake_child("gemini answer")
     sol = fake_child()

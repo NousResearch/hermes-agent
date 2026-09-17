@@ -120,29 +120,50 @@ def wrap_frontier_delegate_child(
         ),
         output_contract=str(task.get("output_contract") or "text"),
     )
+    _replace_registered_child(parent_agent, child, wrapped)
+    return wrapped
+
+
+def _replace_registered_child(parent_agent: Any, old_child: Any, new_child: Any) -> None:
+    """Replace one parent-owned child without leaving duplicate lifecycle owners."""
     active = getattr(parent_agent, "_active_children", None)
     if isinstance(active, list):
         lock = getattr(parent_agent, "_active_children_lock", None)
         lock_context = lock if lock is not None else contextlib.nullcontext()
         with lock_context:
             try:
-                index = active.index(child)
+                index = active.index(old_child)
             except ValueError:
-                active.append(wrapped)
+                active.append(new_child)
             else:
-                active[index] = wrapped
-    return wrapped
+                active[index] = new_child
 
 
 class RoutingInitializationFailureChild:
     """AIAgent-compatible fail-closed result when Gemini setup cannot start."""
 
     def __init__(
-        self, *, task_index: int, routing_cfg: Dict[str, Any], route_reason: str
+        self,
+        *,
+        task_index: int,
+        routing_cfg: Dict[str, Any],
+        route_reason: str,
+        route: str = "gemini",
+        worker_provider: str = "antigravity-subscription",
+        worker_model: str | None = None,
+        unstarted_child: Any | None = None,
     ) -> None:
-        self.session_id = f"gemini-init-failed-{task_index}"
-        self.model = str(routing_cfg.get("model") or "gemini-3.8-flash-low")
-        self.provider = "antigravity-subscription"
+        self.session_id = f"{route}-receipt-init-failed-{task_index}"
+        self.model = str(
+            worker_model or routing_cfg.get("model") or "gemini-3.8-flash-low"
+        )
+        self.provider = worker_provider
+        self._unstarted_child = unstarted_child
+        self._error = (
+            "Gemini receipt initialization failed"
+            if route == "gemini"
+            else "Delegation receipt initialization failed"
+        )
         self._delegate_role = "leaf"
         self._delegate_saved_tool_names: list[str] = []
         self._credential_pool = None
@@ -152,10 +173,10 @@ class RoutingInitializationFailureChild:
         self.tool_progress_callback: Any = None
         self._live_transcript_path = ""
         self._route_metadata = {
-            "route": "gemini",
+            "route": route,
             "route_reason": route_reason,
             "gemini_error_code": "receipt_initialization_failed",
-            "worker_route": "gemini",
+            "worker_route": route,
             "worker_provider": self.provider,
             "worker_model_requested": self.model,
             "route_receipt_id": None,
@@ -168,7 +189,7 @@ class RoutingInitializationFailureChild:
             "completed": False,
             "api_calls": 0,
             "messages": [],
-            "error": "Gemini receipt initialization failed",
+            "error": self._error,
             **self._route_metadata,
         }
 
@@ -176,7 +197,11 @@ class RoutingInitializationFailureChild:
         return {"api_call_count": 0, "max_iterations": 0, "current_tool": None}
 
     def close(self) -> None:
-        return None
+        child = self._unstarted_child
+        self._unstarted_child = None
+        close = getattr(child, "close", None)
+        if callable(close):
+            close()
 
 
 def build_antigravity_delegate_child(

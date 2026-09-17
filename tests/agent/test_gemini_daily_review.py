@@ -98,15 +98,17 @@ def test_sampling_reviews_all_when_cohort_is_under_five():
     assert set(sample_receipt_ids(ids, 5, bytes.fromhex("11" * 32))) == set(ids)
 
 
-def test_review_prompt_contains_full_attempt_and_strict_schema(tmp_path: Path):
+def test_review_prompt_contains_metadata_only_and_strict_schema(tmp_path: Path):
     store = GeminiReceiptStore(tmp_path / "routing.sqlite3")
     add_attempt(store, "grt_a")
 
     prompt = build_review_prompt(store.get_attempt("grt_a"))
 
-    assert "goal grt_a" in prompt
-    assert "bounded context" in prompt
-    assert "response grt_a" in prompt
+    assert "goal grt_a" not in prompt
+    assert "bounded context" not in prompt
+    assert "response grt_a" not in prompt
+    assert "goal_sha256" in prompt
+    assert "response_sha256" in prompt
     assert "route_reason" in prompt
     assert '"verdict": "pass|fail"' in prompt
     assert '"failure_kind": "none|correctness|instruction|omission|hallucination|worker_failure|unreviewable"' in prompt
@@ -231,11 +233,12 @@ def test_runner_reviews_full_cohort_but_worker_failures_fail_closed(tmp_path: Pa
     assert [item["verdict"] for item in items].count("fail") == 2
     failed_worker_item = next(item for item in items if item["receipt_id"] == "grt_1")
     assert failed_worker_item["failure_kind"] == "worker_failure"
-    assert json.loads(failed_worker_item["review_json"]) == {
-        "verdict": "pass",
-        "reason": "acceptable",
-        "failure_kind": "none",
-    }
+    expected_review = {"verdict": "pass", "reason": "acceptable", "failure_kind": "none"}
+    assert failed_worker_item["reason"] is None
+    assert failed_worker_item["review_json"] is None
+    assert failed_worker_item["review_sha256"] == hashlib.sha256(
+        json.dumps(expected_review, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def test_stale_runner_cannot_persist_item_after_review_lease_is_terminalized(

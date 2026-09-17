@@ -335,16 +335,19 @@ def test_attempt_lifecycle_hashes_and_success_payload(tmp_path: Path):
     )
 
     row = store.get_attempt(receipt_id)
-    assert row["goal_text"] == "Summarize this"
-    assert row["context_text"] == "context"
+    assert row["goal_text"] == ""
+    assert row["context_text"] == ""
     assert len(row["goal_sha256"]) == 64
     assert len(row["context_sha256"]) == 64
     assert len(row["prompt_sha256"]) == 64
     assert len(row["response_sha256"]) == 64
+    assert row["response_text"] is None
+    assert row["conversation_id"] is None
+    assert row["raw_envelope_json"] is None
     assert row["worker_status"] == "completed"
     assert row["process_started_at_utc"].startswith("2026-09-11T12:00:00")
     assert json.loads(row["usage_json"]) == {"input": 1}
-    assert json.loads(row["raw_envelope_json"])["status"] == "SUCCESS"
+    assert row["raw_envelope_json"] is None
 
 
 @pytest.mark.parametrize(
@@ -419,7 +422,8 @@ def test_fallback_outcome_cannot_be_rewritten(tmp_path: Path):
     row = store.get_attempt(receipt_id)
     assert row is not None
     assert row["terminal_provider"] == "openai-codex"
-    assert row["terminal_response_text"] == "authoritative"
+    assert row["terminal_response_text"] is None
+    assert row["terminal_response_sha256"] == hashlib.sha256(b"authoritative").hexdigest()
 
 
 def test_schema_upgrade_clears_legacy_provisional_gemini_terminal_truth(tmp_path: Path):
@@ -451,7 +455,7 @@ def test_schema_upgrade_clears_legacy_provisional_gemini_terminal_truth(tmp_path
     assert upgraded["terminal_worker_status"] is None
 
 
-def test_schema_upgrade_bounds_and_sanitizes_legacy_attempt_evidence(tmp_path: Path):
+def test_schema_upgrade_removes_legacy_attempt_evidence_but_keeps_hashes(tmp_path: Path):
     store = make_store(tmp_path)
     receipt_id = prepare(store)
     complete_response = "🔥" * 25_000
@@ -485,27 +489,25 @@ def test_schema_upgrade_bounds_and_sanitizes_legacy_attempt_evidence(tmp_path: P
 
     upgraded = GeminiReceiptStore(store.path).get_attempt(receipt_id)
 
-    assert len(upgraded["response_text"].encode("utf-8")) <= 32_768
+    assert upgraded["response_text"] is None
     assert upgraded["response_sha256"] == hashlib.sha256(
         complete_response.encode("utf-8")
     ).hexdigest()
     assert upgraded["response_bytes"] == len(complete_response.encode("utf-8"))
-    assert len(upgraded["error_message"].encode("utf-8")) <= 2_048
+    assert upgraded["error_message"] is None
     assert upgraded["error_message_sha256"] == hashlib.sha256(
         complete_error.encode("utf-8")
     ).hexdigest()
     assert upgraded["error_message_bytes"] == len(complete_error.encode("utf-8"))
-    assert len(upgraded["terminal_response_text"].encode("utf-8")) <= 32_768
+    assert upgraded["terminal_response_text"] is None
     assert upgraded["terminal_response_sha256"] == hashlib.sha256(
         complete_response.encode("utf-8")
     ).hexdigest()
     assert upgraded["terminal_response_bytes"] == len(complete_response.encode("utf-8"))
-    bounded_envelope = json.loads(upgraded["raw_envelope_json"])
-    assert "response" not in bounded_envelope
-    assert len(upgraded["raw_envelope_json"].encode("utf-8")) <= 32_768
+    assert upgraded["raw_envelope_json"] is None
 
 
-def test_attempt_evidence_is_bounded_with_complete_hashes_and_byte_counts(tmp_path: Path):
+def test_attempt_evidence_is_metadata_only_with_complete_hashes_and_byte_counts(tmp_path: Path):
     store = make_store(tmp_path)
     receipt_id = prepare(store)
     store.mark_process_started(receipt_id)
@@ -527,22 +529,68 @@ def test_attempt_evidence_is_bounded_with_complete_hashes_and_byte_counts(tmp_pa
     )
 
     row = store.get_attempt(receipt_id)
-    assert row["response_text"] != complete_response
-    assert len(row["response_text"].encode("utf-8")) <= 32_768
+    assert row["response_text"] is None
     assert row["response_sha256"] == hashlib.sha256(
         complete_response.encode("utf-8")
     ).hexdigest()
     assert row["response_bytes"] == len(complete_response.encode("utf-8"))
-    assert row["error_message"] != complete_error
-    assert len(row["error_message"].encode("utf-8")) <= 2_048
+    assert row["error_message"] is None
     assert row["error_message_sha256"] == hashlib.sha256(
         complete_error.encode("utf-8")
     ).hexdigest()
     assert row["error_message_bytes"] == len(complete_error.encode("utf-8"))
-    persisted_envelope = row["raw_envelope_json"]
-    assert len(persisted_envelope.encode("utf-8")) <= 32_768
-    assert complete_response not in persisted_envelope
-    assert json.loads(persisted_envelope)["truncated"] is True
+    assert row["raw_envelope_json"] is None
+
+
+def test_receipt_and_review_prompt_never_persist_or_reproduce_sensitive_payloads(
+    tmp_path: Path,
+):
+    from agent.gemini_daily_review import build_review_prompt
+
+    store = make_store(tmp_path)
+    receipt_id = store.prepare_attempt(
+        receipt_id="grt_private",
+        parent_session_id="parent",
+        parent_turn_id="turn",
+        child_session_id="child",
+        task_index=0,
+        route_requested="auto",
+        route_decision="gemini",
+        route_reason="eligible_leaf",
+        data_classification="standard",
+        output_contract="text",
+        goal_text="PROMPT_SECRET",
+        context_text="CONNECTION_STRING_SECRET",
+        requested_provider="antigravity-subscription",
+        requested_model="gemini-3.8-flash-low",
+        requested_effort="low",
+    )
+    store.mark_process_started(receipt_id)
+    store.complete_attempt(
+        receipt_id,
+        worker_status="failed",
+        response_text="OUTPUT_SECRET",
+        duration_ms=1,
+        conversation_id="CONVERSATION_SECRET",
+        raw_envelope={"diagnostic": "ENVELOPE_SECRET"},
+        error_code="worker_failed",
+        error_message="PROVIDER_ERROR_SECRET",
+    )
+
+    row = store.get_attempt(receipt_id)
+    prompt = build_review_prompt(row)
+    forbidden = {
+        "PROMPT_SECRET",
+        "CONNECTION_STRING_SECRET",
+        "OUTPUT_SECRET",
+        "CONVERSATION_SECRET",
+        "ENVELOPE_SECRET",
+        "PROVIDER_ERROR_SECRET",
+    }
+    assert all(secret not in json.dumps(row, sort_keys=True) for secret in forbidden)
+    assert all(secret not in prompt for secret in forbidden)
+    assert row["goal_sha256"] == hashlib.sha256(b"PROMPT_SECRET").hexdigest()
+    assert row["response_sha256"] == hashlib.sha256(b"OUTPUT_SECRET").hexdigest()
 
 
 def test_duplicate_receipt_id_is_rejected_and_terminal_row_cannot_be_rewritten(tmp_path: Path):
@@ -675,9 +723,19 @@ def test_review_items_are_append_only(tmp_path: Path):
     items = store.list_review_items(batch["batch_id"])
     assert len(items) == 1
     assert items[0]["verdict"] == "pass"
+    assert items[0]["reason"] is None
+    assert items[0]["review_json"] is None
+    assert items[0]["review_sha256"] == hashlib.sha256(
+        json.dumps(
+            {"verdict": "pass", "reason": "Correct summary."},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
-def test_retention_redacts_raw_text_before_deleting_hashes(tmp_path: Path):
+def test_retention_finds_no_attempt_payload_after_metadata_only_writes(tmp_path: Path):
     store = make_store(tmp_path)
     old = datetime.now(UTC) - timedelta(days=31)
     prepare(store, started_at=old)
@@ -698,7 +756,7 @@ def test_retention_redacts_raw_text_before_deleting_hashes(tmp_path: Path):
 
     outcome = store.apply_retention(now=datetime.now(UTC), raw_days=30, aggregate_days=180)
     row = store.get_attempt("grt_test")
-    assert outcome["raw_redacted"] == 1
+    assert outcome["raw_redacted"] == 0
     assert row["goal_text"] == ""
     assert row["context_text"] == ""
     assert row["response_text"] is None
@@ -708,7 +766,7 @@ def test_retention_redacts_raw_text_before_deleting_hashes(tmp_path: Path):
     assert row["terminal_response_sha256"]
 
 
-def test_retention_redacts_raw_reviewer_prose_at_raw_cutoff(tmp_path: Path):
+def test_reviewer_prose_is_absent_before_retention_runs(tmp_path: Path):
     store = make_store(tmp_path)
     old = datetime.now(UTC) - timedelta(days=31)
     prepare(store, started_at=old)
@@ -745,10 +803,10 @@ def test_retention_redacts_raw_reviewer_prose_at_raw_cutoff(tmp_path: Path):
     outcome = store.apply_retention(now=datetime.now(UTC), raw_days=30, aggregate_days=180)
     item = store.list_review_items(batch["batch_id"])[0]
 
-    assert outcome["review_raw_redacted"] == 1
-    assert item["reason"] == ""
+    assert outcome["review_raw_redacted"] == 0
+    assert item["reason"] is None
     assert item["review_json"] is None
-    assert item["verdict"] == "fail"
+    assert item["error_message"] is None
     assert item["review_sha256"]
 
 

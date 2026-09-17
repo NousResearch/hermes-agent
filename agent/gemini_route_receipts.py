@@ -531,6 +531,118 @@ class GeminiReceiptStore:
                 (migration_name, _iso()),
             )
 
+        metadata_only_required = {
+            "goal_text",
+            "context_text",
+            "goal_sha256",
+            "context_sha256",
+            "response_text",
+            "response_sha256",
+            "response_bytes",
+            "error_message",
+            "error_message_sha256",
+            "error_message_bytes",
+            "raw_envelope_json",
+            "terminal_response_text",
+            "terminal_response_sha256",
+            "terminal_response_bytes",
+            "conversation_id",
+        }
+        if metadata_only_required <= evidence_columns:
+            rows = conn.execute(
+                """SELECT receipt_id, goal_text, context_text,
+                          goal_sha256, context_sha256,
+                          response_text, response_sha256, response_bytes,
+                          error_message, error_message_sha256, error_message_bytes,
+                          terminal_response_text, terminal_response_sha256,
+                          terminal_response_bytes
+                   FROM gemini_attempts
+                   WHERE goal_text != '' OR context_text != ''
+                      OR response_text IS NOT NULL OR error_message IS NOT NULL
+                      OR raw_envelope_json IS NOT NULL
+                      OR terminal_response_text IS NOT NULL
+                      OR conversation_id IS NOT NULL"""
+            ).fetchall()
+            for row in rows:
+                response = _migrate_text_evidence(
+                    row["response_text"],
+                    row["response_sha256"],
+                    row["response_bytes"],
+                    max_bytes=_RESPONSE_EXCERPT_MAX_BYTES,
+                )
+                error = _migrate_text_evidence(
+                    row["error_message"],
+                    row["error_message_sha256"],
+                    row["error_message_bytes"],
+                    max_bytes=_ERROR_EXCERPT_MAX_BYTES,
+                )
+                terminal = _migrate_text_evidence(
+                    row["terminal_response_text"],
+                    row["terminal_response_sha256"],
+                    row["terminal_response_bytes"],
+                    max_bytes=_RESPONSE_EXCERPT_MAX_BYTES,
+                )
+                conn.execute(
+                    """UPDATE gemini_attempts
+                       SET goal_text='', context_text='',
+                           goal_sha256=?, context_sha256=?,
+                           response_text=NULL, response_sha256=?, response_bytes=?,
+                           error_message=NULL, error_message_sha256=?, error_message_bytes=?,
+                           raw_envelope_json=NULL, conversation_id=NULL,
+                           terminal_response_text=NULL,
+                           terminal_response_sha256=?, terminal_response_bytes=?
+                       WHERE receipt_id=?""",
+                    (
+                        row["goal_sha256"] or _sha256(str(row["goal_text"] or "")),
+                        row["context_sha256"] or _sha256(str(row["context_text"] or "")),
+                        response[1],
+                        response[2],
+                        error[1],
+                        error[2],
+                        terminal[1],
+                        terminal[2],
+                        row["receipt_id"],
+                    ),
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO gemini_schema_migrations (name, applied_at_utc) VALUES (?, ?)",
+                ("metadata_only_attempt_evidence_v1", _iso()),
+            )
+
+        review_metadata_required = {
+            "batch_id",
+            "receipt_id",
+            "reason",
+            "review_json",
+            "review_sha256",
+            "error_message",
+        }
+        if review_metadata_required <= item_columns:
+            rows = conn.execute(
+                """SELECT batch_id, receipt_id, review_json, review_sha256
+                   FROM daily_review_items
+                   WHERE reason IS NOT NULL OR review_json IS NOT NULL
+                      OR error_message IS NOT NULL"""
+            ).fetchall()
+            for row in rows:
+                raw = row["review_json"]
+                conn.execute(
+                    """UPDATE daily_review_items
+                       SET reason=NULL, review_json=NULL, error_message=NULL,
+                           review_sha256=?
+                       WHERE batch_id=? AND receipt_id=?""",
+                    (
+                        row["review_sha256"]
+                        or (_sha256(str(raw)) if raw is not None else None),
+                        row["batch_id"],
+                        row["receipt_id"],
+                    ),
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO gemini_schema_migrations (name, applied_at_utc) VALUES (?, ?)",
+                ("metadata_only_review_evidence_v1", _iso()),
+            )
+
     def prepare_attempt(
         self,
         *,
@@ -583,8 +695,8 @@ class GeminiReceiptStore:
                     route_reason,
                     data_classification,
                     output_contract,
-                    goal_text,
-                    context_text,
+                    "",
+                    "",
                     _sha256(goal_text),
                     _sha256(context_text),
                     _sha256(prompt),
@@ -629,7 +741,7 @@ class GeminiReceiptStore:
     ) -> None:
         if worker_status not in _TERMINAL_ATTEMPT_STATUSES:
             raise ValueError(f"worker_status is not terminal: {worker_status}")
-        response_excerpt, computed_response_sha256, computed_response_bytes = _bounded_text_evidence(
+        _response_excerpt, computed_response_sha256, computed_response_bytes = _bounded_text_evidence(
             response_text, max_bytes=_RESPONSE_EXCERPT_MAX_BYTES
         )
         if (response_sha256 is None) != (response_bytes is None):
@@ -644,9 +756,9 @@ class GeminiReceiptStore:
                 raise ValueError("response_sha256 must be lowercase SHA-256 hex")
             if type(response_bytes) is not int:
                 raise ValueError("response_bytes must be an integer")
-            if response_bytes < len((response_excerpt or "").encode("utf-8")):
-                raise ValueError("response_bytes cannot be smaller than the persisted excerpt")
-        error_excerpt, error_sha256, error_bytes = _bounded_text_evidence(
+            if response_text is not None and response_bytes < len(response_text.encode("utf-8")):
+                raise ValueError("response_bytes cannot be smaller than the supplied response")
+        _error_excerpt, error_sha256, error_bytes = _bounded_text_evidence(
             error_message, max_bytes=_ERROR_EXCERPT_MAX_BYTES
         )
         with self._transaction(commit_fence) as conn:
@@ -663,7 +775,7 @@ class GeminiReceiptStore:
             terminal_provider = None if fallback_used else current["requested_provider"]
             terminal_model = None if fallback_used else current["requested_model"]
             terminal_status = None if fallback_used else worker_status
-            terminal_response = None if fallback_used else response_excerpt
+            terminal_response = None
             terminal_response_sha256 = None if fallback_used else response_sha256
             terminal_response_bytes = None if fallback_used else response_bytes
             terminal_error_code = None if fallback_used else error_code
@@ -681,15 +793,15 @@ class GeminiReceiptStore:
                 """,
                 (
                     _iso(completed_at),
-                    response_excerpt,
+                    None,
                     response_sha256,
                     response_bytes,
                     worker_status,
                     process_exit_code,
                     max(0, int(duration_ms)),
-                    conversation_id,
+                    None,
                     _canonical_json(dict(usage)) if usage is not None else None,
-                    _bounded_envelope_json(raw_envelope),
+                    None,
                     int(bool(fallback_used)),
                     terminal_route,
                     terminal_provider,
@@ -700,7 +812,7 @@ class GeminiReceiptStore:
                     terminal_response_bytes,
                     terminal_error_code,
                     error_code,
-                    error_excerpt,
+                    None,
                     error_sha256,
                     error_bytes,
                     receipt_id,
@@ -728,7 +840,7 @@ class GeminiReceiptStore:
             raise ValueError(f"fallback worker_status is not terminal: {worker_status}")
         if worker_route != "sol" or not provider or not model:
             raise ValueError("fallback route, provider, and model must identify Sol")
-        response_excerpt, computed_response_sha256, computed_response_bytes = _bounded_text_evidence(
+        _response_excerpt, computed_response_sha256, computed_response_bytes = _bounded_text_evidence(
             response_text, max_bytes=_RESPONSE_EXCERPT_MAX_BYTES
         )
         if (response_sha256 is None) != (response_bytes is None):
@@ -743,8 +855,8 @@ class GeminiReceiptStore:
                 raise ValueError("response_sha256 must be lowercase SHA-256 hex")
             if type(response_bytes) is not int or response_bytes < 0:
                 raise ValueError("response_bytes must be a non-negative integer")
-            if response_bytes < len((response_excerpt or "").encode("utf-8")):
-                raise ValueError("response_bytes cannot be smaller than the persisted excerpt")
+            if response_text is not None and response_bytes < len(response_text.encode("utf-8")):
+                raise ValueError("response_bytes cannot be smaller than the supplied response")
         with self._transaction(commit_fence) as conn:
             cursor = conn.execute(
                 """UPDATE gemini_attempts
@@ -760,7 +872,7 @@ class GeminiReceiptStore:
                     provider,
                     model,
                     worker_status,
-                    response_excerpt,
+                    None,
                     response_sha256,
                     response_bytes,
                     error_code,
@@ -1112,13 +1224,13 @@ class GeminiReceiptStore:
                     review_status,
                     verdict,
                     failure_kind,
-                    reason,
-                    raw,
+                    None,
+                    None,
                     _sha256(raw) if raw is not None else None,
                     _iso(started_at),
                     _iso(completed_at) if completed_at is not None else None,
                     error_code,
-                    error_message,
+                    None,
                     batch_id,
                     lease_token,
                 ),

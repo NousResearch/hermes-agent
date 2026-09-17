@@ -43,27 +43,31 @@ def sample_receipt_ids(
 
 
 def build_review_prompt(attempt: Mapping[str, Any]) -> str:
-    """Build a self-contained rubric prompt; no parent memory or SOUL is needed."""
+    """Build a metadata-only receipt-integrity prompt without payload evidence."""
     evidence = {
-        "receipt_id": attempt.get("receipt_id"),
-        "route_requested": attempt.get("route_requested"),
-        "route_decision": attempt.get("route_decision"),
-        "route_reason": attempt.get("route_reason"),
-        "data_classification": attempt.get("data_classification"),
-        "output_contract": attempt.get("output_contract"),
-        "goal": attempt.get("goal_text"),
-        "context": attempt.get("context_text"),
-        "worker_status": attempt.get("worker_status"),
-        "response": attempt.get("response_text"),
-        "fallback_used": attempt.get("fallback_used"),
-        "error_code": attempt.get("error_code"),
-        "error_message": attempt.get("error_message"),
+        key: attempt.get(key)
+        for key in (
+            "receipt_id",
+            "route_requested",
+            "route_decision",
+            "route_reason",
+            "data_classification",
+            "output_contract",
+            "worker_status",
+            "fallback_used",
+            "error_code",
+            "goal_sha256",
+            "context_sha256",
+            "prompt_sha256",
+            "response_sha256",
+            "response_bytes",
+        )
     }
     return (
-        "You are an isolated quality reviewer. Evaluate the recorded Gemini result for "
-        "correctness, completeness, grounding in the supplied evidence, calibrated "
-        "uncertainty, and compliance with the requested output contract. A Gemini worker "
-        "timeout or error must be a fail with failure_kind worker_failure.\n\n"
+        "You are an isolated receipt-integrity evaluator. Review only the metadata below. "
+        "Prompt and response bodies are intentionally unavailable. Do not infer semantic "
+        "correctness from hashes or byte counts; use fail with failure_kind unreviewable when "
+        "content would be required.\n\n"
         "Attempt JSON:\n"
         f"{_canonical_json(evidence)}\n\n"
         "Return JSON only, with exactly this semantic shape:\n"
@@ -385,7 +389,12 @@ class DailyReviewRunner:
                         {"receipt_id": receipt_id, "reason": verdict["reason"]}
                     )
             except Exception as exc:
-                pipeline_error = _safe_fragment(exc)
+                raw_error = str(exc)
+                pipeline_error = (
+                    "reviewer_output_invalid"
+                    if "reviewer_output_invalid" in raw_error
+                    else "reviewer_failed"
+                )
                 try:
                     self.store.add_review_item(
                         batch_id=batch["batch_id"],
@@ -395,12 +404,8 @@ class DailyReviewRunner:
                         reviewer_provider=self.reviewer_provider,
                         reviewer_model=self.reviewer_model,
                         review_status="failed",
-                        error_code=(
-                            "reviewer_output_invalid"
-                            if "reviewer_output_invalid" in pipeline_error
-                            else "reviewer_failed"
-                        ),
-                        error_message=pipeline_error,
+                        error_code=pipeline_error,
+                        error_message=None,
                         completed_at=self.clock(),
                     )
                 except KeyError:

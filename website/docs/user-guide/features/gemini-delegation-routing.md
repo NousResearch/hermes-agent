@@ -117,9 +117,9 @@ Every started Gemini attempt receives one profile-local receipt, including failu
 $HERMES_HOME/routing/gemini-routing.sqlite3
 ```
 
-The database file and SQLite sidecars use mode `0600`; its parent directory uses mode `0700`. Receipt and reviewer prose is redacted after the configured 30-day raw-data window while hashes and aggregate verdicts remain available for the 180-day aggregate window. Receipts include the original goal, context, result or worker-failure evidence, hashes, route decision, model alias, timestamps, byte counts, and duration. Persisted response excerpts are capped at 32 KiB and error excerpts at 2 KiB; the complete SHA-256 and original byte count describe the full value before truncation. Oversized worker output follows the same rule. A stored raw envelope omits the response and is either capped at 32 KiB or replaced with bounded hash-and-byte-count metadata. On the first schema upgrade, existing receipt rows receive those bounds and integrity fields, and legacy raw envelopes lose any duplicated response. When Gemini falls back, the same receipt also records the terminal Sol provider, model, and status. Raw content is necessary for the independent review, so access to the profile home is the privacy boundary.
+The database file and SQLite sidecars use mode `0600`; its parent directory uses mode `0700`. Attempt receipts are metadata-only from the first write. They record route and model identity, statuses, timestamps, usage, SHA-256 digests, byte counts, and duration. The database never stores prompt or context text, Gemini or fallback model output, provider envelopes, conversation IDs, or provider error text. Startup migration strips those fields from existing receipt rows while retaining available hashes and byte counts. When Gemini falls back, the same receipt also records the terminal Sol provider, model, and status.
 
-Raw task text and model output do not go to ordinary gateway logs or a Slack alert. Logs use metadata such as receipt IDs, status, byte counts, and duration. Slack alerts contain counts, the routing day, pipeline status, a batch ID, and the local receipt path.
+Raw task text and model output do not go to the receipt database, ordinary gateway logs, or a Slack alert. Logs use metadata such as receipt IDs, status, byte counts, and duration. Slack alerts contain counts, the routing day, pipeline status, a batch ID, and the local receipt path.
 
 Do not delete the receipt database during rollback. It is the evidence needed to inspect routing and review failures.
 
@@ -132,8 +132,8 @@ For each routing day, the reviewer:
 1. Builds the cohort from every Gemini attempt whose Antigravity process started, including successful, failed, timed-out, malformed, and fallback-triggering attempts.
 2. Selects `min(5, eligible_count)` by sorting receipt IDs on `HMAC-SHA256(sample_seed, receipt_id)` with receipt ID as the tie-breaker. This gives five random tasks selected deterministically and replayably when at least five are eligible, all tasks when fewer than five are eligible, and an empty sample when no tasks are eligible.
 3. Persists the random seed and selected receipt IDs before review. A retry reuses the same sample.
-4. Makes one separate, isolated `openai-codex/gpt-5.6-sol` call for each selected item. Each call has no Hermes tools, memory, SOUL, sibling samples, or model fallback.
-5. Stores every validated verdict and the final batch status in the local receipt database.
+4. Makes one separate, isolated `openai-codex/gpt-5.6-sol` call for each selected item. Each call has no Hermes tools, memory, SOUL, sibling samples, model fallback, or raw task and response bodies. It checks receipt integrity and execution status; it must mark semantic correctness unreviewable when content would be required.
+5. Stores each bounded verdict, its digest, and the final batch status in the local receipt database. Reviewer prose and provider error text are not persisted.
 
 An incomplete review, invalid reviewer response, provider mismatch, timeout, missing receipt, or worker failure fails closed. Recurring failures create evidence and an alert; they do not automatically disable routing.
 

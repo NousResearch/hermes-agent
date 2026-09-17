@@ -408,6 +408,7 @@ class RouteReceiptChild:
         "fallback_from_call_id",
         "route_receipt_id",
         "_route_metadata",
+        "_delegate_release_ownership",
     }
 
     def __init__(

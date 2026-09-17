@@ -247,3 +247,27 @@ def test_frontier_child_wrapper_records_fake_call_without_transport(tmp_path: Pa
     assert result["route_receipt_id"] == child.route_receipt_id
     child.close()
     assert fake.closed
+
+
+def test_frontier_child_wrapper_keeps_release_callback_local(tmp_path: Path):
+    from agent.route_receipts import RouteReceiptStore, RouteReceiptChild
+
+    fake = FakeFrontierChild()
+    child = RouteReceiptChild(
+        child=fake,
+        store=RouteReceiptStore(tmp_path / "routing.sqlite3"),
+        parent_session_id="parent-1",
+        parent_turn_id="turn-1",
+        task_index=0,
+        run_kind="synthetic",
+        route_requested="sol",
+        route_reason="explicit",
+        data_classification="standard",
+        output_contract="text",
+    )
+    release = lambda: True
+
+    child._delegate_release_ownership = release
+
+    assert vars(child)["_delegate_release_ownership"] is release
+    assert "_delegate_release_ownership" not in vars(fake)

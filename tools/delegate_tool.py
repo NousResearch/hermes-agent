@@ -41,6 +41,7 @@ from tools.delegate_tool_gemini import (
     build_antigravity_delegate_child as _build_antigravity_delegate_child,
     frontier_receipt_config as _frontier_receipt_config,
     merge_child_route_metadata as _merge_child_route_metadata,
+    _replace_registered_child,
     wrap_frontier_delegate_child as _wrap_frontier_delegate_child,
 )
 from tools.delegate_tool_progress import (  # noqa: F401
@@ -452,14 +453,35 @@ def _build_children(
                     if route_decision is not None
                     else "Gemini routing unavailable or disabled; Frontier selected"
                 )
-                fallback_child = _wrap_frontier_delegate_child(
-                    child=fallback_child,
-                    parent_agent=parent_agent,
-                    task_index=i,
-                    task=t,
-                    routing_cfg=frontier_receipt_cfg,
-                    route_reason=frontier_reason,
-                )
+                try:
+                    fallback_child = _wrap_frontier_delegate_child(
+                        child=fallback_child,
+                        parent_agent=parent_agent,
+                        task_index=i,
+                        task=t,
+                        routing_cfg=frontier_receipt_cfg,
+                        route_reason=frontier_reason,
+                    )
+                except ValueError:
+                    raise
+                except Exception:
+                    failed_child = _RoutingInitializationFailureChild(
+                        task_index=i,
+                        routing_cfg=frontier_receipt_cfg,
+                        route_reason=frontier_reason,
+                        route="sol",
+                        worker_provider=str(
+                            getattr(fallback_child, "provider", "") or "unknown"
+                        ),
+                        worker_model=str(
+                            getattr(fallback_child, "model", "") or "unknown"
+                        ),
+                        unstarted_child=fallback_child,
+                    )
+                    _replace_registered_child(
+                        parent_agent, fallback_child, failed_child
+                    )
+                    fallback_child = failed_child
         except ValueError as exc:
             return [], str(exc)
 

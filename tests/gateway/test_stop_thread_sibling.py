@@ -88,6 +88,70 @@ def test_sibling_does_not_cross_profiles():
 
 
 # ---------------------------------------------------------------------------
+# _sibling_group_run_keys (#113846: plain group chats, per-sender keys)
+# ---------------------------------------------------------------------------
+
+
+def _group_source(uid, chat_id="chan1"):
+    return SessionSource(
+        platform=Platform.DISCORD, chat_type="group", chat_id=chat_id, user_id=uid
+    )
+
+
+def test_group_sibling_finds_bot_triggered_run():
+    # The bot's turn runs under ...:group:chan1:bot; the human's /stop key is
+    # ...:group:chan1:userA. The group fallback must bridge them.
+    runner = object.__new__(GatewayRunner)
+    bot_key = build_session_key(_group_source("bot"))
+    runner._running_agents = {bot_key: _FakeAgent()}
+    assert runner._sibling_group_run_keys(
+        _group_source("userA"), "agent:main:discord:group:chan1:userA"
+    ) == [bot_key]
+
+
+def test_group_sibling_skips_threaded_sources():
+    # Threaded stops keep thread scoping; the group fallback must not widen them.
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {"agent:main:discord:group:chan1:userB": _FakeAgent()}
+    assert runner._sibling_group_run_keys(_thread_source("userA"), "x") == []
+
+
+def test_group_sibling_does_not_cross_chats_or_profiles():
+    runner = object.__new__(GatewayRunner)
+    other_chat = build_session_key(_group_source("userB", chat_id="chan2"))
+    source = _group_source("userA")
+    source.profile = "work"
+    main_key = build_session_key(_group_source("userB"))
+    runner._running_agents = {other_chat: _FakeAgent(), main_key: _FakeAgent()}
+    assert runner._sibling_group_run_keys(source, "agent:work:discord:group:chan1:userA") == []
+
+
+@pytest.mark.asyncio
+async def test_stop_interrupts_group_sibling_when_authorized(monkeypatch):
+    runner = object.__new__(GatewayRunner)
+    key_a = build_session_key(_group_source("userA"))
+    key_bot = build_session_key(_group_source("bot"))
+    runner._running_agents = {key_bot: _FakeAgent()}
+    runner.session_store = _FakeStore(key_a)
+
+    interrupted = []
+
+    async def _fake_interrupt(session_key, source, *, interrupt_reason, invalidation_reason):
+        interrupted.append((session_key, invalidation_reason))
+
+    runner._interrupt_and_clear_session = _fake_interrupt
+    runner._is_user_authorized_for_source = lambda source: True
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_group_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert interrupted == [(key_bot, "stop_command_group_sibling")]
+    assert "no active" not in str(getattr(result, "text", result)).lower()
+
+
+# ---------------------------------------------------------------------------
 # _handle_stop_command fallback path
 # ---------------------------------------------------------------------------
 

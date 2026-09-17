@@ -439,11 +439,17 @@ class GatewaySlashCommandsMixin(
         # run another user started lives under a different key, yet authorized users must still be
         # able to /stop it: fall back to sibling runs in this thread, gated on authorization.
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
+        sibling_kind = "thread sibling"
+        if not sibling_keys and not getattr(source, "thread_id", None):
+            # Plain group chat with per-sender keys: a bot-triggered turn runs under the
+            # bot's key, so the same cross-user fallback applies at chat scope (#113846).
+            sibling_keys = self._sibling_group_run_keys(source, session_key)
+            sibling_kind = "group sibling"
         if sibling_keys and self._is_user_authorized_for_source(source):
             for sibling_key in sibling_keys:
-                await _stop(sibling_key, "stop_command_thread_sibling")
-            logger.info("STOP (thread sibling) by %s — interrupted %d run(s) in thread: %s",
-                        session_key, len(sibling_keys), ", ".join(sibling_keys))
+                await _stop(sibling_key, f"stop_command_{sibling_kind.replace(' ', '_')}")
+            logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
+                        sibling_kind, session_key, len(sibling_keys), ", ".join(sibling_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
         # No running agent anywhere for this scope. A platform status indicator can still be stuck —

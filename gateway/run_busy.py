@@ -1019,6 +1019,37 @@ class GatewayBusySessionMixin:
             and (key == prefix or key.startswith(prefix + ":"))
         ]
 
+    def _sibling_group_run_keys(self, source: SessionSource, own_key: str) -> list:
+        """Running-agent keys of OTHER participants in the same plain group chat.
+
+        With per-sender group keys (``...:{chat_id}:{user_id}``) a bot-triggered
+        turn runs under the bot's key, invisible to a human's own ``/stop``
+        (#113846). Same prefix discipline as the thread variant: exact or
+        ``prefix + ":"`` match, profile-namespaced, sentinel excluded. Only for
+        sources WITHOUT a thread_id — threaded stops keep thread scoping.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        if getattr(source, "thread_id", None):
+            return []
+        chat_id = getattr(source, "chat_id", None)
+        if not chat_id:
+            return []
+        platform = source.platform.value
+        chat_type = getattr(source, "chat_type", None) or ""
+        prefix = ":".join([
+            _session_key_namespace(getattr(source, "profile", None)),
+            platform,
+            chat_type,
+            str(chat_id),
+        ])
+        return [
+            key
+            for key, agent in self._running_agent_items()
+            if key != own_key
+            and agent is not _AGENT_PENDING_SENTINEL and agent
+            and (key == prefix or key.startswith(prefix + ":"))
+        ]
+
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
         """True if this /restart is a Telegram re-delivery we already handled.
 

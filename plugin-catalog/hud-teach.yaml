@@ -1,0 +1,18 @@
+name: hud-teach
+repo: https://github.com/iamlukethedev/hermes-hud-teach
+sha: 35f64257532ce3d716d93c9f3ff9b5faec81a93b
+description: Numbered how-to marks on the live Mac app underneath Hermes HUD.
+maintainer: iamlukethedev
+tier: community
+category: desktop
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/iamlukethedev/hermes-hud-teach
+version: "0.1.2"
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - teach_screen
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

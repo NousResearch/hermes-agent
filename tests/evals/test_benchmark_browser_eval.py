@@ -1,4 +1,4 @@
-"""Regression tests for scripts/benchmark_browser_eval.py teardown safety.
+"""Regression tests for evals/browser_use/benchmark_browser_eval.py teardown safety.
 
 ``main()`` spawns Chrome and then, inside a ``try``/``finally``, imports
 ``SUPERVISOR_REGISTRY`` and runs the eval loop. The ``finally`` tears down the
@@ -30,7 +30,10 @@ import pytest
 def _load_bench():
     spec = importlib.util.spec_from_file_location(
         "_benchmark_browser_eval_under_test",
-        Path(__file__).resolve().parents[2] / "scripts" / "benchmark_browser_eval.py",
+        Path(__file__).resolve().parents[2]
+        / "evals"
+        / "browser_use"
+        / "benchmark_browser_eval.py",
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

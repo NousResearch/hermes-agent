@@ -325,6 +325,9 @@ def _resolve_chat_argv(
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
+        from hermes_constants import apply_subprocess_home_env
+
+        apply_subprocess_home_env(env)
     try:
         from hermes_cli.config import (
             apply_terminal_config_to_env, read_raw_config, terminal_config_owned_env_vars)

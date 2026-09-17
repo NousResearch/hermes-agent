@@ -7,10 +7,12 @@ Jev is **not** listed in `hermes model` or the session chat picker
 (`api_mode: systemone`).
 
 This is **not** a chat-completions backend. TypeSafe's API is
-`POST /v1/systemone` (model `jev-latest`). Install the community plugin
+`POST /v1/systemone` (model `jev-latest`). Enable the bundled
+`typesafe-jev-skill-routing` plugin for cookbook call-1 skill suggestion
+(`/jev on`), or install the community
 [typesafe-skill-router](https://github.com/DECRUX9812/typesafe-skill-router)
-for skill routing, or call System One from your own hook. Do not set
-`model.provider: jev` as the session chat model.
+for two-stage routing with caching. Do not set `model.provider: jev` as the
+session chat model.
 
 ## Auth
 

@@ -475,34 +475,41 @@ class TestS3IdleChargedFromLastProgress:
     def test_silence_cannot_approach_double_idle_timeout(self):
         """Progress early in an interval must not extend silence to ~2x idle."""
         _drain_admission_slots()
-        idle = 0.4
+        # Scale, not slack: the defect this pins is "the idle budget is charged
+        # from the start of the wait slice instead of from the last progress",
+        # i.e. silence ~2x idle (6s) versus ~idle (3s). At the old 0.4s budget
+        # those two hypotheses sat 0.4s apart and a loaded host's poll jitter
+        # spanned the gap (observed 0.83s against a 0.72s ceiling); the same
+        # ratio claim at 3s keeps 1.5s of separation to the ceiling below.
+        idle = 3.0
         release = threading.Event()
+        fence = CompressionCommitFence()
 
-        def worker(fence: CompressionCommitFence):
+        def worker(worker_fence: CompressionCommitFence):
             time.sleep(0.05)
-            fence.touch_progress()  # early progress, then total silence
+            worker_fence.touch_progress()  # early progress, then total silence
             assert release.wait(timeout=10)
             return ([], "late")
 
-        t0 = time.monotonic()
         try:
             msgs, prompt = run_compress_context_with_progress_timeout(
                 worker=worker,
                 messages=[{"role": "user", "content": "a"}],
                 system_prompt_fallback="fb",
                 idle_timeout_seconds=idle,
-                total_ceiling_seconds=5.0,
+                total_ceiling_seconds=8.0,
                 stall_fallback=False,
+                fence=fence,
             )
         finally:
-            elapsed = time.monotonic() - t0
             release.set()
         assert prompt == "fb"
-        # Old behavior waited a full interval from the CHECK (~2x idle ≈
-        # 0.85s+). New behavior times out ~idle after the last progress
-        # (~0.45s). Allow generous slack while still excluding ~2x.
-        assert elapsed < idle * 1.8, (
-            f"silence exceeded ~2x idle budget shape: {elapsed:.2f}s"
+        # Measured from the fence's own progress stamp — the origin the contract
+        # is defined on — rather than from this thread's t0, which folded in
+        # pool start-up and the pre-progress head of the first wait slice.
+        since_progress = fence.seconds_since_progress()
+        assert since_progress < idle * 1.5, (
+            f"silence since last progress approached ~2x idle: {since_progress:.2f}s"
         )
         _drain_admission_slots()
 

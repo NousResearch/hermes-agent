@@ -226,25 +226,24 @@ const TRANSPORT_KINDS = new Set([
 ])
 
 // Build the Windows profile-listing script.  Returns a newline-separated list
-// of directory names under %HERMES_HOME%\profiles, suitable for
+// of directory names under hermesHome\profiles, suitable for
 // parseRemoteProfileListing().  Delivered via staged execution.
-function buildWindowsListProfilesScript() {
+function buildWindowsListProfilesScript(hermesHome: string) {
   return [
     '$ErrorActionPreference="Stop"',
-    '$hermesHome=$env:HERMES_HOME',
-    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    `$hermesHome=${psLiteral(hermesHome)}`,
     '$profilesDir=Join-Path $hermesHome "profiles"',
     'if(-not (Test-Path -LiteralPath $profilesDir -PathType Container)){exit 0}',
     'Get-ChildItem -LiteralPath $profilesDir -Directory | Select-Object -ExpandProperty Name'
   ].join('\n')
 }
 
-async function listWindowsRemoteHermesProfiles(ssh): Promise<string[]> {
+async function listWindowsRemoteHermesProfiles(ssh, hermesHome: string): Promise<string[]> {
   let listing = ''
 
   try {
     listing = String(
-      await ssh.exec(STAGED_PS_COMMAND, { stdinData: buildWindowsListProfilesScript() })
+      await ssh.exec(STAGED_PS_COMMAND, { stdinData: buildWindowsListProfilesScript(hermesHome) })
     )
       .replace(/^\uFEFF/, '')
       .trim()

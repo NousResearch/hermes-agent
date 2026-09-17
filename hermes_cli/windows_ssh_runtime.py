@@ -433,9 +433,10 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     if help_result.returncode != 0:
         help_result = subprocess.run([*_py_cli, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     help_text = help_result.stdout + help_result.stderr
+    version_lines = (version.stdout + version.stderr).splitlines()
     return {
         "path": path,
-        "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
+        "version": version_lines[0] if version.returncode == 0 and version_lines else "",
         "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text}
 
 

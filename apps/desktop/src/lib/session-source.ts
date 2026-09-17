@@ -9,15 +9,22 @@ const SOURCE_LABELS: Record<string, string> = {
   discord: 'Discord',
   email: 'Email',
   gateway: 'Gateway',
+  google_chat: 'Google Chat',
+  irc: 'IRC',
   kanban: 'Kanban',
+  line: 'LINE',
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
+  ntfy: 'ntfy',
   photon: 'Photon',
   qqbot: 'QQ',
+  raft: 'Raft',
   signal: 'Signal',
+  simplex: 'SimpleX Chat',
   slack: 'Slack',
   sms: 'SMS',
+  teams: 'Microsoft Teams',
   telegram: 'Telegram',
   tui: 'TUI',
   webhook: 'Webhook',
@@ -69,7 +76,14 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'qqbot',
   'yuanbao',
   'dingtalk',
-  'feishu'
+  'feishu',
+  'google_chat',
+  'irc',
+  'line',
+  'ntfy',
+  'raft',
+  'simplex',
+  'teams'
 ]
 const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)
 

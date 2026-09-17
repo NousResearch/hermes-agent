@@ -3168,6 +3168,87 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
 
+    def test_reset_fork_sibling_does_not_steal_tip_projection(self, db):
+        """A reset fork child (``model_config._reset_from``, ended LATER than the
+        real continuation) must not win the chain-step tiebreak. It is a separate
+        user-visible conversation that already lists as its own row, so letting
+        the lineage tip land on it hides the true continuation and shows the
+        reset sibling twice (#114271)."""
+        import time as _time
+        t0 = _time.time() - 3600
+
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+        db.append_message("root1", "user", "help me refactor auth")
+        t_compress_root = t0 + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_root, "compression", "root1"),
+        )
+
+        db.create_session("mid1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t_compress_root + 1, "mid1"),
+        )
+        db.append_message("mid1", "user", "continuing")
+        t_compress_mid = t_compress_root + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_mid, "compression", "mid1"),
+        )
+
+        # Real tip: closed by the startup orphan reap, LAST ACTIVE EARLIER than
+        # the reset fork, so the old tiebreak (last_active DESC) preferred the fork.
+        db.create_session("tip1", "cli", parent_session_id="mid1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=?, last_activity_at=? WHERE id=?",
+            (t_compress_mid + 1, t_compress_mid + 600, "startup_orphan_reap",
+             t_compress_mid + 600, "tip1"),
+        )
+        db.append_message("tip1", "user", "latest message")
+
+        # Reset fork of mid1: its own conversation, ended session_reset later.
+        db.create_session(
+            "reset1", "cli", parent_session_id="mid1", model_config={"_reset_from": "mid1"},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=?, last_activity_at=? WHERE id=?",
+            (t_compress_mid + 2, t_compress_mid + 900, "session_reset",
+             t_compress_mid + 900, "reset1"),
+        )
+        db.append_message("reset1", "user", "post reset talk")
+        db._conn.commit()
+
+        # The chain/tip follow the real continuation, never the reset fork.
+        assert db.get_compression_tip("root1") == "tip1"
+        assert db.get_compression_tip("mid1") == "tip1"
+
+        # Projection: the lineage surfaces as tip1; reset1 stays exactly its own
+        # single row instead of appearing twice (own row + hijacked projection).
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+        assert ids.count("reset1") == 1
+        assert "tip1" in ids
+        assert "root1" not in ids and "mid1" not in ids
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["preview"].startswith("latest message")
+
+        # The order_by_last_active chain CTE must not fold the reset fork's
+        # later activity into the lineage either: a standalone session active
+        # between the tip and the fork still outranks the projected lineage row.
+        db.create_session("solo", "cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, last_activity_at=? WHERE id=?",
+            (t_compress_mid + 300, t_compress_mid + 700, "solo"),
+        )
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+        ordered = db.list_sessions_rich(source="cli", limit=20, order_by_last_active=True)
+        ordered_ids = [s["id"] for s in ordered]
+        assert ordered_ids.count("reset1") == 1
+        assert ordered_ids.index("solo") < ordered_ids.index("tip1")
+
     def test_list_serves_full_lineage_ids_for_projected_rows(self, db):
         """The projected tip row must carry every chain id. Root and tip
         alone are not enough client-side: a persisted tile or route can hold

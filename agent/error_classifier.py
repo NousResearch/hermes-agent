@@ -587,7 +587,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         # A named credential's fairshare 429 is an ordinary rate limit, whatever its body says. The
         # one welcome refusal it does receive is the gateway's mirror 400 on the welcome host; its
         # reconnect copy stands, only the sign-in card is withheld (``_welcome_surface_kind``).
-        if status == 400 and welcome_route_refusal(status, c.msg) == "named_on_welcome_host":
+        if c.provider == "nous" and status == 400 and welcome_route_refusal(status, c.msg) == "named_on_welcome_host":
             return _v(_R.format_error, retryable=False, should_fallback=True,
                       error_context={"welcome_route": "named_on_welcome_host"})
         return None
@@ -603,7 +603,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
     # The route-keyed dark-tier 403 applies only to a 403 that says nothing else: a safety refusal
     # or a billing wall on the welcome host keeps its own classification (and its own recovery).
-    plain_403 = c.provider == "nous" and not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
+    plain_403 = not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
     kind = welcome_route_refusal(status, c.msg, c.base_url if plain_403 else None)
     if kind is None:
         return None

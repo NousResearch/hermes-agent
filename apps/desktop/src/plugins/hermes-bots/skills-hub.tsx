@@ -6,7 +6,7 @@
  * it reaches back into neither.
  */
 
-import { Button, host, Input } from '@hermes/plugin-sdk'
+import { Button, host, Input, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
@@ -251,16 +251,18 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
                 {installed[r.name] ? (
                   <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">✓ added</span>
                 ) : (
-                  <Button
-                    className="shrink-0 px-2 font-semibold"
-                    disabled={installing !== null}
-                    onClick={() => void install(r.name)}
-                    size="sm"
-                    title={`Install "${r.name}" and add it to the list above`}
-                    variant="ghost"
-                  >
-                    {installing === r.name ? '…' : '+'}
-                  </Button>
+                  <Tip label={`Install "${r.name}" and add it to the list above`}>
+                    <Button
+                      aria-label={`Install "${r.name}" and add it to the list above`}
+                      className="shrink-0 px-2 font-semibold"
+                      disabled={installing !== null}
+                      onClick={() => void install(r.name)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      {installing === r.name ? '…' : '+'}
+                    </Button>
+                  </Tip>
                 )}
               </div>
             ))}

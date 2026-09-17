@@ -41,25 +41,19 @@ describe('no native title= on button elements', () => {
   // multiple lines).
   it('uses <Tip> instead of native title= on all button elements', () => {
     const violations: string[] = []
-    const srcDir = resolve(__dirname, '../..')
+    const srcDir = resolve(__dirname, '../../..')
 
     for (const filePath of collectTsxFiles(srcDir)) {
       const content = readFileSync(filePath, 'utf-8')
       const relativePath = filePath.replace(srcDir + '/', '')
 
       // Match <Button ...> or <button ...> opening tags (may span multiple lines).
-      // We use a non-greedy match up to the closing > — this won't perfectly
-      // handle every edge case (e.g. > inside a string literal), but it's good
-      // enough for a lint-style guard.
-      const tagPattern = /<(Button|button)\b([^>]*?)>/gsu
-      let match: RegExpExecArray | null
-
-      while ((match = tagPattern.exec(content)) !== null) {
-        const tagName = match[1]
-        const attrs = match[2]
-
+      // Scan to the brace-depth-0 `>` so a `>` inside a JSX expression (e.g.
+      // `onClick={() => ...}`) doesn't truncate the tag and hide a later
+      // title= (#113688). String literals are skipped the same way.
+      for (const { tagName, attrs, index } of eachButtonOpenTag(content)) {
         if (/\btitle=/.test(attrs)) {
-          const lineNum = content.slice(0, match.index).split('\n').length
+          const lineNum = content.slice(0, index).split('\n').length
           violations.push(`${relativePath}:${lineNum} <${tagName}> has title= — use <Tip>`)
         }
       }
@@ -68,3 +62,47 @@ describe('no native title= on button elements', () => {
     expect(violations, violations.join('\n')).toEqual([])
   })
 })
+
+function eachButtonOpenTag(content: string): Array<{ tagName: string; attrs: string; index: number }> {
+  const tags: Array<{ tagName: string; attrs: string; index: number }> = []
+  const openPattern = /<(Button|button)\b/gsu
+  let match: RegExpExecArray | null
+
+  while ((match = openPattern.exec(content)) !== null) {
+    const end = findBraceDepthZeroClose(content, match.index + match[0].length)
+    if (end < 0) {
+      continue
+    }
+    tags.push({ tagName: match[1], attrs: content.slice(match.index, end), index: match.index })
+  }
+
+  return tags
+}
+
+function findBraceDepthZeroClose(content: string, start: number): number {
+  let depth = 0
+  let quote: string | null = null
+
+  for (let i = start; i < content.length; i++) {
+    const char = content[i]
+    if (quote) {
+      if (char === quote && content[i - 1] !== '\\') {
+        quote = null
+      }
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+    if (char === '{') {
+      depth++
+    } else if (char === '}') {
+      depth--
+    } else if (char === '>' && depth === 0) {
+      return i
+    }
+  }
+
+  return -1
+}

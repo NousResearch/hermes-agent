@@ -961,16 +961,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   }
 
   const attachButton = (thread: null | string) => (
-    <Button
-      className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
-      onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
-      size="sm"
-      title={b.group.attachHint}
-      type="button"
-      variant="ghost"
-    >
-      <Codicon name="attach" />
-    </Button>
+    <Tip label={b.group.attachHint}>
+      <Button
+        aria-label={b.group.attachHint}
+        className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+        onClick={() => void pickGroupAttachments().then(picked => addImages(thread, picked))}
+        size="sm"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="attach" />
+      </Button>
+    </Tip>
   )
 
   // One log entry, rendered exactly as before conversation folding existed.
@@ -1043,15 +1045,17 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             {isUser ? (
               <span className="text-[0.7rem] font-semibold text-foreground">{label}</span>
             ) : (
-              <Button
-                className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
-                onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
-                size="inline"
-                title={revealed ? 'Hide full handle' : 'Show full handle'}
-                variant="text"
-              >
-                {label}
-              </Button>
+              <Tip label={revealed ? 'Hide full handle' : 'Show full handle'}>
+                <Button
+                  aria-label={revealed ? 'Hide full handle' : 'Show full handle'}
+                  className="text-left text-[0.7rem] font-semibold text-(--ui-accent)"
+                  onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
+                  size="inline"
+                  variant="text"
+                >
+                  {label}
+                </Button>
+              </Tip>
             )}
             <span className="text-[0.625rem] text-(--ui-text-quaternary)">{relativeTime(entry.at)}</span>
             {entry.text.trim() ? (

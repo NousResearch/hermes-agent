@@ -6,6 +6,7 @@ import { useDebounced } from '@/app/hooks/use-debounced'
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Tip } from '@/components/ui/tooltip'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -577,23 +578,24 @@ export function AppearanceSettings() {
                               </div>
                             </button>
                             {removable && (
-                              <button
-                                aria-label={a.removeTheme}
-                                className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) opacity-0 backdrop-blur-sm transition hover:text-(--ui-red) focus-visible:opacity-100 group-hover:opacity-100"
-                                onClick={() => {
-                                  triggerHaptic('crisp')
-                                  removeUserTheme(theme.name)
+                              <Tip label={a.removeTheme}>
+                                <button
+                                  aria-label={a.removeTheme}
+                                  className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-md bg-(--ui-bg-elevated)/80 text-(--ui-text-tertiary) opacity-0 backdrop-blur-sm transition hover:text-(--ui-red) focus-visible:opacity-100 group-hover:opacity-100"
+                                  onClick={() => {
+                                    triggerHaptic('crisp')
+                                    removeUserTheme(theme.name)
 
-                                  // Re-normalize off the now-missing skin → default.
-                                  if (active) {
-                                    setTheme(theme.name)
-                                  }
-                                }}
-                                title={a.removeTheme}
-                                type="button"
-                              >
-                                <Trash2 className="size-3.5" />
-                              </button>
+                                    // Re-normalize off the now-missing skin → default.
+                                    if (active) {
+                                      setTheme(theme.name)
+                                    }
+                                  }}
+                                  type="button"
+                                >
+                                  <Trash2 className="size-3.5" />
+                                </button>
+                              </Tip>
                             )}
                           </div>
                         )

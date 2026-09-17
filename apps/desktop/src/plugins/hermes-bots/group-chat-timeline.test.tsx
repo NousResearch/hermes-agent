@@ -9,7 +9,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const base = await pluginSdkMock(createGroupGateway().host)
 
   const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
-    <button onClick={onClick} title={title}>
+    <button aria-label={title} onClick={onClick}>
       {children}
     </button>
   )

@@ -14,6 +14,7 @@ import {
   RowButton,
   SegmentedControl,
   Textarea,
+  Tip,
   useValue
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
@@ -189,16 +190,18 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                     <Codicon className="mr-1 text-[0.8rem]" name="refresh" />
                     {b.avatar.randomize}
                   </Button>
-                  <Button
-                    onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
-                    size="sm"
-                    title={locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'}
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Codicon className="mr-1 text-[0.8rem]" name={locked ? 'unlock' : 'lock'} />
-                    {locked ? 'Unlock' : 'Lock face'}
-                  </Button>
+                  <Tip label={locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'}>
+                    <Button
+                      aria-label={locked ? b.avatar.unlockFollowsName : 'Keep this exact face even if the name changes'}
+                      onClick={() => onShape(blobShapeString(locked ? '' : pickerName, kind))}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Codicon className="mr-1 text-[0.8rem]" name={locked ? 'unlock' : 'lock'} />
+                      {locked ? 'Unlock' : 'Lock face'}
+                    </Button>
+                  </Tip>
                 </div>
                 <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">
                   {locked ? 'Face locked — renaming won\u2019t change it.' : 'Face follows the name.'}

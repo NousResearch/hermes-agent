@@ -1320,21 +1320,23 @@ function ServerConfig({
             const on = isToolEnabled(entry, tool.name)
 
             return (
-              <button
-                aria-pressed={on}
-                className={cn(
-                  'rounded-md px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary) hover:text-foreground',
-                  saved ? 'cursor-pointer' : 'cursor-default',
-                  on ? 'bg-(--ui-bg-quinary)' : 'line-through opacity-70'
-                )}
-                disabled={!saved}
-                key={tool.name}
-                onClick={() => onToggleTool(tool.name)}
-                title={on ? m.disableTool(tool.name) : m.enableTool(tool.name)}
-                type="button"
-              >
-                {tool.name}
-              </button>
+              <Tip label={on ? m.disableTool(tool.name) : m.enableTool(tool.name)}>
+                <button
+                  aria-label={on ? m.disableTool(tool.name) : m.enableTool(tool.name)}
+                  aria-pressed={on}
+                  className={cn(
+                    'rounded-md px-1.5 py-0.5 font-mono text-[0.65rem] text-(--ui-text-tertiary) hover:text-foreground',
+                    saved ? 'cursor-pointer' : 'cursor-default',
+                    on ? 'bg-(--ui-bg-quinary)' : 'line-through opacity-70'
+                  )}
+                  disabled={!saved}
+                  key={tool.name}
+                  onClick={() => onToggleTool(tool.name)}
+                  type="button"
+                >
+                  {tool.name}
+                </button>
+              </Tip>
             )
           })}
         </div>

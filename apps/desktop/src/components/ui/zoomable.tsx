@@ -34,14 +34,16 @@ export function Zoomable({ children, overlay, onCopy, label = 'Open full view', 
     <>
       <div className={cn('group/zoomable relative', className)}>
         {/* The whole content is the trigger — click anywhere to open, like an image. */}
-        <button
-          className="block w-full cursor-zoom-in text-left"
-          onClick={() => setOpen(true)}
-          title={label}
-          type="button"
-        >
-          {children}
-        </button>
+        <Tip label={label}>
+          <button
+            aria-label={label}
+            className="block w-full cursor-zoom-in text-left"
+            onClick={() => setOpen(true)}
+            type="button"
+          >
+            {children}
+          </button>
+        </Tip>
         <span
           aria-hidden
           className="pointer-events-none absolute right-2 top-2 grid size-8 place-items-center rounded-full border border-border/70 bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/zoomable:opacity-100"

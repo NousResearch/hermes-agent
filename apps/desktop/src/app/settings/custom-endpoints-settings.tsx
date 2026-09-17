@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { Tip } from '@/components/ui/tooltip'
 import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
@@ -275,16 +276,18 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                       Use
                     </Button>
                     {endpoint.source !== 'direct-config' && (
-                      <Button
-                        className="hover:text-destructive"
-                        disabled={deleting === endpoint.id}
-                        onClick={() => void handleDelete(endpoint)}
-                        size="icon-sm"
-                        title={t.settings.customEndpoints.deleteEndpoint}
-                        variant="ghost"
-                      >
-                        {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
-                      </Button>
+                      <Tip label={t.settings.customEndpoints.deleteEndpoint}>
+                        <Button
+                          aria-label={t.settings.customEndpoints.deleteEndpoint}
+                          className="hover:text-destructive"
+                          disabled={deleting === endpoint.id}
+                          onClick={() => void handleDelete(endpoint)}
+                          size="icon-sm"
+                          variant="ghost"
+                        >
+                          {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                        </Button>
+                      </Tip>
                     )}
                   </div>
                 </div>

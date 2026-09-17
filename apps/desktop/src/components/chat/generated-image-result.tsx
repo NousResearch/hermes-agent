@@ -4,6 +4,7 @@ import { type FC, useEffect, useState } from 'react'
 
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
+import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
@@ -133,32 +134,34 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
           </div>
         )}
         {src && (
-          <button
-            className="absolute inset-0 block size-full cursor-zoom-in"
-            onClick={() => setLightboxOpen(true)}
-            title={copy.openImage}
-            type="button"
-          >
-            <img
-              alt="Generated image"
-              className={cn(
-                'absolute inset-0 size-full object-contain opacity-0 transition-opacity duration-500 ease-out',
-                loaded && 'opacity-100'
-              )}
-              draggable={false}
-              onError={() => setFailed(true)}
-              onLoad={event => {
-                const { naturalHeight, naturalWidth } = event.currentTarget
+          <Tip label={copy.openImage}>
+            <button
+              aria-label={copy.openImage}
+              className="absolute inset-0 block size-full cursor-zoom-in"
+              onClick={() => setLightboxOpen(true)}
+              type="button"
+            >
+              <img
+                alt="Generated image"
+                className={cn(
+                  'absolute inset-0 size-full object-contain opacity-0 transition-opacity duration-500 ease-out',
+                  loaded && 'opacity-100'
+                )}
+                draggable={false}
+                onError={() => setFailed(true)}
+                onLoad={event => {
+                  const { naturalHeight, naturalWidth } = event.currentTarget
 
-                if (naturalWidth && naturalHeight) {
-                  setRatio(naturalWidth / naturalHeight)
-                }
+                  if (naturalWidth && naturalHeight) {
+                    setRatio(naturalWidth / naturalHeight)
+                  }
 
-                setLoaded(true)
-              }}
-              src={src}
-            />
-          </button>
+                  setLoaded(true)
+                }}
+                src={src}
+              />
+            </button>
+          </Tip>
         )}
         {loaded && src && (
           <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />

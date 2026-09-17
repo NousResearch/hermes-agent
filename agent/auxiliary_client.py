@@ -3291,8 +3291,13 @@ def _is_reasoning_field_rejection(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is not None and status not in {400, 422}:
         return False
+    err_lower = str(exc).lower()
     if not any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think")):
-        return False
+        # Reversed word order some providers use ("reasoning_effort 'none' unsupported"):
+        # the field token plus standalone "unsupported" nearby is the same rejection (#114460).
+        token = _REASONING_FIELD_TOKEN.search(err_lower)
+        if token is None or "unsupported" not in err_lower[token.end():token.end() + 32]:
+            return False
     # The reasoning token must be a standalone wire-field name: not a model-id segment ("The model
     # kimi-k2-thinking is not supported when using this account" is route gating that belongs to the
     # provider-fallback rung) and not the adjective in "... not supported with reasoning models".

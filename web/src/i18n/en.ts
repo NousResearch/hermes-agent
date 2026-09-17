@@ -178,6 +178,12 @@ export const en: Translations = {
 
   sessions: {
     title: "Sessions",
+    renameSession: "Rename session",
+    exportSession: "Export session",
+    exportSessionTooltip: "Export session JSON",
+    sessionTitlePlaceholder: "Session title",
+    saveTitle: "Save title",
+    cancelRename: "Cancel rename",
     history: "History",
     overview: "Overview",
     filterChats: "Chats",
@@ -288,6 +294,10 @@ export const en: Translations = {
 
   models: {
     modelsUsed: "Models Used",
+    expensiveWarningTitle: "Expensive Model Warning",
+    resetAuxiliaryModels: "Reset auxiliary models",
+    newPresetNamePlaceholder: "new preset name",
+    selectMoaModel: "Select MoA Model",
     estimatedCost: "Est. Cost",
     tokens: "tokens",
     sessions: "sessions",
@@ -317,6 +327,8 @@ export const en: Translations = {
     // user has seen; name the field they must fill instead.
     scriptRequired:
       "Script-only jobs need a script path. Fill in the Script field or switch the job back to prompt mode.",
+    jobIdsPlaceholder: "one job id per line",
+    editJob: "Edit job",
     confirmDeleteMessage:
       "This removes the job from the schedule. This cannot be undone.",
     confirmDeleteTitle: "Delete scheduled job?",
@@ -513,6 +525,9 @@ export const en: Translations = {
 
   skills: {
     title: "Skills",
+    editSkillMd: "Edit SKILL.md",
+    learnUrlPlaceholder: "https://docs.example.com/api  (fetched with web_extract)",
+    learnTextPlaceholder: "e.g. how I file an expense report: open the portal, …",
     searchPlaceholder: "Search skills and toolsets...",
     loadWhat: "skills",
     browseHub: "Browse skills hub",
@@ -582,6 +597,7 @@ export const en: Translations = {
   },
 
   env: {
+    jumpToSection: "Jump to section",
     changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
     confirmClearMessage:
       "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
@@ -797,6 +813,17 @@ export const en: Translations = {
         "Clipboard image copy not supported in this browser — use Download instead.",
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
+  },
+
+  chat: {
+    reconnect: "Reconnect chat",
+    newSession: "Start a new chat session",
+    copyLastTooltip: "Copy last assistant response as raw markdown",
+    copyLast: "Copy last assistant response",
+    showSidePanel: "Show chat side panel",
+    showSidePanelTitle: "Show side panel (model + sessions)",
+    collapseSidePanel: "Collapse chat side panel",
+    collapseSidePanelTitle: "Collapse side panel",
   },
 
   kanban: {

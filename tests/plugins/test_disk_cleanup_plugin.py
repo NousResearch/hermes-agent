@@ -187,6 +187,34 @@ class TestProfileUserTreesNeverCleaned:
         assert not sweepable.exists(), "unprotected empty dirs are still swept"
 
 
+class TestPg0DataDirsNeverSwept:
+    """Regression for #113673 — the empty-dir sweep removed the required-but-empty
+    PostgreSQL maintenance dirs inside ``.pg0`` instance data dirs
+    (``pg_logical/snapshots``, ``pg_wal/archive_status``, ``pg_stat_tmp``, ...).
+    Every checkpoint then failed ("could not open directory"), and the next pg0
+    restart left the embedded Hindsight database unable to start.
+    """
+
+    def test_preserves_empty_postgres_maintenance_dirs(self, _isolate_env):
+        dg = _load_lib()
+        data = _isolate_env / ".pg0" / "instances" / "example" / "data"
+        snapshots = data / "pg_logical" / "snapshots"
+        archive = data / "pg_wal" / "archive_status"
+        stat_tmp = data / "pg_stat_tmp"
+        for d in (snapshots, archive, stat_tmp):
+            d.mkdir(parents=True)
+        sweepable = _isolate_env / "scratch" / "empty"
+        sweepable.mkdir(parents=True)
+
+        removed = dg._sweep_empty_dirs(_isolate_env)
+
+        assert snapshots.is_dir(), "pg_logical/snapshots must survive the sweep"
+        assert archive.is_dir(), "pg_wal/archive_status must survive the sweep"
+        assert stat_tmp.is_dir(), "pg_stat_tmp must survive the sweep"
+        assert not sweepable.exists(), "unrelated empty dirs are still swept"
+        assert removed > 0
+
+
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""
 

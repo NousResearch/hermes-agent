@@ -442,8 +442,6 @@ def cron_status():
             if served_by_multiplexer:
                 print("  Scheduler host: default-profile multiplexer")
                 _print_ticker_health(pids, restart_command="hermes --profile default gateway restart")
-                print(color("  If the Desktop app is open, it may have taken over scheduling for this profile; "
-                            "check that the profile is enabled in its scheduler.", Colors.DIM))
             else:
                 _print_ticker_health(pids)
         else:

@@ -62,8 +62,6 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
         assert "hermes --profile default gateway restart" in output
     if mode == "missing":
         assert "has not reported a heartbeat" in output
-        assert "Desktop app is open" in output
-        assert "enabled in its scheduler" in output
     if mode == "stale":
         assert "STALLED" in output
     if mode in {"disabled", "excluded"}:

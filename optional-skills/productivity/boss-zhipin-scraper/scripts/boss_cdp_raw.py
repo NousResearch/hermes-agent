@@ -48,6 +48,22 @@ from urllib.request import Request, urlopen
 websocket = None
 requests = None
 
+
+def configure_console_encoding():
+    """Keep CLI diagnostics printable on Windows consoles using legacy code pages."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not reconfigure:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+configure_console_encoding()
+
 # ============================================================
 # 全局常量
 # ============================================================
@@ -87,50 +103,83 @@ def get_default_macos_browser_paths():
     return executable, os.path.expanduser(profile_dir)
 
 
-def get_default_chrome_path():
+def get_default_browser_path(browser="chrome"):
+    if browser not in ("chrome", "edge"):
+        raise ValueError(f"不支持的浏览器: {browser}")
     system = platform.system()
     if system == "Darwin":
+        if browser == "edge":
+            return "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
         return get_default_macos_browser_paths()[0]
     if system == "Windows":
         candidates = []
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
-            candidates.append(ntpath.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"))
+            if browser == "edge":
+                candidates.append(ntpath.join(local_app_data, "Microsoft", "Edge", "Application", "msedge.exe"))
+            else:
+                candidates.append(ntpath.join(local_app_data, "Google", "Chrome", "Application", "chrome.exe"))
         for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
             base = os.environ.get(env_name)
             if base:
-                candidates.append(ntpath.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+                if browser == "edge":
+                    candidates.append(ntpath.join(base, "Microsoft", "Edge", "Application", "msedge.exe"))
+                else:
+                    candidates.append(ntpath.join(base, "Google", "Chrome", "Application", "chrome.exe"))
         for candidate in candidates:
             if os.path.exists(candidate):
                 return candidate
-        return candidates[0] if candidates else "chrome.exe"
+        return candidates[0] if candidates else ("msedge.exe" if browser == "edge" else "chrome.exe")
 
     candidates = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/chromium",
-        "/snap/bin/chromium",
+        "/usr/bin/microsoft-edge",
+        "/usr/bin/microsoft-edge-stable",
     ]
+    if browser == "chrome":
+        candidates = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/chromium",
+            "/snap/bin/chromium",
+        ]
     for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
     return candidates[0]
 
 
-def get_default_profile_dir():
+def get_default_chrome_path():
+    return get_default_browser_path("chrome")
+
+
+def get_default_edge_path():
+    return get_default_browser_path("edge")
+
+
+def get_default_profile_dir(browser="chrome"):
+    if browser not in ("chrome", "edge"):
+        raise ValueError(f"不支持的浏览器: {browser}")
     system = platform.system()
     if system == "Darwin":
+        if browser == "edge":
+            return os.path.expanduser("~/Library/Application Support/Microsoft Edge")
         return get_default_macos_browser_paths()[1]
     if system == "Windows":
         base = os.environ.get("LOCALAPPDATA")
         if not base:
             base = ntpath.join(os.path.expanduser("~"), "AppData", "Local")
+        if browser == "edge":
+            return ntpath.join(base, "Microsoft", "Edge", "User Data")
         return ntpath.join(base, "Google", "Chrome", "User Data")
+    if browser == "edge":
+        return os.path.expanduser("~/.config/microsoft-edge")
     return os.path.expanduser("~/.config/google-chrome")
 
 
 DEFAULT_CHROME_PATH = get_default_chrome_path()
+DEFAULT_EDGE_PATH = get_default_edge_path()
 DEFAULT_PROFILE_DIR = get_default_profile_dir()
+DEFAULT_EDGE_PROFILE_DIR = get_default_profile_dir("edge")
 
 DEFAULT_CDP_DATA_DIR = os.path.expanduser("~/.boss-zhipin-scraper/chrome-profile")
 DEFAULT_RESULT_DIR = os.path.expanduser("~/.boss-zhipin-scraper/job-result")
@@ -144,6 +193,11 @@ LOGIN_PROBE_TARGETS = (
 )
 LOGIN_PROBE_MAX_INTERVAL = 15
 LOGIN_PROBE_MAX_TRANSIENT_ERRORS = 2
+# CDP 传输层瞬态异常（#78）：TimeoutError 是 OSError 的子类而非 RuntimeError 的子类，
+# 探测/抓取循环若只捕 RuntimeError，事件洪流冲掉命令响应时会整条命令裸崩。
+# websocket 模块为惰性加载，WebSocketException 在依赖加载成功后补入
+# （见 require_runtime_dependencies），CDP 入口均先过该检查，元组在使用前必然就绪。
+CDP_TRANSIENT_EXCEPTIONS = (TimeoutError,)
 # 被动捕获页面自身首次搜索响应的等待上限：导航 + SPA 发请求通常 <8s，留足余量
 PROBE_CAPTURE_TIMEOUT = 25
 LOGIN_RESTRICTED_CODES = {31, 37}
@@ -177,7 +231,7 @@ def default_output_path(kind):
 
 
 def require_runtime_dependencies(*names):
-    global requests, websocket
+    global requests, websocket, CDP_TRANSIENT_EXCEPTIONS
 
     missing = []
     if "requests" in names and requests is None:
@@ -198,6 +252,9 @@ def require_runtime_dependencies(*names):
         print(f"  uv add {' '.join(missing)}")
         print(f"  pip install {' '.join(missing)}")
         return False
+    # 依赖可用后补全 CDP 瞬态异常元组（WebSocketException 来自 websocket-client）
+    if websocket is not None:
+        CDP_TRANSIENT_EXCEPTIONS = (TimeoutError, websocket.WebSocketException)
     return True
 
 
@@ -1170,6 +1227,14 @@ def wait_for_login(cdp_port=DEFAULT_CDP_PORT, timeout=DEFAULT_LOGIN_TIMEOUT, int
             query, city_code = LOGIN_PROBE_TARGETS[attempt % len(LOGIN_PROBE_TARGETS)]
             try:
                 result = probe_login_state(cdp, sid, query=query, city_code=city_code)
+            except CDP_TRANSIENT_EXCEPTIONS as e:
+                # CDP 传输层瞬态异常（事件洪流冲掉响应、连接打嗝）按可重试错误处理，
+                # 计入 transient_errors 走既有退避重试，不裸崩（#78）
+                result = LoginProbeResult(
+                    LoginProbeStatus.RESPONSE_ERROR,
+                    message=f"CDP 传输层异常: {e}",
+                    retryable=True,
+                )
             except RuntimeError as e:
                 print(f"\n❌ {e}")
                 return False
@@ -1508,8 +1573,6 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
     print()
 
     tid, sid = create_page_session(cdp)
-    capture = NetworkJoblistCapture(cdp, sid)
-    capture.enable()
 
     def human_scroll(cdp, sid, to_bottom=False):
         """模拟人类滚动: 随机次数、随机距离、随机停顿，偶尔回滚一点。
@@ -1565,6 +1628,10 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
         )
 
     try:
+        # capture 的创建与 enable 放进 try 内：CDP 传输层异常走统一的优雅退出，
+        # 原先 enable 位于 try 外，任何异常都会裸崩且跳过 finally 清理（#78）
+        capture = NetworkJoblistCapture(cdp, sid)
+        capture.enable()
         for pg in range(1, max_pages + 1):
             print(f"--- [{pg}/{max_pages} 页, {len(all_jobs)} 条已抓] ---")
 
@@ -1661,6 +1728,9 @@ def scrape_list(keyword, city_input, max_pages, filters, output_path,
 
     except KeyboardInterrupt:
         print("\n中断")
+    except CDP_TRANSIENT_EXCEPTIONS as e:
+        # CDP 传输层瞬态异常：优雅停止并保留已抓数据（每页已增量写盘），不裸崩（#78）
+        print(f"\n⚠️ CDP 连接异常，已停止抓取: {e}")
     except RuntimeError as e:
         print(f"\n⚠️ {e}")
     finally:
@@ -2157,8 +2227,8 @@ def run_check(cdp_port=DEFAULT_CDP_PORT):
 # ============================================================
 # --setup-chrome 自动启动
 # ============================================================
-def prepare_cdp_profile(copy_login_state=False, reset=False):
-    """Prepare an isolated persistent Chrome profile for CDP."""
+def prepare_cdp_profile(copy_login_state=False, reset=False, source_profile=None):
+    """Prepare an isolated persistent browser profile for CDP."""
     cdp_data_dir = DEFAULT_CDP_DATA_DIR
     cdp_default = os.path.join(cdp_data_dir, "Default")
 
@@ -2169,7 +2239,7 @@ def prepare_cdp_profile(copy_login_state=False, reset=False):
 
     copied = 0
     if copy_login_state:
-        default_profile = DEFAULT_PROFILE_DIR
+        default_profile = source_profile or DEFAULT_PROFILE_DIR
         default_default = os.path.join(default_profile, "Default")
         cookie_files = []
         for rel_dir in ("", "Network"):
@@ -2204,14 +2274,24 @@ def is_cdp_ready(cdp_port):
         return False
 
 
-def is_chrome_command(command):
+def is_supported_browser_command(command, browser=None):
     lower = (command or "").lower()
-    return any(token in lower for token in (
+    chrome_tokens = (
         "google chrome",
         "google-chrome",
         "chromium",
         "chrome.exe",
-    ))
+    )
+    edge_tokens = (
+        "microsoft edge",
+        "microsoft-edge",
+        "msedge.exe",
+    )
+    if browser == "chrome":
+        return any(token in lower for token in chrome_tokens)
+    if browser == "edge":
+        return any(token in lower for token in edge_tokens)
+    return any(token in lower for token in chrome_tokens + edge_tokens)
 
 
 def normalize_profile_path(path):
@@ -2228,11 +2308,14 @@ def extract_user_data_dir(command):
     return match.group(1).strip("\"'")
 
 
-def iter_chrome_process_commands():
-    """Return (pid, command line) tuples for Chrome-like browser processes."""
+def iter_browser_process_commands(browser=None):
+    """Return (pid, command line) tuples for supported browser processes."""
     if platform.system() == "Windows":
+        # 服务器端 WQL 过滤（-Filter）：只返回 chrome/msedge 进程。
+        # 全量 Win32_Process 枚举在繁忙主机（杀软/数百进程）上会超过 timeout，
+        # 超时被吞成空列表后会误判「浏览器未运行/端口被占用」。
         ps_script = (
-            "Get-CimInstance Win32_Process -Filter \"name = 'chrome.exe'\" | "
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' OR Name='msedge.exe'\" | "
             "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
         )
         try:
@@ -2247,6 +2330,8 @@ def iter_chrome_process_commands():
         try:
             data = json.loads(r.stdout)
         except (json.JSONDecodeError, ValueError):
+            # 非 JSON 输出（错误文本/截断/企业包装器）一律按空处理，
+            # 避免垃圾行被误认成进程再喂给 taskkill。
             return []
         if isinstance(data, dict):
             data = [data]
@@ -2255,7 +2340,7 @@ def iter_chrome_process_commands():
         processes = []
         for item in data:
             command = item.get("CommandLine") or ""
-            if not is_chrome_command(command):
+            if not is_supported_browser_command(command, browser):
                 continue
             try:
                 processes.append((int(item.get("ProcessId")), command))
@@ -2270,7 +2355,7 @@ def iter_chrome_process_commands():
 
     processes = []
     for line in r.stdout.splitlines():
-        if not is_chrome_command(line):
+        if not is_supported_browser_command(line, browser):
             continue
         try:
             pid_text, command = line.strip().split(None, 1)
@@ -2281,11 +2366,22 @@ def iter_chrome_process_commands():
     return processes
 
 
+def iter_chrome_process_commands():
+    """Backward-compatible alias。名称含 chrome，但实际同时返回 Chrome 与 Edge 进程。"""
+    return iter_browser_process_commands()
+
+
+def browser_commands_for_cdp_port(cdp_port):
+    """Return command lines of supported browser processes listening on the CDP port."""
+    port_arg = f"--remote-debugging-port={cdp_port}"
+    return [command for _pid, command in iter_browser_process_commands() if port_arg in command]
+
+
 def chrome_pids_for_user_data_dir(user_data_dir):
-    """Return Chrome PIDs using the given user-data-dir."""
+    """Return Chrome/Edge PIDs using the given user-data-dir."""
     pids = []
     real_dir = normalize_profile_path(user_data_dir)
-    for pid, command in iter_chrome_process_commands():
+    for pid, command in iter_browser_process_commands():
         if "--user-data-dir=" not in command:
             continue
         path = extract_user_data_dir(command)
@@ -2295,12 +2391,9 @@ def chrome_pids_for_user_data_dir(user_data_dir):
 
 
 def chrome_user_data_dirs_for_cdp_port(cdp_port):
-    """Return user-data-dir paths for Chrome processes using the given CDP port."""
+    """Return user-data-dir paths for Chrome/Edge processes using the given CDP port."""
     dirs = []
-    port_arg = f"--remote-debugging-port={cdp_port}"
-    for _pid, command in iter_chrome_process_commands():
-        if port_arg not in command:
-            continue
+    for command in browser_commands_for_cdp_port(cdp_port):
         path = extract_user_data_dir(command)
         if path:
             dirs.append(path)
@@ -2356,8 +2449,15 @@ def wait_for_cdp(cdp_port, timeout=30):
             print(f"\n✅ CDP 已就绪 (端口 {cdp_port})")
             return True
     print(f"\n❌ 等待超时 ({timeout}s)，CDP 未就绪")
-    print(f"   请手动检查 Chrome 是否启动，端口 {cdp_port} 是否开放")
+    print(f"   请手动检查专用浏览器是否启动，端口 {cdp_port} 是否开放")
     return False
+
+
+def browser_executable_exists(path):
+    """检查浏览器可执行文件是否存在；裸可执行名（依赖 PATH/App Paths 解析）始终视为可用。"""
+    if os.path.basename(path) == path:
+        return True
+    return os.path.exists(path)
 
 
 def launch_chrome(cmd):
@@ -2378,43 +2478,65 @@ def launch_chrome(cmd):
 
 def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False,
                      reset_profile=False, wait_login=True,
-                     login_timeout=DEFAULT_LOGIN_TIMEOUT):
-    """自动配置并启动 Chrome CDP 模式"""
+                     login_timeout=DEFAULT_LOGIN_TIMEOUT, browser="chrome"):
+    """自动配置并启动 Chrome/Edge CDP 模式。"""
     if not require_runtime_dependencies("requests"):
+        return 1
+    if browser not in ("chrome", "edge"):
+        print(f"❌ 不支持的浏览器: {browser}")
+        return 1
+
+    browser_label = "Microsoft Edge" if browser == "edge" else "Chrome"
+    browser_path = DEFAULT_EDGE_PATH if browser == "edge" else DEFAULT_CHROME_PATH
+    source_profile = DEFAULT_EDGE_PROFILE_DIR if browser == "edge" else DEFAULT_PROFILE_DIR
+
+    if not browser_executable_exists(browser_path):
+        print(f"❌ 未找到 {browser_label} 可执行文件: {browser_path}")
+        print(f"   请先安装 {browser_label} 后重试（本命令不会自动下载浏览器）")
         return 1
 
     print("=" * 50)
-    print("  设置 Chrome CDP 调试模式")
+    print(f"  设置 {browser_label} CDP 调试模式")
     print("=" * 50)
     print()
 
-    profile = prepare_cdp_profile(copy_login_state=copy_login_state, reset=reset_profile)
+    profile = prepare_cdp_profile(
+        copy_login_state=copy_login_state,
+        reset=reset_profile,
+        source_profile=source_profile,
+    )
     cdp_data_dir = profile["path"]
-    print(f"✅ 使用独立 Chrome profile: {cdp_data_dir}")
+    print(f"✅ 使用独立 {browser_label} profile: {cdp_data_dir}")
     if reset_profile:
         print("   已按 --reset-chrome-profile 重建 profile")
     if copy_login_state:
         print(f"   已复制 {profile['copied']} 个登录态文件（Local State + Cookie 相关文件）")
     else:
-        print("   默认、首次启动、重复启动都不复制主 Chrome Cookie；首次使用请在此专用 Chrome 中登录 zhipin.com")
+        print(f"   默认、首次启动、重复启动都不复制主浏览器 Cookie；首次使用请在此专用 {browser_label} 中登录 zhipin.com")
 
     if is_cdp_ready(cdp_port):
         if cdp_port_uses_profile(cdp_port, cdp_data_dir):
+            serving_commands = browser_commands_for_cdp_port(cdp_port)
+            if serving_commands and not any(is_supported_browser_command(cmd, browser) for cmd in serving_commands):
+                serving_label = "Microsoft Edge" if any(is_supported_browser_command(cmd, "edge") for cmd in serving_commands) else "Chrome"
+                print(f"\n❌ 端口 {cdp_port} 的隔离 profile 正由 {serving_label} 提供，而非 {browser_label}")
+                print(f"   请先运行 --stop-chrome 关闭当前实例，再重新执行本命令以启动 {browser_label}")
+                return 1
             print(f"\n✅ CDP 已就绪 (端口 {cdp_port})")
             if wait_login:
                 return 0 if wait_for_login(cdp_port, timeout=login_timeout) else 1
             return 0
-        print(f"\n❌ 端口 {cdp_port} 已被其他 Chrome CDP profile 占用")
+        print(f"\n❌ 端口 {cdp_port} 已被其他浏览器 CDP profile 占用")
         print(f"   请关闭旧 CDP Chrome，或改用 --cdp-port 指定其他端口")
         return 1
 
     stopped = stop_cdp_chrome(cdp_data_dir)
     if stopped:
-        print(f"\n已关闭 {stopped} 个旧的 BOSS CDP Chrome 进程")
+        print(f"\n已关闭 {stopped} 个旧的 BOSS CDP 专用浏览器进程")
 
-    print(f"\n启动 Chrome (CDP 端口: {cdp_port})...")
+    print(f"\n启动 {browser_label} (CDP 端口: {cdp_port})...")
     cmd = [
-        DEFAULT_CHROME_PATH,
+        browser_path,
         f"--remote-debugging-port={cdp_port}",
         f"--user-data-dir={cdp_data_dir}",
         "--no-first-run",
@@ -2427,7 +2549,7 @@ def run_setup_chrome(cdp_port=DEFAULT_CDP_PORT, copy_login_state=False,
         return 1
 
     print()
-    print("Chrome 已启动。请在这个专用浏览器中登录 zhipin.com。")
+    print(f"{browser_label} 已启动。请在这个专用浏览器中登录 zhipin.com。")
     if wait_login:
         print()
         if not wait_for_login(cdp_port, timeout=login_timeout):
@@ -2466,15 +2588,28 @@ def run_stop_chrome():
     return 0
 
 
+def resolve_setup_browser(setup_chrome, setup_edge, browser_choice):
+    """解析 --setup-chrome/--setup-edge/--browser 的浏览器选择。
+
+    --setup-edge 优先；--browser edge 是 --setup-chrome 的兼容用法（保持原行为）；
+    显式冲突（--setup-edge + --browser chrome）以 --setup-edge 为准并返回告警文案。
+    返回 (browser, warning)，warning 为 None 表示无冲突。
+    """
+    if setup_edge:
+        warning = "⚠️  --setup-edge 优先，忽略与之冲突的 --browser chrome" if browser_choice == "chrome" else None
+        return "edge", warning
+    if setup_chrome:
+        return "chrome", None
+    return (browser_choice or "chrome"), None
+
+
 # ============================================================
 # main
 # ============================================================
 def main():
     # Windows 控制台默认 GBK 无法编码输出中的 emoji/部分中文，会直接 UnicodeEncodeError
     # （实测 73 个单测中 8 个因此失败）。统一重配为 UTF-8，输出用 errors=replace 兜底。
-    for stream in (sys.stdout, sys.stderr):
-        if stream is not None and hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+    configure_console_encoding()
     p = argparse.ArgumentParser(
         description=f"BOSS直聘抓取 + 分析 (CDP Raw) v{__version__}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2557,8 +2692,14 @@ def main():
                         "支持全国城市，码表见 data/city_codes.json，运行时自动从 BOSS 同步")
     p.add_argument("--setup-chrome", action="store_true",
                    help="自动启动 Chrome CDP 调试模式")
+    p.add_argument("--setup-edge", action="store_true",
+                   help="自动启动 Microsoft Edge CDP 调试模式")
+    p.add_argument("--browser", choices=["chrome", "edge"], default=None,
+                   help="搭配 --setup-chrome 选择浏览器（chrome/edge，默认 chrome）；"
+                        "--setup-edge 固定 Edge，显式传 --browser chrome 会以 --setup-edge 为准并提示")
     p.add_argument("--copy-login-state", action="store_true",
-                   help="手动从主 Chrome 导入 Local State + Cookie 相关文件到独立 profile（默认、首次启动、重复启动都不复制）")
+                   help="手动从主浏览器导入 Local State + Cookie 相关文件到独立 profile"
+                        "（--setup-chrome 取主 Chrome、--setup-edge 取主 Edge；默认、首次启动、重复启动都不复制）")
     p.add_argument("--reset-chrome-profile", action="store_true",
                    help="重建 BOSS 专用 Chrome profile，会清除此专用浏览器内的登录态")
     p.add_argument("--no-wait-login", action="store_true",
@@ -2567,6 +2708,8 @@ def main():
                    help=f"--setup-chrome 等待登录完成的秒数 (默认 {DEFAULT_LOGIN_TIMEOUT})")
     p.add_argument("--stop-chrome", action="store_true",
                    help="关闭 BOSS 专用 CDP Chrome（按隔离 profile 精准匹配，不影响主 Chrome）")
+    p.add_argument("--stop-edge", action="store_true",
+                   help="关闭 BOSS 专用浏览器 CDP（与 --stop-chrome 共用隔离 profile）")
     p.add_argument("--close-chrome", action="store_true",
                    help="抓取正常结束后自动关闭专用 Chrome（默认不关；异常退出不触发，保留登录态）")
 
@@ -2584,18 +2727,26 @@ def main():
         list_cities(keyword=args.list_cities or None)
         sys.exit(0)
 
-    # --setup-chrome 模式
-    if args.setup_chrome:
+    # --setup-chrome / --setup-edge 模式
+    if args.setup_chrome and args.setup_edge:
+        print("❌ --setup-chrome 和 --setup-edge 不能同时使用")
+        sys.exit(1)
+
+    if args.setup_chrome or args.setup_edge:
+        browser, conflict_warning = resolve_setup_browser(args.setup_chrome, args.setup_edge, args.browser)
+        if conflict_warning:
+            print(conflict_warning)
         sys.exit(run_setup_chrome(
             args.cdp_port,
             copy_login_state=args.copy_login_state,
             reset_profile=args.reset_chrome_profile,
             wait_login=not args.no_wait_login,
             login_timeout=args.login_timeout,
+            browser=browser,
         ))
 
-    # --stop-chrome 模式（关闭 BOSS 专用 CDP Chrome，独立命令）
-    if args.stop_chrome:
+    # --stop-chrome / --stop-edge 模式（关闭独立 profile，独立命令）
+    if args.stop_chrome or args.stop_edge:
         sys.exit(run_stop_chrome())
 
     if not require_runtime_dependencies("requests", "websocket"):

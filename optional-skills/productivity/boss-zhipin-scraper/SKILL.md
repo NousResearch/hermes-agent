@@ -84,6 +84,7 @@ script also syncs fresher codes from BOSS直聘 at runtime.
 | `--input FILE` | Analyze an existing JSON instead of scraping. |
 | `--check` / `--smoke-test` | Environment diagnosis / one real search round-trip, no files written. |
 | `--setup-chrome` / `--stop-chrome` / `--close-chrome` | Start, stop, or auto-close the dedicated CDP Chrome. |
+| `--browser edge` / `--setup-edge` / `--stop-edge` | Same flow through Microsoft Edge instead of Chrome (`--browser edge` is a `--setup-chrome` compatibility form). |
 | `--reset-chrome-profile` | Rebuild the dedicated profile (wipes its login). |
 | `--list-cities [kw]` | Print supported cities from the code table. |
 

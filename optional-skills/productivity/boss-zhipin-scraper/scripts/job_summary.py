@@ -362,9 +362,8 @@ def positive_int(raw):
 
 def main(argv=None):
     # 与 boss_cdp_raw.py 保持一致：Windows GBK 控制台重配 UTF-8，避免 emoji 输出崩溃。
-    for stream in (sys.stdout, sys.stderr):
-        if stream is not None and hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+    # 复用 boss_cdp_raw 的共享实现（导入 boss 时已执行一次，这里显式调用以自文档化）。
+    boss.configure_console_encoding()
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

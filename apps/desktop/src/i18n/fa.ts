@@ -194,7 +194,6 @@ export const fa = defineLocale({
         'باک‌اند دسکتاپ آن درخواست را رد کرد (405 Method Not Allowed). راه‌اندازی مجدد Hermes Desktop را امتحان کنید.',
       microphonePermission: 'مجوز میکروفون رد شد.',
       openaiRejectedApiKey: 'OpenAI کلید API را نپذیرفت.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI کلید API را نپذیرفت (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'TTS با OpenAI به VOICE_TOOLS_OPENAI_KEY یا OPENAI_API_KEY نیاز دارد.'
     },
     voice: {
@@ -413,8 +412,7 @@ export const fa = defineLocale({
       archivedChats: 'گفتگوهای بایگانی‌شده',
       about: 'درباره',
       billing: 'صورت‌حساب',
-      notifications: 'اعلان‌ها',
-      plugins: 'افزونه‌ها'
+      notifications: 'اعلان‌ها'
     },
     plugins: {
       title: 'افزونه‌های دسکتاپ',
@@ -427,21 +425,7 @@ export const fa = defineLocale({
       disable: 'غیرفعال کردن',
       failed: 'ناموفق',
       empty: 'هنوز افزونه دسکتاپی نصب نشده است.',
-      kinds: { bundled: 'همراه برنامه', disk: 'روی دیسک', runtime: 'زمان اجرا' },
-      agent: {
-        title: 'افزونه‌های عامل',
-        blurb:
-          'افزونه‌هایی که در باک‌اند Hermes نصب کرده‌اید — ابزارها، مهارت‌ها، سرورهای MCP، هوک‌ها و فرمان‌های اسلش. نسخه‌های قابل‌حمل بسته «افزونه عامل» هستند (مهارت + بسته MCP که در عامل‌های دیگر هم کار می‌کند). تغییر وضعیت روی نشست‌های جدید اعمال می‌شود.',
-        appliesTo: 'اعمال به:',
-        empty: 'هنوز افزونه عاملی نصب نشده است.',
-        loadFailed: 'بارگذاری افزونه‌های عامل ممکن نشد',
-        portable: 'قابل‌حمل',
-        search: 'جستجوی افزونه‌ها…',
-        noMatches: 'افزونه‌ای مطابق جستجوی شما نیست.',
-        toggleFailed: (name: string) => `تغییر وضعیت ${name} ممکن نشد`,
-        updateBackendToManage: 'برای مدیریت این افزونه از دسکتاپ، باک‌اند Hermes را به‌روزرسانی کنید.',
-        sources: { bundled: 'همراه برنامه', user: 'کاربر', git: 'git', project: 'پروژه', entrypoint: 'pip' }
-      },
+      kinds: { bundled: 'همراه برنامه', disk: 'روی دیسک', runtime: 'زمان اجرا'      },
       installModal: {
         title: 'نصب افزونه',
         description: 'پیش از نصب هر چیزی، محتوای این مخزن را بازبینی کنید.',
@@ -3415,22 +3399,18 @@ export const fa = defineLocale({
       lateAnswerHint: 'این پرامپت دیگر منتظر نیست. گزینه‌ای را انتخاب کنید تا به‌عنوان پیام پیگیری پیش‌نویس شود.'
     },
     mcpSetup: {
-      installTitle: server => `سرور MCP ${server} اضافه شود؟`,
-      enableTitle: server => `سرور MCP ${server} فعال شود؟`,
-      authorizeTitle: server => `سرور MCP ${server} مجاز شود؟`,
+      installTitle: 'افزودن سرور MCP',
+      enableTitle: 'فعال‌سازی سرورهای MCP',
+      authorizeTitle: 'مجازسازی سرورهای MCP',
       installAction: 'نصب',
       enableAction: 'فعال‌سازی',
       authorizeAction: 'مجاز کردن',
-      decline: 'فعلاً نه',
-      declined: 'رد شد',
       installed: server => `${server} نصب شد`,
       enabled: server => `${server} فعال شد`,
       authorized: server => `${server} مجاز شد`,
       failed: server => `راه‌اندازی ${server} ناموفق بود`,
-      unanswered: 'بدون پاسخ',
       toolCount: count => (count === 1 ? '۱ ابزار' : `${count} ابزار`),
       notInCatalog: server => `«${server}» در کاتالوگ MCP نیست`,
-      catalogSource: 'از کاتالوگ تأییدشده Nous',
       envRequired: 'ابتدا اعتبارنامه‌های الزامی را پر کنید',
       sendFailed: 'ارسال پاسخ راه‌اندازی MCP ممکن نشد',
       reloadFailed: 'سرور ذخیره شد، اما بارگذاری مجدد ابزارهای MCP ناموفق بود — نشست بعدی بارگذاری می‌شوند',
@@ -3669,10 +3649,6 @@ export const fa = defineLocale({
       'composer-mentions': {
         title: 'پیوست و فرمان',
         text: '@ تایپ کنید تا فایلی به مکالمه بیاید، / تایپ کنید تا فرمانی اجرا شود.'
-      },
-      'model-switch': {
-        title: 'تعویض مدل وسط گفتگو',
-        text: 'نام مدل یک دکمه است. هر وقت شکل کار عوض شد، آن را عوض کنید.'
       },
       'right-pane': {
         title: 'پنل کاری',

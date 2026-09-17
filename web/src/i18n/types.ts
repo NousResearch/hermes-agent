@@ -553,7 +553,6 @@ export interface Translations {
     searchPlaceholder: string;
     /** Optional — English fallback until translated. */
     loadWhat?: string;
-    browseHub?: string;
     createSkill?: string;
     enabledOf: string;
     all: string;

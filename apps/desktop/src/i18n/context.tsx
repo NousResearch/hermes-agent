@@ -66,17 +66,6 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
 
-const RTL_LOCALES = new Set<Locale>(['ar', 'fa'])
-
-function applyDocumentLocale(locale: Locale) {
-  if (typeof document === 'undefined') {
-    return
-  }
-
-  document.documentElement.lang = locale
-  document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
-}
-
 export interface I18nContextValue {
   configLoadError: Error | null
   isLoadingConfig: boolean

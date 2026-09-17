@@ -411,8 +411,9 @@ DEFAULT_CONFIG = {
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
         # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
         # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux
-        # (copy-while-running works).
+        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux,
+        # where a running browser instead makes the Login Data / Web Data SQLite backups miss
+        # their deadline; quit the browser by hand there.
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
@@ -1623,6 +1624,10 @@ DEFAULT_CONFIG = {
     "personalities": {},
     "security": {  # Security: pre-exec scanning via tirith plus related guards.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
+        # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
+        # Answers inside these blocks are the proxy's sentinels, not internal hosts, so the guard
+        # dials them instead of rejecting them as private. Empty = normal private-address verdict.
+        "fake_ip_ranges": [],
         "redact_secrets": True,
         # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
         # on prompts. The startup guard still warns every run; cost guards are unaffected.
@@ -1891,7 +1896,9 @@ DEFAULT_CONFIG = {
     # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
     # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
     # the catalog does not know, so they never clamp known models. Unknown ids start from safe
-    # defaults (200K context, tools on, vision/reasoning off) and get patched. Provider keys: Hermes
+    # defaults (200K context, tools on) and get patched; supports_vision / supports_reasoning stay
+    # UNKNOWN (fail-open) unless the override sets them — a context_window-only entry must not turn
+    # into "text-only" and hide vision_analyze / reasoning controls (#112649). Provider keys: Hermes
     # or models.dev id; model ids match case-insensitively. Example: {"custom:my-local-vllm":
     # {"my-llava-model": {"context_window": 8192}}}
     # Semantics: 1. NOTE: an explicit model.context_length (global) and a custom_providers per-model
@@ -1979,13 +1986,16 @@ DEFAULT_CONFIG = {
         "write_sessions_json": True,
         # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
         # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
-        # stamps the profile into session keys. Flip with `hermes gateway migrate --multiplex`
-        # (records a rollback manifest; `--standalone` undoes it) or `hermes config set
-        # gateway.multiplex_profiles true` + `hermes gateway restart`. GATEWAY_MULTIPLEX_PROFILES
-        # in the environment overrides. Two profiles configuring the same bot token cannot be
-        # served together — the duplicate adapter is parked; `hermes profile create --clone`
-        # therefore leaves messaging channels behind unless --clone-channels is passed.
-        "multiplex_profiles": False,
+        # stamps the profile into session keys. On by default. An UNSET key is a request, not a
+        # verdict: at boot the default gateway runs the migration preflight and stays standalone
+        # (logging why) when a secondary still runs its own gateway or a blocker exists — an
+        # explicit `true` (config or GATEWAY_MULTIPLEX_PROFILES) is honoured as before, an explicit
+        # `false` keeps per-profile gateways for good. `hermes gateway migrate --multiplex` folds a
+        # per-profile fleet (records a rollback manifest; `--standalone` undoes it and pins false).
+        # Two profiles configuring the same bot token cannot be served together — the duplicate
+        # adapter is parked; `hermes profile create --clone` therefore leaves messaging channels
+        # behind unless --clone-channels is passed.
+        "multiplex_profiles": True,
         # May `hermes update` fold this install onto a multiplexed default gateway by itself?
         # True (the default) keeps today's behaviour: a multi-profile install whose secondaries run
         # their own gateways is migrated automatically after an update when nothing blocks it.
@@ -2233,14 +2243,15 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
+            # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
+            "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
             "account": "",          # account shorthand for `op --account`; empty = default account.
             "binary_path": "",      # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
         },
         "bitwarden": {
-            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
+            "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
             "binary_path": "",      # absolute path to bw; empty = PATH.
         },
     },

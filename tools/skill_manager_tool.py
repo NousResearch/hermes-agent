@@ -364,7 +364,8 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8")
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir)
     if not scan_error:
@@ -421,7 +422,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(skill_dir)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
@@ -722,6 +724,31 @@ _REQUIRED_ARGS = {
         ("file_path", _MISSING, "file_path is required for 'write_file'. Example: 'references/api-guide.md'"),
         ("file_content", _IS_NONE, "file_content is required for 'write_file'.")],
     "remove_file": [("file_path", _MISSING, "file_path is required for 'remove_file'.")]}
+# Text-slot keys a model confuses (the schema is one flat object): key -> the action that reads it.
+# A 27B model that just used write_file's file_content re-emits it on create/patch and then
+# replays the identical payload when the error only says the right key is "required" — the
+# hint has to name where the text actually landed so the retry can move it.
+_TEXT_SLOT_OWNER = {"content": "create (and a full-rewrite patch)",
+                    "new_string": "a targeted patch (with old_string)",
+                    "file_content": "write_file"}
+# action -> (text slots it reads, where misfiled text belongs)
+_TEXT_SLOT_FOR = {
+    "create": (("content",), "'content'"),
+    "edit": (("content",), "'content'"),
+    "patch": (("content", "new_string"), "old_string/new_string (targeted) or 'content' (full rewrite, last resort)"),
+    "write_file": (("file_content",), "'file_content'")}
+
+
+def _misplaced_text_hint(action: str, args: Dict[str, Any]) -> str:
+    """Sentence naming the text-slot key(s) this op carries that ``action`` never reads, or ''."""
+    if action not in _TEXT_SLOT_FOR:
+        return ""  # delete/remove_file/unknown: no text slot, so no destination to point at
+    reads, destination = _TEXT_SLOT_FOR[action]
+    stray = [k for k in _TEXT_SLOT_OWNER if k not in reads and args.get(k) is not None]
+    if not stray:
+        return ""
+    carried = " and ".join(f"'{k}' (that key is for {_TEXT_SLOT_OWNER[k]})" for k in stray)
+    return f" Note: this op carries {carried} — move that text to {destination}."
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
@@ -785,7 +812,7 @@ def skill_manage(
         return gate_result
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
-            return tool_error(message, success=False)
+            return tool_error(message + _misplaced_text_hint(action, args), success=False)
     # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
     # (create takes a bare name; the other actions also accept ``category/name``).
     if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
@@ -810,6 +837,8 @@ def skill_manage(
         result = handler({"name": name, **args})
         if isinstance(result, str):
             return result  # tool_error JSON for argument-shape problems (patch)
+        if not result.get("success") and (hint := _misplaced_text_hint(action, args)):
+            result["error"] = result.get("error", "") + hint
         if result.get("success"):
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,

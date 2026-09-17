@@ -129,7 +129,15 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
   Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
   refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for.
+  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt writer runs in
+  the PRE-pull interpreter after the module purge, so `update_receipt.py` may import only stdlib and
+  purge-protected modules (`hermes_constants`) — a `hermes_cli.config` import there re-executed the
+  pulled config against a stale `utils` and silently dropped the whole receipt; a write failure
+  prints `⚠ Update receipt not written` and logs at WARNING, never debug.
+- **Post-update steps are isolated**: everything after the code swap that runs pulled code in the
+  pre-pull process (`_finish_dashboard_update_cleanup`, notices, probes) catches its own failure,
+  prints it, and records a failed receipt step — one stale-symbol `AttributeError` must not abort
+  the fleet matrix, reconciliation and receipt finalize that follow it.
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
@@ -145,7 +153,9 @@ profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
 root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+islands by design — no live config inheritance and no credential inheritance (a named profile reads
+only its own `auth.json`/`.env`; the root store is never a fallback and never a write-through target,
+#111724 — a profile without a provider gets the setup prompt); `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
@@ -154,12 +164,24 @@ and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>`
 `_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
 symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
-`profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
-`profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
+`profiles.py::profiles_to_serve(multiplex=True)` = default + every live dir under `profiles/` — live =
+carries an identity marker (`hermes_constants.named_profile_has_identity`: `config.yaml`/`.env`/`SOUL.md`/
+`profile.yaml`/`auth.json`/`state.db`) and is not tombstoned. A marker-less dir (cron/log side-effect
+shell, stray infrastructure dir) is never listed, served, ticked, `.env`-backfilled or resolvable via `-p`
+(#95188, #99392); `profile create` replaces it only when it is also tombstoned (a live marker-less dir may hold user
+files — fail closed, never rmtree). A dangling symlinked marker still counts as identity (`is_symlink()`).
+`tools/bot_mode_probe._roster` (Bot Mode teammate roster, `bot_relay.deliver` target check) applies the same
+predicate. There is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
 Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
 tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+`gateway.multiplex_profiles` defaults to **on**, but `GatewayConfig` keeps an unset flag `None` and
+`gateway_multiplex_mode.resolve_multiplex_mode` settles it once per boot (called from
+`load_gateway_config_for_runner`): default profile, >= 2 profiles, no standalone secondary gateway,
+no preflight blocker, migratable host → `True`; else `False` + a logged reason. Explicit values pass
+through. CLI/dashboard readers use `default_gateway_multiplexes` (live `served_profiles` record, then
+the explicit flag) — never the merged default, which would guess a verdict only the gateway makes.
 Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
 --multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
 `update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success

@@ -117,7 +117,12 @@ class UpdateReceipt:
 
 
 def _receipt_dir() -> Path:
-    from hermes_cli.config import get_hermes_home
+    # ``hermes_constants``, never ``hermes_cli.config``: the receipt is written by the PRE-pull
+    # interpreter after the post-pull module purge, so a ``hermes_cli.config`` import here
+    # re-executes the pulled config.py against whatever is still cached — an ImportError on a
+    # symbol the pull added dropped the whole receipt (#112465, #112558). ``hermes_constants``
+    # is protected from the purge and stdlib-only.
+    from hermes_constants import get_hermes_home
 
     return get_hermes_home() / "logs" / "update_receipts"
 
@@ -182,8 +187,11 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             (directory / "latest.json").write_text(body, encoding="utf-8")
         _prune_old_receipts(directory)
         return path
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Could not write update receipt: %s", exc)
+    except Exception as exc:
+        # Visible, not debug: a run that pulled code and left no receipt is exactly the run
+        # operators need to post-mortem, and INFO-level logs discard debug (#112465, #112558).
+        logger.warning("Could not write update receipt (%s): %s", outcome, exc)
+        print(f"  ⚠ Update receipt not written: {exc}")
         return None
 
 
@@ -357,6 +365,14 @@ _FLEET_ROW_LINES = {
     "down": "  ✗ {profile} — DOWN (gateway was running before the update; pid {pid} is gone and nothing replaced it)",
 }
 _FLEET_ROW_UNKNOWN = "  ? {profile} (pid {pid}) — version unknown (gateway predates version stamping; restart to enable)"
+# A gateway pid the pre-update snapshot did not know that had not published its code identity when
+# the settle window closed (#112634): most likely the successor this update relaunched, still
+# booting, so "restart to enable" would be wrong — but the poll never observed the restart itself,
+# so the copy does not claim one.
+_FLEET_ROW_IDENTITY_PENDING = (
+    "  ? {profile} (pid {pid}) — new pid since the update, code identity not published yet"
+    " — re-check with `hermes gateway status`"
+)
 
 
 def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
@@ -376,7 +392,8 @@ def print_fleet_version_matrix(fleet: list[dict[str, Any]]) -> bool:
     for entry in fleet:
         sha = entry.get("code_sha")
         states.add(entry.get("state"))
-        print(_FLEET_ROW_LINES.get(entry.get("state"), _FLEET_ROW_UNKNOWN).format(
+        fallback = _FLEET_ROW_IDENTITY_PENDING if entry.get("identity_pending") else _FLEET_ROW_UNKNOWN
+        print(_FLEET_ROW_LINES.get(entry.get("state"), fallback).format(
             profile=entry.get("profile"), pid=entry.get("pid"), short=sha[:8] if isinstance(sha, str) and sha else "?",
         ))
     stale_or_down = sum(1 for entry in fleet if entry.get("state") in ("stale", "down"))

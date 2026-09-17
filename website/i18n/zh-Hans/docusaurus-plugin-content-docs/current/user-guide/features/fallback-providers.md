@@ -84,6 +84,7 @@ fallback_model:
 | LM Studio（本地） | `lmstudio` | `LM_API_KEY`（本地可不填）+ `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | 自定义端点 | `custom` | `base_url` + `key_env`（见下文） |
+| Mixture of Agents 预设 | `moa`（`model` = 预设名称） | 已配置且聚合器有凭据的 MoA 预设——备用时运行整个预设（参考模型 + 聚合器），而不是仅运行聚合器 |
 
 ### 自定义端点备用
 

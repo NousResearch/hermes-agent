@@ -347,6 +347,9 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                     _core._server_connecting.discard(_server_key(_sn))
                     _core._server_connect_errors.setdefault(
                         _server_key(_sn), f"Connection attempt {how} during discovery")
+                    # Its attempt is still running on the MCP loop; without a cooldown the next
+                    # reconcile tick would spawn a second one beside it.
+                    _record_connect_failure(_sn)
         raise
     finally:
         if _was_interrupted:
@@ -493,7 +496,8 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     """Bring the live server set in step with ``mcp_servers`` as it is on disk NOW: tear down
     servers that were removed from config or set ``enabled: false`` (a parked server keeps
     self-probing forever otherwise — for hours after the user deleted its entry), then connect
-    anything newly configured via :func:`discover_mcp_tools`. Scoped to the current registry
+    anything enabled that is not live via :func:`discover_mcp_tools` — newly configured, or one
+    whose earlier connect failed and whose cooldown has lapsed. Scoped to the current registry
     scope (one multiplexed profile's config prunes only its own connections). A lazily registered
     (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
     is reported under ``"pending"`` so the caller retries. Returns
@@ -514,10 +518,18 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     for key in lazy:
         _forget_lazy_server(key)
     with _core._lock:
-        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
-                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
-        known |= {_key_name(key) for key in _core._lazy_server_configs}
-    added = sorted(wanted - known)
+        # Same resolution ``_select_new_servers`` applies: this scope's own connection OR a shared
+        # one it adopted from another profile counts as live. Owner==scope alone misses the adopted
+        # case, so a multiplexed profile would re-enter discovery (cross-process lock) and log
+        # "added" every tick forever for a server that is already serving it.
+        known = {name for name in wanted
+                 if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                 or key in _core._server_connecting or key in _core._lazy_server_configs}
+    # A configured server that is not live is retried here — this is the only reviver for one whose
+    # FIRST connect failed (#112445) — but only once its connect cooldown lapsed: ``discover_mcp_tools``
+    # would skip it anyway, and entering it takes the cross-process discovery lock (up to 120 s of
+    # waiting when another process holds it) and logs a failed pass, every tick, for nothing.
+    added = sorted(name for name in wanted - known if not _connect_cooldown_active(name))
     if added:
         discover_mcp_tools()
     return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,

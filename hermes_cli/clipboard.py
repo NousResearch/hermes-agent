@@ -8,6 +8,7 @@ Get-Clipboard, then a file-drop fallback; Linux wl-paste (Wayland), xclip (X11).
 import base64
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -58,8 +59,8 @@ def save_clipboard_image(dest: Path) -> bool:
     """Save the clipboard image to *dest* as PNG; True when an image was found and written."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
-        # pngpaste first (fast, handles more formats); osascript bitmap, then Finder file-url.
-        return _macos_pngpaste(dest) or _macos_osascript(dest) or _macos_save_file_image(dest)
+        # pngpaste first (fast, handles more formats); osascript is the always-present fallback.
+        return _macos_pngpaste(dest) or _macos_osascript(dest)
     return (_windows_save if sys.platform == "win32" else _linux_save)(dest)
 
 
@@ -118,47 +119,31 @@ def write_clipboard_text(text: str) -> bool:
 
 # ── macOS ────────────────────────────────────────────────────────────────
 
-def _macos_clipboard_info() -> str:
+def _osascript(expr: str, timeout: int = 3) -> str:
+    """stdout of an osascript expression; "" on any failure."""
     try:
-        r = subprocess.run(["osascript", "-e", "clipboard info"], timeout=3, **_TEXT)
+        r = subprocess.run(["osascript", "-e", expr], timeout=timeout, **_TEXT)
         return r.stdout if r.returncode == 0 else ""
-    except Exception:
+    except Exception as e:
+        logger.debug("osascript probe failed: %s", e)
         return ""
 
 
-def _macos_has_bitmap(info: str | None = None) -> bool:
-    text = _macos_clipboard_info() if info is None else info
-    return "«class PNGf»" in text or "«class TIFF»" in text
+def _macos_has_bitmap(info: str) -> bool:
+    return "«class PNGf»" in info or "«class TIFF»" in info
 
 
 def _macos_clipboard_file_image() -> Path | None:
-    """Local image path when the clipboard holds a Finder file-url, not bitmap data."""
-    try:
-        r = subprocess.run(
-            ["osascript", "-e", 'POSIX path of (the clipboard as «class furl»)'],
-            timeout=3, **_TEXT)
-    except Exception as e:
-        logger.debug("osascript clipboard file-url probe failed: %s", e)
-        return None
-    if r.returncode != 0:
-        return None
-    raw = r.stdout.strip().strip('"')
-    if not raw:
-        return None
-    path = Path(raw)
-    try:
-        if path.suffix.lower() in _FILE_IMAGE_EXTS and path.is_file():
-            return path
-    except OSError:
-        return None
-    return None
+    """Local image path when the clipboard holds a Finder file-url: Cmd+C on a file puts
+    «class furl» (no bitmap) on the pasteboard, yet other apps paste it as an image."""
+    path = Path(_osascript("POSIX path of (the clipboard as «class furl»)").strip())
+    return path if path.suffix.lower() in _FILE_IMAGE_EXTS and os.path.isfile(path) else None
 
 
 def _macos_has_image() -> bool:
-    info = _macos_clipboard_info()
-    if _macos_has_bitmap(info):
-        return True
-    return "«class furl»" in info and _macos_clipboard_file_image() is not None
+    info = _osascript("clipboard info")
+    return _macos_has_bitmap(info) or (
+        "«class furl»" in info and _macos_clipboard_file_image() is not None)
 
 
 def _macos_save_file_image(dest: Path) -> bool:
@@ -166,7 +151,7 @@ def _macos_save_file_image(dest: Path) -> bool:
     if src is None:
         return False
     try:
-        dest.write_bytes(src.read_bytes())
+        shutil.copyfile(src, dest)
         if _is_png_file(dest) or (_convert_to_png(dest) and _is_png_file(dest)):
             return True
     except OSError as e:
@@ -188,9 +173,11 @@ def _macos_pngpaste(dest: Path) -> bool:
 
 
 def _macos_osascript(dest: Path) -> bool:
-    """osascript PNG extraction (always available)."""
-    if not _macos_has_bitmap():
-        return False
+    """osascript extraction (always available): bitmap PNGf, else a Finder file-url. One
+    `clipboard info` listing gates both — the furl read is a pasteboard *content* access."""
+    info = _osascript("clipboard info")
+    if not _macos_has_bitmap(info):
+        return "«class furl»" in info and _macos_save_file_image(dest)
     script = f'''try
   set imgData to the clipboard as «class PNGf»
   set f to open for access POSIX file "{dest}" with write permission
@@ -210,7 +197,7 @@ end try
 
 # ── PowerShell (native Windows powershell/pwsh + WSL2 powershell.exe) ─────
 
-_FILEDROP_IMAGE_EXTS = "'.png','.jpg','.jpeg','.gif','.webp','.bmp','.tiff','.tif'"
+_FILEDROP_IMAGE_EXTS = ",".join(f"'{e}'" for e in sorted(_FILE_IMAGE_EXTS))
 _PS_FILEDROP_HIT = (
     "try { "
     "$files = Get-Clipboard -Format FileDropList -ErrorAction Stop;"

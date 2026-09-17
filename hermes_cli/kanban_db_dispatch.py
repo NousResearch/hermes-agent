@@ -1382,9 +1382,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR). A latest
+    ``changes_requested`` or ``timed_out`` run is explicit continuation evidence,
+    so it may resume the existing branch/PR. The review lane skips the last two:
+    they are the *inputs* to a review handoff. Stale / dead claim locks are NOT a
+    guard reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1400,7 +1402,7 @@ def check_respawn_guard(
     # resets the ladder; legacy ``rate_limited`` rows remain compatible.
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "WHERE task_id = ? "
         "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
@@ -1469,6 +1471,15 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Requested rework and implementation timeouts resume the SAME branch and
+    # PR; the link is not evidence of duplicate work in those states. Looking
+    # at the latest run (including an open one) preserves the guard once a
+    # successor has actually claimed the card.
+    if latest_run is not None and latest_run["outcome"] in (
+        "changes_requested",
+        "timed_out",
+    ):
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

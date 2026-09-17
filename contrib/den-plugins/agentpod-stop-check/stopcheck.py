@@ -44,8 +44,10 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 try:  # package load (PluginManager) / direct-file load (tests)
+    from . import escalation as escalation_mod
     from . import owners as owners_mod
 except ImportError:  # pragma: no cover - direct-file load
+    import escalation as escalation_mod  # type: ignore
     import owners as owners_mod  # type: ignore
 
 # Statuses that still owe the project an outcome.
@@ -79,6 +81,9 @@ KIND_OWNER_UNKNOWN = "owner_unknown"
 KIND_OWNER_OVERDUE = "owner_overdue"
 KIND_OWNER_NO_WAKE = "owner_without_wake"
 KIND_UNQUALIFIED_GATE = "unqualified_gate"
+KIND_ESCALATION_ROUTABLE = "escalation_routable"
+KIND_ESCALATION_STALE_REVIEW = "escalation_stale_review"
+KIND_ESCALATION_ACCESS = "escalation_access_blocker"
 
 DEFAULT_MAX_GATE_AGE = 3 * 86400        # a human gate must be re-confirmed
 DEFAULT_MAX_HOLD_AGE = 3 * 86400        # a typed hold must be re-qualified
@@ -200,6 +205,7 @@ class _Markers:
     gate: Optional[_Gate] = None
     checkpoint: Optional[_Checkpoint] = None
     gate_resolved_at: Optional[int] = None
+    escalation: Optional[Any] = None
 
     @property
     def checkpoint_at(self) -> Optional[int]:  # back-compat for readers/tests
@@ -223,6 +229,9 @@ def _scan_markers(comments) -> _Markers:
                     author=author,
                     written_at=created,
                 )
+        esc = escalation_mod.parse_escalation(body, author=author, written_at=created)
+        if esc is not None:
+            out.escalation = esc
         if GATE_RESOLVED_RE.search(body):
             out.gate_resolved_at = created
             out.gate = None
@@ -343,6 +352,34 @@ def verify_wake(
         return (True, f"dispatcher can claim a '{task.status}' card for {task.assignee}")
 
     return (False, f"wake '{wake}' names no target this deployment can verify")
+
+
+# ------------------------------------------------------------ classifier ---
+
+def _current_head(task, cfg: dict, esc) -> Optional[str]:
+    """The head the supervisor can observe RIGHT NOW, best source first.
+
+    Order matters and is the whole point of the staleness check: a live
+    resolver (or an operator-supplied observation) always beats the SHA the
+    escalation marker recorded when it was written, because the marker is
+    exactly the thing that can be out of date. The marker's ``head_sha`` is the
+    last resort, and it is still only ever compared against ``review_sha`` —
+    never trusted as proof that the review is current.
+    """
+    resolver = cfg.get("head_resolver")
+    if callable(resolver):
+        try:
+            got = resolver(task)
+        except Exception:
+            got = None
+        if got:
+            return str(got)
+    heads = cfg.get("current_heads")
+    if isinstance(heads, dict):
+        got = heads.get(getattr(task, "id", "")) or heads.get("*")
+        if got:
+            return str(got)
+    return (getattr(esc, "head_sha", "") or "").strip() or None
 
 
 # ------------------------------------------------------------ classifier ---
@@ -486,6 +523,32 @@ def _classify(
             f"verify/reclaim {tid} for its existing owner "
             f"({owner or 'unassigned'}); do not spawn a second worker",
         )
+
+    # 3b. A recorded escalation. Pulling the human in is expensive and is only
+    #     correct when the decision is genuinely theirs. A review gate that a
+    #     documented, authorised OPAQUE identity can discharge, against an
+    #     independent review pinned to the CURRENT head, is routable work — and
+    #     escalating it anyway is the t_de12518a/#4952 defect. Every other
+    #     shape (stale review, undocumented/credential-revealing identity,
+    #     non-review class) keeps the human prompt or emits an access blocker.
+    #     This runs BEFORE the human-gate branch so a routable escalation is
+    #     never laundered into "attended by a human gate" and left quiet.
+    esc = markers.escalation
+    if esc is not None:
+        v = escalation_mod.classify_escalation(
+            esc,
+            current_head=_current_head(task, cfg, esc),
+            cfg=cfg,
+            task_id=tid,
+        )
+        if v.decision == escalation_mod.DECISION_ROUTE:
+            return find(KIND_ESCALATION_ROUTABLE, v.detail, v.next_action)
+        if v.decision == escalation_mod.DECISION_FRESH_REVIEW:
+            return find(KIND_ESCALATION_STALE_REVIEW, v.detail, v.next_action)
+        if v.decision == escalation_mod.DECISION_ACCESS_BLOCKER:
+            return find(KIND_ESCALATION_ACCESS, v.detail, v.next_action)
+        # DECISION_HUMAN falls through: the existing gate/hold branches below
+        # own the human prompt, unchanged.
 
     # 4. An authorised, current human/external gate.
     gate = markers.gate

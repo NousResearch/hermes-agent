@@ -180,9 +180,15 @@ def install_runtime(home: Path, *, extra_cfg: dict | None = None):
     if pdir.exists():
         shutil.rmtree(pdir)
     pdir.mkdir(parents=True)
-    for name in ("__init__.py", "plugin.yaml", "stopcheck.py", "owners.py"):
-        if (PLUGIN_SRC / name).exists():
-            shutil.copy(PLUGIN_SRC / name, pdir / name)
+    # Derive the module set from the source directory instead of a literal
+    # list: a new module (escalation.py) that a hand-maintained list forgot
+    # would otherwise be silently absent from the INSTALLED plugin while the
+    # tests kept passing against the source tree.
+    for src in sorted(PLUGIN_SRC.glob("*.py")):
+        if src.name.startswith(("test_", "repro_")):
+            continue
+        shutil.copy(src, pdir / src.name)
+    shutil.copy(PLUGIN_SRC / "plugin.yaml", pdir / "plugin.yaml")
 
     cfg = {
         "enabled": True,
@@ -338,11 +344,12 @@ def _stopcheck_import_alias():
     pkg = types.ModuleType("contrib_stopcheck")
     pkg.__path__ = [str(PLUGIN_SRC)]
     sys.modules["contrib_stopcheck"] = pkg
-    for name in ("owners", "stopcheck", "__init__"):
+    for name in ("owners", "escalation", "stopcheck", "__init__"):
         if not (PLUGIN_SRC / f"{name}.py").exists():
             continue
         mod_name = "contrib_stopcheck." + {
             "__init__": "plugin", "owners": "owners", "stopcheck": "stopcheck",
+            "escalation": "escalation",
         }[name]
         spec = importlib.util.spec_from_file_location(mod_name, PLUGIN_SRC / f"{name}.py")
         mod = importlib.util.module_from_spec(spec)
@@ -2507,3 +2514,196 @@ def test_50_empty_and_compacted_turn_context_fails_closed(home, procs):
     # ...and a genuine stop after it wins, in every repaired shape.
     set_turn_context(REVIEWER_STOPS[0])
     assert not (fire_pre_verify() or "")
+
+
+# ------------------------------------------------- escalation classification
+# EM regression requirement (2026-09-17, t_de12518a / PR #4952): the supervisor
+# escalated to the human although a documented opaque non-author review
+# capability existed, an independent review was pinned to the current head, and
+# only a formal review gate remained. These drive the REAL runtime turn-stop
+# path (pre_verify + finalize_turn), not an AGENTS.md wording assertion.
+
+REVIEW_HEAD = "326168c3a9ef4410b2d1c77b0a9e5f3d4c218806"
+OLD_HEAD = "0a638f304f1579fc727e841e4288ccd69a1bf97f"
+
+DOCUMENTED_APP_REVIEW = [
+    {"name": "app-review", "opaque": True, "reveals_credential": False},
+]
+
+
+def _escalation_cfg(home: Path, *, heads: dict, caps=None) -> dict:
+    return {
+        "review_capabilities": DOCUMENTED_APP_REVIEW if caps is None else caps,
+        "current_heads": heads,
+    }
+
+
+def _escalated_card(conn, kb, *, review_sha: str, head_sha: str,
+                    capability: str = "app-review", klass: str = "review_gate"):
+    tid = kb.create_task(conn, title="PR #4952 needs a formal review",
+                         assignee="software-engineer")
+    kb.block_task(conn, tid, reason="needs a formal approving review",
+                  kind="needs_input")
+    kb.add_comment(
+        conn, tid, author="supervisor",
+        body=(
+            "STOP-CHECK-ESCALATION: PR #4952 needs a formal approving review "
+            f"class={klass} capability={capability} "
+            f"review_sha={review_sha} head_sha={head_sha}"
+        ),
+    )
+    return tid
+
+
+def test_51_documented_opaque_review_at_current_head_is_routed_not_escalated(home):
+    """(1) Documented opaque identity + review pinned to the CURRENT head.
+
+    The supervisor must DECIDE and route the scoped review itself. The turn is
+    still not allowed to end quietly (there is work), but the instruction it
+    carries must be 'route it yourself', and it must NOT ask the human.
+    """
+    conn, kb = _board(home)
+    tid = _escalated_card(conn, kb, review_sha=REVIEW_HEAD, head_sha=REVIEW_HEAD)
+    cfg = _escalation_cfg(home, heads={tid: REVIEW_HEAD})
+    install_runtime(home, extra_cfg=cfg)
+
+    v = helper_verdict(home, cfg=cfg)
+    f = next(f for f in v.findings if f.task_id == tid)
+    assert f.kind == "escalation_routable", f
+    assert "app-review" in f.next_action
+    assert "Do NOT escalate to the human" in f.next_action
+    # The human is not summoned and no access blocker is claimed.
+    assert "ACCESS BLOCKER" not in f.next_action
+    assert "ask the operator" not in f.next_action.lower()
+
+    # ...and the REAL turn-stop path carries that routing instruction.
+    set_turn_context(SUPERVISION_MSG)
+    msg = fire_pre_verify() or ""
+    assert "STOP-CHECK" in msg and tid in msg
+    assert "escalation_routable" in msg or "route the scoped review" in msg
+    out = run_turn(QUIET)["final_response"]
+    assert "STOP-CHECK" in out
+
+
+def test_52_head_moved_invalidates_the_capability(home):
+    """(2) The head moved: the pinned review is stale.
+
+    The documented capability must NOT be used, and a fresh independent review
+    at the new head is required first.
+    """
+    conn, kb = _board(home)
+    tid = _escalated_card(conn, kb, review_sha=OLD_HEAD, head_sha=OLD_HEAD)
+    cfg = _escalation_cfg(home, heads={tid: REVIEW_HEAD})  # head moved
+    install_runtime(home, extra_cfg=cfg)
+
+    f = next(f for f in helper_verdict(home, cfg=cfg).findings if f.task_id == tid)
+    assert f.kind == "escalation_stale_review", f
+    assert "do NOT use 'app-review'" in f.next_action
+    assert "fresh independent review" in f.next_action
+    assert REVIEW_HEAD[:12] in f.next_action
+
+    # Same card, same capability, review re-pinned to the new head -> routable.
+    kb.add_comment(
+        conn, tid, author="supervisor",
+        body=("STOP-CHECK-ESCALATION: re-reviewed class=review_gate "
+              f"capability=app-review review_sha={REVIEW_HEAD} "
+              f"head_sha={REVIEW_HEAD}"),
+    )
+    f2 = next(f for f in helper_verdict(home, cfg=cfg).findings if f.task_id == tid)
+    assert f2.kind == "escalation_routable", f2
+
+
+def test_53_no_documented_identity_or_credential_use_is_an_access_blocker(home):
+    """(3) No documented identity / a credential-revealing one -> access blocker."""
+    conn, kb = _board(home)
+    cfg_none = _escalation_cfg(home, heads={"*": REVIEW_HEAD}, caps=[])
+    tid = _escalated_card(conn, kb, review_sha=REVIEW_HEAD, head_sha=REVIEW_HEAD)
+    install_runtime(home, extra_cfg=cfg_none)
+
+    f = next(f for f in helper_verdict(home, cfg=cfg_none).findings if f.task_id == tid)
+    assert f.kind == "escalation_access_blocker", f
+    assert "ACCESS BLOCKER" in f.next_action
+    assert "do NOT mint, reveal or borrow a credential" in f.next_action
+
+    # A documented identity that would reveal/mint a credential is equally blocked.
+    cfg_cred = _escalation_cfg(
+        home, heads={"*": REVIEW_HEAD},
+        caps=[{"name": "app-review", "opaque": True, "reveals_credential": True}],
+    )
+    f2 = next(f for f in helper_verdict(home, cfg=cfg_cred).findings if f.task_id == tid)
+    assert f2.kind == "escalation_access_blocker", f2
+    assert "reveal or mint a credential" in f2.detail
+
+    # A documented but NON-opaque (author) identity cannot supply the review.
+    cfg_author = _escalation_cfg(
+        home, heads={"*": REVIEW_HEAD},
+        caps=[{"name": "app-review", "opaque": False}],
+    )
+    f3 = next(f for f in helper_verdict(home, cfg=cfg_author).findings if f.task_id == tid)
+    assert f3.kind == "escalation_access_blocker", f3
+
+
+def test_54_human_prompt_preserved_for_irreversible_financial_and_unstated(home):
+    """(4) Only review gates are routable. Everything else keeps the human."""
+    conn, kb = _board(home)
+    cfg = _escalation_cfg(home, heads={"*": REVIEW_HEAD})
+    ids = {}
+    for klass in ("financial", "irreversible", "external_policy", ""):
+        ids[klass] = _escalated_card(
+            conn, kb, review_sha=REVIEW_HEAD, head_sha=REVIEW_HEAD,
+            klass=klass or "unstated-not-a-class",
+        )
+    install_runtime(home, extra_cfg=cfg)
+
+    v = helper_verdict(home, cfg=cfg)
+    for klass, tid in ids.items():
+        f = next((f for f in v.findings if f.task_id == tid), None)
+        if f is not None:
+            assert not f.kind.startswith("escalation_"), (klass, f)
+            assert "route the scoped review" not in f.next_action, (klass, f)
+            continue
+        # No finding means the card is ATTENDED — and the only legitimate way
+        # for one of these to be attended is the human gate it is waiting on.
+        a = next(a for a in v.attended if a.task_id == tid)
+        assert a.reason == "human_gate", (klass, a)
+
+
+def test_55_removing_the_classification_guard_breaks_these_invariants(home):
+    """Mutation proof: delete the routing branch -> the invariants go RED.
+
+    Without this, the guard has never been observed failing. The mutation is
+    applied to the classifier's dispatch, exactly where the defect lived.
+    """
+    from contrib_stopcheck import escalation as E  # type: ignore
+    from contrib_stopcheck import stopcheck as S  # type: ignore
+
+    conn, kb = _board(home)
+    tid = _escalated_card(conn, kb, review_sha=REVIEW_HEAD, head_sha=REVIEW_HEAD)
+    cfg = _escalation_cfg(home, heads={tid: REVIEW_HEAD})
+    install_runtime(home, extra_cfg=cfg)
+
+    # GREEN before.
+    assert next(
+        f for f in helper_verdict(home, cfg=cfg).findings if f.task_id == tid
+    ).kind == "escalation_routable"
+
+    # MUTATE: the classifier can no longer tell a routable escalation apart --
+    # every escalation becomes "the human decides", which is the original bug.
+    original = E.classify_escalation
+    S.escalation_mod.classify_escalation = lambda *a, **k: E.EscalationVerdict(
+        E.DECISION_HUMAN, "mutated: always escalate", "ask the human"
+    )
+    try:
+        v = helper_verdict(home, cfg=cfg)
+        f = next((f for f in v.findings if f.task_id == tid), None)
+        assert f is None or f.kind != "escalation_routable", (
+            "MUTATION DID NOT GO RED: the routing decision is not actually "
+            "produced by classify_escalation"
+        )
+    finally:
+        S.escalation_mod.classify_escalation = original
+
+    # GREEN again after revert.
+    assert next(
+        f for f in helper_verdict(home, cfg=cfg).findings if f.task_id == tid
+    ).kind == "escalation_routable"

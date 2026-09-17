@@ -266,6 +266,33 @@ class TestOutboundStaleVisionEviction:
         evict_stale_outbound_tool_images(outbound)
         assert len(_image_bearing_tool_ids(outbound)) == _MAX_KEEP_TOOL_IMAGES
 
+    def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
+        """A whole-batch retire must not take the newest frames when the floor already fits.
+
+        Fifteen reserved uploads leave five block slots; the sixth screenshot breaches, and
+        one eight-wide batch would retire all six tool frames -- including the one the model
+        was just asked about -- although keeping the newest three already clears the limit.
+        """
+        uploads = _OUTBOUND_IMAGE_LIMIT - 5
+        history: list[dict] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    *[
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,U{k}"}}
+                        for k in range(uploads)
+                    ],
+                ],
+            }
+        ]
+        for i in range(6):
+            history.extend(_image_tool(i))
+        outbound = sanitize_api_messages(history)
+        evict_stale_outbound_tool_images(outbound)
+        assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT
+        assert _image_bearing_tool_ids(outbound) == [f"call_{i}" for i in range(3, 6)]
+
     def test_byte_pressure_overrides_the_keep_newest_floor(self):
         """A hard request-size breach must not be preserved by the floor.
 

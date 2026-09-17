@@ -562,6 +562,23 @@ class TestAnthropicAdapterMultimodal:
         _evict_old_screenshots(result)
         assert not any(x.get("type") == "image" for x in result[0]["content"][0]["content"])
 
+    def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
+        """Fifteen reserved uploads plus six one-frame tool_results: one eight-wide batch would
+        retire every frame although keeping the newest three already clears the ceiling."""
+        from agent.anthropic_message_convert import _OUTBOUND_IMAGE_LIMIT, _evict_old_screenshots
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        result = [{"role": "user", "content": [dict(img) for _ in range(_OUTBOUND_IMAGE_LIMIT - 5)]}]
+        for i in range(6):
+            result.append({"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}", "name": "s", "input": {}}]})
+            result.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}]})
+        _evict_old_screenshots(result)
+        kept = [
+            b["tool_use_id"] for m in result for b in m["content"]
+            if b.get("type") == "tool_result" and any(x.get("type") == "image" for x in b["content"])
+        ]
+        assert kept == ["t3", "t4", "t5"]
+
     def test_eviction_frontier_holds_between_batch_advances(self):
         """Screenshot eviction must not rewrite a new block on every capture.
 

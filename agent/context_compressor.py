@@ -1330,8 +1330,10 @@ def _outbound_image_retire_count(
     then cannot fix the request and would only blind the model on the frames it was just
     asked about, which is worse than the stricter dimension cap the block limit avoids.
     Whenever retiring tool content CAN bring the request inside the ceiling, it does so,
-    even past the floor — and byte pressure never yields to the floor at all, because the
-    request-size limit is hard and the provider answers 413.
+    past the floor only when keeping the floor does not fit — a batch step that would blind
+    the model while the floor alone clears the ceiling is cut back to the floor. Byte
+    pressure never yields to the floor, because the request-size limit is hard and the
+    provider answers 413.
     """
     total = len(block_counts_newest_first)
 
@@ -1347,17 +1349,22 @@ def _outbound_image_retire_count(
     if _fits(total):
         return 0
 
-    # The floor may only shelter a violation that retiring tool content cannot fix.
-    floor = max(keep_newest, 0)
-    if _fits(0) or not _bytes_fit(floor):
-        # Eviction can clear the ceiling, or bytes breach it even at the floor: no shelter.
-        max_retire = total
+    floor = min(max(keep_newest, 0), total)
+    if not _fits(0) and _bytes_fit(floor):
+        # Reserved uploads alone breach the block ceiling: no retirement can fix it, so the
+        # newest frames stay rather than blinding the model for nothing.
+        max_retire = total - floor
     else:
-        max_retire = max(total - floor, 0)
+        max_retire = total
 
     retire = 0
     while retire < max_retire:
-        retire = min(retire + batch, max_retire)
+        step = min(retire + batch, max_retire)
+        if step > total - floor and _fits(floor):
+            # A whole batch would retire the frames the model was just asked about while
+            # keeping the floor already clears the ceiling; take the smaller edit instead.
+            step = total - floor
+        retire = step
         if _fits(total - retire):
             break
     return retire

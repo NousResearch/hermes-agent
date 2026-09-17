@@ -639,14 +639,21 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
     # The keep floor only shelters a breach that retiring every screenshot cannot fix
     # (reserved uploads alone over the ceiling); one tool_result carrying 25 frames is
     # fixable and must not hide behind a floor counted in carriers.
-    if reserved <= _OUTBOUND_IMAGE_LIMIT:
-        max_retire = len(carriers)
-    else:
-        max_retire = max(len(carriers) - _MAX_KEEP_SCREENSHOTS, 0)
+    floor = min(_MAX_KEEP_SCREENSHOTS, len(carriers))
+
+    def _fits(kept: int) -> bool:
+        return reserved + sum(n for _, n in carriers[:kept]) <= _OUTBOUND_IMAGE_LIMIT
+
+    max_retire = len(carriers) - floor if not _fits(0) else len(carriers)
     retire = 0
     while retire < max_retire:
-        retire = min(retire + _SCREENSHOT_EVICTION_BATCH, max_retire)
-        if reserved + sum(n for _, n in carriers[: len(carriers) - retire]) <= _OUTBOUND_IMAGE_LIMIT:
+        step = min(retire + _SCREENSHOT_EVICTION_BATCH, max_retire)
+        if step > len(carriers) - floor and _fits(floor):
+            # A whole batch would retire the frames the model was just asked about while
+            # keeping the floor already clears the ceiling; take the smaller edit instead.
+            step = len(carriers) - floor
+        retire = step
+        if _fits(len(carriers) - retire):
             break
     for block, _ in carriers[-retire:] if retire else []:
         placeholder = _text_block("[screenshot removed to save context]")

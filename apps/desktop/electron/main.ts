@@ -434,12 +434,12 @@ import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
+import { bindWindowChromeEvents } from './window-chrome-events'
 import {
   registrySshPoolScopeByConnectionId,
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { bindWindowChromeEvents } from './window-chrome-events'
 import { registerWindowControlIpc, windowControlState } from './window-controls'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'

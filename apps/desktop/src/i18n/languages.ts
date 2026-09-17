@@ -42,6 +42,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.ru,
     englishName: 'Russian',
     configValue: 'ru'
+  },
+  {
+    id: 'tr',
+    name: LOCALE_ENDONYMS.tr,
+    englishName: 'Turkish',
+    configValue: 'tr'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -96,7 +102,13 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   russian: 'ru',
   'russian-russian': 'ru',
   русский: 'ru',
-  руский: 'ru'
+  руский: 'ru',
+  tr: 'tr',
+  'tr-tr': 'tr',
+  tr_tr: 'tr',
+  turkish: 'tr',
+  türkçe: 'tr',
+  turkce: 'tr'
 }
 
 export function isLocale(value: unknown): value is Locale {

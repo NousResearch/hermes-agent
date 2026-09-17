@@ -1976,26 +1976,33 @@ def _end_run(
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
     is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    to end a worker that survived its own terminal transition.
+
+    ``metadata`` is MERGED over what the row already holds, never substituted for it
+    (:func:`_merge_run_metadata`), so a worker's heartbeat stamp survives the close."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
-    conn.execute(
+    cur = conn.execute(
         """
         UPDATE task_runs
            SET status        = ?,
                outcome       = ?,
                summary       = ?,
                error         = ?,
-               metadata      = ?,
                ended_at      = ?,
                claim_expires = NULL
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, now, run_id),
     )
+    # Only a call that actually closed the row may write to it: the ``ended_at IS NULL``
+    # CAS is what makes a second close idempotent, and metadata rode inside that UPDATE
+    # before it moved out.
+    if cur.rowcount == 1:
+        _merge_run_metadata(conn, run_id, metadata, incoming_wins=True)
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
 

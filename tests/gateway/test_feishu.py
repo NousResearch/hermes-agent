@@ -1027,7 +1027,14 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(first.message_id, "om_2")
         self.assertEqual(first.source.message_id, first.message_id)
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(
+        os.environ,
+        {
+            "HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES": "8",
+            "HERMES_FEISHU_TEXT_BATCH_MAX_CHARS": "4000",
+        },
+        clear=False,
+    )
     def test_text_batch_preserves_later_message_attachments(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.event import MessageEvent, MessageType

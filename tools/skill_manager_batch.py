@@ -141,7 +141,14 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
             return {"action": "batch", "operations": operations}, gist
-        staged = _smt._run_write_gate(_staging)
+        def _preflight():
+            # Payload-intrinsic shape of EVERY op, before the batch becomes pending: one
+            # invalid op would otherwise surface only after the whole batch was approved.
+            for i, op in enumerate(operations):
+                if err := _smt._preflight_staged_skill_write(op["action"], names[i], op):
+                    return f"operations[{i}]: {err}"
+            return None
+        staged = _smt._run_write_gate(_staging, _preflight)
         if staged is not None:
             return staged
     # Every target's lock is held from the snapshot through commit or rollback; the per-op

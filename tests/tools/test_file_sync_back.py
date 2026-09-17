@@ -511,6 +511,22 @@ class TestSyncBackSizeCap:
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
 
+    def test_sync_back_cap_reads_env_override_at_import(self, monkeypatch):
+        """HERMES_SYNC_BACK_MAX_BYTES overrides the 2 GiB default at import time (#114437)."""
+        import importlib
+        from tools.environments import file_sync as file_sync_mod
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1024")
+        try:
+            reloaded = importlib.reload(file_sync_mod)
+            assert reloaded._SYNC_BACK_MAX_BYTES == 1024
+        finally:
+            monkeypatch.delenv("HERMES_SYNC_BACK_MAX_BYTES", raising=False)
+            importlib.reload(file_sync_mod)
+
+    def test_stale_sweep_window_is_bounded_to_half_an_hour(self):
+        """A hard-kill crash loop must not accumulate tars for hours before reclaim (#114437)."""
+        assert _SYNC_BACK_STALE_SECONDS <= 30 * 60
+
 
 class TestSyncBackWindowsHost:
     """#76267: sync_back on a Windows host. The staging tar must be reopenable for writing by

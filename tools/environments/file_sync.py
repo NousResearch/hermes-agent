@@ -47,12 +47,16 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
-_SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+# 2 GiB by default — refuse to extract larger tars. Overridable for hosts whose synced tree
+# legitimately exceeds the cap (a skip means sync-back silently does nothing at full cost).
+_SYNC_BACK_MAX_BYTES = int(os.environ.get("HERMES_SYNC_BACK_MAX_BYTES", 2 * 1024 * 1024 * 1024))
 _SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
 # a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs), so anything older than
-# this is safe to reclaim; a live transfer is hours younger than the cutoff.
-_SYNC_BACK_STALE_SECONDS = 6 * 60 * 60
+# this is safe to reclaim. The download itself is bounded by a 120 s subprocess timeout, so a
+# live transfer is minutes old at most; the cutoff only has to sit above that. The old 6 h
+# window let a crash loop accumulate tens of GB before anything was reclaimed (#114437).
+_SYNC_BACK_STALE_SECONDS = 30 * 60
 
 
 def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:

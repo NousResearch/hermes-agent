@@ -244,12 +244,24 @@ class SSHEnvironment(BaseEnvironment):
         # Tar from / with the full path so archive entries keep absolute paths
         # (home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
-        ssh_cmd = self._build_ssh_command() + [f"tar cf - -C / {shlex.quote(rel_base)}"]
+        # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
+        # "socket ignored" and exits 2, which used to fail every sync-back and leave a multi-GB
+        # temp tar behind on each retry (#114437). Exclude them up front.
+        ssh_cmd = self._build_ssh_command() + [
+            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120)
         if result.returncode != 0:
-            raise _sync_error(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}",
-                              f"File sync from {self.host}")
+            stderr = result.stderr.decode(errors="replace").strip()
+            # tar exits 2 for non-fatal conditions; a socket that slipped past the exclude
+            # pattern (or a tar without --exclude support) is the only one we knowingly accept,
+            # and only when nothing else was reported. Every other non-zero status still fails
+            # the transfer.
+            tolerated = result.returncode == 2 and bool(stderr) and all(
+                "socket ignored" in line for line in stderr.splitlines() if line.strip())
+            if not tolerated:
+                raise _sync_error(f"SSH bulk download failed: {stderr}",
+                                  f"File sync from {self.host}")
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         self._run_ssh_checked(quoted_rm_command(remote_paths), 10, "remote rm failed",

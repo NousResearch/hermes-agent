@@ -131,6 +131,54 @@ class TestSSHBulkDownload:
         call_kwargs = mock_run.call_args
         assert call_kwargs.kwargs.get("timeout") == 120 or call_kwargs[1].get("timeout") == 120
 
+    def test_ssh_bulk_download_excludes_sockets(self, ssh_mock_env, tmp_path):
+        """The remote tar must skip live sockets — gateway.sock cannot be archived (#114437)."""
+        dest = tmp_path / "backup.tar"
+
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+            ssh_mock_env._ssh_bulk_download(dest)
+
+        cmd_str = " ".join(mock_run.call_args[0][0])
+        assert "--exclude='*.sock'" in cmd_str
+
+    def test_ssh_bulk_download_tolerates_socket_ignored_exit_2(
+        self, ssh_mock_env, tmp_path
+    ):
+        """rc=2 whose stderr is only 'socket ignored' lines must not fail the transfer (#114437)."""
+        dest = tmp_path / "backup.tar"
+        stderr = b"tar: home/testuser/.hermes/gateway.sock: socket ignored\n"
+        completed = subprocess.CompletedProcess([], 2, stderr=stderr)
+
+        with patch.object(subprocess, "run", return_value=completed):
+            ssh_mock_env._ssh_bulk_download(dest)  # must not raise
+
+    def test_ssh_bulk_download_fails_on_other_exit_2_errors(self, ssh_mock_env, tmp_path):
+        """rc=2 reporting anything besides an ignored socket still fails the transfer."""
+        from tools.environments.base import EnvironmentConnectionError
+        dest = tmp_path / "backup.tar"
+        stderr = (b"tar: home/testuser/.hermes/gateway.sock: socket ignored\n"
+                  b"tar: home/testuser/.hermes/state.db: Cannot open: Permission denied\n")
+        completed = subprocess.CompletedProcess([], 2, stderr=stderr)
+
+        with patch.object(subprocess, "run", return_value=completed):
+            with pytest.raises(EnvironmentConnectionError):
+                ssh_mock_env._ssh_bulk_download(dest)
+
+    def test_ssh_bulk_download_fails_on_exit_1_and_bare_exit_2(
+        self, ssh_mock_env, tmp_path
+    ):
+        """rc=1, and rc=2 with no diagnostic at all, still fail the transfer."""
+        from tools.environments.base import EnvironmentConnectionError
+        dest = tmp_path / "backup.tar"
+        failures = (
+            subprocess.CompletedProcess([], 1, stderr=b"ssh: connect to host refused"),
+            subprocess.CompletedProcess([], 2, stderr=b""),
+        )
+        for completed in failures:
+            with patch.object(subprocess, "run", return_value=completed):
+                with pytest.raises(EnvironmentConnectionError):
+                    ssh_mock_env._ssh_bulk_download(dest)
+
 
 class TestSSHCleanup:
     """Verify SSH cleanup() calls sync_back() before closing ControlMaster."""

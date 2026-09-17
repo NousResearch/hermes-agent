@@ -18,6 +18,10 @@ def _package_manifest(root: Path) -> dict[str, str]:
     }
 
 
+def _file_bytes_or_none(path: Path) -> bytes | None:
+    return path.read_bytes() if path.exists() else None
+
+
 def _write_skill(skills: Path, name: str, *, support: bool = False) -> Path:
     root = skills / name
     root.mkdir(parents=True)
@@ -221,16 +225,93 @@ def test_background_consolidation_routes_through_the_public_transaction(consolid
     assert result["receipt"]["forwarding"]["readback"] is True
 
 
-def test_consolidate_refuses_preflight_without_mutating_fixture(consolidation_env):
-    """Invalid destination/provenance input fails before snapshot or archival."""
-    from agent.curator_consolidation import consolidate_skills
+@pytest.mark.parametrize(
+    ("refusal", "error_fragment"),
+    [
+        ("same-name", "distinct"),
+        ("missing-destination", "destination skill 'missing-destination' is not an active local skill"),
+        ("pinned", "pinned"),
+        ("bundled", "bundled"),
+        ("hub", "hub-installed"),
+        ("protected", "protected built-in"),
+        ("external", "not an active local skill"),
+        ("wrong-profile", "not an active local skill"),
+        ("unmanaged", "not curator-managed"),
+    ],
+)
+def test_public_consolidate_refuses_invalid_source_or_destination_before_mutation(
+    consolidation_env, monkeypatch, capsys, refusal, error_fragment,
+):
+    """Every public refusal leaves the candidate package, cron, snapshots, and ledger untouched.
 
-    source_manifest = _package_manifest(consolidation_env["source"])
+    External and wrong-profile sources deliberately reach the active-local lookup
+    refusal: the registered command parser represents both names, but the
+    transaction must never resolve a package from an external directory or a
+    sibling profile into the active profile's mutation domain.
+    """
+    from agent import curator_backup
+    from hermes_cli import curator as curator_cli
+    from tools import skill_ledger, skill_usage
+
+    source_name = "source-skill"
+    source_dir = consolidation_env["source"]
+    destination_name = "destination-skill"
+
+    if refusal == "same-name":
+        destination_name = source_name
+    elif refusal == "missing-destination":
+        destination_name = "missing-destination"
+    elif refusal == "pinned":
+        usage = json.loads((consolidation_env["skills"] / ".usage.json").read_text(encoding="utf-8"))
+        usage[source_name]["pinned"] = True
+        (consolidation_env["skills"] / ".usage.json").write_text(json.dumps(usage), encoding="utf-8")
+    elif refusal == "bundled":
+        (consolidation_env["skills"] / ".bundled_manifest").write_text(
+            f"{source_name}:synthetic-hash\n", encoding="utf-8")
+    elif refusal == "hub":
+        hub = consolidation_env["skills"] / ".hub"
+        hub.mkdir()
+        (hub / "lock.json").write_text(json.dumps({
+            "version": 1,
+            "installed": {source_name: {"install_path": source_name}},
+        }), encoding="utf-8")
+    elif refusal == "protected":
+        monkeypatch.setattr(skill_usage, "PROTECTED_BUILTIN_SKILLS", {source_name})
+    elif refusal == "external":
+        external_root = consolidation_env["home"] / "external-skills"
+        source_name = "external-source"
+        source_dir = _write_skill(external_root, source_name, support=True)
+        (consolidation_env["home"] / "config.yaml").write_text(
+            "skills:\n  external_dirs:\n    - external-skills\n", encoding="utf-8")
+        import agent.skill_utils as skill_utils
+        skill_utils._external_dirs_cache_clear()
+    elif refusal == "wrong-profile":
+        source_name = "other-profile-source"
+        source_dir = _write_skill(
+            consolidation_env["home"] / "profiles" / "other" / "skills", source_name, support=True,
+        )
+        (consolidation_env["home"] / "profiles" / "other" / "config.yaml").write_text(
+            "{}\n", encoding="utf-8")
+    elif refusal == "unmanaged":
+        source_name = "unmanaged-source"
+        source_dir = _write_skill(consolidation_env["skills"], source_name, support=True)
+
+    source_manifest = _package_manifest(source_dir)
     before_cron = consolidation_env["jobs_file"].read_bytes()
-    receipt = consolidate_skills("source-skill", "source-skill")
+    ledger_path = skill_ledger.ledger_path()
+    before_ledger = _file_bytes_or_none(ledger_path)
+    assert curator_backup.list_backups() == []
+
+    assert curator_cli.cli_main(["consolidate", source_name, destination_name]) == 1
+    receipt = json.loads(capsys.readouterr().out.removeprefix("curator: "))
 
     assert receipt["success"] is False
-    assert "distinct" in receipt["error"]
+    assert error_fragment in receipt["error"]
+    assert receipt["archive_location"] is None
+    assert receipt["rollback_handle"] is None
     assert receipt["recovery"]["attempted"] is False
-    assert _package_manifest(consolidation_env["source"]) == source_manifest
+    assert _package_manifest(source_dir) == source_manifest
     assert consolidation_env["jobs_file"].read_bytes() == before_cron
+    assert not (consolidation_env["skills"] / ".archive" / source_dir.name).exists()
+    assert curator_backup.list_backups() == []
+    assert _file_bytes_or_none(ledger_path) == before_ledger

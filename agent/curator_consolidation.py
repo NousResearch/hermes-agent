@@ -104,6 +104,15 @@ def _preflight(source: str, destination: str) -> Tuple[Path, Path, Path, bytes, 
         raise ValueError(f"source skill '{source}' is not an active local skill")
     if destination_dir is None:
         raise ValueError(f"destination skill '{destination}' is not an active local skill")
+    # ``prune_builtins`` permits the deterministic aging pass to archive an
+    # old bundled skill, but consolidation is a source-to-destination rewrite
+    # and must never re-home upstream-owned packages.
+    if skill_usage.is_bundled(source):
+        raise ValueError(f"source skill '{source}' is a bundled built-in and cannot be consolidated")
+    if skill_usage.is_hub_installed(source):
+        raise ValueError(f"source skill '{source}' is hub-installed and cannot be consolidated")
+    if skill_usage.is_protected_builtin(source):
+        raise ValueError(f"source skill '{source}' is a protected built-in and cannot be consolidated")
     if not skill_usage.is_curation_eligible(source, source_dir):
         raise ValueError(f"source skill '{source}' is not eligible for curator consolidation")
     if not skill_usage.is_curation_eligible(destination, destination_dir):

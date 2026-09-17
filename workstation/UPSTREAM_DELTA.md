@@ -28,6 +28,15 @@ tests prove reset and auxiliary route propagation; its lifecycle was not rewritt
 Workstation CI retains locked uv sync and adds the controlled replay and path filters
 for affected core seams. See engineering journal for exact GitHub evidence.
 
+Promotion gate follow-up extends Desktop-owned helpers: Windows secret-file mode
+checks reject symlinks before the chmod no-op, and BrowserRuntime emits typed
+human-control faults through the existing controller contract. First-launch E2E
+checks visible setup/recovery or completed boot instead of arbitrary shell text;
+stable UI selectors are additive. Windows qualification has an explicit bounded
+900s timeout for the full suite (local Windows run measured 448s), Dashboard smoke
+builds canonical web assets, and load evidence validates from repository cwd.
+No gate, scope check, permission guard or uncertain replay protection is removed.
+
 ## HW-021 — Final durable graph/effect/turn hardening (2026-09-16)
 
 Audit base: `17df394cfe3e913e6fce6f3130e3efc47e4592a2`, equal to fetched origin/main.

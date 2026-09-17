@@ -24,7 +24,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
@@ -687,7 +687,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
             .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: sid, value: next })
             .then(sr => {
               if (sr) {
-                actions.sys(`reasoning: ${sr.value || next}`)
+                const value = sr.value || next
+                patchUiState(state => ({
+                  ...state,
+                  info: state.info ? { ...state.info, reasoning_effort: value } : state.info
+                }))
+                actions.sys(`reasoning: ${value}`)
               }
             })
         })

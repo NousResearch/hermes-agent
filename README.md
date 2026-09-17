@@ -156,6 +156,8 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
 | Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
 
+**Model picker by number (text-picker platforms, e.g. QQ via OneBot):** send `/model` with no arguments to get a numbered model list (the current model is marked "← current"), then reply `/model <number>` within 5 minutes to switch to that entry. The ambiguity priority is fixed: exact model-name match > snapshot index (only while the most recent picker list is fresh and 1 ≤ n ≤ length) > an expired/out-of-range error. `--provider` / `--global` / `--session` / `--once` keep their existing semantics and never resolve as numbers; sessions that were never shown a picker are unaffected.
+
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 
 ---

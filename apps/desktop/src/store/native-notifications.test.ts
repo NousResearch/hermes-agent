@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
 
 import { $gateway } from './gateway'
 import {
@@ -18,7 +19,7 @@ import {
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
-import { $activeSessionId, setActiveSessionId } from './session'
+import { $activeSessionId, setActiveSessionId, setSessions } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -165,6 +166,47 @@ describe('dispatchNativeNotification preferences', () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
     )
+  })
+})
+
+describe('dispatchNativeNotification session context', () => {
+  it('names the session in a blocking-prompt title so parked approvals stay tellable apart', () => {
+    setSessions([{ id: 'review-chat', title: 'Fix the flaky test' } as SessionInfo])
+
+    try {
+      dispatchNativeNotification({ kind: 'approval', sessionId: 'review-chat', title: 'Approval needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — Fix the flaky test' }))
+    } finally {
+      setSessions([])
+    }
+  })
+
+  it('carries the same label on the sibling input.request toast', () => {
+    setSessions([{ id: 'named-chat', title: 'Migrate the schema' } as SessionInfo])
+
+    try {
+      dispatchNativeNotification({ kind: 'input', sessionId: 'named-chat', title: 'Input needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Input needed — Migrate the schema' }))
+    } finally {
+      setSessions([])
+    }
+  })
+
+  it('falls back to a short id tail while the session has no row yet', () => {
+    dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
+  })
+
+  it('leaves a completion title alone (only blocking prompts need the session)', () => {
+    setSessions([{ id: 'done-chat', title: 'Fix the flaky test' } as SessionInfo])
+    setActiveSessionId('done-chat')
+
+    try {
+      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'done-chat', title: 'Hermes finished' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hermes finished' }))
+    } finally {
+      setSessions([])
+    }
   })
 })
 

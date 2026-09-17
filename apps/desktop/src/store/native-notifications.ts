@@ -13,7 +13,7 @@ import {
   sessionApprovalRequests
 } from './prompts'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
-import { $activeSessionId } from './session'
+import { $activeSessionId, ownerLookupSessionRows, sessionMatchesStoredId } from './session'
 import { storedSessionIdForRuntimeId } from './session-states'
 
 export type { HermesOpenTarget }
@@ -155,6 +155,26 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
   return isBackgrounded() && Boolean(sessionId) && sessionId === $activeSessionId.get()
 }
 
+/** Last-resort label for a session the renderer has no row for (yet): the id
+ *  tail still tells three parked approvals apart. */
+const shortSessionId = (id: string) => `#${id.slice(-6)}`
+
+/** Name the session in a blocking-prompt title: "Approval needed — Fix the flaky
+ *  test". Without it every parallel parked approval raises an identical OS toast
+ *  and the user cannot tell which chat is waiting (the runtime id the caller
+ *  already passes is the whole hint needed). */
+function withSessionLabel(title: string, runtimeSessionId: string): string {
+  const storedId = storedSessionIdForRuntimeId(runtimeSessionId) ?? runtimeSessionId
+  const row = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedId))
+  const name = row?.title?.trim() || row?.preview?.trim()
+
+  if (!name) {
+    return `${title} — ${shortSessionId(storedId)}`
+  }
+
+  return `${title} — ${name.length > 80 ? `${name.slice(0, 80).trimEnd()}…` : name}`
+}
+
 export interface NativeNotificationAction {
   id: string
   text: string
@@ -214,6 +234,9 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     return false
   }
 
+  const title =
+    ATTENTION_KINDS.has(input.kind) && input.sessionId ? withSessionLabel(input.title, input.sessionId) : input.title
+
   void window.hermesDesktop?.notify({
     actions: input.actions,
     activate: input.activate,
@@ -225,7 +248,7 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
     sessionId: input.sessionId ?? undefined,
     silent: input.silent,
     tag: input.tag,
-    title: input.title
+    title
   })
 
   return true

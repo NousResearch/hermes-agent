@@ -1279,6 +1279,7 @@ export interface HermesApiRequest {
   path: string
   method?: string
   body?: unknown
+  headers?: Record<string, string>
   // Single-file multipart upload (FastAPI UploadFile endpoints). Mutually
   // exclusive with `body`; bytes transfer over IPC as a structured-clone
   // ArrayBuffer. Token-mode backends only.

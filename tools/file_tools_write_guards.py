@@ -431,7 +431,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     silently destroys the document (port of nearai/ironclaw#7109).
     """
     if has_opaque_document_extension(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
+        ext = os.path.splitext(filepath)[1].lower()
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -443,7 +443,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
     # WAL dropped next to a live database is picked up on the next open.
     if is_sqlite_sidecar(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
+        ext = os.path.splitext(filepath)[1].lower()
         return (
             f"Refusing to write plain text to binary SQLite sidecar '{filepath}' ({ext}). "
             "A -wal/-shm/-journal file holds raw database pages that SQLite "

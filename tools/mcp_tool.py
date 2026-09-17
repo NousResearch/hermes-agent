@@ -505,16 +505,8 @@ def _reset_server_error(server_name: str) -> None:
     _server_errors_all_application.pop(key, None)
 
 
-<<<<<<< HEAD
 # Connection keys opted into parallel tool calls. Outside multiplexing these remain bare raw
 # names; under multiplexing they include the owning profile scope.
-||||||| b6b53c69a6
-# Raw server names opted into parallel tool calls (``foo-bar``/``foo_bar`` sanitize alike but
-# must not share policy).
-=======
-# Servers opted into parallel tool calls, keyed by the consuming profile's own key (``foo-bar``/
-# ``foo_bar`` sanitize alike but must not share policy; neither do two profiles' same-named servers).
->>>>>>> upstream/main
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}

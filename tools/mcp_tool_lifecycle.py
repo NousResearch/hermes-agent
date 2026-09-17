@@ -140,19 +140,11 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     from tools.mcp_tool_scope import _key_name
     wildcard = scope is None and names is None
     with _core._lock:
-<<<<<<< HEAD
         selected = [key for key in _core._servers if scope is None or _core._server_scope_keys.get(key) == scope]
         adopted = [] if scope is None else [
             key for key, scopes in _core._server_tool_scopes.items()
             if scope in scopes and _core._server_scope_keys.get(key) != scope
         ]
-||||||| b6b53c69a6
-        selected = [key for key in _core._servers if scope is None or _core._server_scope_keys.get(key) == scope]
-=======
-        selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
-        if names is not None:
-            selected = [key for key in selected if _key_name(key) in names]
->>>>>>> upstream/main
         servers_snapshot = [_core._servers[key] for key in selected]
         if names is not None:
             selected_status = set(selected)

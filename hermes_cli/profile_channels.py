@@ -367,7 +367,6 @@ def _remove_entry(entry: Path) -> None:
     """Remove a state entry without following symlinks (``rmtree`` refuses a symlinked dir and would
     otherwise leave the copied link in place; unlinking the link never touches the source)."""
     import shutil
-<<<<<<< HEAD
     index = ChannelKeyIndex()
     preserve = set()
     if not _platform_enabled_in_config(profile_dir / "config.yaml", "homeassistant"):
@@ -377,23 +376,6 @@ def _remove_entry(entry: Path) -> None:
     stripped: Dict[str, List[str]] = dict(
         strip_channel_env_file(profile_dir / ".env", index, preserve_platforms=preserve)
     )
-||||||| b6b53c69a6
-    index = ChannelKeyIndex()
-    stripped: Dict[str, List[str]] = dict(strip_channel_env_file(profile_dir / ".env", index))
-=======
-    if entry.is_symlink() or not entry.is_dir():
-        entry.unlink(missing_ok=True)
-    else:
-        shutil.rmtree(entry, ignore_errors=True)
-
-
-def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir: Optional[Path] = None) -> Dict[str, List[str]]:
-    """Strip channel credentials/identity from a freshly cloned profile, judged in ``source_dir``'s
-    plugin scope. ``include_state`` also drops the runtime state ``--clone-all`` copied. Returns
-    ``{platform|"config"|"state": [what]}``."""
-    index = ChannelKeyIndex(source_dir)
-    stripped: Dict[str, List[str]] = dict(strip_channel_env_file(profile_dir / ".env", index))
->>>>>>> upstream/main
     config_paths = strip_channel_config(profile_dir / "config.yaml", index)
     if config_paths:
         stripped["config"] = config_paths
@@ -418,13 +400,7 @@ def channel_platforms_configured(profile_dir: Path) -> List[str]:
         for line in env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
             key = _env_key_of_line(line)
             platform = index.platform_for(key) if key else None
-<<<<<<< HEAD
             if platform and (platform != "homeassistant" or homeassistant_enabled):
-||||||| b6b53c69a6
-            if platform:
-=======
-            if platform and platform != GATEWAY_POLICY_ID:
->>>>>>> upstream/main
                 found.add(platform)
     config_path = profile_dir / "config.yaml"
     if config_path.is_file():

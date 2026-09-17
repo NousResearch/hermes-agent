@@ -1483,73 +1483,6 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print("  can refuse to start another copy until this process stops.")
 
 
-<<<<<<< HEAD
-||||||| b6b53c69a6
-def _print_served_ingress_urls(profile: str | None = None) -> None:
-    """Callback URLs of inbound-port platforms the live multiplexer serves for secondary profiles
-    (the value to paste into the Twilio / LINE / Teams / BlueBubbles console)."""
-    try:
-        from hermes_cli.gateway_multiplex_served import format_ingress_url_lines, served_profile_ingress_urls
-        urls = served_profile_ingress_urls(profile)
-    except Exception:
-        return
-    if not urls:
-        return
-    print()
-    print("Inbound callback URLs on the shared listener:")
-    for name, per_platform in sorted(urls.items()):
-        for line in format_ingress_url_lines(per_platform, indent=f"  {name}/" if not profile else "  "):
-            print(line)
-
-
-=======
-def _print_multiplex_standalone_reason() -> None:
-    """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
-    try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
-    except Exception:
-        return
-    if reason:
-        print(f"⚠ Serving the default profile only (gateway.multiplex_profiles unset): {reason}")
-        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
-        print("  Keep per-profile gateways: hermes config set gateway.multiplex_profiles false")
-
-
-def _print_served_ingress_urls(profile: str | None = None) -> None:
-    """Callback URLs of inbound-port platforms the live multiplexer serves for secondary profiles
-    (the value to paste into the Twilio / LINE / Teams / BlueBubbles console)."""
-    try:
-        from hermes_cli.gateway_multiplex_served import format_ingress_url_lines, served_profile_ingress_urls
-        urls = served_profile_ingress_urls(profile)
-    except Exception:
-        return
-    if not urls:
-        return
-    print()
-    print("Inbound callback URLs on the shared listener:")
-    for name, per_platform in sorted(urls.items()):
-        for line in format_ingress_url_lines(per_platform, indent=f"  {name}/" if not profile else "  "):
-            print(line)
-
-
-def _print_unserved_shared_ingress(profile: str | None) -> None:
-    """Shared-ingress platforms (WhatsApp/Relay) this served profile enabled that the multiplexer runs
-    only on the default profile — the ``whatsapp: not served under multiplex`` line."""
-    try:
-        from hermes_cli.gateway_multiplex_served import served_profile_unserved_platforms
-        unserved = served_profile_unserved_platforms(profile or "")
-    except Exception:
-        return
-    if not unserved:
-        return
-    print()
-    for platform, reason in sorted(unserved.items()):
-        print(f"  ⚠ {platform}: {reason}")
-    print("  Enable it on the default profile (shared ingress serves every profile), or disable it here.")
-
-
->>>>>>> upstream/main
 def _print_other_profiles_gateway_status() -> None:
     """Print other profiles' running gateways at the bottom of ``hermes gateway status``."""
     try:
@@ -4525,7 +4458,6 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         if recorded is not None:
             return normalize_profile_name(suffix) in {normalize_profile_name(p) for p in recorded}
 
-<<<<<<< HEAD
         from gateway.config import _env_multiplex_profiles_override
         cfg_path = default_root / "config.yaml"
         cfg = {}
@@ -4550,30 +4482,6 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         from gateway.config import _normalize_multiplex_profile_allowlist
         profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
         return profile_allowlist is None or normalize_profile_name(suffix) in profile_allowlist
-||||||| b6b53c69a6
-        from gateway.config import _env_multiplex_profiles_override
-        cfg_path = default_root / "config.yaml"
-        cfg = {}
-        if cfg_path.exists():
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path)
-
-        env_multiplex = _env_multiplex_profiles_override()
-        if env_multiplex is False:
-            return False
-        if env_multiplex is not True:
-            if not cfg_path.exists():
-                return False
-            if not (cfg.get("multiplex_profiles") or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")):
-                return False
-
-        return True  # a multiplexing default gateway serves every named profile
-=======
-        # No record (older gateway): only an EXPLICIT opt-in counts. The unset default is settled by
-        # the gateway at boot (it may have stayed standalone); a CLI process must not guess it on.
-        from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
-        return explicit_multiplex_flag(default_root) is True  # a multiplexer serves every named profile
->>>>>>> upstream/main
     except Exception:
         logger.debug("Multiplexer-serving probe failed", exc_info=True)
         return False
@@ -6531,13 +6439,6 @@ def _cmd_status(args):
         # Satellite profile: the default multiplexer is the live inbound process for it.
         print("✓ Gateway is running via the default-profile multiplexer")
         print("  Manage it from the default profile: hermes gateway status")
-<<<<<<< HEAD
-||||||| b6b53c69a6
-        _print_served_ingress_urls(get_active_profile_name())
-=======
-        _print_served_ingress_urls(get_active_profile_name())
-        _print_unserved_shared_ingress(get_active_profile_name())
->>>>>>> upstream/main
     elif (kind := _installed_service_kind_for(lambda: _windows_service_installed)) is not None:
         if kind == "systemd":
             systemd_status(deep, system=system, full=full)
@@ -6546,26 +6447,12 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
-<<<<<<< HEAD
-||||||| b6b53c69a6
-        _print_served_ingress_urls()
-=======
-        _print_multiplex_standalone_reason()
-        _print_served_ingress_urls()
->>>>>>> upstream/main
     else:
         pids = list(snapshot.gateway_pids)
         if pids:
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
-<<<<<<< HEAD
-||||||| b6b53c69a6
-            _print_served_ingress_urls()
-=======
-            _print_multiplex_standalone_reason()
-            _print_served_ingress_urls()
->>>>>>> upstream/main
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
         else:

@@ -1985,16 +1985,6 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
-<<<<<<< HEAD
-||||||| b6b53c69a6
-        # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
-        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
-=======
-        # Allow all users without allowlists (security opt-in).
-        "allow_all_users": False,
-        # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
-        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
->>>>>>> upstream/main
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
         # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
         # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S
@@ -2258,45 +2248,6 @@ DEFAULT_CONFIG = {
     },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
-<<<<<<< HEAD
-||||||| b6b53c69a6
-    # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
-    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
-    # External password managers are unlocked per session with a masked master-password prompt;
-    # headless sessions (cron, webhook, API) never prompt and see them as locked.
-    "vault": {
-        "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
-            "account": "",          # account shorthand for `op --account`; empty = default account.
-            "binary_path": "",      # absolute path to op; empty = PATH.
-            # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
-            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
-        },
-        "bitwarden": {
-            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
-            "binary_path": "",      # absolute path to bw; empty = PATH.
-        },
-    },
-=======
-    # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
-    # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
-    # External password managers are unlocked per session with a masked master-password prompt;
-    # headless sessions (cron, webhook, API) never prompt and see them as locked.
-    "vault": {
-        "onepassword": {
-            # Detected managers are login sources unless the user opts out (vault.<name>.enabled: false).
-            "enabled": True,        # `op` CLI: Login items with a website URL become fillable handles.
-            "account": "",          # account shorthand for `op --account`; empty = default account.
-            "binary_path": "",      # absolute path to op; empty = PATH.
-            # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
-            "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
-        },
-        "bitwarden": {
-            "enabled": True,        # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
-            "binary_path": "",      # absolute path to bw; empty = PATH.
-        },
-    },
->>>>>>> upstream/main
     "secrets": {
         # Optional ordering of enabled sources (e.g. [onepassword, bitwarden]); default registration
         # order. Mapped sources (explicit VAR→ref) always beat bulk sources (BSM project dumps);

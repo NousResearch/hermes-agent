@@ -539,16 +539,8 @@ class CLISessionMixin:
                 self._session_db.end_session(old_session_id, "new_session")
             self._discard_session_if_empty(old_session_id)
 
-<<<<<<< HEAD
         self.session_start = new_session_start
         self.session_id = new_session_id
-||||||| b6b53c69a6
-        self.session_start = datetime.now()
-        self.session_id = f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-=======
-        self.session_start = datetime.now()
-        self.session_id = new_session_id(self.session_start)
->>>>>>> upstream/main
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
@@ -556,13 +548,7 @@ class CLISessionMixin:
         self._resumed = False
         # An explicit -m/--model was for the previous session only.
         self._explicit_model_override = False
-<<<<<<< HEAD
         self.reasoning_config = new_reasoning_config
-||||||| b6b53c69a6
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", ""))
-=======
->>>>>>> upstream/main
         # Session-scoped overrides (/model --session, /fast, one-turn restores) don't carry over.
         # Re-derive model/provider and service tier from config.yaml so a session-only switch never leaks
         # into the next session (#48055, #23131).

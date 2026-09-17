@@ -3078,15 +3078,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-<<<<<<< HEAD
 _MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider", "session_id", "cache_scope")
-||||||| b6b53c69a6
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
-=======
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
-    "requested_provider", "session_id", "cache_scope",
-)
->>>>>>> upstream/main
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -4295,20 +4287,7 @@ def _try_main_agent_model_fallback(
                        base_url="", api_key="", api_mode="")
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-<<<<<<< HEAD
     main_base_url = str(runtime.get("base_url") or "").strip() or _custom_health_base_url(main_provider)
-||||||| b6b53c69a6
-    main_base_url = _custom_health_base_url(main_provider)
-=======
-    if task == "vision" and (
-            main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
-        # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
-        # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
-        logger.info("Auxiliary vision: %s on %s — main agent provider %s accepts no image input, not falling back",
-                    reason, failed_provider, main_provider)
-        return None, None, ""
-    main_base_url = _custom_health_base_url(main_provider)
->>>>>>> upstream/main
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
             failure_scope=failure_scope)(main_provider, main_model, main_base_url):
@@ -7620,21 +7599,10 @@ def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
     failed_model: Optional[str], failure_scope: Any,
 ) -> Tuple[Optional[Any], Optional[str], str]:
-<<<<<<< HEAD
     """Next candidate after a fallback entry was quarantined mid-request: remaining configured
     entries (task chain, then main chain on auto) before the discovery chain."""
     reason = "stale fallback credential"
     fallback_kwargs = {"async_mode": True} if route.async_mode else {}
-||||||| b6b53c69a6
-    """Next candidate after a fallback entry was quarantined mid-request: remaining configured
-    entries (task chain, then main chain on auto) before the discovery chain."""
-    reason = "stale fallback credential"
-=======
-    """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
-    capacity error): remaining configured entries (task chain, then main chain on auto) before the
-    discovery chain."""
-    reason = "fallback candidate unavailable"
->>>>>>> upstream/main
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
         failed_base_url=route.base_info, failure_scope=failure_scope, **fallback_kwargs)
@@ -7709,7 +7677,6 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     elif fb_client is None:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
-<<<<<<< HEAD
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope, **fallback_kwargs)
     if fb_client is not None:
         # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
@@ -7738,42 +7705,6 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
                     task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
                 if fb_client is None:
                     break
-||||||| b6b53c69a6
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    if fb_client is not None:
-        # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
-        # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
-        # their turn), then discovery where the selection policy allows it.
-        for _pass in range(2):
-            _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-            fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
-            if fb_resp is not None:
-                return fb_resp
-            if _pass == 0:
-                fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
-                    task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
-                if fb_client is None:
-                    break
-=======
-            failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
-    # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
-    # lands on the next entry, then discovery where the selection policy allows it (#106367).
-    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
-    # re-selection hands back a lane already tried, so each lane is attempted at most once.
-    tried_lanes: set = set()
-    while fb_client is not None:
-        lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
-        if lane in tried_lanes:
-            break
-        tried_lanes.add(lane)
-        _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-        fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
-        if fb_resp is not None:
-            return fb_resp
-        fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
-            task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
->>>>>>> upstream/main
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator
@@ -7798,19 +7729,12 @@ def _aux_recovery_ladder(
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
-<<<<<<< HEAD
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
     from agent.llm_egress_firewall import EgressBlocked
     if isinstance(first_err, EgressBlocked):
         from agent.auxiliary_egress_recovery import local_fallback_steps
         response = yield from local_fallback_steps(route, _LadderStep)
         return response if response is not None else _RERAISE_ORIGINAL
-||||||| b6b53c69a6
-        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
-=======
-        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
->>>>>>> upstream/main
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp

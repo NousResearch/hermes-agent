@@ -316,7 +316,6 @@ export function ChatRuntimeBoundary({
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.
   const transcriptTailStates = useStore($transcriptTailBySessionId)
-<<<<<<< HEAD
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
   const ownerRoute = storedId
@@ -331,19 +330,6 @@ export function ChatRuntimeBoundary({
     [ownerRoute]
   )
 
-||||||| b6b53c69a6
-  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
-
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
-
-  const tailProfile = ownerRoute
-    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
-    : undefined
-
-=======
->>>>>>> upstream/main
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 

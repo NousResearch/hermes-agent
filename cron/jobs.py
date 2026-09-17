@@ -34,14 +34,7 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-<<<<<<< HEAD
 from utils import atomic_replace, atomic_write_text, is_truthy_value
-||||||| b6b53c69a6
-from utils import atomic_replace, atomic_write_text
-=======
-from hermes_time import get_timezone
-from utils import atomic_replace, atomic_write_text
->>>>>>> upstream/main
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.

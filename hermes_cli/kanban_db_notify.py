@@ -100,22 +100,7 @@ def add_notify_sub(
     # delivery mechanism at all. Explicit modes still win.
     insert_mode = valid_mode or ("notify+wake" if platform == "api_server" else "notify")
     key = _sub_key(task_id, platform, chat_id, thread_id)
-<<<<<<< HEAD
     with _kb.write_txn(conn, allow_nested=allow_nested):
-||||||| b6b53c69a6
-    with _kb.write_txn(conn):
-=======
-    with _kb.write_txn(conn):
-        existing = conn.execute(
-            "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
-            key,
-        ).fetchone()
-        existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
-        merged_metadata = dict(existing_metadata)
-        if delivery_metadata:
-            merged_metadata.update(delivery_metadata)
-        metadata_json = _encode_notify_delivery_metadata(merged_metadata) if merged_metadata else None
->>>>>>> upstream/main
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs

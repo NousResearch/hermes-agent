@@ -25,15 +25,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-<<<<<<< HEAD
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home, get_hermes_home_override, mkdir_under_hermes_home
-||||||| b6b53c69a6
-from agent.message_sanitization import _sanitize_surrogates
-from hermes_constants import get_hermes_home, mkdir_under_hermes_home
-=======
-from hermes_constants import get_hermes_home, mkdir_under_hermes_home
->>>>>>> upstream/main
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import (
@@ -467,13 +460,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-<<<<<<< HEAD
     SessionMessagesMixin, SessionWorktreesMixin,
-||||||| b6b53c69a6
-    SessionMessagesMixin,
-=======
-    SessionMessagesMixin, SessionRewindMixin,
->>>>>>> upstream/main
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 

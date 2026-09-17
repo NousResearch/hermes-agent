@@ -451,39 +451,14 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
-<<<<<<< HEAD
             return _err(
-||||||| b6b53c69a6
-            error = _err(
-=======
-            failure = describe_storage_failure(_db_error)
-            error = _err(
->>>>>>> upstream/main
                 rid, 5072,
-<<<<<<< HEAD
                 "session storage unavailable: "
                 f"{_db_error or 'state.db could not be opened'} — the message "
                 "was not saved; repair state.db and try again")
         _bind_conversation_worktree_on_submit(session)
         _persist_branch_seed(session)
-||||||| b6b53c69a6
-                "session storage unavailable: "
-                f"{_db_error or 'state.db could not be opened'} — the message "
-                "was not saved; repair state.db and try again")
-        else:
-            _persist_branch_seed(session)
-            return None
-=======
-                f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
-                f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, _db_error))
-        else:
-            _persist_branch_seed(session)
-            _persist_submit_user_row(session, text, display_kind)
-            return None
->>>>>>> upstream/main
     except Exception as exc:
-<<<<<<< HEAD
         from hermes_state_errors import is_disk_full_error
         with session["history_lock"]:
             session["running"] = False
@@ -491,56 +466,11 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
             _clear_inflight_turn(session)
         if is_disk_full_error(exc):
             return _err(
-||||||| b6b53c69a6
-        from hermes_state_errors import is_disk_full_error
-        if is_disk_full_error(exc):
-            error = _err(
-=======
-        failure = describe_storage_failure(exc)
-        if failure.code == "disk_full":
-            error = _err(
->>>>>>> upstream/main
                 rid, 5070,
-<<<<<<< HEAD
                 "disk full: session storage could not be written — free some disk space and try again")
         logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
         return _err(rid, 5071, f"session storage could not be written: {exc}")
     return None
-||||||| b6b53c69a6
-                "disk full: session storage could not be written — free some disk space and try again")
-        else:
-            logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(rid, 5071, f"session storage could not be written: {exc}")
-    # No turn thread will start, so neither resume nor the busy queue may see
-    # this rejected prompt as live. Release the slot a turn would normally own.
-    with session["history_lock"]:
-        session["running"] = False
-        session["last_active"] = time.time()
-        session.pop("_hosted_room_task", None)
-        _clear_inflight_turn(session)
-        _release_active_session_slot(session)
-    return error
-=======
-                "Session storage could not be written, so this message was not saved: the disk is full. "
-                "Free some disk space, then send your message again.",
-                data=_storage_error_data(failure, exc))
-        else:
-            logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(
-                rid, 5071,
-                f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
-                f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, exc))
-    # No turn thread will start, so neither resume nor the busy queue may see
-    # this rejected prompt as live. Release the slot a turn would normally own.
-    with session["history_lock"]:
-        session["running"] = False
-        session["last_active"] = time.time()
-        session.pop("_hosted_room_task", None)
-        _clear_inflight_turn(session)
-        _release_active_session_slot(session)
-    return error
->>>>>>> upstream/main
 
 
 def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None):
@@ -738,7 +668,6 @@ def _(rid, params: dict) -> dict:
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-<<<<<<< HEAD
     err, survivor_fields = _admit_prompt_submit(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids,
         hosted_task, internal_hosted_submit, t, reattach=True,
@@ -747,13 +676,6 @@ def _(rid, params: dict) -> dict:
             if params.get("surface") in {"hud", "voice-live"}
             else ""
         ))
-||||||| b6b53c69a6
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
-=======
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
->>>>>>> upstream/main
     if err is not None:
         return err
     turn_author = session.pop("_accepted_turn_author", None)
@@ -775,14 +697,6 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-<<<<<<< HEAD
-||||||| b6b53c69a6
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
-        return err
-=======
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
-        return err
->>>>>>> upstream/main
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
@@ -1255,7 +1169,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "ok", "remaining": remaining})
 
 
-<<<<<<< HEAD
 _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
@@ -1263,31 +1176,6 @@ _LATE_RESPOND_KEYS = {
 for _name, _key in _LATE_RESPOND_KEYS.items():
     method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
 del _name, _key
-||||||| b6b53c69a6
-_LATE_RESPOND_KEYS = {
-    "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
-    "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
-    "vault.save_login.respond": "login", "vault.code.respond": "code"}
-for _name, _key in _LATE_RESPOND_KEYS.items():
-    method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
-del _name, _key
-=======
-@method("request.answer")
-def _(rid, params: dict) -> dict:
-    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
-    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
-    the norm; this is the proxy for it. ``expired`` when the request already ended."""
-    request_id = str(params.get("id") or "")
-    result = params.get("result")
-    if not request_id or not isinstance(result, dict):
-        return _err(rid, 4002, "id and an object result required")
-    from tui_gateway import server_requests
-    frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
-        return _ok(rid, {"status": "ok"})
-    return _ok(rid, {"status": "expired"})
->>>>>>> upstream/main
 
 
 # ── approvals ───────────────────────────────────────────────────────────────

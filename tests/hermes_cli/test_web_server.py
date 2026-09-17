@@ -776,27 +776,13 @@ class TestWebServerEndpoints:
         seen = {}
 
         def _pid(pid_path=None, **kw):
-<<<<<<< HEAD
             seen["pid_path"] = pid_path
             seen.setdefault("pid_paths", []).append(pid_path)
-||||||| b6b53c69a6
-            seen["pid_path"] = pid_path
-=======
-            # The served-profile probe also verifies the DEFAULT home's gateway identity; the
-            # contract here is that the worker's OWN pid file is what the scoped rung reads.
-            seen.setdefault("pid_paths", []).append(pid_path)
->>>>>>> upstream/main
             return None
 
         def _runtime(path=None):
-<<<<<<< HEAD
             seen["status_path"] = path
             seen.setdefault("status_paths", []).append(path)
-||||||| b6b53c69a6
-            seen["status_path"] = path
-=======
-            seen.setdefault("status_paths", []).append(path)
->>>>>>> upstream/main
             return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
@@ -812,19 +798,9 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/messaging/platforms?profile=worker")
 
         assert resp.status_code == 200
-<<<<<<< HEAD
         assert worker_home / "gateway.pid" in seen["pid_paths"]
         assert worker_home / "gateway_state.json" in seen["status_paths"]
         assert seen["expected_home"] == worker_home
-||||||| b6b53c69a6
-        assert seen["pid_path"] == worker_home / "gateway.pid"
-        assert seen["status_path"] == worker_home / "gateway_state.json"
-        assert seen["expected_home"] == worker_home
-=======
-        assert worker_home / "gateway.pid" in seen["pid_paths"]
-        assert worker_home / "gateway_state.json" in seen["status_paths"]
-        assert worker_home in seen["expected_homes"]
->>>>>>> upstream/main
 
 
 

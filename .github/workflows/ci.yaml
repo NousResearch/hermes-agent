@@ -23,14 +23,6 @@ on:
 
 permissions:
   contents: read
-<<<<<<< HEAD
-||||||| b6b53c69a6
-  pull-requests: write # needed by lint (PR comment) + supply-chain review_status
-  actions: read # needed by osv-scanner (SARIF upload)
-  security-events: write # needed by osv-scanner (SARIF upload)
-=======
-  pull-requests: write # needed by lint (PR comment) + supply-chain review_status
->>>>>>> upstream/main
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -233,7 +225,6 @@ jobs:
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
       supply_chain: ${{ needs.supply-chain.outputs.critical_findings == 'true' }}
 
-<<<<<<< HEAD
   osv-scanner:
     name: OSV scan
     permissions:
@@ -249,13 +240,6 @@ jobs:
       # boundaries, which previously recreated the Advanced Security warning.
       upload-sarif: false
 
-||||||| b6b53c69a6
-  osv-scanner:
-    name: OSV scan
-    uses: ./.github/workflows/osv-scanner.yml
-
-=======
->>>>>>> upstream/main
   # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``

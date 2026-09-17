@@ -40,18 +40,10 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "beta"))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-<<<<<<< HEAD
     monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
     # The production probe validates lock, start-time, and command identity through
     # gateway.status.get_running_pid; keep this unit test focused on multiplex routing.
     monkeypatch.setattr(gateway_multiplex_served, "live_default_gateway_pid", lambda: os.getpid())
-||||||| b6b53c69a6
-    monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
-=======
-    monkeypatch.setattr(
-        status, "_read_process_cmdline", lambda pid: "python -m hermes_cli.main gateway run --replace"
-    )
->>>>>>> upstream/main
 
 
 def _run_status():

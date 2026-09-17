@@ -11,16 +11,8 @@ import { host } from '@hermes/plugin-sdk'
 import { PROFILE_SESSION_LIST_LIMIT } from './canonical-chat'
 import { cachedUnionRoster } from './data'
 import { $groupChats } from './group-chat'
-<<<<<<< HEAD
 import { groupMemberKey } from './group-membership'
 import { backendTargetProfile, botConnectionRoute } from './routing'
-||||||| b6b53c69a6
-import { groupMemberKey } from './group-membership'
-import { backendTargetProfile, botConnectionRoute, requestForBot } from './routing'
-=======
-import { groupMemberKey, groupSessionMemberKey } from './group-membership'
-import { backendTargetProfile, botConnectionRoute, requestForBot } from './routing'
->>>>>>> upstream/main
 import type { GroupMember, RosterRow } from './types'
 
 /** The slice of the plugin context the scheduler needs to park its timer. */

@@ -1028,7 +1028,6 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-<<<<<<< HEAD
             from hermes_cli.kanban_completion_policy import CompletionPolicyError
 
             try:
@@ -1037,20 +1036,6 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             except CompletionPolicyError as error:
                 fail_msg[tid] = str(error)
                 return False
-||||||| b6b53c69a6
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
-=======
-            try:
-                return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                        expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
-            except kb.LiveClaimError:
-                fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
-                                 f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
-                                 f"--force to close its run and complete anyway.")
-                return False
->>>>>>> upstream/main
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

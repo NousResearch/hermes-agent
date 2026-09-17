@@ -1244,7 +1244,6 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
-<<<<<<< HEAD
 -- Append-only candidate requests and promotion receipts for specialist
 -- discovery. Capability declarations and revocations are owned by
 -- ``gateway.capability_registry``; these tables only store the inert request
@@ -1276,10 +1275,6 @@ BEFORE DELETE ON candidate_profile_requests BEGIN
 END;
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
-||||||| b6b53c69a6
-CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
-=======
->>>>>>> upstream/main
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
@@ -1543,37 +1538,10 @@ def create_task(
                     },
                 )
                 if task_status == "blocked":
-<<<<<<< HEAD
                     _append_event(conn, task_id, "blocked", {
                         "reason": "initial_status", "kind": "needs_input",
                         "source_status": "created",
                     })
-||||||| b6b53c69a6
-                    _append_event(
-                        conn,
-                        task_id,
-                        "blocked",
-                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
-                    )
-=======
-                    _append_event(
-                        conn,
-                        task_id,
-                        "blocked",
-                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
-                    )
-                if task_status == "todo":
-                    # Parked behind an open parent: record why, exactly as
-                    # link_tasks does, so the board never shows an unexplained todo.
-                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
-                    if gating:
-                        _append_event(
-                            conn,
-                            task_id,
-                            "dependency_wait",
-                            {"reason": "parent_not_done", "parent": gating[0]},
-                        )
->>>>>>> upstream/main
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -2746,14 +2714,8 @@ def release_stale_claims(
             continue
 
         termination = _terminate_reclaimed_worker(
-<<<<<<< HEAD
             row["worker_pid"], row["claim_lock"],
             task_id=row["id"], signal_fn=signal_fn,
-||||||| b6b53c69a6
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
-=======
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
->>>>>>> upstream/main
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -3106,14 +3068,8 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-<<<<<<< HEAD
     fire_lifecycle_hook: bool = True,
     board: Optional[str] = None,
-||||||| b6b53c69a6
-    fire_lifecycle_hook: bool = True,
-=======
-    fire_lifecycle_hook: bool = True, force: bool = False,
->>>>>>> upstream/main
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -3158,24 +3114,9 @@ def complete_task(
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
-<<<<<<< HEAD
         prior_status = _task_status(conn, task_id)
         from hermes_cli.kanban_review_recognition import recipient_before_completion, record_approval
         recognition_recipient = recipient_before_completion(conn, task_id, prior_status)
-||||||| b6b53c69a6
-        prior_status = _task_status(conn, task_id)
-=======
-        trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        prior_status = trow["status"] if trow else None
-        # Refuse to close a LIVE worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
-            raise LiveClaimError(task_id)
->>>>>>> upstream/main
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -3690,7 +3631,6 @@ def request_review(
     initial_state = (task.status, task.current_run_id)
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
-<<<<<<< HEAD
     try:
         enforce_review_policies(
             task_id=task_id, board=_lifecycle_board(conn, None), assignee=task.assignee,
@@ -3727,57 +3667,6 @@ def request_review(
         if reviewer is None:
             reviewer = _prior_reviewer(conn, task_id)
             if reviewer is False:
-||||||| b6b53c69a6
-    with write_txn(conn):
-        if not _parents_satisfied(conn, task_id):
-            return _ret(False, "parent dependencies are not satisfied")
-        trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
-            "FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        if trow is None:
-            return _ret(False, "task not found")
-        # Refuse to clear a live worker's claim without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True).
-        if (
-            expected_run_id is None
-            and not force
-            and trow["status"] == "running"
-            and trow["claim_lock"] is not None
-        ):
-            return _ret(
-                False, "task is running under a live claim; pass expected_run_id "
-                "(worker ownership) or force=True (explicit operator "
-                "override) instead of clearing the live run's claim",
-            )
-        implementer = trow["assignee"]
-        if reviewer is None:
-            reviewer = _prior_reviewer(conn, task_id)
-            if reviewer is False:
-=======
-    # Declared (metadata["artifacts"]) and prose-referenced files
-    # must be durable BEFORE anything can clean the scratch workspace up: for a
-    # review-bound card the reviewer's completion is the cleanup trigger.
-    metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
-    now = int(time.time())
-    # Staged copies live outside the txn: a rollback after staging must not
-    # leave orphans that make the retry stage ``name_1.ext`` beside them.
-    staged_copies: list[Path] = []
-    try:
-        with write_txn(conn):
-            if not _parents_satisfied(conn, task_id):
-                return _ret(False, "parent dependencies are not satisfied")
-            trow = conn.execute(
-                "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
-            ).fetchone()
-            if trow is None:
-                return _ret(False, "task not found")
-            # Refuse to clear a live worker's claim without proof of ownership
-            # (expected_run_id) or an explicit human override (force=True);
-            # the same fence as complete_task (_claim_is_live).
-            if expected_run_id is None and not force and _claim_is_live(trow):
->>>>>>> upstream/main
                 return _ret(
                     False, "task is running under a live claim; pass expected_run_id "
                     "(worker ownership) or force=True (explicit operator "
@@ -4299,19 +4188,9 @@ def decompose_triage_task(
     # (create_task, link_tasks, add_comment) must not be called in here.
     now = int(time.time())
     with write_txn(conn):
-<<<<<<< HEAD
         root_row = conn.execute(
             "SELECT * "
             "FROM tasks WHERE id = ?", (task_id,),
-||||||| b6b53c69a6
-        row = conn.execute(
-            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
-            (task_id,),
-=======
-        row = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
-            (task_id,),
->>>>>>> upstream/main
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
             return None
@@ -4424,15 +4303,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
                 reason="archive_termination_unverified",
             )
             return False
-<<<<<<< HEAD
     with write_txn(conn):
-||||||| b6b53c69a6
-        was_running = row["status"] == "running"
-        prev_pid, prev_lock = row["worker_pid"], row["claim_lock"]
-=======
-        was_running = row["status"] == "running"
-        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
->>>>>>> upstream/main
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -4447,18 +4318,6 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             metadata=termination,
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
-<<<<<<< HEAD
-||||||| b6b53c69a6
-    if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn)
-        with write_txn(conn):
-            _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
-=======
-    if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
-        with write_txn(conn):
-            _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
->>>>>>> upstream/main
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).

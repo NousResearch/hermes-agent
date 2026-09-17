@@ -224,16 +224,10 @@ export async function materializeDesktopHalf(
       }
     }
 
-<<<<<<< HEAD
     if (existing.source === sourceDir && (
       existing.sourceRevision === sourceRevision ||
       (!existing.sourceRevision && existing.sourceMtimeMs !== undefined && existing.sourceMtimeMs >= stat.mtimeMs)
     )) {
-||||||| b6b53c69a6
-    if (existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
-=======
-    if (existing && existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
->>>>>>> upstream/main
       return null
     }
   }

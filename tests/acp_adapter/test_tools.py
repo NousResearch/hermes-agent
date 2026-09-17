@@ -93,18 +93,11 @@ class TestBuildToolTitle:
 
     def test_read_file_title(self):
         title = build_tool_title("read_file", {"path": "/etc/hosts"})
-<<<<<<< HEAD:tests/acp/test_tools.py
         assert "/etc/hosts" in title
 
     def test_process_manage_title_uses_process_formatter(self):
         assert build_tool_title("process_manage", {"action": "list"}) == "process list"
 
-||||||| b6b53c69a6:tests/acp/test_tools.py
-        assert "/etc/hosts" in title
-
-=======
-        assert "hosts" in title
->>>>>>> upstream/main:tests/acp_adapter/test_tools.py
 
     def test_search_title(self):
         title = build_tool_title("search_files", {"pattern": "TODO"})

@@ -168,19 +168,6 @@ the plain restart. `/api/status?profile=coder` carries the same list as
 default home's `gateway_state.json`), so it stays correct when the multiplexer was
 enabled only through `GATEWAY_MULTIPLEX_PROFILES` in the default profile's
 environment, or when profiles were added after the gateway started.
-<<<<<<< HEAD
-||||||| b6b53c69a6
-
-=======
-
-The setup flows follow the same rule: `hermes -p coder setup gateway`, `hermes -p coder setup`,
-`hermes -p coder gateway setup` and `hermes -p coder import` configure the profile's bots but
-skip the "install the gateway background service" step for a served profile, printing
-*"Profile 'coder' is already served by the default multiplexer"* instead of registering a
-stray unit or plist that could only sit dead. Add the bot token and the running multiplexer
-picks it up.
-
->>>>>>> upstream/main
 The multiplexer is the single inbound process; a second profile gateway would
 double-bind that profile's platforms. Pass `--force` (accepted by `run`, `start`,
 `install` and `restart`) only if you deliberately want a separate process for that
@@ -210,35 +197,11 @@ no API server is enabled); it serves three kinds of profile-prefixed paths:
   `api_server` or `webhook` itself (the dashboard refuses with `409`; an
   `API_SERVER_KEY` or `WEBHOOK_ENABLED` in the secondary's `.env` wires the
   credential without starting a listener).
-<<<<<<< HEAD
 - **Other port-binding platforms remain standalone-only.** A secondary that
   configures an inbound platform without a tested `/p/<profile>/` ingress is
   rejected during multiplex startup; keep that profile on a standalone gateway
   or disable the platform there. The adapter declaration alone does not create
   shared-listener forwarding.
-||||||| b6b53c69a6
-- **Every other inbound-port platform runs in shared-listener mode.** A
-  secondary that configures Twilio SMS, LINE, Teams, BlueBubbles, Microsoft
-  Graph, WhatsApp Cloud, WeCom callback or Feishu webhook mode gets its **own**
-  adapter instance built without a port; the default listener forwards
-  `/p/<profile>/<the adapter's usual path>` to it. See
-  [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
-=======
-- **Every other inbound-port platform runs in shared-listener mode.** A
-  secondary that configures Twilio SMS, LINE, Teams, BlueBubbles, Microsoft
-  Graph, WhatsApp Cloud, WeCom callback or Feishu webhook mode gets its **own**
-  adapter instance built without a port; the default listener forwards
-  `/p/<profile>/<the adapter's usual path>` to it. See
-  [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
-- **WhatsApp (bridge) and Relay are shared ingress owned by the default profile.**
-  The multiplexer never starts them for a secondary: `WHATSAPP_ENABLED=true` in
-  `profiles/work/.env` does nothing on its own. Enable and configure them on the
-  default profile (their inbound is routed to profiles via `profile_routes`), or
-  disable them in the secondary. The gateway logs one INFO line per skipped
-  secondary platform, and if **no** profile runs it a WARNING says the platform
-  is not being served; `hermes gateway status --profile work` shows
-  `whatsapp: not served under multiplex (shared ingress owned by default)`.
->>>>>>> upstream/main
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.

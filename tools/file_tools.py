@@ -18,14 +18,8 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-<<<<<<< HEAD
 from agent.file_safety import get_read_block_error
 from agent.source_provenance_tools import issue_active_read_provenance
-||||||| b6b53c69a6
-from agent.file_safety import get_read_block_error
-=======
-from agent.file_safety import get_nt_namespace_error, get_read_block_error
->>>>>>> upstream/main
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
@@ -719,12 +713,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
-<<<<<<< HEAD
         content_before_redaction = result.content or ""
-||||||| b6b53c69a6
-=======
-        redacted = False
->>>>>>> upstream/main
         if result.content:
             unredacted = result.content
             result.content = redact_sensitive_text(

@@ -35,17 +35,8 @@ def served_root(tmp_path, monkeypatch):
     import hermes_constants
     import gateway.status as status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-<<<<<<< HEAD
     from hermes_cli import gateway_multiplex_served
     monkeypatch.setattr(gateway_multiplex_served, "live_default_gateway_pid", lambda: os.getpid())
-||||||| b6b53c69a6
-=======
-    # Liveness is a VERIFIED identity: this pytest process stands in for the default gateway only
-    # because its command line reads as one; any other PID keeps its real command line.
-    real_cmdline = status._read_process_cmdline
-    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: (
-        "python -m hermes_cli.main gateway run" if pid == os.getpid() else real_cmdline(pid)))
->>>>>>> upstream/main
     return root
 
 

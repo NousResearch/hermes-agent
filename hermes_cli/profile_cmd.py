@@ -9,12 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
-<<<<<<< HEAD
-||||||| b6b53c69a6
-from typing import Optional
-=======
-from typing import NoReturn, Optional
->>>>>>> upstream/main
 
 
 def _die(msg: str, code: int = 1, *, err: bool = False) -> NoReturn:

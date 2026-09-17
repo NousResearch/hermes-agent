@@ -955,35 +955,8 @@ function ClarifyToolBatchPending({
 
   // qids only exist on the gateway request — args are a hydration-race
   // fallback for display, never answerable (no ids to respond with).
-<<<<<<< HEAD
   const questions = useMemo(() => request?.questions ?? [], [request?.questions])
   const ready = Boolean(request?.requestId) && questions.length > 0
-||||||| b6b53c69a6
-  const questions = request?.questions ?? []
-  const ready = Boolean(request?.requestId) && questions.length > 0
-=======
-  const liveQuestions = request?.questions ?? []
-  const ready = Boolean(request?.requestId) && liveQuestions.length > 0
-
-  // Preview items from the tool args: same question text/choices, synthetic
-  // qids, shown disabled until the live request lands (or indefinitely when
-  // the caller has no gateway request at all — e.g. an external tool call —
-  // so the user sees the question instead of an endless spinner). ONE form
-  // renders both states: every control is disabled while !ready, so nothing
-  // is ever staged under a synthetic qid and the swap to live qids is clean.
-  const previewQuestions: ClarifyQuestion[] = useMemo(
-    () =>
-      (fromArgs?.questions ?? []).map((entry, index) => ({
-        choices: entry.choices ?? null,
-        multiSelect: entry.multiSelect ?? false,
-        qid: `args-${index}`,
-        question: entry.question
-      })),
-    [fromArgs]
-  )
-
-  const questions = ready ? liveQuestions : previewQuestions
->>>>>>> upstream/main
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)

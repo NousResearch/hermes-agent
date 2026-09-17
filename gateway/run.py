@@ -899,19 +899,11 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-<<<<<<< HEAD
     TTL cache), context files."""
-||||||| b6b53c69a6
-    TTL cache), context files, the local Python toolchain probe (#106064)."""
-=======
-    TTL cache), and the local Python toolchain probe (#106064). Context files remain lazy because they
-    need the active turn's agent and model context."""
->>>>>>> upstream/main
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
     tool_defs = model_tools.get_tool_definitions(quiet_mode=True)
-<<<<<<< HEAD
     try:
         from hermes_cli.config import load_config
         from tools.env_probe import get_environment_probe_line
@@ -926,33 +918,6 @@ def _warm_turn_machinery_sync() -> int:
         build_context_files_prompt()
     except Exception:
         logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
-||||||| b6b53c69a6
-    try:
-        from agent.prompt_builder import build_context_files_prompt
-
-        build_context_files_prompt()
-    except Exception:
-        logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
-    from hermes_cli.config import load_config_readonly
-
-    agent_cfg = load_config_readonly().get("agent")
-    if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
-        # The resolver owns remote-backend omission, the single worker, its cache and the bounded
-        # wait; calling it here is what the first prompt build would otherwise do on the hot path.
-        from tools.env_probe import get_environment_probe_line
-
-        get_environment_probe_line()
-=======
-    from hermes_cli.config import load_config_readonly
-
-    agent_cfg = load_config_readonly().get("agent")
-    if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
-        # The resolver owns remote-backend omission, the single worker, its cache and the bounded
-        # wait; calling it here is what the first prompt build would otherwise do on the hot path.
-        from tools.env_probe import get_environment_probe_line
-
-        get_environment_probe_line()
->>>>>>> upstream/main
     return len(tool_defs)
 
 
@@ -1154,21 +1119,9 @@ def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None
     if raw is None and platform_cfg is not None and adapter is None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
     if raw is None:
-<<<<<<< HEAD
         # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra.
         # See #46925.
         raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
-||||||| b6b53c69a6
-        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
-        # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
-        from gateway.authz_mixin import _platform_gate_env
-        raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
-=======
-        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
-        # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
-        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
-        raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
->>>>>>> upstream/main
     return _csv_or_list_to_set(raw)
 
 
@@ -2930,43 +2883,12 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 
 
 def _parse_session_key(session_key: str) -> "dict | None":
-<<<<<<< HEAD
     """Parse a session key (``agent:{profile}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id`` is omitted.
-||||||| b6b53c69a6
-    """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
-
-    ``{ns}`` is ``main`` for the default profile or a named-profile id (profile ids match
-    ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
-    For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
-    is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
-    shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
-=======
-    """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
-
-    ``{ns}`` is ``main`` for the default profile, ``main~`` for a profile literally named ``main``
-    (``gateway.session._session_key_namespace``), or a named-profile id (profile ids match
-    ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
-    For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
-    is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
-    shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
->>>>>>> upstream/main
     """
     parts = session_key.split(":")
-<<<<<<< HEAD
     if len(parts) >= 5 and parts[0] == "agent" and (
         parts[1] == "main" or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", parts[1])
-||||||| b6b53c69a6
-    if (
-        len(parts) >= 5
-        and parts[0] == "agent"
-        and (parts[1] == "main" or _PROFILE_ID_KEY_RE.match(parts[1]))
-=======
-    if (
-        len(parts) >= 5
-        and parts[0] == "agent"
-        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
->>>>>>> upstream/main
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":

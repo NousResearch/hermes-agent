@@ -733,7 +733,6 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     assert response["error"]["code"] == 4001
 
 
-<<<<<<< HEAD
 def test_message_react_accepts_stored_session_key_after_runtime_id_remint(server, monkeypatch):
     """Multi-agent UI actions may retain the durable key after the live id changes."""
     stored_key = "stored-parent-session"
@@ -782,19 +781,6 @@ def test_clear_pending(server):
     assert server._answers["r1"] == ""
 
 
-||||||| b6b53c69a6
-def test_clear_pending(server):
-    ev = threading.Event()
-    # _pending values are (sid, Event) tuples
-    server._pending["r1"] = ("sid-x", ev)
-    server._clear_pending()
-
-    assert ev.is_set()
-    assert server._answers["r1"] == ""
-
-
-=======
->>>>>>> upstream/main
 # ── Session lookup ───────────────────────────────────────────────────
 
 

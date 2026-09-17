@@ -917,7 +917,6 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
-<<<<<<< HEAD
     # Keep the profile layout bootstrapped while leaving scheduled work bound to the source
     # profile.  The ignore callback excludes the root cron directory and all of its contents.
     (profile_dir / "cron").mkdir(parents=True, exist_ok=True)
@@ -929,19 +928,6 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         env_path.unlink()
         env_path.write_bytes(data)
         os.chmod(str(env_path), 0o600)
-||||||| b6b53c69a6
-    # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
-    for subdir in _PROFILE_DIRS:
-        (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
-=======
-    materialized = _materialize_symlinked_files(profile_dir)
-    if materialized:
-        logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
-                    canon, materialized, source_dir)
-    # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
-    for subdir in _PROFILE_DIRS:
-        (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
->>>>>>> upstream/main
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
@@ -1039,7 +1025,6 @@ def create_profile(
         if refusal:
             raise ValueError(refusal)
     clear_named_profile_deleted(profile_dir)
-<<<<<<< HEAD
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
         source_dir = _resolve_clone_source(clone_from)
@@ -1056,41 +1041,6 @@ def create_profile(
         stripped = strip_channel_settings(profile_dir, include_state=clone_all)
         if stripped:
             logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-||||||| b6b53c69a6
-    source_dir = None
-    if clone_from is not None or clone_all or clone_config:
-        source_dir = _resolve_clone_source(clone_from)
-    if clone_all and source_dir:
-        _clone_all_into(source_dir, profile_dir, canon)
-    else:
-        _bootstrap_profile_dir(profile_dir, source_dir)
-    if source_dir is not None and not clone_channels:
-        from hermes_cli.profile_channels import strip_channel_settings
-        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
-        if stripped:
-            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-=======
-    # Build in a hidden sibling and publish with one rename: a running multiplexer rescans profiles/
-    # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
-    # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
-    # below has not removed yet.
-    staging = _clone_staging_dir(profile_dir)
-    try:
-        if clone_all and source_dir:
-            _clone_all_into(source_dir, staging, canon)
-        else:
-            _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
-        if source_dir is not None and not clone_channels:
-            from hermes_cli.profile_channels import strip_channel_settings
-            stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
-            if stripped:
-                logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-        _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
-        os.rename(staging, profile_dir)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
->>>>>>> upstream/main
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare

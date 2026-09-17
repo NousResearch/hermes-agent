@@ -242,17 +242,6 @@ _INLINE_SECRET_ASSIGN_RE = re.compile(
 # bare secret-word key only at line start (optionally after ``export``), so conversational ``I have
 # password=foo`` mid-sentence is left alone.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
-<<<<<<< HEAD
-||||||| b6b53c69a6
-_CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
-=======
-# Rendered line-number prefix: ``5|line`` (read_file), ``6:line`` (grep -n), ``7-line`` (grep -A/-B/-C
-# context lines) and ``     8\tline`` (cat -n / nl: right-aligned number + TAB). Callers put the ONLY
-# leading ``[ \t]*`` in front of it — stacking a second whitespace run around an optional gutter made
-# the anchored passes quadratic on long indented lines (2s per 5k spaces).
-_LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
-_CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
->>>>>>> upstream/main
 # Linear pre-gate for the _CFG_*_RE subs: no secret keyword => neither can match.
 _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
 
@@ -277,13 +266,7 @@ _CFG_DOTTED_RE = re.compile(
 # and ``cat -n`` emits ``     7\tADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those
 # matched, so the rendered read of a secret-bearing file leaked what the raw text masked.
 _CFG_ANCHORED_RE = re.compile(
-<<<<<<< HEAD
     rf"(^[ \t]*(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)=",
-||||||| b6b53c69a6
-    rf"(^[ \t]*(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
-=======
-    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
->>>>>>> upstream/main
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -409,17 +392,8 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # a code snippet, not a leaked secret value.
     if _ENV_LOOKUP_VALUE_RE.match(value):
         return False
-<<<<<<< HEAD
     if key.casefold() == "auth" and value.casefold() == "none":
         return False
-||||||| b6b53c69a6
-=======
-    # An earlier pass already masked this value (``***`` or the ``«redacted:…»`` sentinel). Masking it
-    # again only erases what the sentinel deliberately kept — the vendor label (``Digest ***`` →
-    # ``***``, ``«redacted:ghp_…»`` → ``«redacted-secret»``). Same guard _redact_python_repr_fields uses.
-    if value == "***" or value.startswith("«redacted"):
-        return False
->>>>>>> upstream/main
     if check_keyword and not _key_has_secret_keyword(key):
         return False
     # A shell rc's ``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock`` is configuration the agent must keep
@@ -940,13 +914,7 @@ def _assignment_sub(render, *, check_keyword: bool):
     return _sub
 
 
-<<<<<<< HEAD
 def _redact_assignments(text: str, *, force: bool = False) -> str:
-||||||| b6b53c69a6
-def _redact_assignments(text: str) -> str:
-=======
-def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
->>>>>>> upstream/main
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
     params are intentionally passed through, see redact_sensitive_text).
@@ -957,16 +925,10 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-<<<<<<< HEAD
         _redact_env = _assignment_sub(
             lambda g: f"{g[0]}={g[1] or ''}{_mask_token(g[2])}{g[1] or ''}",
             check_keyword=True,
         )
-||||||| b6b53c69a6
-        _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{_mask_token(g[2])}{g[1]}", check_keyword=True)
-=======
-        _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
->>>>>>> upstream/main
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
             # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
@@ -1099,13 +1061,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
 
     if not code_file:
-<<<<<<< HEAD
         text = _redact_assignments(text, force=force)
-||||||| b6b53c69a6
-        text = _redact_assignments(text)
-=======
-        text = _redact_assignments(text, mask_nonreusable=file_read)
->>>>>>> upstream/main
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)

@@ -190,7 +190,6 @@ def _tool_result_failed(result: Optional[str], tool_name: str | None = None) -> 
 # --- tool-call titles -------------------------------------------------------
 
 
-<<<<<<< HEAD
 def _title_web_extract(args: Args) -> str:
     urls = args.get("urls", [])
     if not urls:
@@ -252,67 +251,6 @@ _TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
 }
 
 
-||||||| b6b53c69a6
-def _title_web_extract(args: Args) -> str:
-    urls = args.get("urls", [])
-    if not urls:
-        return "web extract"
-    first = urls[0]
-    if isinstance(first, dict):
-        first = first.get("url") or first.get("href") or "?"
-    elif not isinstance(first, str):
-        first = "?"
-    return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
-
-
-def _title_delegate(args: Args) -> str:
-    if isinstance(tasks := args.get("tasks"), list) and tasks:
-        return f"delegate batch ({len(tasks)} tasks)"
-    return f"delegate: {_clip(goal, 60)}" if (goal := args.get("goal", "")) else "delegate task"
-
-
-def _title_execute_code(args: Args) -> str:
-    first_line = next((line.strip() for line in _arg(args, "code").splitlines() if line.strip()), "")
-    return _fmt(_clip(first_line, 70), "python: {}", "python code")
-
-
-def _title_skill_manage(args: Args) -> str:
-    name, file_path = _arg(args, "name", default="?"), _arg(args, "file_path")
-    target = _clip(f"{name}/{file_path}" if file_path else name, 64)
-    return f"skill {_arg(args, 'action', default='manage')}: {target}"
-
-
-_TITLE_BUILDERS: Dict[str, Callable[[Args], str]] = {
-    "terminal": lambda a: f"terminal: {_clip(a.get('command', ''), 80)}",
-    "read_file": lambda a: f"read: {a.get('path', '?')}",
-    "write_file": lambda a: f"write: {a.get('path', '?')}",
-    "patch": lambda a: f"patch ({a.get('mode', 'replace')}): {a.get('path', '?')}",
-    "search_files": lambda a: f"search: {a.get('pattern', '?')}",
-    "web_search": lambda a: f"web search: {a.get('query', '?')}",
-    "web_extract": _title_web_extract,
-    "process": lambda a: _fmt(_arg(a, "session_id"), f"process {_arg(a, 'action', default='manage')}: {{}}",
-                              f"process {_arg(a, 'action', default='manage')}"),
-    "delegate_task": _title_delegate,
-    "session_search": lambda a: _fmt(_arg(a, "query"), "session search: {}", "recent sessions"),
-    "memory": lambda a: f"memory {_arg(a, 'action', default='manage')}: {_arg(a, 'target', default='memory')}",
-    "execute_code": _title_execute_code,
-    "todo": lambda a: f"todo ({_plural(len(a['todos']), 'item')})" if isinstance(a.get("todos"), list) else "todo",
-    "skill_view": lambda a: f"skill view ({_arg(a, 'name', default='?')}{_fmt(_arg(a, 'file_path'), '/{}', '')})",
-    "skills_list": lambda a: _fmt(_arg(a, "category"), "skills list ({})", "skills list"),
-    "skill_manage": _title_skill_manage,
-    "browser_navigate": lambda a: f"navigate: {a.get('url', '?')}",
-    "browser_snapshot": lambda a: "browser snapshot",
-    "browser_vision": lambda a: f"browser vision: {str(a.get('question', '?'))[:50]}",
-    "browser_get_images": lambda a: "browser images",
-    "vision_analyze": lambda a: f"analyze image: {str(a.get('question', '?'))[:50]}",
-    "image_generate": lambda a: _fmt(_arg(a, "prompt", "description")[:50], "generate image: {}", "generate image"),
-    "cronjob": lambda a: _fmt(_arg(a, "job_id", "id"), f"cron {_arg(a, 'action', default='manage')}: {{}}",
-                              f"cron {_arg(a, 'action', default='manage')}"),
-}
-
-
-=======
->>>>>>> upstream/main
 def build_tool_title(tool_name: str, args: Args) -> str:
     """``<tool_name>: <preview>`` using the same per-tool preview (and argument redaction) as
     every other Hermes surface, so ACP clients never show a different summary than the CLI/TUI;

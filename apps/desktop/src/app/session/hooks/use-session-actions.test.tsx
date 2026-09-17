@@ -73,16 +73,9 @@ import {
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
   setSessions,
-<<<<<<< HEAD
   setTurnStartedAt,
   setWorkspaceCwdOwner,
   workspaceCwdBelongsToSelectedSession
-||||||| b6b53c69a6
-  setTurnStartedAt
-=======
-  setTurnStartedAt,
-  setUnlistedSessionOwnerRows
->>>>>>> upstream/main
 } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'

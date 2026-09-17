@@ -31,28 +31,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
-<<<<<<< HEAD
 import { destroyKeepaliveAgents, downloadAgentFor, httpStatusError, jsonAgentFor, withRetry } from './api-transport'
-||||||| b6b53c69a6
-import {
-  destroyKeepaliveAgents,
-  downloadAgentFor,
-  httpStatusError,
-  jsonAgentFor,
-  readStatusCode,
-  withRetry
-} from './api-transport'
-=======
-import {
-  destroyKeepaliveAgents,
-  downloadAgentFor,
-  htmlResponseError,
-  httpStatusError,
-  jsonAgentFor,
-  readStatusCode,
-  withRetry
-} from './api-transport'
->>>>>>> upstream/main
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
@@ -72,19 +51,12 @@ import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
 import { runBackendDial } from './backend-dial-routing'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
-<<<<<<< HEAD
 import {
   isReauthRequiredError,
   makeNousCloudBackendDownError,
   makeUnsignedOauthError,
   waitForHermesReady
 } from './backend-health'
-||||||| b6b53c69a6
-import { isReauthRequiredError, waitForHermesReady } from './backend-health'
-=======
-import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
-import { isReauthRequiredError, waitForHermesReady } from './backend-health'
->>>>>>> upstream/main
 import { backendCommandMatches, createBackendOwnership, createBackendShutdownCoordinator } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
@@ -116,18 +88,7 @@ import {
 } from './browser-windows'
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
-<<<<<<< HEAD
 import { applyConnectionChange, sshQuitShouldBlock, teardownSshState } from './connection-apply'
-||||||| b6b53c69a6
-import { registerChatOnboardingWindow } from './chat-onboarding-window'
-import { writeComposerPaste } from './composer-paste'
-import { applyConnectionChange, teardownSshState } from './connection-apply'
-=======
-import { registerChatOnboardingWindow } from './chat-onboarding-window'
-import { installCommandScreenshot } from './command-screenshot'
-import { writeComposerPaste } from './composer-paste'
-import { applyConnectionChange, teardownSshState } from './connection-apply'
->>>>>>> upstream/main
 import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
@@ -196,18 +157,7 @@ import { adoptServedDashboardToken } from './dashboard-token'
 import { stopDesktopBackgroundServices } from './desktop-background-shutdown'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-<<<<<<< HEAD
 import { withPoolBackendAuthorityEnv } from './desktop-pool-cron-authority'
-||||||| b6b53c69a6
-=======
-import {
-  createDesktopProfilePreferences,
-  DESKTOP_PROFILE_NAME_RE,
-  type DesktopProfileRoute,
-  resolveDesktopConnectionRequest,
-  resolveDesktopWindowRoute
-} from './desktop-profile'
->>>>>>> upstream/main
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
@@ -253,20 +203,7 @@ import {
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
-<<<<<<< HEAD
 import { clearStaleGitLocks } from './gitlock'
-||||||| b6b53c69a6
-import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
-=======
-import {
-  describeGitHubCredentialSource,
-  forgetGhCliToken,
-  githubApiHeaders,
-  githubTokenRejected,
-  resolveGitHubCredential
-} from './github-api-auth'
-import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
->>>>>>> upstream/main
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -296,16 +233,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
-<<<<<<< HEAD
 import { closeWindowsForDrain, ensureMainWindow, shouldQuitAfterWindowAllClosed } from './main-window-lifecycle'
-||||||| b6b53c69a6
-import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
-import { ensureMainWindow } from './main-window-lifecycle'
-=======
-import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
-import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
-import { ensureMainWindow } from './main-window-lifecycle'
->>>>>>> upstream/main
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -357,12 +285,7 @@ import {
   localRouteFallbackProfiles,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
-<<<<<<< HEAD
 import { selectPoolEvictions } from './pool-eviction'
-||||||| b6b53c69a6
-import { evictPoolEntries } from './pool-eviction'
-=======
->>>>>>> upstream/main
 import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_DEFAULTS } from './pool-limits'
 import { createPoolRetirer } from './pool-retire'
 import { createPoolRetirementClient } from './pool-retire-http'
@@ -453,13 +376,6 @@ import { ensureLoginShellPath } from './shell-path'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
-<<<<<<< HEAD
-||||||| b6b53c69a6
-import { createSshTeardownTracker } from './ssh-teardown'
-=======
-import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
-import { createSshTeardownTracker } from './ssh-teardown'
->>>>>>> upstream/main
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
@@ -476,7 +392,6 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
-<<<<<<< HEAD
 import { shouldHealMissingUpdateBranch } from './update-branch-policy'
 import {
   compareApiUrl,
@@ -485,19 +400,6 @@ import {
   resolveCommitLogSelection,
   shouldCountCommits
 } from './update-count'
-||||||| b6b53c69a6
-import { branchTipApiUrl, cacheIsFresh, compareApiUrl, githubRepoSlug, parseCompare } from './update-api-check'
-=======
-import {
-  branchTipApiUrl,
-  cacheIsFresh,
-  compareApiUrl,
-  describeUpdateCheckFailure,
-  githubRepoSlug,
-  parseCompare,
-  rateLimitFromHeaders
-} from './update-api-check'
->>>>>>> upstream/main
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
@@ -1654,41 +1556,9 @@ function promotePoolEntry(entry: any): void {
   entry.localBackendSpawnRequest?.promote?.('foreground')
 }
 
-<<<<<<< HEAD
 // Land a spawn failure in desktop.log. A background slot-wait timeout is
 // routine under a saturated pool (the next hydration pass retries), so it is
 // logged as such instead of as a backend-start failure.
-||||||| b6b53c69a6
-// A passive read (background tile reconcile, #103375) may only be served by a
-// backend that already exists: it never cold-starts a pooled child, never
-// takes a slot, and never refreshes lastActiveAt, so an open-but-unviewed tile
-// cannot keep the pool saturated. Callers treat the rejection as "nothing to
-// refresh yet"; primary-routed profiles are always warm and never reach here.
-function assertNotPassiveSpawn(passive: boolean, poolKey: string): void {
-  if (passive) {
-    throw new Error(`Passive read: no warm backend for "${poolKey}"`)
-  }
-}
-
-// Land a spawn failure in desktop.log. A background slot-wait timeout is
-// routine under a saturated pool (the next hydration pass retries), so it is
-// logged as such instead of as a backend-start failure.
-=======
-// A passive read (background tile reconcile, #103375) may only be served by a
-// backend that already exists: it never cold-starts a pooled child, never
-// takes a slot, and never refreshes lastActiveAt, so an open-but-unviewed tile
-// cannot keep the pool saturated. Callers treat the rejection as "nothing to
-// refresh yet"; primary-routed profiles are always warm and never reach here.
-function assertNotPassiveSpawn(passive: boolean, poolKey: string): void {
-  if (passive) {
-    throw new Error(`Passive read: no warm backend for "${poolKey}"`)
-  }
-}
-
-// Land a spawn failure in desktop.log. Background slot waits back off per
-// profile under a saturated pool, so a roster refresh cannot create a retry
-// storm while a user-triggered foreground open still gets its reserved slot.
->>>>>>> upstream/main
 function logPoolSpawnFailure(label: string, error: unknown): void {
   if (isBackgroundSlotRetryDeferred(error)) {
     return
@@ -3488,294 +3358,8 @@ async function readCommitLog(cwd, branch, isShallow) {
     .map(line => {
       const [sha, summary, author, at] = line.split(SEP)
 
-<<<<<<< HEAD
       return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
     })
-||||||| b6b53c69a6
-  if (!/^[0-9a-f]{40}$/i.test(targetSha)) {
-    return { error: 'fetch-failed', message: 'GitHub API returned no tip SHA.' }
-  }
-
-  if (targetSha === currentSha) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
-  // "update available, count unknown" — never a fabricated number.
-  const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
-    .then(parseCompare)
-    .catch(() => null)
-
-  // ahead_by === 0 with differing tips: the remote tip is reachable from our
-  // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
-  // nudges the user into wiping their work.
-  if (compared?.behind === 0) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  return {
-    behind: compared ? compared.behind : null,
-    updateAvailable: true,
-    targetSha,
-    commits: compared?.commits ?? []
-  }
-}
-
-// Non-GitHub origins: one ls-remote for the tip SHA (still no pack transfer),
-// counting via the local graph only when the tip is already known locally.
-async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
-  const target = await runGit(['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: updateRoot })
-  const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-
-  if (target.code !== 0 || !targetSha) {
-    return { error: 'fetch-failed', message: firstLine(target.stderr) || 'git ls-remote failed.' }
-  }
-
-  if (targetSha === currentSha) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
-
-  const isAncestor =
-    known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  if (isAncestor) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  return { behind: null, updateAvailable: true, targetSha, commits: [] }
-}
-
-// One line a user can act on (or paste into a bug report) instead of the
-// generic "couldn't reach the update server": which host, which failure.
-// #105855 was a run of GitHub outages that read as a Hermes bug because the
-// UI hid the cause.
-function describeUpdateCheckFailure(error) {
-  const status = error?.statusCode
-  const code = error?.code
-
-  if (status === 403 || status === 429) {
-    return `GitHub API rate limit reached (HTTP ${status}) — try again in an hour.`
-  }
-
-  if (typeof status === 'number' && status >= 500) {
-    return `GitHub is having trouble (HTTP ${status} from api.github.com) — check githubstatus.com and try again later.`
-  }
-
-  if (typeof status === 'number') {
-    return `api.github.com answered HTTP ${status}.`
-  }
-
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
-    return 'DNS lookup for api.github.com failed — check your connection or proxy.'
-  }
-
-  if (code === 'ETIMEDOUT' || error?.message === 'timeout') {
-    return 'api.github.com did not answer within 10 seconds.'
-  }
-
-  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-    return `Connection to api.github.com failed (${code}) — a firewall or proxy may be blocking it.`
-  }
-
-  if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
-    return `TLS handshake with api.github.com failed (${code}) — a proxy may be intercepting HTTPS.`
-  }
-
-  return `api.github.com: ${error?.message || String(error)}`
-}
-
-function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      {
-        headers: {
-          Accept: accept,
-          // GitHub requires a UA on api.github.com; requests without one 403.
-          'User-Agent': 'hermes-desktop-update-check'
-        },
-        timeout: 10_000
-      },
-      res => {
-        const chunks = []
-        res.on('error', reject)
-        res.on('data', chunk => chunks.push(chunk))
-        res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-
-          if ((res.statusCode || 500) >= 400) {
-            reject(Object.assign(new Error(`HTTP ${res.statusCode}`), { statusCode: res.statusCode }))
-
-            return
-          }
-
-          if (accept === 'application/vnd.github.sha') {
-            resolve(body)
-
-            return
-          }
-
-          try {
-            resolve(JSON.parse(body))
-          } catch (error) {
-            reject(error)
-          }
-        })
-      }
-    )
-
-    req.on('timeout', () => req.destroy(new Error('timeout')))
-    req.on('error', reject)
-  })
-=======
-  if (!/^[0-9a-f]{40}$/i.test(targetSha)) {
-    return { error: 'fetch-failed', message: 'GitHub API returned no tip SHA.' }
-  }
-
-  if (targetSha === currentSha) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
-  // "update available, count unknown" — never a fabricated number.
-  const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
-    .then(parseCompare)
-    .catch(() => null)
-
-  // ahead_by === 0 with differing tips: the remote tip is reachable from our
-  // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
-  // nudges the user into wiping their work.
-  if (compared?.behind === 0) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  return {
-    behind: compared ? compared.behind : null,
-    updateAvailable: true,
-    targetSha,
-    commits: compared?.commits ?? []
-  }
-}
-
-// Non-GitHub origins: one ls-remote for the tip SHA (still no pack transfer),
-// counting via the local graph only when the tip is already known locally.
-async function checkUpdatesViaLsRemote({ updateRoot, branch, currentSha }) {
-  const target = await runGit(['ls-remote', 'origin', `refs/heads/${branch}`], { cwd: updateRoot })
-  const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
-
-  if (target.code !== 0 || !targetSha) {
-    return { error: 'fetch-failed', message: firstLine(target.stderr) || 'git ls-remote failed.' }
-  }
-
-  if (targetSha === currentSha) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  const known = (await runGit(['cat-file', '-e', `${targetSha}^{commit}`], { cwd: updateRoot })).code === 0
-
-  const isAncestor =
-    known && (await runGit(['merge-base', '--is-ancestor', targetSha, 'HEAD'], { cwd: updateRoot })).code === 0
-
-  if (isAncestor) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
-  }
-
-  return { behind: null, updateAvailable: true, targetSha, commits: [] }
-}
-
-// GITHUB_TOKEN / GH_TOKEN from the environment, when present, moves the call
-// from the anonymous 60/hour-per-IP budget to the token's 5,000/hour one; the
-// header shape is otherwise unchanged. Read per request, never stored.
-//
-// Credential ladder (github-api-auth.ts): GITHUB_TOKEN / GH_TOKEN from the
-// launch env, then the gh CLI's login, then anonymous. A token GitHub rejects
-// (401: expired, revoked, malformed) must not turn a check that worked
-// anonymously into a hard failure, so the call is retried once without it; the
-// rejection is logged once per source per process, never with the token.
-const warnedRejectedGitHubTokenSources = new Set()
-
-async function fetchGitHubApi(url, accept = 'application/vnd.github+json') {
-  const credential = await resolveGitHubCredential({ env: process.env })
-
-  try {
-    return await fetchGitHubApiOnce(url, accept, credential?.token ?? null)
-  } catch (error) {
-    if (!credential || !githubTokenRejected(error)) {
-      throw error
-    }
-
-    if (credential.source === 'gh-cli') {
-      // The user may re-login to gh; the next check asks it again.
-      forgetGhCliToken()
-    }
-
-    if (!warnedRejectedGitHubTokenSources.has(credential.source)) {
-      warnedRejectedGitHubTokenSources.add(credential.source)
-      rememberLog(
-        `[updates] api.github.com rejected ${describeGitHubCredentialSource(credential.source)} (HTTP 401); ` +
-          'retrying the update check anonymously'
-      )
-    }
-
-    return fetchGitHubApiOnce(url, accept, null)
-  }
-}
-
-function fetchGitHubApiOnce(url, accept, token) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      {
-        headers: githubApiHeaders(
-          {
-            Accept: accept,
-            // GitHub requires a UA on api.github.com; requests without one 403.
-            'User-Agent': 'hermes-desktop-update-check'
-          },
-          token
-        ),
-        timeout: 10_000
-      },
-      res => {
-        const chunks = []
-        res.on('error', reject)
-        res.on('data', chunk => chunks.push(chunk))
-        res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8')
-
-          if ((res.statusCode || 500) >= 400) {
-            reject(
-              Object.assign(new Error(`HTTP ${res.statusCode}`), {
-                statusCode: res.statusCode,
-                ...rateLimitFromHeaders(res.headers),
-                authenticated: Boolean(token)
-              })
-            )
-
-            return
-          }
-
-          if (accept === 'application/vnd.github.sha') {
-            resolve(body)
-
-            return
-          }
-
-          try {
-            resolve(JSON.parse(body))
-          } catch (error) {
-            reject(error)
-          }
-        })
-      }
-    )
-
-    req.on('timeout', () => req.destroy(new Error('timeout')))
-    req.on('error', reject)
-  })
->>>>>>> upstream/main
 }
 
 let updateInFlight = false
@@ -3871,106 +3455,6 @@ function isShimLocked(shimPath) {
   }
 }
 
-<<<<<<< HEAD
-||||||| b6b53c69a6
-// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
-// exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
-// daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
-// venv files mapped. External holders (a user terminal running `hermes`,
-// unrelated scripts) are NOT killed — scanVenvBlockers reports them and the
-// hand-off aborts, per existing design. Selection lives in the pure
-// venv-holder-select module (ordinal path-prefix, no PowerShell -like
-// wildcard hazards) so it's testable without Electron.
-function killHermesOwnedVenvDaemons(updateRoot) {
-  if (!IS_WINDOWS) {
-    return
-  }
-
-  const scriptsDir = path.join(updateRoot, 'venv', 'Scripts')
-
-  let holders = []
-
-  try {
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
-      ],
-      hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
-    )
-
-    const parsed = JSON.parse(String(out || '[]'))
-
-    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
-      isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
-    )
-  } catch {
-    // Best-effort: the venv-blocker scan downstream is the real backstop.
-    return
-  }
-
-  for (const holder of holders) {
-    const pid = Number(holder?.ProcessId)
-
-    if (Number.isInteger(pid) && pid > 0) {
-      rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
-      forceKillProcessTree(pid)
-    }
-  }
-}
-
-=======
-// Kill only Hermes-OWNED venv daemons (the memory plugin's hindsight daemon:
-// exe under venv\Scripts AND cmdline referencing hindsight_api.main). The
-// daemon is spawned DETACHED, so it outlives the backend tree-kill and keeps
-// venv files mapped. External holders (a user terminal running `hermes`,
-// unrelated scripts) are NOT killed — scanVenvBlockers reports them and the
-// hand-off aborts, per existing design. Selection lives in the pure
-// venv-holder-select module (ordinal path-prefix, no PowerShell -like
-// wildcard hazards) so it's testable without Electron.
-function killHermesOwnedVenvDaemons(updateRoot) {
-  if (!IS_WINDOWS) {
-    return
-  }
-
-  const scriptsDir = path.join(resolveVenvDir(updateRoot), 'Scripts')
-
-  let holders = []
-
-  try {
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
-      ],
-      hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
-    )
-
-    const parsed = JSON.parse(String(out || '[]'))
-
-    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
-      isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
-    )
-  } catch {
-    // Best-effort: the venv-blocker scan downstream is the real backstop.
-    return
-  }
-
-  for (const holder of holders) {
-    const pid = Number(holder?.ProcessId)
-
-    if (Number.isInteger(pid) && pid > 0) {
-      rememberLog(`[updates] stopping Hermes-owned venv daemon (hindsight) PID ${pid} before hand-off`)
-      forceKillProcessTree(pid)
-    }
-  }
-}
-
->>>>>>> upstream/main
 // Force-kill the entire process TREE rooted at each PID. Node's child.kill()
 // only signals the direct child, so on Windows a backend `hermes.exe` that
 // spawned its own grandchildren (a `hermes` REPL, a pty terminal session, the
@@ -5640,26 +5124,7 @@ async function resolveHermesBackend(backendArgs) {
   }
 }
 
-<<<<<<< HEAD
 async function ensureRuntime(backend) {
-||||||| b6b53c69a6
-function ensureRuntime(backend: any): Promise<any> {
-  return localBackendLifecycle.start(() => runEnsureRuntime(backend))
-}
-
-async function runEnsureRuntime(backend: any): Promise<any> {
-  localBackendLifecycle.assertCanStart()
-
-=======
-function ensureRuntime(backend: any, assertStillOwned: () => void): Promise<any> {
-  return localBackendLifecycle.start(() => runEnsureRuntime(backend, assertStillOwned))
-}
-
-async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Promise<any> {
-  localBackendLifecycle.assertCanStart()
-  assertStillOwned()
-
->>>>>>> upstream/main
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -11910,17 +11375,7 @@ function resetHermesConnection({ soft = false } = {}) {
   backendStartFailure = null
   remoteReauthFailure = null
   remoteLiveness.clear()
-<<<<<<< HEAD
   const hermesProcess = backendConnectionState.invalidate()
-||||||| b6b53c69a6
-  // The next startHermes() re-reads active-profile.json for its launch profile.
-  primaryProfilePin.clear()
-  const hermesProcess = backendConnectionState.invalidate()
-=======
-  // The next startHermes() re-reads active-profile.json for its launch profile.
-  primaryProfilePin.clear()
-  const hermesProcess = invalidatePrimaryConnection()
->>>>>>> upstream/main
   stopBackendChild(hermesProcess)
 
   if (!soft) {
@@ -13039,7 +12494,6 @@ function touchPoolBackend(profile, options: { activeTurn?: boolean } = {}) {
 // across N registered remote connections LRU-evict a REAL local backend that
 // was merely idle past the keepalive window. Descriptors are still reclaimed
 // by the idle reaper.
-<<<<<<< HEAD
 function evictLruPoolBackends(keep) {
   const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
 
@@ -13047,22 +12501,6 @@ function evictLruPoolBackends(keep) {
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
     stopPoolBackend(profile)
   }
-||||||| b6b53c69a6
-async function evictLruPoolBackends(keep) {
-  return evictPoolEntries(
-    backendPool.entries(),
-    Math.max(0, keep),
-    Date.now(),
-    POOL_KEEPALIVE_FRESH_MS,
-    async profile => {
-      rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
-      await stopPoolBackend(profile)
-    }
-  )
-=======
-async function evictLruPoolBackends(keep) {
-  return poolRetirer.evictTo(Math.max(0, keep), POOL_KEEPALIVE_FRESH_MS)
->>>>>>> upstream/main
 }
 
 function startPoolIdleReaper() {
@@ -13113,30 +12551,10 @@ function releaseLocalBackendSlot(entry: any) {
   }
 }
 
-<<<<<<< HEAD
 function assertPoolEntryStillOwned(poolKey: string, entry: any) {
   if (backendPool.get(poolKey) !== entry) {
     releaseLocalBackendSlot(entry)
     throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
-||||||| b6b53c69a6
-function assertPoolEntryStillOwned(poolKey: string, entry: any) {
-  if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
-    releaseLocalBackendSlot(entry)
-    throw new Error(`Profile backend start for "${poolKey}" was cancelled before spawn.`)
-=======
-// `releaseSlot` must be false once `entry.process` exists: the lease has to
-// stay held until the child has actually exited (pool-spawn-coordinator
-// invariant), and teardownFailedLocalBackend releases it after that exit. A
-// pre-spawn release here would turn that post-exit release into a no-op and
-// let a successor spawn while the superseded child is still alive.
-function assertPoolEntryStillOwned(poolKey: string, entry: any, { releaseSlot = true } = {}) {
-  if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
-    if (releaseSlot) {
-      releaseLocalBackendSlot(entry)
-    }
-
-    throw new Error(`Profile backend start for "${poolKey}" was cancelled before it became ready.`)
->>>>>>> upstream/main
   }
 }
 
@@ -13221,20 +12639,6 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
 
   const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(entry.spawnPriority)
 
-<<<<<<< HEAD
-||||||| b6b53c69a6
-  assertPoolEntryStillOwned(poolKey, entry)
-
-=======
-  assertPoolEntryStillOwned(poolKey, entry)
-
-  if (spawnPriority === 'background' && !backgroundSlotRetryBackoff.canAttempt(poolKey)) {
-    throw new BackgroundSlotRetryDeferredError(profile)
-  }
-
-  // The arbiter subscribes to the actual coordinator queue, so a later
-  // foreground promotion receives reclamation too, not just fresh starts.
->>>>>>> upstream/main
   const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
     timeoutMs: POOL_SLOT_WAIT_MS,
     priority: spawnPriority
@@ -13249,34 +12653,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     )
   }
 
-<<<<<<< HEAD
   entry.releaseLocalBackendSlot = await spawnRequest.acquired
-||||||| b6b53c69a6
-  const cancelRequest = () => spawnRequest.cancel()
-  localBackendLifecycle.signal.addEventListener('abort', cancelRequest, { once: true })
-
-  try {
-    entry.releaseLocalBackendSlot = await spawnRequest.acquired
-  } finally {
-    localBackendLifecycle.signal.removeEventListener('abort', cancelRequest)
-  }
-=======
-  const cancelRequest = () => spawnRequest.cancel()
-  localBackendLifecycle.signal.addEventListener('abort', cancelRequest, { once: true })
-
-  try {
-    entry.releaseLocalBackendSlot = await spawnRequest.acquired
-    backgroundSlotRetryBackoff.clear(poolKey)
-  } catch (error) {
-    if (isBackgroundSlotWaitTimeout(error)) {
-      backgroundSlotRetryBackoff.recordFailure(poolKey)
-    }
-
-    throw error
-  } finally {
-    localBackendLifecycle.signal.removeEventListener('abort', cancelRequest)
-  }
->>>>>>> upstream/main
 
   if (entry.localBackendSpawnRequest === spawnRequest) {
     entry.localBackendSpawnRequest = null
@@ -13622,69 +12999,7 @@ async function prepareProfileRenameRequest(request) {
   })
 }
 
-<<<<<<< HEAD
 async function startHermes() {
-||||||| b6b53c69a6
-function startHermes() {
-  return localBackendLifecycle.start(runHermesStart)
-}
-
-async function runHermesStart() {
-=======
-function startHermes() {
-  primaryRecoverySuppressed = false
-  primaryStartsInFlight += 1
-
-  const start = localBackendLifecycle.start(runHermesStart)
-
-  const releaseStart = () => {
-    primaryStartsInFlight -= 1
-  }
-
-  void start.then(releaseStart, releaseStart)
-
-  return start
-}
-
-// A ready primary child died. When its exit leaves the primary slot with no
-// owner and no start in flight (outside an intentional teardown), the
-// supervisor owns the respawn (#112344): the stale-classified exit used to
-// "log and return", and recovery then hinged on the renderer noticing its
-// socket drop — a 9 h engine-less window when it did not. Pool children are
-// deliberately not consulted: they never own the window backend.
-function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error = null, ready = false } = {}) {
-  if (!ready) {
-    return false
-  }
-
-  const claimed = primaryExitRecovery.claim({
-    hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
-    hasPendingStart: primaryStartsInFlight > 0,
-    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
-  })
-
-  if (!claimed) {
-    if (primaryExitRecovery.isCrashLooping()) {
-      const message =
-        'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
-      rememberLog(`[supervisor] ${message}`)
-      sendBackendExit({ code, signal, error: message })
-
-      return true
-    }
-
-    return false
-  }
-
-  rememberLog('[supervisor] backend exit left no primary owner and no start in flight; respawning')
-  sendBackendExit({ code, signal, ...(error ? { error } : {}) })
-  startHermes().catch(respawnError => rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`))
-
-  return true
-}
-
-async function runHermesStart() {
->>>>>>> upstream/main
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -13813,13 +13128,6 @@ async function runHermesStart() {
     }
 
     const setup = await runPrimaryBackendStartup({
-<<<<<<< HEAD
-||||||| b6b53c69a6
-      signal: localBackendLifecycle.signal,
-=======
-      signal: localBackendLifecycle.signal,
-      assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
->>>>>>> upstream/main
       connectRemote,
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
@@ -13872,19 +13180,7 @@ async function runHermesStart() {
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
-<<<<<<< HEAD
     const hermesProcess = spawn(
-||||||| b6b53c69a6
-    if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-      throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-    }
-
-    const hermesProcess = spawnOwnedBackend(
-=======
-    backendConnectionState.assertCurrentAttempt(connectionAttempt)
-
-    const hermesProcess = spawnOwnedBackend(
->>>>>>> upstream/main
       backend.command,
       backend.args,
       hiddenWindowsChildOptions({
@@ -15757,17 +15053,7 @@ async function connectDesktopProfileRoute(
   let connection
 
   try {
-<<<<<<< HEAD
     connection = await runClaimedBackendDial(null, profileKey, () => ensureBackend(profile, { spawnPriority }))
-||||||| b6b53c69a6
-    connection = await backendDialClaims.run(scopeKey, () => ensureBackend(profile, { spawnPriority }))
-=======
-    connection = await backendDialClaims.run(scopeKey, () =>
-      route.connectionId
-        ? ensureRegistryBackend(route.connectionId, route.profile, '', { spawnPriority })
-        : ensureBackend(route.profile, { spawnPriority })
-    )
->>>>>>> upstream/main
   } finally {
     clearSpawnPriority()
   }
@@ -15792,7 +15078,6 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
 
-<<<<<<< HEAD
   // Same single-owner claim as 'hermes:connection', keyed by the composite
   // (connectionId, profile) scope (#90812): concurrent registry dials for one
   // scope share the first spawn instead of bootstrapping duplicate remotes.
@@ -15808,25 +15093,6 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   }
 
   return { ...connection, connectionId: id, registryScoped: true }
-||||||| b6b53c69a6
-  // Same single-owner claim as 'hermes:connection', keyed by the composite
-  // (connectionId, profile) scope (#90812): concurrent registry dials for one
-  // scope share the first spawn instead of bootstrapping duplicate remotes.
-  const scopeKey = backendScopeKey(id, profile)
-  const clearSpawnPriority = applySpawnPriority(scopeKey, spawnPriority)
-
-  let connection
-
-  try {
-    connection = await backendDialClaims.run(scopeKey, () => ensureRegistryBackend(id, profile, '', { spawnPriority }))
-  } finally {
-    clearSpawnPriority()
-  }
-
-  return { ...connection, connectionId: id, registryScoped: true }
-=======
-  return connectDesktopProfileRoute({ connectionId: id, profile: String(profile ?? '').trim() || 'default' }, spawnPriority)
->>>>>>> upstream/main
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -17529,31 +16795,10 @@ async function dispatchRegistryApiRequest(
   // Claim-guarded (#90812): every registry-scoped REST call funnels through
   // here, so it can race a renderer's own WS reconnect dial for the same
   // (connectionId, profile) scope; coalescing avoids bootstrapping a second
-<<<<<<< HEAD
   // SSH tunnel / remote dashboard.
   const connection: any = await runClaimedBackendDial(registryConnectionId, routeProfile, () =>
     ensureRegistryBackend(registryConnectionId, routeProfile)
   )
-||||||| b6b53c69a6
-  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
-  // OUT of the claim: an interactive open coalescing onto an in-flight
-  // passive read would otherwise inherit its "no warm backend" rejection.
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile)
-      )
-=======
-  // SSH tunnel / remote dashboard. A passive read never dials, so it stays
-  // OUT of the claim: an interactive open coalescing onto an in-flight
-  // passive read would otherwise inherit its "no warm backend" rejection.
-  const spawnPriority = spawnPriorityFrom(request?.priority)
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-      )
->>>>>>> upstream/main
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -17642,13 +16887,7 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-<<<<<<< HEAD
     const connection = await ensureBackend(routeProfile)
-||||||| b6b53c69a6
-    const connection = await ensureBackend(routeProfile, { passive: request?.passive })
-=======
-    connection = await ensureBackend(routeProfile, { passive: request?.passive, spawnPriority })
->>>>>>> upstream/main
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const url = `${connection.baseUrl}${apiRoute.requestPath}`

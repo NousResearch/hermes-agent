@@ -22918,7 +22918,6 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
-<<<<<<< HEAD:tests/test_tui_gateway_server.py
 
 
 def test_workspace_move_rejects_managed_running_session(monkeypatch, tmp_path):
@@ -22979,26 +22978,3 @@ def test_workspace_move_rejects_managed_stored_session(monkeypatch, tmp_path):
 
     assert res["error"]["code"] == 4018
     assert "row_update" not in captured
-||||||| b6b53c69a6:tests/test_tui_gateway_server.py
-=======
-
-
-def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path):
-    """#111105: the raw-config cache must not serve (and later write back) a stale document after a
-    same-size replacement that keeps the old mtime."""
-    import shutil
-
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("model:\n  default: bbbb-route\n", encoding="utf-8")
-    monkeypatch.setattr(server, "_active_config_path", lambda: cfg)
-    monkeypatch.setattr(server, "_cfg_cache", None)
-    monkeypatch.setattr(server, "_cfg_sig", None)
-    monkeypatch.setattr(server, "_cfg_path", None)
-    assert server._load_cfg_raw()["model"]["default"] == "bbbb-route"
-    st = cfg.stat()
-    other = tmp_path / "other.yaml"
-    other.write_text("model:\n  default: aaaa-route\n", encoding="utf-8")
-    shutil.copy2(other, cfg)
-    os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
-    assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"
->>>>>>> upstream/main:tests/tui_gateway/test_tui_gateway_server.py

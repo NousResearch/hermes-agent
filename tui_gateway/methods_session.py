@@ -810,22 +810,10 @@ def _resume_eager(ctx: _Resume) -> dict:
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-<<<<<<< HEAD
                 conversation_worktree=ctx.conversation_worktree, **stored_runtime_overrides)
-||||||| b6b53c69a6
-                **stored_runtime_overrides)
-=======
-                auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
->>>>>>> upstream/main
         except Exception as e:
-<<<<<<< HEAD
             return _err(ctx.rid, 5000, f"resume failed: {e}")
     resume_error = None
-||||||| b6b53c69a6
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
-=======
-            return _err(ctx.rid, 5000, resume_failed_message(e))
->>>>>>> upstream/main
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -857,7 +845,6 @@ def _resume_eager(ctx: _Resume) -> dict:
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
-<<<<<<< HEAD
             resume_error = e
         if resume_error is None:
             session = _sessions.get(sid) or {}
@@ -870,19 +857,6 @@ def _resume_eager(ctx: _Resume) -> dict:
                 with contextlib.suppress(Exception):
                     agent.close()
         return _err(ctx.rid, 5000, f"resume failed: {resume_error}")
-||||||| b6b53c69a6
-            if ctx.owns_db:
-                with _sessions_lock:
-                    _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, f"resume failed: {e}")
-        session = _sessions.get(sid) or {}
-=======
-            if ctx.owns_db:
-                with _sessions_lock:
-                    _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, resume_failed_message(e))
-        session = _sessions.get(sid) or {}
->>>>>>> upstream/main
     return _resume_response(
         ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
@@ -2171,28 +2145,15 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
-<<<<<<< HEAD
     branch_cwd = (conversation_worktree or {}).get("path") or _session_cwd(session)
-||||||| b6b53c69a6
-=======
-    parent_user_id = _session_auth_user_id(session)
->>>>>>> upstream/main
     branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
-<<<<<<< HEAD
                                            context_cwd_is_launch_artifact=(
                                                False if conversation_worktree
                                                else _context_cwd_is_launch_artifact(session)),
                                            conversation_worktree=conversation_worktree)
-||||||| b6b53c69a6
-                                           context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
-=======
-                                           cwd_override=_session_cwd(session),
-                                           context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
-                                           auth_user_id=parent_user_id)
->>>>>>> upstream/main
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
                           cwd=branch_cwd, session_db=branch_db, source=source, profile_home=parent_home,
                           explicit_cwd=bool(conversation_worktree or session.get("explicit_cwd")),

@@ -289,7 +289,6 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             candidate_keys[k]: v for k, v in servers.items()
             if keys[k] not in _core._servers and keys[k] not in _core._server_connecting
             and keys[k] not in _core._lazy_server_configs
-<<<<<<< HEAD
             and _enabled(v) and not _connect_cooldown_active(k)})
         stale_cached = [_core._servers[keys[k]] for k in servers
                         if keys[k] in _core._servers and getattr(_core._servers[keys[k]], "session", None) is None]
@@ -301,51 +300,12 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             _core._server_scope_keys[key] = current_scope
             _core._server_connect_errors.pop(key, None)
         # Track which servers opt-in to parallel tool calls (idempotent).
-||||||| b6b53c69a6
-            and _enabled(v) and not _connect_cooldown_active(k)}
-        stale_cached = [_core._servers[keys[k]] for k in servers
-                        if keys[k] in _core._servers and getattr(_core._servers[keys[k]], "session", None) is None]
-        for srv_name in new_servers:
-            _core._server_connecting.add(keys[srv_name])
-            _core._server_scope_keys[keys[srv_name]] = current_scope
-            _core._server_connect_errors.pop(keys[srv_name], None)
-        # Track which servers opt-in to parallel tool calls (idempotent).
-=======
-            and _enabled(v) and not _connect_cooldown_active(k)}
-        stale_cached = [_core._servers[keys[k]] for k, v in servers.items()
-                        if keys[k] in _core._servers and _enabled(v)
-                        and getattr(_core._servers[keys[k]], "session", None) is None]
-        for srv_name in new_servers:
-            _core._server_connecting.add(keys[srv_name])
-            _core._server_scope_keys[keys[srv_name]] = current_scope
-            _core._server_connect_errors.pop(keys[srv_name], None)
-        # Track which servers opt-in to parallel tool calls (idempotent). Keyed by THIS profile's own
-        # key: the opt-in is the calling profile's policy, so B's parallel-safe `x` never makes A's
-        # same-named serial `x` (own connection or adopted) run two calls at once.
->>>>>>> upstream/main
         for srv_name, srv_cfg in servers.items():
-<<<<<<< HEAD
             key = keys[srv_name]
-||||||| b6b53c69a6
-=======
-            own_key = _server_key(srv_name, current_scope, current=False)
->>>>>>> upstream/main
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-<<<<<<< HEAD
                 _core._parallel_safe_servers.add(key)
-||||||| b6b53c69a6
-                _core._parallel_safe_servers.add(srv_name)
-=======
-                _core._parallel_safe_servers.add(own_key)
->>>>>>> upstream/main
             else:
-<<<<<<< HEAD
                 _core._parallel_safe_servers.discard(key)
-||||||| b6b53c69a6
-                _core._parallel_safe_servers.discard(srv_name)
-=======
-                _core._parallel_safe_servers.discard(own_key)
->>>>>>> upstream/main
     for srv in stale_cached:
         _loop._signal_reconnect(srv)
     return new_servers
@@ -422,29 +382,12 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                      if _candidate_ledger_key(candidate) in _core._server_connecting]
             if stale:
                 logger.warning("MCP discovery %s while %d server(s) were still connecting; clearing stale "
-<<<<<<< HEAD
                                "connecting set: %s", how, len(stale),
                                ", ".join(_candidate_public_name(candidate) for candidate in stale))
                 for candidate in stale:
                     key = _candidate_ledger_key(candidate)
                     _core._server_connecting.discard(key)
                     _core._server_connect_errors.setdefault(key, f"Connection attempt {how} during discovery")
-||||||| b6b53c69a6
-                               "connecting set: %s", how, len(stale), ", ".join(stale))
-                for _sn in stale:
-                    _core._server_connecting.discard(_server_key(_sn))
-                    _core._server_connect_errors.setdefault(
-                        _server_key(_sn), f"Connection attempt {how} during discovery")
-=======
-                               "connecting set: %s", how, len(stale), ", ".join(stale))
-                for _sn in stale:
-                    _core._server_connecting.discard(_server_key(_sn))
-                    _core._server_connect_errors.setdefault(
-                        _server_key(_sn), f"Connection attempt {how} during discovery")
-                    # Its attempt is still running on the MCP loop; without a cooldown the next
-                    # reconcile tick would spawn a second one beside it.
-                    _record_connect_failure(_sn)
->>>>>>> upstream/main
         raise
     finally:
         if _was_interrupted:
@@ -653,17 +596,11 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         scoped = _core._mcp_tool_server_names_by_scope.get(scope, {}) if scope is not None else {}
         key = scoped.get(tool_name)
         server_name = _core._mcp_tool_server_names.get(tool_name)
-<<<<<<< HEAD
         if key is None and not server_name:
             return False
         if key is None:
             key = _resolve_server_key(server_name, lock_held=True)
         return key in _core._parallel_safe_servers
-||||||| b6b53c69a6
-        return bool(server_name and server_name in _core._parallel_safe_servers)
-=======
-        return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
->>>>>>> upstream/main
 
 
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:

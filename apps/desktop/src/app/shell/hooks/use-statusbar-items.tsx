@@ -40,14 +40,7 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
-<<<<<<< HEAD
 import { projectNameForCwd } from '@/store/projects'
-||||||| b6b53c69a6
-import { $projectTree, projectNameForCwd } from '@/store/projects'
-=======
-import { $profileRailVisible } from '@/store/profile-rail-prefs'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
->>>>>>> upstream/main
 import {
   $activeSessionId,
   $busy,

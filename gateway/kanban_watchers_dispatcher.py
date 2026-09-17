@@ -11,14 +11,7 @@ import contextlib
 import os
 import sqlite3
 import time
-<<<<<<< HEAD
 from dataclasses import asdict, dataclass, field
-||||||| b6b53c69a6
-from dataclasses import asdict, dataclass
-=======
-from dataclasses import asdict, dataclass
-from pathlib import Path
->>>>>>> upstream/main
 from typing import Any, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
@@ -297,7 +290,6 @@ class _KanbanDispatcher:
                 # with no board kwarg (same pattern as the dashboard specify endpoint).
                 prev_env = os.environ.get("HERMES_KANBAN_BOARD")
                 try:
-<<<<<<< HEAD
                     triage_ids = _decomp.list_triage_ids()
                 except Exception as exc:
                     logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
@@ -326,39 +318,6 @@ class _KanbanDispatcher:
                     os.environ.pop("HERMES_KANBAN_BOARD", None)
                 else:
                     os.environ["HERMES_KANBAN_BOARD"] = prev_env
-||||||| b6b53c69a6
-                    triage_ids = _decomp.list_triage_ids()
-                except Exception as exc:
-                    logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
-                    triage_ids = []
-                for tid in triage_ids:
-                    if attempted >= auto_decompose_per_tick:
-                        break
-                    attempted += 1
-                    successes += self._decompose_one(_decomp, slug, tid)
-            finally:
-                if prev_env is None:
-                    os.environ.pop("HERMES_KANBAN_BOARD", None)
-                else:
-                    os.environ["HERMES_KANBAN_BOARD"] = prev_env
-=======
-                    os.environ["HERMES_KANBAN_BOARD"] = slug
-                    try:
-                        triage_ids = _decomp.list_triage_ids()
-                    except Exception as exc:
-                        logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
-                        triage_ids = []
-                    for tid in triage_ids:
-                        if attempted >= auto_decompose_per_tick:
-                            break
-                        attempted += 1
-                        successes += self._decompose_one(_decomp, slug, tid)
-                finally:
-                    if prev_env is None:
-                        os.environ.pop("HERMES_KANBAN_BOARD", None)
-                    else:
-                        os.environ["HERMES_KANBAN_BOARD"] = prev_env
->>>>>>> upstream/main
         return successes
 
     @staticmethod

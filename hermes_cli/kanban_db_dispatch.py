@@ -816,17 +816,11 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-<<<<<<< HEAD
         from hermes_cli.kanban_worker_process import claim_is_host_local
         if row["claim_lock"] and not claim_is_host_local(row["claim_lock"], pid=pid, task_id=tid):
             continue
 
         if pid and _kb._pid_alive(pid):
-||||||| b6b53c69a6
-        if pid and _kb._pid_alive(pid):
-=======
-        if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
->>>>>>> upstream/main
             # Never requeue beside a live process. Retry next tick.
             _kb._log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
@@ -993,34 +987,8 @@ class _DeadWorker:
         return "rate_limited" if self.rate_limited else "crashed"
 
 
-<<<<<<< HEAD
 def _classify_dead_worker(pid: int, claimer: Optional[str], task_id: str) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
-||||||| b6b53c69a6
-def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
-    """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
-=======
-def _classify_dead_worker(
-    pid: int, claimer: Optional[str], *, task_id: Optional[str] = None, board: Optional[str] = None,
-) -> _DeadWorker:
-    """Map a dead worker's reaped exit status to its reclaim bookkeeping.
-
-    A clean exit or a crash carries the worker's own last output (``worker_output``
-    in the event payload, appended to the error text) so the board and the retry
-    worker see WHY instead of a bare label; a rate-limited requeue does not need it.
-    """
-    dead = _classify_dead_worker_exit(pid, claimer)
-    if task_id and not dead.rate_limited:
-        worker_output = _worker_final_output(task_id, board=board)
-        if worker_output:
-            dead.error_text += f" Worker's last output: {worker_output!r}"
-            dead.event_payload["worker_output"] = worker_output
-    return dead
-
-
-def _classify_dead_worker_exit(pid: int, claimer: Optional[str]) -> _DeadWorker:
-    """Exit status -> reclaim bookkeeping, before the worker's own words are folded in."""
->>>>>>> upstream/main
     kind, code = _classify_worker_exit(pid)
     from hermes_cli.kanban_provider_errors import _provider_terminal_error_text
 
@@ -1105,13 +1073,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-<<<<<<< HEAD
             dead = _classify_dead_worker(pid, row["claim_lock"], row["id"])
-||||||| b6b53c69a6
-            dead = _classify_dead_worker(pid, row["claim_lock"])
-=======
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
->>>>>>> upstream/main
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -1531,17 +1493,9 @@ def check_respawn_guard(
     #    so the worker that opened the PR is still not re-spawned against it.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-<<<<<<< HEAD
         "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ?",
-||||||| b6b53c69a6
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-=======
-        "SELECT body, created_at FROM task_comments "
-        "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
->>>>>>> upstream/main
         (task_id, pr_cutoff),
     ).fetchall():
-<<<<<<< HEAD
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
             requeued = conn.execute(
                 "SELECT 1 FROM task_events WHERE task_id = ? AND kind IN "
@@ -1550,23 +1504,6 @@ def check_respawn_guard(
             ).fetchone()
             if not requeued:
                 return "active_pr"
-||||||| b6b53c69a6
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
-=======
-        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
-            continue
-        events = conn.execute(
-            # Strictly after: a same-second tie stays guarded (fail closed).
-            "SELECT kind, payload FROM task_events "
-            "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
-            (task_id, int(c["created_at"] or 0)),
-        ).fetchall()
-        if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
-            return None
-        return "active_pr"
->>>>>>> upstream/main
 
     return None
 
@@ -2741,43 +2678,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
-<<<<<<< HEAD
     env = build_subprocess_env(
         scrub_secrets=is_multiplex_active(),
         inherit_profile_home=True,
     )
     # Keep the assigned repository cwd from shadowing Hermes runtime imports.
     env["PYTHONSAFEPATH"] = "1"
-||||||| b6b53c69a6
-    env = build_subprocess_env(
-        scrub_secrets=is_multiplex_active(),
-        inherit_profile_home=True,
-    )
-=======
-    try:
-        profile_home = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        profile_home = None
-
-    multiplex_active = is_multiplex_active()
-    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars
-    # through get_secret(), which raises UnscopedSecretError with no profile scope
-    # installed while multiplexing is on — mirrors _resolve_worker_cli_toolsets's
-    # own scope-then-read ordering a few functions up in this module.
-    secret_token = (
-        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-        if multiplex_active and profile_home else None)
-    try:
-        env = build_subprocess_env(
-            scrub_secrets=multiplex_active,
-            inherit_profile_home=True,
-        )
-    finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
->>>>>>> upstream/main
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
@@ -2788,7 +2694,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # without it the child's get_hermes_home() falls back to the DEFAULT
     # profile root because `hermes -p` applies its override before
     # hermes_constants is imported.
-<<<<<<< HEAD
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
         strip_launch_profile_env(env, env["HERMES_HOME"])
@@ -2799,23 +2704,6 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # No profile dir (isolated test fixtures) — the CLI resolves it from
         # HERMES_PROFILE (set below) instead.
         pass
-||||||| b6b53c69a6
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-        # A multiplexer dispatching for another profile must not hand it the launch
-        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
-        strip_launch_profile_env(env, env["HERMES_HOME"])
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        pass
-=======
-    if profile_home:
-        env["HERMES_HOME"] = profile_home
-        # A multiplexer dispatching for another profile must not hand it the launch
-        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
-        strip_launch_profile_env(env, profile_home)
->>>>>>> upstream/main
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

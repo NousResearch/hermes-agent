@@ -2486,19 +2486,9 @@ class GatewayTurnMixin:
 
             def _scoped_server_names() -> set:
                 with _lock:
-<<<<<<< HEAD
                     names = {
                         _server_public_names.get(name, _key_name(name)) for name in _servers
                         if _server_visible_in_scope(name, reload_scope)
-||||||| b6b53c69a6
-                    return {
-                        name for name in _servers
-                        if _server_visible_in_scope(name, reload_scope)
-=======
-                    return {
-                        _key_name(key) for key in _servers
-                        if _server_visible_in_scope(key, reload_scope)
->>>>>>> upstream/main
                     }
                     if reload_scope is not None:
                         names.update(

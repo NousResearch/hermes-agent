@@ -508,3 +508,75 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_releases_sole_owner_lea
         assert ended == []
     finally:
         _stop_child(child, release_file)
+
+
+# ── #104691: a reconnecting client under a NEW runtime owns its own chat ──
+
+def _runtime_record(session_key: str, transport, *, running: bool) -> dict:
+    class _Agent:
+        interrupted = False
+
+        def request_interrupt(self, *args, **kwargs) -> None:
+            self.interrupted = True
+
+        def interrupt(self, *args, **kwargs) -> None:
+            self.interrupted = True
+
+        def clear_interrupt(self) -> None:
+            pass
+
+    return {
+        "agent": _Agent(), "agent_ready": None, "transport": transport, "running": running,
+        "last_active": time.time(), "created_at": time.time(), "source": "desktop",
+        "session_key": session_key, "history": [], "history_lock": threading.Lock(),
+        "active_session_lease": None, "profile_home": None,
+    }
+
+
+def test_new_runtime_takes_over_detached_sibling_lease_in_same_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Desktop restores a chat under a new runtime while the old, client-less runtime (wedged turn) still holds
+    the lease: the new runtime gets the lease, the old turn is interrupted, the registry follows."""
+    key = "restored-chat"
+    old = _runtime_record(key, server._detached_ws_transport, running=True)
+    new = _runtime_record(key, object(), running=False)
+    monkeypatch.setattr(server, "_sessions", {"old": old, "new": new})
+    assert server._ensure_active_session_slot("old", old) is None
+    lease = old["active_session_lease"]
+
+    assert server._ensure_active_session_slot("new", new) is None
+
+    assert new["active_session_lease"] is lease and "active_session_lease" not in old
+    assert old["agent"].interrupted and old["_turn_cancel_requested"] is True
+    (entry,) = active_session_registry_snapshot()
+    assert entry["lease_id"] == lease.lease_id and entry["metadata"]["live_session_id"] == "new"
+    lease.release()
+
+
+@pytest.mark.live_system_guard_bypass
+def test_new_runtime_never_takes_a_live_foreign_or_attached_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Takeover is same-process AND client-less only: a lease held by a live foreign process, or by a sibling
+    runtime that still has a client (second window), keeps refusing."""
+    hermes_home = Path(os.environ["HERMES_HOME"])
+    ready_file, release_file = tmp_path / "ready", tmp_path / "release"
+    child = _spawn_lease_holder(home=hermes_home, session_id="foreign-chat", ready_file=ready_file,
+                                release_file=release_file)
+    try:
+        _wait_for_child_file(child, ready_file, label="foreign lease holder")
+        foreign = _runtime_record("foreign-chat", object(), running=False)
+        attached = _runtime_record("two-windows", object(), running=False)
+        second = _runtime_record("two-windows", object(), running=False)
+        monkeypatch.setattr(server, "_sessions", {"f": foreign, "w1": attached, "w2": second})
+        assert server._ensure_active_session_slot("w1", attached) is None
+
+        for sid, record in (("f", foreign), ("w2", second)):
+            refusal = server._ensure_active_session_slot(sid, record)
+            assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
+            assert record.get("active_session_lease") is None
+        assert attached["active_session_lease"] is not None and not attached["agent"].interrupted
+        attached["active_session_lease"].release()
+    finally:
+        _stop_child(child, release_file)

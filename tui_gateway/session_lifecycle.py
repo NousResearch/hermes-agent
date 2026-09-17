@@ -85,12 +85,49 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
     if session.get("active_session_lease") is not None:
         return None
+    key = str(session.get("session_key") or "")
     lease, limit_message = _claim_active_session_slot(
-        str(session.get("session_key") or ""), live_session_id=sid,
-        surface=_session_source(session), profile_home=session.get("profile_home"))
+        key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
     if limit_message is None:
         session["active_session_lease"] = lease
+        return None
+    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
+        return None
     return limit_message
+
+
+def _take_over_detached_runtime_lease(sid: str, session: dict, key: str) -> bool:
+    """Hand a detached sibling runtime's lease for ``key`` to ``session``; True when it now owns the slot.
+
+    Lease identity is (pid, live_session_id), so a client that reconnects under a NEW runtime — Desktop
+    restoring a chat after a renderer crash, a reload during the client-gone settle window (4009 fences
+    ``session.resume``) — is a "different writer" of its own chat and was refused ``SESSION_NOT_OWNED`` until
+    the old runtime's reap released the lease (up to grace + activity-stale + interrupt polls). The user IS the
+    owner: the old runtime is in THIS process and has no client, so its turn is interrupted and the lease moves.
+    A live foreign pid, or a sibling that still has a client, keeps refusing — cross-process and multi-window
+    exclusivity are untouched. See #104691.
+    """
+    from hermes_cli.active_sessions import transfer_active_session
+    with _session_resume_lock, _sessions_lock:
+        for other_sid, other in _sessions.items():
+            if other is session or other.get("_finalized") or str(other.get("session_key") or "") != key:
+                continue
+            lease = other.get("active_session_lease")
+            if lease is None or getattr(lease, "released", False) or not _transport_is_dead(other.get("transport")):
+                continue
+            if not transfer_active_session(
+                    lease, session_id=key, metadata={"live_session_id": sid, "bot_live_delivery_consumer": True}):
+                return False
+            del other["active_session_lease"]
+            session["active_session_lease"] = lease
+            break
+        else:
+            return False
+    logger.info("Session %s took over lease for %s from detached runtime %s", sid, key, other_sid)
+    with contextlib.suppress(Exception):
+        _interrupt_session_turn(other_sid, other, request_id=f"lease-takeover-{sid}")
+    return True
 
 
 def _lease_retry(attempts: int, fn) -> Exception | None:

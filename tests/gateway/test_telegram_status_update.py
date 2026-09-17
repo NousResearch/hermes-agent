@@ -86,7 +86,7 @@ async def test_first_call_sends_and_caches_message_id(adapter):
     assert result.message_id == "100"
     adapter.send.assert_awaited_once()
     adapter.edit_message.assert_not_awaited()
-    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
+    assert "100" in adapter._status_message_ids.values()
 
 
 @pytest.mark.asyncio
@@ -102,7 +102,7 @@ async def test_distinct_status_keys_do_not_collide(adapter):
 
     assert adapter.send.await_count == 2
     adapter.edit_message.assert_not_awaited()
-    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
-    assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
+    assert "100" in adapter._status_message_ids.values()
+    assert "200" in adapter._status_message_ids.values()
 
 

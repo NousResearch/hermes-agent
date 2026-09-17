@@ -542,6 +542,26 @@ class TestAnthropicAdapterMultimodal:
         ]
         assert survivors == [f"t{i}" for i in range(_SCREENSHOT_EVICTION_BATCH, n)]
 
+    def test_floor_yields_when_one_carrier_breaches_the_block_limit(self):
+        """The keep floor shelters only breaches eviction cannot fix.
+
+        One tool_result carrying more image blocks than the ceiling is a single carrier;
+        a floor of three counted in carriers would retire nothing and ship a request the
+        API rejects. With no reserved uploads the breach is fixable, so it must be fixed.
+        """
+        from agent.anthropic_message_convert import _OUTBOUND_IMAGE_LIMIT, _evict_old_screenshots
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        result = [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": "t0",
+                "content": [dict(img) for _ in range(_OUTBOUND_IMAGE_LIMIT + 5)],
+            }],
+        }]
+        _evict_old_screenshots(result)
+        assert not any(x.get("type") == "image" for x in result[0]["content"][0]["content"])
+
     def test_eviction_frontier_holds_between_batch_advances(self):
         """Screenshot eviction must not rewrite a new block on every capture.
 

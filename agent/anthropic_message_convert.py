@@ -610,8 +610,8 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
 
     The ceiling is counted in image blocks, so a ``tool_result`` holding several
     screenshots weighs several blocks, and user-uploaded images are reserved against the
-    limit without ever being rewritten. ``_MAX_KEEP_SCREENSHOTS`` is a floor: when reserved
-    uploads alone fill the ceiling the newest frames still reach the model.
+    limit without ever being rewritten. ``_MAX_KEEP_SCREENSHOTS`` is a satisfiability
+    floor: only when reserved uploads alone fill the ceiling do the newest frames stay.
     """
     reserved = sum(
         1
@@ -636,7 +636,13 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
     # Extend by whole batches: this runs statelessly on every request, so a fixed one-batch
     # retire would stop enforcing the limit after the first batch, and an exact
     # "limit minus batch" target would move the frontier on every new screenshot.
-    max_retire = max(len(carriers) - _MAX_KEEP_SCREENSHOTS, 0)
+    # The keep floor only shelters a breach that retiring every screenshot cannot fix
+    # (reserved uploads alone over the ceiling); one tool_result carrying 25 frames is
+    # fixable and must not hide behind a floor counted in carriers.
+    if reserved <= _OUTBOUND_IMAGE_LIMIT:
+        max_retire = len(carriers)
+    else:
+        max_retire = max(len(carriers) - _MAX_KEEP_SCREENSHOTS, 0)
     retire = 0
     while retire < max_retire:
         retire = min(retire + _SCREENSHOT_EVICTION_BATCH, max_retire)

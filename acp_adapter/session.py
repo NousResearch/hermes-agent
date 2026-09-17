@@ -352,7 +352,11 @@ class SessionManager:
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
         try:
-            history = db.get_messages_as_conversation(session_id, repair_alternation=True)
+            # include_row_ids: this list doubles as a sanitation-commit snapshot source;
+            # without durable row ids the commit's represented set is empty and the whole
+            # transcript is re-cloned byte-exact (same fix as the CLI/gateway loaders).
+            history = db.get_messages_as_conversation(
+                session_id, repair_alternation=True, include_row_ids=True)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []

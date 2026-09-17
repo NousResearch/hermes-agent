@@ -436,3 +436,105 @@ def test_repaired_transcript_row_ids_carry_dropped_leading_membership(db) -> Non
         "being represented by the first survivor's membership group"
     )
     assert len(db.search_messages("leadpw1", include_inactive=True)) == 0
+
+
+def test_sanitation_refuses_when_filtering_leaves_represented_set_empty(
+    db: SessionDB,
+) -> None:
+    """Round-2 finding 4041479204: after an in-place compaction rewrites rows
+    with NEW ids, a caller still holding the OLD snapshot ids must be refused,
+    not re-clone the whole transcript byte-exact. The represented-row filter
+    drops every stale id against the current active set; if the filtered set
+    comes back EMPTY while active rows exist, the snapshot no longer describes
+    this transcript — fail closed like the empty-tuple gate."""
+    first = db.append_message("sess1", role="user", content="password=orig-pw-1")
+    second = db.append_message("sess1", role="assistant", content="reply-1")
+
+    # First commit: the snapshot ids are the real row ids and the commit lands,
+    # rewriting every row with a fresh id (row ids rotate on an in-place
+    # rewrite).
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "user", "content": "clean-first"},
+            {"role": "assistant", "content": "reply-1"},
+        ],
+        watermark=second,
+        represented_row_ids=(first, second),
+        lock_holder="sanitizer",
+    )
+    db.release_compression_lock("sess1", "sanitizer")
+
+    rotated = [row["id"] for row in db.get_messages("sess1", include_inactive=True)]
+    assert rotated and set(rotated).isdisjoint({first, second}), (
+        "the committed rows must carry fresh ids (in-place rewrite)"
+    )
+
+    # Second commit with the STALE pre-rewrite ids: every id filters out
+    # against the current active set, so the represented set is empty while
+    # active rows exist — refuse instead of re-cloning.
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+    with pytest.raises(ValueError, match="filtered represented set empty"):
+        db.sanitize_and_compact(
+            "sess1",
+            [
+                {"role": "user", "content": "clean-again"},
+                {"role": "assistant", "content": "reply-1"},
+            ],
+            watermark=second,
+            represented_row_ids=(first, second),
+            lock_holder="sanitizer",
+        )
+    contents = [row["content"] for row in db.get_messages("sess1")]
+    assert contents == ["clean-first", "reply-1"], (
+        "a refused commit must not delete or duplicate any durable row"
+    )
+
+
+def test_sanitation_represents_concurrently_persisted_snapshot_tail_by_content(
+    db: SessionDB,
+) -> None:
+    """Round-2 finding 4041479212: the current user message persisted by a
+    close-flush WHILE turn-start sanitation is in flight lands a durable row
+    the snapshot's membership cannot name (the snapshot captured no row id for
+    it). Left as-is the row is cloned byte-exact at the END of the transcript —
+    the message appears twice and any secret in the concurrent bytes stays in
+    SQLite/FTS. The row must be matched against the candidate's own
+    unpersisted tail by durable content identity and represented-by-that-slot
+    instead."""
+    old_row = db.append_message("sess1", role="user", content="password=orig-pw-4")
+    db.append_message("sess1", role="assistant", content="old reply")
+    watermark = db.get_active_message_watermark("sess1")
+
+    # The sanitation snapshot: history (persisted) + the current turn's user
+    # message, which is NOT yet persisted (no row id).
+    candidate = [
+        {"role": "user", "content": "clean"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "fresh concurrent ask"},
+    ]
+
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+    # The close-flush lands the current ask while sanitation is in flight: a
+    # new active row above the watermark the snapshot never named.
+    concurrent_row = db.append_message(
+        "sess1", role="user", content="fresh concurrent ask"
+    )
+    assert concurrent_row > watermark
+
+    db.sanitize_and_compact(
+        "sess1",
+        candidate,
+        watermark=watermark,
+        represented_row_ids=(old_row, old_row + 1),
+        member_row_ids=((old_row,), (old_row + 1,), ()),
+        lock_holder="sanitizer",
+    )
+
+    contents = [row["content"] for row in db.get_messages("sess1")]
+    assert contents == ["clean", "old reply", "fresh concurrent ask"], (
+        "the concurrently persisted snapshot-tail message must appear exactly "
+        "once (from the candidate slot), not re-cloned after it"
+    )
+    assert len(db.search_messages("fresh concurrent ask")) == 1

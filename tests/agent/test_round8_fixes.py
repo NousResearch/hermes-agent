@@ -95,6 +95,38 @@ def test_cold_resume_loader_carries_row_ids_for_sanitation(tmp_path):
     assert secret_row in sanitation_snapshot_row_ids(messages)
 
 
+def test_acp_restore_loader_carries_row_ids(tmp_path):
+    """Finding 4041479196 (ACP adapter resume entrypoint): the ACP session
+    restore loader must stamp ``_row_id`` like the CLI cold-resume and gateway
+    live-replay loaders — without it the sanitation commit's represented-row
+    set is the empty tuple and the whole transcript is re-cloned byte-exact."""
+    from acp_adapter import session as acp_session
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("sess1", source="acp")
+    secret_row = db.append_message(
+        "sess1", role="user", content="password=acp-pw-round8"
+    )
+    db.append_message("sess1", role="assistant", content="reply")
+
+    class _Manager(acp_session.SessionManager):
+        def _get_db(self):
+            return db
+
+        def _make_agent(self, **_kwargs):
+            return object()
+
+    manager = _Manager()
+    state = manager.get_session("sess1")
+    assert state is not None, "the ACP restore path must load an acp-source session"
+    ids = sanitation_snapshot_row_ids(state.history)
+    assert secret_row in ids, (
+        "the ACP restore loader must stamp row ids so a sanitation commit can "
+        "represent them"
+    )
+
+
 def test_live_replay_transcript_loader_carries_row_ids(tmp_path):
     """Finding 4030343969 (gateway live-replay entrypoint): load_transcript is
     the production shape feeding live replay, and its loaded rows must carry
@@ -352,3 +384,75 @@ def test_retained_retry_rebases_onto_append_only_tail():
         "still be dropped"
     )
     assert not has_sanitation_retry(_Agent(), [{"role": "user", "content": "x"}])
+
+
+def test_retry_taken_after_persistence_stamps_api_content_on_prefix():
+    """Round-2 finding 4041479200: turn-start persistence stamps the user row's
+    ``api_content`` sidecar onto the live transcript AFTER a sanitation rollback
+    (the durable sidecar backfill), so the retained candidate's original —
+    snapshotted before the stamp — differs from the retry-time transcript by
+    that sidecar alone. The retry prefix-equality check must treat
+    ``api_content`` as comparison-invisible or the validated candidate is
+    dropped and the secret stays in SQLite/FTS."""
+    from agent.conversation_sanitation import (
+        SanitationRetryCandidate,
+        has_sanitation_retry,
+        take_sanitation_retry,
+    )
+
+    class _Compressor:
+        def load_externalized_payload_sidecar(self, _ref):
+            return None
+
+    class _Agent:
+        session_id = "s1"
+        _pending_sanitation_retry = None
+        context_compressor = _Compressor()
+
+    secret = "password=hostpw7-stamp"
+    placeholder = _placeholder("password_assignment", "hostpw7-stamp")
+    original = [
+        {"role": "user", "content": secret},
+        {"role": "assistant", "content": "refused answer"},
+    ]
+    candidate = [
+        {"role": "user", "content": f"password={placeholder}"},
+        {"role": "assistant", "content": "refused answer"},
+    ]
+
+    # Rollback happened; persistence then stamped the sidecar on the prefix.
+    stamped = [
+        {"role": "user", "content": secret, "api_content": [{"role": "user", "content": secret}]},
+        {"role": "assistant", "content": "refused answer"},
+    ]
+    agent = _Agent()
+    agent._pending_sanitation_retry = SanitationRetryCandidate(
+        session_id="s1",
+        original=copy.deepcopy(original),
+        candidate=copy.deepcopy(candidate),
+    )
+    assert has_sanitation_retry(agent, stamped), (
+        "a sidecar-stamped prefix must still be recognized as the retained "
+        "candidate's original"
+    )
+    rebased = take_sanitation_retry(agent, copy.deepcopy(stamped) + [
+        {"role": "user", "content": "next turn"},
+    ])
+    assert rebased is not None, (
+        "the retained candidate must be taken once persistence stamped "
+        "api_content on the rolled-back prefix"
+    )
+    assert rebased[: len(candidate)] == candidate
+    # Validation still runs on the UNSTRIPPED lists: a mid-list CONTENT edit is
+    # a real difference, not a sidecar — the candidate still drops.
+    agent2 = _Agent()
+    agent2._pending_sanitation_retry = SanitationRetryCandidate(
+        session_id="s1",
+        original=copy.deepcopy(original),
+        candidate=copy.deepcopy(candidate),
+    )
+    edited = [
+        {"role": "user", "content": "edited content"},
+        {"role": "assistant", "content": "refused answer"},
+    ]
+    assert not has_sanitation_retry(agent2, edited)

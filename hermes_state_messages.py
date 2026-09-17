@@ -866,6 +866,19 @@ class SessionMessagesMixin:
                 represented = tuple(
                     row_id for group in member_groups for row_id in group
                 )
+            # Fail-closed stale-snapshot gate (round-2 finding 4041479204):
+            # after the in-place filters above, a snapshot whose represented set
+            # came back EMPTY while active durable rows exist no longer describes
+            # this transcript (row ids rotate on every in-place rewrite — a
+            # caller holding pre-rewrite ids would have every row classified
+            # unrepresented and re-cloned byte-exact, secrets intact in
+            # SQLite/FTS). Same refusal class as the empty-tuple gate.
+            if not represented and active_ids:
+                raise ValueError(
+                    "Invalid sanitation structure: stale row ids after in-place "
+                    f"rewrite: filtered represented set empty while {len(active_ids)} "
+                    "active rows exist — refusing to publish"
+                )
             represented_set = set(represented)
             represented_sorted = sorted(represented_set)
             current_by_id = {int(row["id"]): dict(row) for row in active_rows}
@@ -892,12 +905,64 @@ class SessionMessagesMixin:
                 else:
                     message["display_metadata"] = display_metadata
             retained_by_slot: Dict[int, List[Dict[str, Any]]] = {}
+            # Concurrent-flush matching (round-2 finding 4041479212): the
+            # candidate may contain the current turn's message(s) that were not
+            # durable at snapshot time — their member groups are empty. A
+            # close-flush landing that same message during the sanitizer's
+            # flight creates a post-watermark durable row; cloning it raw would
+            # duplicate the turn and keep the unsanitized bytes. Match such
+            # rows against the candidate's EMPTY-member-group slots by durable
+            # content identity and treat them as represented by that slot.
+            def _durable_content_key(value: Any) -> str:
+                # Durable rows store content as canonical text; mirror the store
+                # write's canonicalization for live values (json for structures).
+                if value is None:
+                    return ""
+                if isinstance(value, str):
+                    return value
+                try:
+                    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+                except (TypeError, ValueError):
+                    return str(value)
+
+            unpersisted_slot_identities: Dict[int, tuple] = {}
+            for slot, group in enumerate(member_groups or []):
+                if group:
+                    continue
+                if slot >= len(durable_messages):
+                    continue
+                msg = durable_messages[slot]
+                unpersisted_slot_identities[slot] = (
+                    str(msg.get("role") or ""),
+                    _durable_content_key(msg.get("content")),
+                    str(msg.get("tool_call_id") or ""),
+                )
+            matched_concurrent_rows: set[int] = set()
             for row in active_rows:
                 row_id = int(row["id"])
                 if row_id in represented_set:
                     continue
                 if row_id > int(watermark):
                     slot = len(durable_messages)
+                    row_identity = (
+                        str(row["role"] or ""),
+                        _durable_content_key(row["content"]),
+                        str(row["tool_call_id"] or ""),
+                    )
+                    matched_slot = next(
+                        (
+                            candidate_slot
+                            for candidate_slot, candidate_identity
+                            in unpersisted_slot_identities.items()
+                            if candidate_identity == row_identity
+                            and candidate_slot not in matched_concurrent_rows
+                        ),
+                        None,
+                    )
+                    if matched_slot is not None:
+                        matched_concurrent_rows.add(matched_slot)
+                        matched_concurrent_rows.add(row_id)
+                        continue
                 else:
                     slot = min(
                         bisect.bisect_left(represented_sorted, row_id),

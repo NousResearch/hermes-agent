@@ -914,6 +914,31 @@ def remember_sanitation_retry(
     )
 
 
+def _strip_retry_comparison_view(messages: Any) -> Any:
+    """Retry-equality view: persistence markers AND ``api_content`` sidecars.
+
+    Persistence stamps the user row's ``api_content`` sidecar onto the live
+    transcript AFTER a turn-start sanitation rollback (the durable sidecar
+    backfill in ``agent/turn_context.py``), so the retained candidate's
+    original — snapshotted before the stamp — differs from the retry-time
+    transcript by that sidecar alone. For the retry check ONLY the sidecar is
+    comparison-invisible: ``_candidate_validates_for`` still runs full
+    structural validation on the UNSTRIPPED lists, and the validation path
+    keeps treating ``api_content`` as payload-bearing (round-6/7).
+    """
+    stripped = _strip_persistence_marker(messages)
+    if not isinstance(stripped, list):
+        return stripped
+    return [
+        (
+            {key: value for key, value in message.items() if key != "api_content"}
+            if isinstance(message, dict)
+            else message
+        )
+        for message in stripped
+    ]
+
+
 def take_sanitation_retry(agent: Any, messages: list) -> list | None:
     """Consume a retained candidate only when it still validates for this input."""
     retry = getattr(agent, "_pending_sanitation_retry", None)
@@ -923,8 +948,12 @@ def take_sanitation_retry(agent: Any, messages: list) -> list | None:
         agent._pending_sanitation_retry = None
         return None
     agent._pending_sanitation_retry = None
-    stripped_messages = _strip_persistence_marker(messages)
-    stripped_original = _strip_persistence_marker(retry.original)
+    # Retry-equality views (round-2 finding 4041479200): persistence stamps
+    # ``api_content`` on the prefix AFTER the rollback, so the retry views must
+    # treat that sidecar as comparison-invisible. Validation below still runs
+    # on the UNSTRIPPED lists via _candidate_validates_for.
+    stripped_messages = _strip_retry_comparison_view(messages)
+    stripped_original = _strip_retry_comparison_view(retry.original)
     rebased = _rebase_retry_onto_prefix(stripped_messages, stripped_original, retry.candidate)
     if rebased is not None:
         return rebased
@@ -938,10 +967,6 @@ def has_sanitation_retry(agent: Any, messages: list) -> bool:
         return False
     if retry.session_id != agent.session_id:
         return False
-    stripped_messages = _strip_persistence_marker(messages)
-    stripped_original = _strip_persistence_marker(retry.original)
-    if _same_typed_value(stripped_messages, stripped_original):
-        return _candidate_validates_for(agent, messages, retry.candidate)
     # Append-only tail rebase (round-8 finding): after a refusal the raw request
     # continues and appends, so the retry-time transcript is no longer byte-equal
     # and the byte-equality check would drop the validated candidate permanently
@@ -949,6 +974,13 @@ def has_sanitation_retry(agent: Any, messages: list) -> bool:
     # PREFIX of the current transcript, rebase onto that prefix and preserve the
     # unchanged tail — mirroring the concurrent-tail preservation in
     # sanitize_and_compact. Anything else (edited mid-list content) still drops.
+    # Views (round-2 finding 4041479200): the byte-equality prefix check strips
+    # api_content (persistence stamps it on the prefix after the rollback);
+    # _candidate_validates_for below still validates the UNSTRIPPED lists.
+    stripped_messages = _strip_retry_comparison_view(messages)
+    stripped_original = _strip_retry_comparison_view(retry.original)
+    if _same_typed_value(stripped_messages, stripped_original):
+        return _candidate_validates_for(agent, messages, retry.candidate)
     rebased = _rebase_retry_onto_prefix(stripped_messages, stripped_original, retry.candidate)
     if rebased is None:
         return False

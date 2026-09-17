@@ -223,6 +223,13 @@ class TestTransparentRefreshOnAccessTokenEviction:
                 self.refresh_calls += 1
                 raise AssertionError("foreign refresh token reached Basic provider")
 
+        # Browsing is read-only; initialize the real store as its owner would.
+        from contextlib import closing
+        from hermes_state import SessionDB
+
+        with closing(SessionDB()) as db:
+            db.create_session("refresh-owner-session", source="cli")
+
         wrong = WrongProvider()
         _provider, valid_rt = self._build_rt_only_app()
         clear_providers()
@@ -235,6 +242,7 @@ class TestTransparentRefreshOnAccessTokenEviction:
         response = gated_app.get("/api/sessions", follow_redirects=False)
 
         assert response.status_code == 200
+        assert [row["id"] for row in response.json()["sessions"]] == ["refresh-owner-session"]
         assert wrong.refresh_calls == 0
         assert any(
             SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie

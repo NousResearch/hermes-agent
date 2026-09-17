@@ -50,6 +50,7 @@ def _run_clarify(adapter, answer=None, questions=None, answers=(), via_tool=Fals
     from tools import clarify_gateway as cm
 
     runner = object.__new__(TurnRunner)
+    runner._approval_owner = None  # no owning authority: the controls snapshot is skipped
     runner._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="C1", _status_thread_metadata={},
         session_key="sk1", stream_consumer_holder=[None])

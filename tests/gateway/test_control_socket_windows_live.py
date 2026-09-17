@@ -2,12 +2,12 @@
 
 Runs ONLY on a real Windows host (the on-demand ``windows-venv-e2e.yml``
 lane). Spawns a REAL child process that binds the REAL named pipe via the
-proactor event loop with the DEFAULT verb handlers, then drives the real
+dedicated native pipe worker with the DEFAULT verb handlers, then drives the real
 sync client and the real fleet consumers against it — no mocks anywhere.
 
 Proves, on windows-latest:
   1. `GatewayControlServer` binds ``\\\\.\\pipe\\hermes-gateway-<hash>`` via
-     ``loop.start_serving_pipe`` and answers ``identify``/``status``.
+     same-user local-only native pipe worker and answers ``identify``/``status``.
   2. The sync client's pipe transport (open/write/read/busy-retry) works
      against a live server and returns the child's true pid + code identity.
   3. ``collect_fleet_versions()`` prefers the socket (``source: socket``).
@@ -27,9 +27,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason="live Windows named-pipe E2E"
-)
+pytestmark = pytest.mark.windows_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,7 +128,9 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
 
     assert identify_gateway(home, timeout=2.0) is None
 
-    # Consumer falls back to the state file (live pid = this test process)
+    # Consumer falls back to the state file. Its live pid is THIS test process, whose command
+    # line is not a gateway's, so the record's self-reported SHA must not classify it (#109680):
+    # a fail-open visibility row with state ``unknown``, never ``stale``/``current``.
     import hermes_cli.update_receipt as ur
 
     (home / "gateway_state.json").write_text(
@@ -150,4 +150,6 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
     assert "source" not in fleet[0]
-    assert fleet[0]["state"] == "stale"
+    assert fleet[0]["pid"] == os.getpid()
+    assert fleet[0]["state"] == "unknown"
+    assert fleet[0]["code_sha"] is None

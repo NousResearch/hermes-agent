@@ -206,10 +206,9 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
 /**
  * Probe pooled REMOTE descriptors and drop the dead ones.
  *
- * A pooled entry backed by a remote host has no child process, so the 'exit'
- * handler that clears a dead local backend never fires, and the renderer's
- * keepalive touch keeps the idle reaper off it. Without this the pool serves a
- * descriptor for an unreachable host indefinitely.
+ * A pooled entry is a cached descriptor with no child process, so nothing
+ * signals its host's death. Without this the pool serves a descriptor for an
+ * unreachable host indefinitely.
  *
  * Entries share the primary's failure policy, keyed per base URL, so a profile
  * pointing at the same host as another does not burn the streak twice as fast.
@@ -273,7 +272,7 @@ export interface RevalidateSuspectPooledRemoteBackendsOptions<TConnection extend
  *
  * After a sleep/wake or network restore every pooled SSH tunnel is suspect:
  * the SSH master died with the network, but the local forward's descriptor is
- * still cached and the renderer keepalive keeps the idle reaper off it. Unlike
+ * still cached. Unlike
  * the background policy in revalidatePooledRemoteBackends — which tolerates a
  * failure streak because transient blips are common in steady state — a
  * suspect descriptor that fails ONE bounded probe after resume is dead: retire

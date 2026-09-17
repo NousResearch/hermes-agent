@@ -14,13 +14,9 @@ import contextlib
 import contextvars
 import logging
 import os
-import shutil
-import subprocess
-import sys
 from dataclasses import dataclass
 from typing import Any, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -652,61 +648,16 @@ def _resolve_single_delivery_target(
     return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
 
 
-def _get_bot_chat_delivery_timeout() -> int:
-    """Timeout for one bot-chat delivery turn (a full agent turn — minutes, not seconds).
-    ``cron.bot_chat_delivery_timeout_seconds``; default 600."""
-    try:
-        cfg = _sched.load_config()
-        value = int(cfg.get("cron", {}).get("bot_chat_delivery_timeout_seconds", 600))
-        return value if value > 0 else 600
-    except Exception:
-        return 600
+def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
+    """Admit job output to the target profile's authority as a real inbound Bot Chat turn.
 
-
-_BOT_CHAT_STDERR_TAIL = 500
-# stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
-_BOT_CHAT_STDOUT_TAIL = 200
-_BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
-
-
-def _format_failure_streams(result) -> str:
-    """Exit code plus labeled, redacted stderr/stdout tails for a failed delivery turn.
-
-    ``-Q`` reports the resume banner and ``session_id:`` while the response
-    rides stdout, so ``stderr or stdout`` discarded half the signal — and when
-    stderr is empty and stdout holds only the banner, the recorded error
-    carried zero diagnostics (#104056). The banner lines are dropped from the
-    stdout tail so what remains is the reason; the exit code is always named.
-    The text lands in ``last_delivery_error`` on disk, so it is scrubbed like
-    ``cron.incidents`` / ``cron.delivery_queue`` scrub their persisted errors.
-    """
-    from agent.redact import redact_sensitive_text
-
-    err = (getattr(result, "stderr", None) or "").strip()
-    out = (getattr(result, "stdout", None) or "").strip()
-    parts = [f"exit code {getattr(result, 'returncode', '?')}"]
-    if err:
-        parts.append(f"stderr: {err[-_BOT_CHAT_STDERR_TAIL:]}")
-    if out:
-        kept = "\n".join(
-            line for line in out.splitlines()
-            if line.strip() and not line.strip().lstrip("↻ ").startswith(_BOT_CHAT_BANNER_PREFIXES))
-        parts.append(
-            f"stdout: {kept[-_BOT_CHAT_STDOUT_TAIL:]}" if kept
-            else "stdout was only the resume banner")
-    return redact_sensitive_text(" | ".join(parts), force=True, redact_url_credentials=True)
-
-
-def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
-    """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
-
-    None means completed; a queued/claimed receipt returns an explicit unverified status
-    string so existing Optional[str] callers cannot misreport admission as delivery.
-    ``profile`` is ``""`` for the job's own profile.
+    None means the target's durable receipt is settled; anything else is an explicit
+    unverified status string so Optional[str] callers cannot misreport admission as
+    delivery. ``profile`` is ``""`` for the job's own profile. There is no second-writer
+    fallback: without a running authority the payload stays unverified for retry.
     """
     import hashlib
     import json
-    import tempfile
     import uuid
     from hermes_constants import get_hermes_home
     from hermes_cli.profiles import get_profile_dir
@@ -723,11 +674,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     )
     try:
         source_home = get_hermes_home().resolve()
-        from pathlib import Path
-        home = (Path(deferred["home"]) if deferred is not None else
-                get_profile_dir(profile) if profile else source_home).resolve()
-        if deferred is not None and not (home / "state.db").is_file():
-            return f"bot-chat delivery target no longer exists: {home}; do not resend"
+        home = (get_profile_dir(profile) if profile else source_home).resolve()
         # run_one_job/claim_fire attach the durable execution id before delivery. The
         # transient fallback supports direct helper callers, never deduping recurring
         # runs by their (potentially identical) output or previous last_run timestamp.
@@ -738,123 +685,28 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             [str(source_home), job_id, str(run_id), str(home)],
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
-        if deferred is not None:
-            key = deferred["id"]
         # Read BEFORE discovery: the previous owner may have exited after accepting.
-        # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
-        if receipt is None and not deferred:
-            from cron.bot_chat_delivery import defer, read_pending
-            from tools.bot_live_delivery import find_canonical_owner
-
-            pending = read_pending(key)
-            if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
-                pending = defer(key, dict(job), content, profile, home)
-            if pending is not None:
-                if pending["content"] != content or pending["home"] != str(home):
-                    raise ValueError("delivery id already belongs to a different payload")
-                status = pending["status"]
-                target = f"bot-chat:{profile_label}"
-                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
-                    "status": status, "delivery_id": key}
-                return None if status == "settled" else f"{target} {status} (receipt {key}): completion unverified; do not resend"
         if receipt is None:
             owner = find_canonical_live_owner(home)
-            if owner is not None:
-                receipt = deliver_to_live_owner(home, owner, message, delivery_id=key)
-        if receipt is not None:
-            if receipt["message"] != message:
-                raise ValueError("delivery id already belongs to a different payload")
-            status = receipt["status"]
-            target = f"bot-chat:{profile_label}"
-            receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-            receipts[target] = {"status": status, "delivery_id": key}
-            logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
-                        job_id, profile_label, key, status)
-            if status == "settled":
-                return None
-            detail = ("completion unverified; do not resend" if status in ("queued", "claimed")
-                      else receipt.get("error") or receipt.get("reason") or "not completed")
-            return f"{target} {status} (receipt {key}): {detail}"
+            if owner is None:
+                return f"bot-chat delivery to profile '{profile_label}' unverified: no canonical Bot Chat"
+            receipt = deliver_to_live_owner(home, owner, message, delivery_id=key)
+        if receipt["message"] != message:
+            raise ValueError("delivery id already belongs to a different payload")
+        status = receipt["status"]
+        target = f"bot-chat:{profile_label}"
+        receipts = job.setdefault("_bot_chat_delivery_receipts", {})
+        receipts[target] = {"status": status, "delivery_id": key}
+        logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
+                    job_id, profile_label, key, status)
+        if status == "settled":
+            return None
+        detail = ("completion unverified; do not resend" if status in ("queued", "claimed")
+                  else receipt.get("error") or receipt.get("reason") or "not completed")
+        return f"{target} {status} (receipt {key}): {detail}"
     except Exception as exc:
-        # Discovery/admission uncertainty must never open a second-writer fallback.
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
-
-    # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
-    # scheduler lives in the long-running gateway, so a PATH-first lookup would hand delivery
-    # to whatever `hermes` PATH names — another install, or a planted one — instead of this one.
-    try:
-        import importlib.util as _ilu
-        found = _ilu.find_spec("hermes_cli") is not None
-    except Exception:
-        found = False
-    if found:
-        argv = [sys.executable, "-m", "hermes_cli.main"]
-    else:
-        hermes_bin = shutil.which("hermes")
-        if not hermes_bin:
-            return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
-                    "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
-        argv = [hermes_bin]
-
-    def _fail(msg: str, **log_kwargs) -> str:
-        logger.warning("Job '%s': %s", job_id, msg, **log_kwargs)
-        return msg
-
-    from agent.delegation_context import delegated_child_subprocess_env
-    from tools.environments.local import strip_launch_profile_env
-    env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
-    if not home.is_dir():
-        return _fail(f"bot-chat delivery target no longer exists: {home}; do not resend")
-    # Discovery (or deferred admission) owns the destination, not HOME or a
-    # subsequently changed active_profile. Do not resolve the name a second time.
-    env["HERMES_HOME"] = str(home)
-    if home.parent.name != "profiles":
-        argv += ["-p", "default"]
-
-    query_file = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", suffix=".txt", prefix="hermes-cron-botchat-", delete=False,
-        ) as fh:
-            fh.write(message)
-            query_file = fh.name
-
-        argv += [
-            "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
-            "-Q", "--query-file", query_file,
-        ]
-        result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
-            creationflags=windows_hide_flags())
-        if result.returncode != 0:
-            tail = _format_failure_streams(result)
-            logger.warning(
-                "Job '%s': bot-chat delivery to profile '%s' failed at %s: %s",
-                job_id, profile_label, home, tail)
-            return (
-                f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
-                "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening"
-                f". Details: {tail}")
-        logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
-        return None
-    except subprocess.TimeoutExpired:
-        return _fail(
-            f"bot-chat delivery to profile '{profile_label}' timed out "
-            f"after {_get_bot_chat_delivery_timeout()}s (the bot's turn may "
-            "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
-            "this recurs)")
-    except Exception as e:
-        logger.warning(
-            "Job '%s': bot-chat delivery to profile '%s' failed: %s", job_id, profile_label,
-            str(e) or type(e).__name__, exc_info=True)
-        return (
-            f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
-            "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
-    finally:
-        if query_file:
-            with contextlib.suppress(OSError):
-                os.unlink(query_file)
 
 
 def _normalize_deliver_value(deliver) -> str:

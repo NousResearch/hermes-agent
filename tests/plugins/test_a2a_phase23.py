@@ -512,7 +512,7 @@ class TestTaskStore:
         adapter._add_pending("t-live", "c1")
         agent = {"slug": "dev", "tenant": "dev", "profile": "dev", "local": False, "timeout": 900}
 
-        def fake_forward(*_args):
+        def fake_forward(*_args, **_kwargs):
             forwarded_id = next(tid for tid in adapter.tasks._tasks if tid not in {
                 "t-live", "t-orphan", "t-within-reply-window"
             })

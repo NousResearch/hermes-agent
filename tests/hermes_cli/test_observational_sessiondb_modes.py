@@ -16,7 +16,10 @@ def test_observational_sessions_actions_open_a_read_only_store(monkeypatch, acti
 
     sessions_cmd.cmd_sessions(Namespace(sessions_action=action))
 
-    factory.assert_called_once_with(read_only=True)
+    # One read-only open; the store path is passed explicitly because a served-profile
+    # process has no single default home.
+    assert factory.call_count == 1
+    assert factory.call_args.kwargs["read_only"] is True
 
 
 def test_sessions_observational_commands_on_missing_store_stay_empty(monkeypatch, tmp_path, capsys):

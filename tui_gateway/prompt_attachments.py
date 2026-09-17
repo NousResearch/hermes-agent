@@ -63,6 +63,7 @@ def _decode_attach_payload(
 
 def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
     """Extension from the filename hint, else magic bytes (WebP: RIFF container), else ``.png``."""
+    from pathlib import Path
     if filename and (suffix := Path(filename).suffix.lower()):
         return suffix
     head = img_bytes[:16]
@@ -92,15 +93,32 @@ def _session_images_dir(session: dict) -> Path:
     return _session_home_dir(session, "images")
 
 
+def stage_image_bytes(directory, img_bytes: bytes, ext: str, *, prefix: str):
+    """Private, collision-free staging shared by local and canonical byte uploads."""
+    import os
+    from pathlib import Path
+    import tempfile
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=directory, prefix=prefix + "_", suffix=ext)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(img_bytes)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
     """Write image bytes into the session images dir and queue them for the next submit."""
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
     try:
-        img_path.write_bytes(img_bytes)
+        img_path = stage_image_bytes(img_dir, img_bytes, ext, prefix=prefix)
     except Exception:
         session["image_counter"] = max(0, session["image_counter"] - 1)
         raise

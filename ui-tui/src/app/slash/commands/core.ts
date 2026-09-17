@@ -704,7 +704,13 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
+        .rpc<SessionSteerResponse>('session.steer', {
+          session_id: ctx.sid,
+          text: payload,
+          ...(ctx.gateway.gw.isCanonical && ctx.ui.info?.execution_generation !== undefined
+            ? { execution_generation: ctx.ui.info.execution_generation }
+            : {})
+        })
         .then(
           ctx.guarded<SessionSteerResponse>(r => {
             if (r?.status === 'queued') {

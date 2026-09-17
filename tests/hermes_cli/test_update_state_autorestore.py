@@ -1,22 +1,4 @@
-"""Auto-restore of state.db must not inherit the corrupt database's WAL.
-
-The post-update integrity guard added for #68474 restores ``state.db`` from a
-pre-update quick snapshot with a plain ``shutil.copy2``. The snapshot image is
-produced by ``backup._safe_copy_db`` via ``sqlite3.backup()``, so it is already
-checkpointed and owns no WAL — which is why ``backup._EXCLUDED_SUFFIXES``
-deliberately refuses to ship ``-wal`` / ``-shm`` / ``-journal`` inside a
-snapshot.
-
-Copying that image over the live path replaces only the main database file. A
-``state.db-wal`` left behind by the *old* database — a crashed writer, or a
-second Hermes holder the updater's drain did not stop — survives the copy and is
-replayed over the fresh image on the next open. The restored file then passes
-``PRAGMA integrity_check`` while serving the discarded database's contents, so
-the CLI prints "✓ Auto-restored from snapshot" over data the user has lost.
-
-These tests exercise REAL SQLite files, in WAL mode, with a genuinely hot
-sidecar.
-"""
+"""Updater restore must publish snapshot rows without replaying the old WAL."""
 
 import shutil
 import sqlite3
@@ -25,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.update_cmd import (
-    _clear_stale_sqlite_sidecars,
     _restore_state_db_from_snapshot,
 )
 
@@ -106,29 +87,6 @@ def _row_count(db_path: Path) -> int:
         conn.close()
 
 
-def test_restore_over_hot_wal_serves_snapshot_rows(live_db_with_hot_wal, snapshot_db):
-    """The restored database must contain the SNAPSHOT's rows, not the WAL's.
-
-    Without clearing the sidecars the copy silently loses every restored row:
-    SQLite replays the old WAL and serves the discarded database instead.
-    """
-    _clear_stale_sqlite_sidecars(live_db_with_hot_wal)
-    shutil.copy2(snapshot_db, live_db_with_hot_wal)
-
-    assert _row_count(live_db_with_hot_wal) == SNAPSHOT_ROWS
-
-
-def test_stale_wal_is_not_left_beside_the_restored_file(
-    live_db_with_hot_wal, snapshot_db
-):
-    """No sidecar from the discarded database may survive the restore."""
-    _clear_stale_sqlite_sidecars(live_db_with_hot_wal)
-    shutil.copy2(snapshot_db, live_db_with_hot_wal)
-
-    for suffix in ("-wal", "-shm", "-journal"):
-        assert not _sidecar(live_db_with_hot_wal, suffix).exists()
-
-
 def test_torn_restore_is_what_the_guard_prevents(live_db_with_hot_wal, snapshot_db):
     """Pin the SQLite behaviour that makes the guard necessary.
 
@@ -150,38 +108,12 @@ def test_torn_restore_is_what_the_guard_prevents(live_db_with_hot_wal, snapshot_
     assert _row_count(live_db_with_hot_wal) != SNAPSHOT_ROWS
 
 
-def test_clear_is_a_noop_when_no_sidecars_exist(tmp_path):
-    """A snapshot-clean destination must not raise (``missing_ok``)."""
-    db_path = tmp_path / "state.db"
-    conn = sqlite3.connect(db_path)
-    conn.execute("CREATE TABLE t (a INTEGER)")
-    conn.commit()
-    conn.close()
-
-    _clear_stale_sqlite_sidecars(db_path)
-
-    assert db_path.exists()
-
-
-def test_clear_removes_every_sidecar_suffix_and_spares_the_database(tmp_path):
-    db_path = tmp_path / "state.db"
-    db_path.write_bytes(b"main-db")
-    for suffix in ("-wal", "-shm", "-journal"):
-        _sidecar(db_path, suffix).write_bytes(b"stale")
-
-    _clear_stale_sqlite_sidecars(db_path)
-
-    for suffix in ("-wal", "-shm", "-journal"):
-        assert not _sidecar(db_path, suffix).exists()
-    assert db_path.read_bytes() == b"main-db"
-
-
 def test_restore_helper_serves_snapshot_rows_over_a_hot_wal(
     live_db_with_hot_wal, snapshot_db
 ):
     """The shared restore helper is what both update paths call.
 
-    It must clear, copy and verify as one unit: after it returns, the database
+    It must restore and verify as one unit: after it returns, the database
     has to hold the SNAPSHOT's rows even though the destination still owned a
     hot WAL from the corrupt database.
     """
@@ -249,10 +181,17 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     _make_valid_db(root_home / "state.db", 10)
     root_before = (root_home / "state.db").read_bytes()
 
-    # Sibling: live DB corrupted post-update (the #68474 zeroed signature),
-    # with its own VALID pre-update snapshot under its own snapshots dir.
+    # Corrupt only the sessions B-tree; the canonical epoch must remain readable.
     _make_valid_snapshot(sibling_home, "20260901-pre-update", 25)
-    (sibling_home / "state.db").write_bytes(b"\x00" * 4096)
+    state = sibling_home / "state.db"
+    _make_valid_db(state, 3)
+    with sqlite3.connect(state) as conn:
+        page = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='sessions'").fetchone()[0]
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    conn.close()
+    with state.open("r+b") as stream:
+        stream.seek((page - 1) * page_size)
+        stream.write(b"\x00")
 
     monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: root_home)
     monkeypatch.setattr(
@@ -269,6 +208,7 @@ def test_post_update_guard_covers_sibling_profiles(tmp_path, monkeypatch, capsys
     # Operator-visible restore message mentions the profile.
     out = capsys.readouterr().out
     assert "profile work" in out
+    assert "✓ Auto-restored from snapshot" in out
 
 
 def test_post_update_guard_leaves_valid_sibling_dbs_alone(tmp_path, monkeypatch, capsys):

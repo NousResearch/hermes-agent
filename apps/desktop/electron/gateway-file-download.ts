@@ -2,8 +2,8 @@
 // main process. Extracted from main.ts so the streaming, data-URL decoding, and
 // filename derivation are unit-testable without spinning up Electron.
 //
-// The transport wrappers (token / OAuth) live in main.ts because they need
-// main-process singletons (https/http, electronNet, the OAuth session). They
+// The native/token transport lives in gateway-download-transport.ts; OAuth
+// remains in main.ts for the Electron session partition. Both transports
 // delegate the byte-moving to `pumpStreamToFile` here, which streams the
 // response into a sibling temp file with backpressure and renames it onto the
 // user-selected destination only once the body has landed in full — so a large

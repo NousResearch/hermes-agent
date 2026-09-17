@@ -397,13 +397,16 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     assert "Nightly docs" in out
 
 
-def test_cron_tick_invokes_scheduler_tick_with_verbose(monkeypatch):
+def test_cron_tick_invokes_scheduler_tick_verbose_and_headless(monkeypatch):
+    """The CLI tick runs outside any gateway: it must declare itself headless so agent jobs are
+    refused, never spawned for."""
     calls = []
-    monkeypatch.setattr("cron.scheduler.tick", lambda verbose=False: calls.append(verbose))
+    monkeypatch.setattr("cron.scheduler.tick",
+                        lambda verbose=False, headless=False: calls.append((verbose, headless)))
 
     cron_cli.cron_tick()
 
-    assert calls == [True]
+    assert calls == [(True, True)]
 
 
 def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
@@ -530,7 +533,7 @@ class TestCronRunBackgroundDispatch:
 
         rc, out = self._run_cmd(capsys)
 
-        assert rc == 0
+        assert rc == 1
         assert "Ran now: failed." in out
 
     def test_delegation_id_alone_counts_as_background(self, monkeypatch, capsys):

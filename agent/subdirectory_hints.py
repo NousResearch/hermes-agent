@@ -40,6 +40,10 @@ def _digest(content: str) -> str:
 def _first_hint_file(directory: Path):
     """``(path, stripped content)`` of the first readable non-empty hint file
     in *directory* (priority order), or None. Unreadable files are skipped."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     for filename in _HINT_FILENAMES:
         candidate = directory / filename
         try:
@@ -102,7 +106,9 @@ class SubdirectoryHintTracker:
 
     def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
-        if not self.enabled:
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if not self.enabled or safe_worker_enabled():
             return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None

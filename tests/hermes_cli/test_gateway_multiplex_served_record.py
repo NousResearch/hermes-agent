@@ -102,21 +102,24 @@ def test_setup_gateway_service_step_skips_install_for_served_profile(served_root
     step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist,
     while a profile the live record does not list is still installed (#111958)."""
     import hermes_cli.gateway as gw
+    from hermes_cli.gateway_setup_service import ensure_gateway_service
 
     calls: list[str] = []
+    # The orchestrator reads every service primitive through ``hermes_cli.gateway``; patch that binding.
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gw, "_is_service_running", lambda: False)
-    monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gw, "_is_service_installed", lambda: "install" in calls)
     monkeypatch.setattr(gw, "has_conflicting_systemd_units", lambda: False)
     monkeypatch.setattr(gw, "systemd_install", lambda **kwargs: calls.append("install"))
     monkeypatch.setattr(gw, "systemd_start", lambda *args, **kwargs: calls.append("start"))
 
-    assert gw.ensure_gateway_service(context="setup") is True
+    # Consent is explicit here; the served-profile early return must win before it matters.
+    assert ensure_gateway_service(context="setup", install=True) is True
     assert calls == []
     assert "already served by the default multiplexer" in capsys.readouterr().out
 
     monkeypatch.setenv("HERMES_HOME", str(served_root / "profiles" / "other"))  # not in the live record
-    assert gw.ensure_gateway_service(context="setup") is True
+    assert ensure_gateway_service(context="setup", install=True) is True
     assert calls == ["install", "start"]
 
 

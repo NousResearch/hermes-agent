@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -58,6 +58,7 @@ it('keeps every public member reply readable in room arrival order across interl
 
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
   const { container } = render(<GroupChatWorkspace group="Room" members={[]} />)
+  await waitFor(() => expect(container.textContent).toContain('Build request'))
   const text = container.textContent || ''
   let previous = -1
 

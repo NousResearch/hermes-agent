@@ -120,48 +120,6 @@ def _abs_completion_prefix_exists(path_part: str) -> bool:
         return False
 
 
-_DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
-_DETAILS_MODES = ("hidden", "collapsed", "expanded")
-
-
-def _details_root_meta(candidate: str) -> str:
-    if candidate in _DETAILS_SECTIONS:
-        return "section override"
-    return "cycle global mode" if candidate == "cycle" else "global mode"
-
-
-def _details_completions(text: str) -> list[dict] | None:
-    """Argument completions for ``/details [section] [mode]``; None when ``text`` is not that command."""
-    if not text.lower().startswith("/details"):
-        return None
-    stripped = text.strip()
-    if stripped and not "/details".startswith(stripped.lower().split()[0]):
-        return None
-    body = text[len("/details") :].removeprefix(" ")
-    parts = body.split()
-    trailing = text.endswith(" ")
-    root_candidates = (*_DETAILS_MODES, "cycle", *_DETAILS_SECTIONS)
-    if not body or (not parts and trailing):
-        lead = "" if trailing else " "
-        return [_item(f"{lead}{c}", _details_root_meta(c)) for c in root_candidates]
-    if len(parts) == 1 and not trailing:
-        prefix = parts[0].lower()
-        return [_item(c, _details_root_meta(c)) for c in root_candidates if c.startswith(prefix) and c != prefix]
-    section = parts[0].lower() if parts else ""
-    if section not in _DETAILS_SECTIONS:
-        return []
-
-    def section_meta(candidate: str) -> str:
-        return f"clear {section} override" if candidate == "reset" else f"set {section}"
-    mode_candidates = (*_DETAILS_MODES, "reset")
-    if len(parts) == 1:  # trailing space after the section
-        return [_item(c, section_meta(c)) for c in mode_candidates]
-    if len(parts) == 2 and not trailing:
-        prefix = parts[1].lower()
-        return [_item(c, section_meta(c)) for c in mode_candidates if c.startswith(prefix) and c != prefix]
-    return []
-
-
 def _model_picker_context(agent):
     """Layer live session state onto config without losing custom identity."""
     from hermes_cli.inventory import load_picker_context

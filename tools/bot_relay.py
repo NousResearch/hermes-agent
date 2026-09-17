@@ -74,22 +74,6 @@ class EnvelopeRefusedError(RuntimeError):
 # ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
-# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
-# ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
-BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
-
-# Set by a dispatcher on the ONE policy-gated re-run of a failed delivery turn (``tools.bot_mode_dm``,
-# ``tui_gateway.methods_bot_relay``). The failed attempt's turn-start persist already left the DM as the
-# Bot Chat's unanswered tail row, and a fresh process cannot tell that from a new message on its own — so
-# the re-run is told to adopt that row instead of appending a second copy
-# (``hermes_cli.quiet_single_query.adopt_unanswered_turn``, which consumes the variable before the turn).
-RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
-
-
-def retry_turn_env(env: Optional[Mapping[str, str]]) -> dict[str, str]:
-    """The re-run's child env: the first attempt's env plus the resume marker."""
-    return {**(os.environ if env is None else env), RESUME_UNANSWERED_TURN_ENV: "1"}
-
 
 def relay_root(root: Path | str) -> Path:
     return Path(root) / RELAY_DIR_NAME
@@ -227,7 +211,7 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
                                    "Try again once that machine reconnects to the Desktop.")
     base = _ensure_dirs(root)
     envelope = {
-        "id": uuid.uuid4().hex, "created_at": int(time.time()),
+        "id": uuid.uuid4().hex, "created_at": int(time.time()), "canonical_delivery_v1": True,
         "from_profile": sender_profile, "from_handle": sender_handle,
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
@@ -288,6 +272,13 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
             out.append(json.loads(claimed.read_text(encoding="utf-8")))
+    seen = {row['id'] for row in out}
+    for path in sorted((base / CLAIMED_DIR).glob('*.json')):
+        with contextlib.suppress(OSError, ValueError):
+            envelope = json.loads(path.read_text(encoding='utf-8'))
+            if (envelope.get('canonical_delivery_v1') is True and envelope['id'] not in seen
+                    and not (base / REPLIES_DIR / path.name).exists()):
+                out.append(envelope)
     return out
 
 
@@ -303,8 +294,16 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
+    from tools.bot_live_delivery import _locked, _read, _write
     path = base / REPLIES_DIR / f"{safe}.json"
-    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
+    outcome = {"reply": str(reply or ""), "error": err, "reason": code}
+    with _locked(root):
+        existing = _read(path)
+        if existing is not None:
+            if any(existing.get(key) != value for key, value in outcome.items()):
+                raise ValueError("delivery already has a different reply")
+            return path
+        _atomic_write_json(path, {"id": safe, "at": int(time.time()), **outcome})
     return path
 
 
@@ -391,11 +390,6 @@ def _hermes_cli() -> str:
     """
     sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
-
-
-def local_delivery_command(profile: str, query_file: str) -> list[str]:
-    """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
 
 
 class DeliveryAuthor:

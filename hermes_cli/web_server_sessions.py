@@ -1,10 +1,8 @@
-"""Session-DB access for the dashboard: per-profile SessionDB opening with schema
-heal, latest-descendant lookup and the auto-archive ticker.
+"""Read-only session browsing, latest-descendant lookup and owner maintenance.
 """
 
 import logging
 import asyncio
-import threading
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -68,116 +66,152 @@ def _session_latest_descendant(session_id: str, db):
     return current, path
 
 
-# Serialises the one-time writable schema bootstrap for read-only opens, so
-# concurrent first-load polls don't open mode=ro against a half-written schema
-# ("no such table: sessions").
-_session_db_bootstrap_lock = threading.Lock()
+def _session_mutation_context(request, profile):
+    """Use the same principal and profile boundary for prepare and apply."""
+    from fastapi import HTTPException
+    from gateway.session_contract import Principal
+    from hermes_cli.web_server import _has_valid_session_token
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_state import _default_db_path
+
+    native = getattr(request.state, 'native_http_principal', None)
+    session = getattr(request.state, 'session', None)
+    if native is not None:
+        subject = native['subject']
+    elif session is not None:
+        from gateway.session_identity import authenticated_subject
+        subject = authenticated_subject({"user_id": session.user_id,
+            "provider": session.provider, "issuer": session.issuer})
+    elif not getattr(request.app.state, 'auth_required', False) and _has_valid_session_token(request):
+        from gateway.session_identity import authenticated_subject
+        subject = authenticated_subject({'user_id': 'legacy-token-owner', 'provider': 'session-token'})
+    else:
+        raise HTTPException(status_code=401, detail='Unauthorized')
+    authority = getattr(request.app.state, 'session_authority', None)
+    if authority is None:
+        raise HTTPException(status_code=503, detail='session_authority_unavailable')
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    # ``?profile=`` selects a served home; its own authority (not the launch one) owns the mutation.
+    from gateway.session_authorities import authority_for_home
+    runner = getattr(request.app.state, 'gateway_runner', None)
+    owner = authority_for_home(runner, home) if runner is not None else None
+    if owner is None and home.resolve() == Path(authority.db.db_path).parent.resolve():
+        owner = authority
+    if owner is None:
+        raise HTTPException(status_code=403, detail='profile_mismatch')
+    authority = owner
+    if native is not None and native['profile_id'] != authority.profile_id:
+        raise HTTPException(status_code=403, detail='profile_mismatch')
+    return authority, Principal(subject, authority.profile_id,
+        frozenset({'session:read', 'session:control', 'session:create', 'session:operator'}), 'http')
+
+
+async def _mutate_session_request(request, profile, session_id, *, request_id,
+                                  expected_revision, operation, payload, expected_generation=None):
+    """Resolve the authenticated principal and owner; never open a second writer."""
+    import sqlite3
+    from fastapi import HTTPException
+    from gateway.session_contract import SessionRef
+    from gateway.session_mutations import mutate_session
+    from hermes_state_runtime import RuntimeStoreError
+
+    authority, actor = _session_mutation_context(request, profile)
+    if operation == 'import':
+        _, errors = authority.db._validate_import_payload(payload['sessions'])
+        if errors:
+            raise HTTPException(status_code=400, detail={'errors': errors})
+    if request_id is None or expected_revision is None:
+        raise HTTPException(status_code=409, detail='mutation_identity_required')
+    params = dict(session_id=session_id, request_id=request_id, expected_revision=expected_revision,
+        operation=operation, payload=payload)
+    if expected_generation is not None:
+        params['expected_generation'] = expected_generation
+    try:
+        result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+        return {'ok': True, **result}
+    except RuntimeStoreError as exc:
+        status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
+                  'invalid_params': 400, 'runtime_draining': 503}.get(exc.reason, 409)
+        raise HTTPException(status_code=status, detail=exc.reason) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=503, detail='storage_unavailable') from exc
+
+
+def _with_session_maintenance(profile, operation, *args):
+    """Offline bulk actions reserve the exact owner lock through final DB close."""
+    from fastapi import HTTPException
+    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_state import _default_db_path
+
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    try:
+        with exclusive_maintenance([home]):
+            return operation(*args)
+    except OwnershipConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _session_db_read_probe_statements() -> tuple:
-    """Stale-schema probes for read-only opens (which skip _reconcile_columns()).
-    Derived from SCHEMA_SQL so a new column is probed automatically — a
-    hand-written list once went stale and emptied the sidebar after update."""
+    """Probe the declared schema without reconciling it on a browsing request."""
     from hermes_state_schema import schema_read_probe_statements
 
     return schema_read_probe_statements()
 
 
-# Stores where a heal WRITABLE OPEN SUCCEEDED but the read probe still failed:
-# one reconciliation cannot fix them (e.g. a NOT-NULL-without-default column),
-# so they fall back to the raw read-only open until restart instead of paying
-# a writable init per poll. A FAILED writable open (transient lock) is NOT
-# recorded — the next poll retries the heal.
-_session_db_heal_exhausted: set = set()
-
-# Deduplicates the heal-failure warning per store per process.
-_session_db_heal_warned: set = set()
-
-
-def _is_stale_schema_error(exc: BaseException) -> bool:
-    message = str(exc).lower()
-    return "no such table" in message or "no such column" in message
-
-
 def _open_session_db_at_path(db_path: Path, *, read_only: bool):
-    """Open a SessionDB at an explicit path with an explicit access mode.
+    """Browsing never initializes, repairs or upgrades the owner's session store.
 
-    Read-only opens bootstrap a missing/zero-byte store once and heal a stale or
-    malformed schema through ONE writable open before reopening read-only; the
-    healthy read path never takes a write lock.  Tables outside SCHEMA_SQL
-    (telemetry ``tel_*``, FTS shadow tables) are outside both probe and heal.
+    Owner startup reconciles schema; explicit mutation APIs retain their writable
+    acquisition until their separate owner-RPC migration.
     """
     import sqlite3
 
-    from hermes_state import SessionDB, is_malformed_schema_error
-    from hermes_state_registry import acquire, release_or_close
+    from fastapi import HTTPException
+    from hermes_state import SessionDB
+    from hermes_state_errors import is_transient_sqlite_error
+    from hermes_state_registry import acquire
 
-    # Read-only file/sidecar preflight (port of kilocode#12508): repair-or-refuse BEFORE the first
-    # connection so users get an actionable message instead of an opaque "attempt to write a readonly
-    # database" from deep inside _init_schema.
     if not read_only:
         return acquire(db_path)
 
-    def _needs_bootstrap() -> bool:
-        try:
-            return db_path.stat().st_size == 0
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-
-    if _needs_bootstrap():
-        with _session_db_bootstrap_lock:
-            if _needs_bootstrap():
-                db = acquire(db_path)
-                release_or_close(db)
-
-    def _open_probed():
-        db = SessionDB(db_path=db_path, read_only=True)
-        # Unit-test fakes may replace SessionDB without exposing a raw
-        # connection. Probe only real connections.
-        conn = getattr(db, "_conn", None)
-        if conn is not None and str(db_path) not in _session_db_heal_exhausted:
-            try:
-                for statement in _session_db_read_probe_statements():
-                    conn.execute(statement).fetchone()
-            except BaseException:
-                db.close()
-                raise
-        return db
+    try:
+        initialized = db_path.stat().st_size > 0
+    except FileNotFoundError:
+        initialized = False
+    if not initialized:
+        raise HTTPException(
+            status_code=503,
+            detail="Session store is not initialized. Start this profile's gateway to initialize it.")
 
     try:
-        return _open_probed()
-    except (sqlite3.DatabaseError, UnicodeDecodeError) as exc:
-        # UnicodeDecodeError = pysqlite could not decode SQLite's own error
-        # message because corrupt file bytes were embedded in it; the
-        # one-writable-open heal is the only repair path, so treat it as
-        # malformed schema.
-        if not (
-            _is_stale_schema_error(exc)
-            or is_malformed_schema_error(exc)
-            or isinstance(exc, UnicodeDecodeError)):
-            raise
-        db = acquire(db_path)
-        release_or_close(db)
+        db = SessionDB(db_path=db_path, read_only=True)
         try:
-            return _open_probed()
-        except (sqlite3.DatabaseError, UnicodeDecodeError) as still_stale:
-            if not _is_stale_schema_error(still_stale):
-                raise
-            # Writable open succeeded but the store is STILL behind the probe:
-            # serve reads without the probe (only queries touching the broken
-            # part fail) and stop paying the writable init per poll.
-            _session_db_heal_exhausted.add(str(db_path))
-            if str(db_path) not in _session_db_heal_warned:
-                _session_db_heal_warned.add(str(db_path))
-                _log.warning(
-                    "state.db at %s is missing schema that a writable "
-                    "reconcile could not add (%s); read paths may partially "
-                    "fail until the store is repaired",
-                    db_path,
-                    still_stale)
-            return _open_probed()
+            conn = getattr(db, "_conn", None)
+            if conn is not None:
+                for statement in _session_db_read_probe_statements():
+                    conn.execute(statement).fetchone()
+            return db
+        except BaseException:
+            db.close()
+            raise
+    except (sqlite3.DatabaseError, UnicodeDecodeError) as exc:
+        from hermes_state_errors import is_malformed_db_error
+        if isinstance(exc, sqlite3.DatabaseError) and is_malformed_db_error(exc):
+            # Same structured 503 the analytics routers publish (``corrupt_store_as_status``): a
+            # corrupt image names the repair (`hermes doctor`), never a generic "schema unavailable".
+            from hermes_cli.web_routers._common import corrupt_store_status
+            raise corrupt_store_status(db_path, exc) from exc
+        if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_error(exc):
+            detail = "Session store is busy (disk I/O or lock). Retry; the list was not cleared."
+        else:
+            detail = (
+                "Session store schema is unavailable or corrupt. Start or restart this profile's "
+                "gateway to reconcile it; if it persists, run `hermes doctor` for diagnosis. "
+                "Browsing does not repair the store.")
+        raise HTTPException(status_code=503, detail=detail) from exc
 
 
 def _session_db_path_for_profile(profile: Optional[str]) -> Path:
@@ -207,9 +241,11 @@ _last_auto_archive_check: Dict[str, float] = {}
 
 
 def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
-    """Config-gated stale-session auto-archive for ``profile``; never raises.
-    ``hermes serve`` runs neither CLI nor gateway startup hooks, so this
-    session-list trigger is what makes ``sessions.auto_archive`` work there."""
+    """Config-gated owner-lifetime maintenance, never invoked by browsing.
+
+    The standalone serve ticker maintains its own profile; a composed HTTP
+    listener relies on its gateway owner's startup and housekeeping hooks.
+    """
     try:
         key = profile or ""
         now = time.monotonic()

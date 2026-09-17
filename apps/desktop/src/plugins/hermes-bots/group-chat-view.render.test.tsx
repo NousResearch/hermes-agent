@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -75,6 +75,8 @@ it('renders member replies through the shell message renderer, resolving media o
 
   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
   const { getAllByTestId } = render(<GroupChatWorkspace group="Room" members={members} />)
+  // The room paints once the async group-driver gate resolves to the legacy workspace.
+  await waitFor(() => expect(getAllByTestId('message-text-content')).toHaveLength(3))
   const bodies = getAllByTestId('message-text-content').map(el => [el.textContent, el.dataset.media])
 
   expect(bodies).toEqual([

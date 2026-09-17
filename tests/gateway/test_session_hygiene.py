@@ -1705,7 +1705,9 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
 
         assert result == "ok"
         assert worker_started.wait(timeout=2)
-        assert elapsed < 2.0, (
+        # The bug this guards against is a 600s ceiling; a saturated CI runner
+        # legitimately adds seconds of scheduling latency, so the bound is loose.
+        assert elapsed < 20.0, (
             f"hygiene host waited {elapsed:.1f}s after fence cancel — "
             "must not extend toward the 600s ceiling (#96953)"
         )

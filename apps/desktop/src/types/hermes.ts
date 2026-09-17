@@ -425,6 +425,7 @@ export interface HermesConfig {
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    busy_input_mode?: string
     timestamps?: boolean
   }
   desktop?: {
@@ -723,12 +724,15 @@ export interface SessionResumeResult {
 }
 
 export interface SessionRuntimeInfo {
+  stored_session_id?: string
+  pending_submissions?: unknown
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
+  desktop_protocol?: string
   fast?: boolean
   install_warning?: string
   model?: string

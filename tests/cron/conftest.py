@@ -11,6 +11,11 @@ edge cases — call ``monkeypatch.delenv("HERMES_MODEL", raising=False)``
 inside the test, which overrides this fixture's value for that scope.
 """
 
+import asyncio
+import json
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 
 
@@ -70,3 +75,50 @@ def _reset_session_context_vars():
     _reset_all()
     yield
     _reset_all()
+
+
+@pytest.fixture
+def cron_owner(monkeypatch):
+    """Replace only the client transport with the production owner execution seam.
+
+    This is not admission/RPC coverage. Tests requesting it exercise the real
+    scheduler under the exact owner-store identity and profile scope.
+    """
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
+
+    def run(job, *, extra_prompt=None, cancel_event=None, execution_id=None):
+        from cron.scheduler import _get_hermes_home
+
+        db = acquire(_get_hermes_home() / "state.db")
+        identity = uuid4().hex
+        ref = SessionRef("test-profile", "cron-" + identity)
+        db.create_session(ref.session_id, source="cron")
+        authority = SimpleNamespace(
+            db=db, sessions={ref.session_id: SimpleNamespace(
+                source=SimpleNamespace(user_id="cron-owner"))}, pending_results={})
+        request_id = execution_id or identity
+        row = {"admission_id": identity, "request_id": request_id,
+               "principal_id": "cron-owner", "payload": {"text": extra_prompt or ""}}
+        policy = SimpleNamespace(request_json=json.dumps({
+            "cron_job": job, "extra_prompt": extra_prompt, "request_id": request_id}))
+
+        async def execute_job():
+            previous = current_execution()
+            try:
+                await execute(authority, ref, row, policy)
+            except RuntimeError:
+                if identity not in authority.pending_results:
+                    raise
+            assert current_execution() is previous
+            assert not authority._cron_cancellations
+            return tuple(authority.pending_results[identity]["result"]["cron_result"])
+
+        try:
+            return asyncio.run(execute_job())
+        finally:
+            release(db)
+
+    monkeypatch.setattr("cron.scheduler_authority.run_canonical_job", run)
+    return run

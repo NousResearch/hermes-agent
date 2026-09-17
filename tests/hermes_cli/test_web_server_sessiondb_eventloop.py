@@ -18,7 +18,7 @@ TARGET_HANDLERS = {
     "delete_empty_sessions_endpoint",
     "get_session_latest_descendant",
     "get_session_messages",
-    "delete_session_endpoint",
+    # delete_session_endpoint admits through the session authority and opens no SessionDB.
     "export_session_endpoint",
     "prune_sessions_endpoint",
     "get_usage_analytics",

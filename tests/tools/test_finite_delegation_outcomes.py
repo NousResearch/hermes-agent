@@ -6,6 +6,7 @@ child timeout/status conversion, interrupt propagation and cleanup are real.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from types import SimpleNamespace
 
@@ -226,3 +227,26 @@ def test_nonfinite_marker_preserves_background_dispatch(harness, monkeypatch, ma
     if api_history:
         assert event["origin_session_id"] == "history-session"
     assert all(child.closed.wait(2) for child in children)
+
+
+def test_owner_finite_scope_overrides_history_without_leaking(harness, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from gateway.session_finite import finite_turn_scope, finite_turn_required
+    from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    gate = threading.Barrier(2)
+    before = dict(os.environ)
+
+    def resolve(finite):
+        with finite_turn_scope(finite):
+            sc.set_session_vars(async_delivery=True, session_history_delivery="1")
+            gate.wait(5)
+            return _resolve_async_wake_sid("history", True)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(resolve, [True, False]))
+    assert results == [None, ""]
+    assert dict(os.environ) == before
+    assert finite_turn_required() is None
+    assert _resolve_async_wake_sid("history", True) is None

@@ -223,3 +223,20 @@ def test_two_processes_migrate_same_trello_manifest_once(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM hybrid_card_delegations").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_kanban_db_connect_handles_str_and_path(tmp_path):
+    from hermes_cli import kanban_db
+    p_path = tmp_path / "as_path" / "kanban.db"
+    conn1 = kanban_db.connect(db_path=p_path)
+    try:
+        assert p_path.is_file()
+    finally:
+        conn1.close()
+
+    p_str = str(tmp_path / "as_str" / "kanban.db")
+    conn2 = kanban_db.connect(db_path=p_str)
+    try:
+        assert Path(p_str).is_file()
+    finally:
+        conn2.close()

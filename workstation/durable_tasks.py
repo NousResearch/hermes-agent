@@ -64,6 +64,8 @@ class WorkItem:
     created_at: str = field(default_factory=_utc_now)
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    operation_id: Optional[str] = None
+    run_id: Optional[str] = None
 
     @property
     def is_terminal(self) -> bool:
@@ -131,6 +133,8 @@ class WorkItem:
             created_at=str(data.get("created_at", _utc_now())),
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
+            operation_id=data.get("operation_id"),
+            run_id=data.get("run_id"),
         )
 
 
@@ -148,6 +152,8 @@ class WorkPlan:
     created_at: str = field(default_factory=_utc_now)
     updated_at: str = field(default_factory=_utc_now)
     completed_at: Optional[str] = None
+    run_id: Optional[str] = None
+    execution_key: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -173,6 +179,8 @@ class WorkPlan:
             created_at=str(data.get("created_at", _utc_now())),
             updated_at=str(data.get("updated_at", _utc_now())),
             completed_at=data.get("completed_at"),
+            run_id=data.get("run_id"),
+            execution_key=data.get("execution_key"),
         )
 
 
@@ -234,6 +242,12 @@ class DurableTaskStore:
                 """
             )
             try:
+                cols_wp = {row[1] for row in conn.execute("PRAGMA table_info(work_plans)").fetchall()}
+                if "run_id" not in cols_wp:
+                    conn.execute("ALTER TABLE work_plans ADD COLUMN run_id TEXT")
+                if "execution_key" not in cols_wp:
+                    conn.execute("ALTER TABLE work_plans ADD COLUMN execution_key TEXT")
+
                 cols = {row[1] for row in conn.execute("PRAGMA table_info(work_items)").fetchall()}
                 if "error" not in cols:
                     conn.execute("ALTER TABLE work_items ADD COLUMN error TEXT")
@@ -241,6 +255,10 @@ class DurableTaskStore:
                     conn.execute("ALTER TABLE work_items ADD COLUMN last_error TEXT")
                 if "evidence_refs" not in cols:
                     conn.execute("ALTER TABLE work_items ADD COLUMN evidence_refs TEXT")
+                if "operation_id" not in cols:
+                    conn.execute("ALTER TABLE work_items ADD COLUMN operation_id TEXT")
+                if "run_id" not in cols:
+                    conn.execute("ALTER TABLE work_items ADD COLUMN run_id TEXT")
                 conn.commit()
             except Exception:
                 pass
@@ -279,12 +297,17 @@ class DurableTaskStore:
         items: List[Dict[str, Any]],
         *,
         session_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        execution_key: Optional[str] = None,
         checkpoint_frequency: int = 1,
         max_retries: int = 3,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> WorkPlan:
         plan_id = f"plan_{uuid4().hex[:12]}"
         now = _utc_now()
+        meta = metadata or {}
+        actual_run_id = run_id or meta.get("run_id") or meta.get("canonical_run_id")
+        actual_exec_key = execution_key or meta.get("execution_key") or meta.get("operation_key")
         plan = WorkPlan(
             id=plan_id,
             task_id=task_id,
@@ -294,9 +317,11 @@ class DurableTaskStore:
             total_items=len(items),
             checkpoint_frequency=checkpoint_frequency,
             max_retries=max_retries,
-            metadata=metadata or {},
+            metadata=meta,
             created_at=now,
             updated_at=now,
+            run_id=actual_run_id,
+            execution_key=actual_exec_key,
         )
 
         with self._lock, self.get_connection() as conn:
@@ -304,8 +329,9 @@ class DurableTaskStore:
                 """
                 INSERT INTO work_plans (
                     id, task_id, session_id, title, status, total_items,
-                    checkpoint_frequency, max_retries, metadata, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    checkpoint_frequency, max_retries, metadata, created_at, updated_at,
+                    run_id, execution_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan.id,
@@ -319,18 +345,22 @@ class DurableTaskStore:
                     json.dumps(plan.metadata, ensure_ascii=False),
                     plan.created_at,
                     plan.updated_at,
+                    plan.run_id,
+                    plan.execution_key,
                 ),
             )
 
             # Insert work items
             for idx, item_input in enumerate(items, start=1):
                 item_id = f"{plan_id}_{idx:04d}"
+                op_id = item_input.get("operation_id") or f"op_{item_id}"
                 conn.execute(
                     """
                     INSERT INTO work_items (
                         id, plan_id, task_id, item_index, status, attempts,
-                        input_payload, checkpoints, retry_state, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        input_payload, checkpoints, retry_state, created_at,
+                        operation_id, run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item_id,
@@ -343,6 +373,8 @@ class DurableTaskStore:
                         json.dumps({}, ensure_ascii=False),
                         json.dumps({}, ensure_ascii=False),
                         now,
+                        op_id,
+                        plan.run_id,
                     ),
                 )
             conn.commit()
@@ -729,10 +761,32 @@ class DurableTaskStore:
                          (status, _utc_now(), _utc_now() if status == "completed" else None, plan_id))
             if status in {"interrupted", "failed", "cancelled", "blocked"}:
                 conn.execute(
-                    "UPDATE work_items SET status='blocked', last_error=? WHERE plan_id=? AND status='running'",
+                    """UPDATE work_items
+                       SET status='blocked', last_error=?
+                       WHERE plan_id=? AND status IN ('running', 'pending', 'ready', 'claimed', 'retrying')""",
                     ("parent stopped; reconcile dispatched effects before resume", plan_id),
                 )
             conn.commit()
+
+    def reconcile_terminal_plans(self) -> int:
+        """Startup and periodic reconciliation: ensure no terminal plan has live descendants."""
+        changed = 0
+        with self._lock, self.get_connection() as conn:
+            terminal_plans = [
+                row[0] for row in conn.execute(
+                    "SELECT id FROM work_plans WHERE status IN ('interrupted', 'failed', 'cancelled', 'blocked')"
+                ).fetchall()
+            ]
+            for plan_id in terminal_plans:
+                cur = conn.execute(
+                    """UPDATE work_items
+                       SET status='blocked', last_error='parent terminal; reconciled on startup'
+                       WHERE plan_id=? AND status IN ('running', 'pending', 'ready', 'claimed', 'retrying')""",
+                    (plan_id,)
+                )
+                changed += cur.rowcount
+            conn.commit()
+        return changed
 
     def reconcile_running_items(self, plan_id: str, *, live_item_ids: set[str] | None = None) -> int:
         """Recover durable state against handles proved live by the current runtime.

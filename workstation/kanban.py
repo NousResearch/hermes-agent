@@ -192,6 +192,8 @@ class WorkstationKanbanBridge:
         self,
         task_id: str,
         report: BrowserTaskReport,
+        *,
+        expected_run_id: Optional[int] = None,
     ) -> bool:
         """Complete Kanban task with structured Workstation report metadata."""
         metadata = report.to_kanban_metadata()
@@ -202,13 +204,31 @@ class WorkstationKanbanBridge:
         )
         if not report.completed and status == OutcomeStatus.VERIFIED_COMPLETED:
             status = OutcomeStatus.BLOCKED
+        target_run_id = expected_run_id
+        if target_run_id is None and getattr(report, "run_id", None):
+            try:
+                target_run_id = int(report.run_id)
+            except (ValueError, TypeError):
+                target_run_id = None
         outcome = TaskOutcome(
             task_id=task_id, session_id=report.session_id, objective=report.objective,
             status=status, summary=report.result, evidence_refs=report.evidence,
             verifier_results=report.verifier_results, deliverables=report.deliverables,
             pending_items=report.pending_items, uncertain_mutation=report.uncertain_mutation,
+            run_id=str(target_run_id) if target_run_id is not None else None,
+            operation_id=report.operation_id,
         )
         with self.get_connection() as conn:
+            cur_run_id = kanban_db._current_run_id(conn, task_id)
+            if target_run_id is not None and cur_run_id is not None and cur_run_id != target_run_id:
+                journal = ExecutionJournal(task_id, report.session_id)
+                journal.record(
+                    ExecutionEventKind.PROGRESS,
+                    f"Stale run {target_run_id} rejected (current run is {cur_run_id})",
+                    evidence=report.evidence,
+                    metadata={"boundary": "acceptance_commit_failed", "task_id": task_id, "expected_run_id": target_run_id, "current_run_id": cur_run_id},
+                )
+                return False
             saved = conn.execute("SELECT contract_json FROM task_acceptance_contracts WHERE task_id=?", (task_id,)).fetchone()
         contract = AcceptanceContract(**json.loads(saved[0])) if saved else AcceptanceContract()
         reasons = AcceptanceEvaluator().evaluate(outcome, contract)
@@ -218,7 +238,12 @@ class WorkstationKanbanBridge:
             elif outcome.status == OutcomeStatus.VERIFIED_COMPLETED:
                 outcome.status = OutcomeStatus.FAILED if "verifier_failed" in reasons else OutcomeStatus.BLOCKED
             with self.get_connection() as conn:
-                kanban_db.block_task(conn, task_id, reason="; ".join(reasons), kind="needs_input")
+                kanban_db.block_task(
+                    conn, task_id,
+                    reason="; ".join(reasons),
+                    kind="needs_input",
+                    expected_run_id=target_run_id,
+                )
             ExecutionJournal(task_id, report.session_id).record(
                 ExecutionEventKind.PROGRESS, report.result, evidence=report.evidence,
                 metadata={"completed": False, "outcome": outcome.to_dict(), "acceptance_reasons": reasons},
@@ -242,9 +267,16 @@ class WorkstationKanbanBridge:
                 result=report.result,
                 summary=report.result,
                 metadata=metadata,
+                expected_run_id=target_run_id,
             )
 
         if not success:
+            journal.record(
+                ExecutionEventKind.PROGRESS,
+                "Canonical completion CAS rejected (stale run or state conflict)",
+                evidence=report.evidence,
+                metadata={"boundary": "acceptance_commit_failed", "task_id": task_id, "expected_run_id": target_run_id},
+            )
             return False
         journal = ExecutionJournal(task_id, report.session_id)
         journal.record(

@@ -306,3 +306,107 @@ def test_semantic_preflight_blocks_execution_on_loaded_but_unready_spa(tmp_path)
     assert calls == ["browser_snapshot"]
     assert result["completed"] == 0
     assert result["anomalies"][0]["reason"] == "dom_drift"
+
+
+def test_stale_run_late_completion_rejected():
+    from workstation.kanban import WorkstationKanbanBridge
+    from hermes_cli import kanban_db
+    from workstation.contracts import BrowserTaskReport, ExecutionEventKind
+    from workstation.journal import ExecutionJournal
+    bridge = WorkstationKanbanBridge()
+    task_id = create_task(bridge)
+    with bridge.get_connection() as conn:
+        cur1 = conn.execute("INSERT INTO task_runs (task_id, started_at, status) VALUES (?, 100, 'running')", (task_id,))
+        run_a_id = cur1.lastrowid
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_a_id, task_id))
+
+        # Run B takes over the task
+        cur2 = conn.execute("INSERT INTO task_runs (task_id, started_at, status) VALUES (?, 200, 'running')", (task_id,))
+        run_b_id = cur2.lastrowid
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_b_id, task_id))
+        conn.commit()
+
+        task = kanban_db.get_task(conn, task_id)
+        assert task.current_run_id == run_b_id
+
+    report_a = BrowserTaskReport(task_id, "session", "objective", "Run A late result", True, run_id=str(run_a_id))
+    success_a = bridge.complete_task_with_report(task_id, report_a, expected_run_id=run_a_id)
+    assert success_a is False
+
+    with bridge.get_connection() as conn:
+        task_after = kanban_db.get_task(conn, task_id)
+        assert task_after.status != "done"
+        assert task_after.current_run_id == run_b_id
+
+    journal_events = ExecutionJournal(task_id, "session").read_events()
+    assert all(e.kind != ExecutionEventKind.TASK_COMPLETED for e in journal_events)
+    assert any(e.metadata.get("boundary") == "acceptance_commit_failed" for e in journal_events)
+
+
+def test_terminal_parent_reconciliation_cases_a_and_b():
+    from workstation.durable_tasks import DurableTaskStore
+    store = DurableTaskStore()
+
+    # Case A: 12 descendants: 2 complete, 2 blocked, 1 running, 7 pending
+    plan_a = store.create_plan(task_id="task_case_a", title="Case A", items=[{"id": i} for i in range(12)])
+    items_a = store.get_work_items(plan_a.id)
+    with store.get_connection() as conn:
+        conn.execute("UPDATE work_items SET status='completed' WHERE id IN (?, ?)", (items_a[0].id, items_a[1].id))
+        conn.execute("UPDATE work_items SET status='blocked' WHERE id IN (?, ?)", (items_a[2].id, items_a[3].id))
+        conn.execute("UPDATE work_items SET status='running' WHERE id = ?", (items_a[4].id,))
+        conn.commit()
+
+    store.update_plan_state(plan_a.id, "interrupted")
+    live_statuses = {"running", "pending", "ready", "claimed", "retrying"}
+    remaining_a = store.get_work_items(plan_a.id)
+    assert len([it for it in remaining_a if it.status.value in live_statuses]) == 0
+    assert len([it for it in remaining_a if it.status.value == "completed"]) == 2
+
+    # Case B: 100 descendants: 1 complete, 99 pending
+    plan_b = store.create_plan(task_id="task_case_b", title="Case B", items=[{"id": i} for i in range(100)])
+    items_b = store.get_work_items(plan_b.id)
+    with store.get_connection() as conn:
+        conn.execute("UPDATE work_items SET status='completed' WHERE id = ?", (items_b[0].id,))
+        conn.commit()
+
+    store.update_plan_state(plan_b.id, "interrupted")
+    remaining_b = store.get_work_items(plan_b.id)
+    assert len([it for it in remaining_b if it.status.value in live_statuses]) == 0
+    assert len([it for it in remaining_b if it.status.value == "completed"]) == 1
+
+    # Startup reconciliation
+    plan_c = store.create_plan(task_id="task_case_c", title="Case C", items=[{"id": 1}])
+    item_c = store.get_work_items(plan_c.id)[0]
+    with store.get_connection() as conn:
+        conn.execute("UPDATE work_plans SET status='failed' WHERE id = ?", (plan_c.id,))
+        conn.execute("UPDATE work_items SET status='running' WHERE id = ?", (item_c.id,))
+        conn.commit()
+
+    reconciled_count = store.reconcile_terminal_plans()
+    assert reconciled_count >= 1
+    assert store.get_item(item_c.id).status.value == "blocked"
+
+
+def test_workplan_persists_canonical_lineage_run_and_execution_key():
+    from workstation.durable_tasks import DurableTaskStore
+    store = DurableTaskStore()
+    plan = store.create_plan(
+        task_id="task_lineage",
+        title="Lineage Plan",
+        items=[{"id": 1, "operation_id": "op_test_1"}],
+        run_id="run_42",
+        execution_key="exec_key_xyz",
+    )
+    assert plan.run_id == "run_42"
+    assert plan.execution_key == "exec_key_xyz"
+
+    recovered = store.get_plan(plan.id)
+    assert recovered is not None
+    assert recovered.run_id == "run_42"
+    assert recovered.execution_key == "exec_key_xyz"
+
+    items = store.get_work_items(plan.id)
+    assert len(items) == 1
+    assert items[0].run_id == "run_42"
+    assert items[0].operation_id == "op_test_1"
+

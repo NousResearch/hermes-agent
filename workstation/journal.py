@@ -20,13 +20,18 @@ class JournalIntegrityError(RuntimeError):
 
 @contextmanager
 def _writer_lock(path: Path):
-    with path.with_suffix(path.suffix + ".lock").open("a+b") as lock:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    if not lock_path.exists() or lock_path.stat().st_size == 0:
+        try:
+            with lock_path.open("a+b") as init_f:
+                if init_f.tell() == 0:
+                    init_f.write(b"0")
+                    init_f.flush()
+        except OSError:
+            pass
+    with lock_path.open("r+b" if os.name == "nt" else "a+b") as lock:
         if os.name == "nt":
             import msvcrt
-            lock.seek(0)
-            if not lock.read(1):
-                lock.write(b"0")
-                lock.flush()
             lock.seek(0)
             msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
         else:

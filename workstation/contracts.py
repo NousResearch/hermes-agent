@@ -89,6 +89,8 @@ class TaskOutcome:
     started_at: str | None = None
     finished_at: str = field(default_factory=utc_now)
     uncertain_mutation: bool = False
+    run_id: str | None = None
+    operation_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -153,6 +155,10 @@ class EvidenceRef:
     uri: str
     summary: str = ""
     sha256: str | None = None
+    run_id: str | None = None
+    operation_id: str | None = None
+    task_id: str | None = None
+    verifier: str | None = None
 
 
 @dataclass(slots=True)
@@ -192,6 +198,8 @@ class ExecutionEvent:
     risk: RiskLevel = RiskLevel.LOW
     evidence: list[EvidenceRef] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    run_id: str | None = None
+    operation_id: str | None = None
     schema_version: int | None = None
     sequence_number: int | None = None
     previous_event_hash: str | None = None
@@ -237,12 +245,16 @@ class BrowserTaskReport:
     repeatability_hint: bool = False
     procedure_steps: list[dict[str, Any]] = field(default_factory=list)
     procedure_scope: str = ""
+    run_id: str | None = None
+    operation_id: str | None = None
 
     def to_kanban_metadata(self) -> dict[str, Any]:
         return {
             "workstation": {
                 "report_version": 1,
                 "session_id": self.session_id,
+                "run_id": self.run_id,
+                "operation_id": self.operation_id,
                 "sites": sorted(set(self.sites)),
                 "modified_items": self.modified_items,
                 "errors_and_retries": self.errors_and_retries,

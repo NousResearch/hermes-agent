@@ -427,6 +427,9 @@ def _run_agent(
         agent.tool_gen_callback = None
 
         result = agent.run_conversation(prompt)
+        from agent.shadow_observer import observe_completed_response
+        # The observer is post-completion and opt-in; the returned answer remains unchanged.
+        observe_completed_response(result, cfg)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

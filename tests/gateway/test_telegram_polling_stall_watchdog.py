@@ -72,53 +72,29 @@ async def test_stalled_long_poll_escalates_to_reconnect_ladder():
 
 
 @pytest.mark.asyncio
-async def test_confirmed_stall_hands_off_before_reusing_updater():
-    """A stop that returns before the old getUpdates action quiesces is unsafe to reuse."""
-    adapter = _make_adapter(stalled_seconds=400)
-    adapter._running = True
-    updater = adapter._app.updater
-    updater.stop = AsyncMock(return_value=None)
-    updater.start_polling = AsyncMock()
-    adapter._drain_polling_connections = AsyncMock()
-    adapter._notify_fatal_error = AsyncMock()
-
-    try:
-        with patch("asyncio.sleep", new=AsyncMock()):
-            await adapter._check_polling_stall()
-            task = adapter._polling_error_task
-            assert task is not None
-            await task
-
-        assert adapter.has_fatal_error
-        assert adapter.fatal_error_retryable is True
-        adapter._notify_fatal_error.assert_awaited_once()
-        updater.start_polling.assert_not_awaited()
-    finally:
-        background_tasks = tuple(adapter._background_tasks)
-        for background_task in background_tasks:
-            background_task.cancel()
-        await asyncio.gather(*background_tasks, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_verifier_stall_hands_off_before_reusing_updater(monkeypatch):
-    """Post-reconnect verifier stall escalates to fatal rather than retrying on an unquiesced updater."""
+@pytest.mark.parametrize("via_verifier", [False, True], ids=["watchdog", "verifier"])
+async def test_confirmed_stall_hands_off_before_reusing_updater(monkeypatch, via_verifier):
+    """#113618: a confirmed stall (watchdog or post-reconnect verifier) must escalate to the
+    retryable fatal and mark the adapter degraded instead of restarting the same Updater."""
     from plugins.platforms.telegram import adapter as tg_adapter
 
-    adapter = _make_adapter(stalled_seconds=0)
+    adapter = _make_adapter(stalled_seconds=0 if via_verifier else 400)
     adapter._running = True
+    adapter._mark_degraded = MagicMock()
     updater = adapter._app.updater
     updater.stop = AsyncMock(return_value=None)
     updater.start_polling = AsyncMock()
     adapter._drain_polling_connections = AsyncMock()
     adapter._notify_fatal_error = AsyncMock()
 
-    generation, progress = adapter._begin_polling_generation()
-    monkeypatch.setattr(tg_adapter, "_POLLING_PROGRESS_TIMEOUT", 0)
-
     try:
         with patch("asyncio.sleep", new=AsyncMock()):
-            await adapter._verify_polling_after_reconnect(generation, progress)
+            if via_verifier:
+                generation, progress = adapter._begin_polling_generation()
+                monkeypatch.setattr(tg_adapter, "_POLLING_PROGRESS_TIMEOUT", 0)
+                await adapter._verify_polling_after_reconnect(generation, progress)
+            else:
+                await adapter._check_polling_stall()
             task = adapter._polling_error_task
             assert task is not None
             await task
@@ -126,6 +102,7 @@ async def test_verifier_stall_hands_off_before_reusing_updater(monkeypatch):
         assert adapter.has_fatal_error
         assert adapter.fatal_error_retryable is True
         adapter._notify_fatal_error.assert_awaited_once()
+        adapter._mark_degraded.assert_called_once()
         updater.start_polling.assert_not_awaited()
     finally:
         background_tasks = tuple(adapter._background_tasks)

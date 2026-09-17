@@ -102,6 +102,8 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "disk-cleanup", "logs", "memories", "sessions", "config.yaml",
     "skills", "plugins", ".env", "USER.md", "MEMORY.md", "SOUL.md",
     "auth.json", "hermes-agent",
+    # pg0/PostgreSQL data dirs: quick() must not dispose of their files either (#113673).
+    ".pg0",
     # User-authored project trees — never sweep empty directories inside these (#75403).
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
     # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace``, ``plans`` and ``home`` are the
@@ -262,7 +264,11 @@ def quick() -> Dict[str, Any]:
 
 def _subdirs(dirpath: Path, exclude: frozenset) -> List[Path]:
     try:
-        return [c for c in dirpath.iterdir() if c.is_dir() and not c.is_symlink() and c.name not in exclude]
+        return [c for c in dirpath.iterdir()
+                if c.is_dir() and not c.is_symlink() and c.name not in exclude
+                # A PostgreSQL cluster root always carries ``PG_VERSION``; never sweep one,
+                # whatever its path — pg0 supports custom data dirs (#113673).
+                and not (c / "PG_VERSION").exists()]
     except OSError:
         return []
 

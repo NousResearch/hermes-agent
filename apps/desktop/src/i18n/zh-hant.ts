@@ -983,8 +983,12 @@ export const zhHant = defineLocale({
       autosaveFailed: '自動儲存失敗',
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
-      keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      keepAwakeTitle: '在代理程式執行期間保持電腦喚醒',
+      keepAwakeDesc: '只在代理程式回合執行時防止系統睡眠。螢幕仍可變暗。',
+      closedDisplayTitle: '闔上螢幕仍防止系統睡眠（實驗性）',
+      closedDisplayDesc: '僅限 macOS。需要一次性的管理員設定，且行為可能因 Mac 型號、電源和顯示器而異。',
+      closedDisplaySetupUnavailable: 'Power Protect 設定僅可在 macOS Desktop 使用。',
+      closedDisplaySetupFailed: 'Power Protect 設定已取消或失敗。實驗性選項仍維持關閉。',
       showOptions: '顯示選項'
     },
     screenshot: {

@@ -356,6 +356,8 @@ declare global {
       setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
       /** Main-process fact: this OS can back glass with a native material. */
       glassSupported?: boolean
+      /** Main-process fact: the Electron host OS. */
+      platform?: NodeJS.Platform
       /** Main-process fact: this OS can do any translucency at all (not Linux). */
       translucencySupported?: boolean
       /** Launch flag: the app was started with --local, enabling the
@@ -369,7 +371,7 @@ declare global {
        *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
       skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
-      setKeepAwake?: (on: boolean) => void
+      installPowerProtect?: () => Promise<{ ok: boolean; error?: string }>
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>

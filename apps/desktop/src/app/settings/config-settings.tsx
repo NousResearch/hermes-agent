@@ -21,7 +21,6 @@ import {
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
-import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -91,7 +90,6 @@ function ConfigSettingsInner({
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
   const c = t.settings.config
-  const keepAwake = useStore($keepAwake)
   const disableF12 = useStore($disableF12)
   // The editable draft is local (debounced autosave watches it), but it's seeded
   // from — and saved back through — the shared config cache, so edits are visible
@@ -378,7 +376,49 @@ function ConfigSettingsInner({
     return <SettingsSkeleton sections={[{ rows: 6 }]} />
   }
 
-  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  const visibleFields = (
+    activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
+  ).filter(([key]) => key !== 'agent.stay_awake' && key !== 'agent.stay_awake_mode')
+
+  const stayAwake = getNested(config, 'agent.stay_awake') === true
+  const closedDisplay = getNested(config, 'agent.stay_awake_mode') === 'closed-display'
+  const isMacOS = window.hermesDesktop?.platform === 'darwin'
+
+  const setStayAwake = (on: boolean) => updateConfig(setNested(config, 'agent.stay_awake', on))
+
+  const setClosedDisplay = async (on: boolean) => {
+    if (!on) {
+      updateConfig(setNested(config, 'agent.stay_awake_mode', 'idle'))
+
+      return
+    }
+
+    const installer = window.hermesDesktop?.installPowerProtect
+
+    if (!installer) {
+      notify({ kind: 'warning', title: c.closedDisplayTitle, message: c.closedDisplaySetupUnavailable })
+
+      return
+    }
+
+    let result: { ok: boolean; error?: string }
+
+    try {
+      result = await installer()
+    } catch (error) {
+      notifyError(error, c.closedDisplaySetupFailed)
+
+      return
+    }
+
+    if (!result.ok) {
+      notify({ kind: 'warning', title: c.closedDisplayTitle, message: result.error || c.closedDisplaySetupFailed })
+
+      return
+    }
+
+    updateConfig(setNested(config, 'agent.stay_awake_mode', 'closed-display'))
+  }
 
   return (
     <SettingsContent>
@@ -390,16 +430,22 @@ function ConfigSettingsInner({
           <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} />
         </div>
       )}
-      {/* Device-local desktop prefs (not config.yaml) — they live here since
-          keeping the machine awake and the global Quick Entry chord are both
-          power-user, this-computer-only knobs. */}
+      {/* Config-backed stay-awake settings plus device-local Quick Entry and
+          developer controls live together because they are power-user options. */}
       {activeSectionId === 'advanced' && (
         <>
           <ToggleRow
-            checked={keepAwake}
+            checked={stayAwake}
             description={c.keepAwakeDesc}
             label={c.keepAwakeTitle}
-            onChange={setKeepAwake}
+            onChange={setStayAwake}
+          />
+          <ToggleRow
+            checked={closedDisplay}
+            description={isMacOS ? c.closedDisplayDesc : c.closedDisplaySetupUnavailable}
+            disabled={!stayAwake || !isMacOS}
+            label={c.closedDisplayTitle}
+            onChange={on => void setClosedDisplay(on)}
           />
           <ToggleRow
             checked={disableF12}

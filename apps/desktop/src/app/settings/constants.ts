@@ -807,6 +807,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'agent.api_max_retries',
       'agent.service_tier',
       'agent.tool_use_enforcement',
+      'agent.stay_awake',
+      'agent.stay_awake_mode',
       'delegation.model',
       'delegation.provider',
       'delegation.max_iterations',

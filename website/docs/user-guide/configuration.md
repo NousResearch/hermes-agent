@@ -1069,6 +1069,67 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## Stay Awake
+
+Prevent the OS from sleeping while the agent is running a turn — useful for
+long-running tasks on a laptop (a machine that sleeps mid-turn drops the API
+call and halts tool execution):
+
+```yaml
+agent:
+  stay_awake: true       # default: false
+  stay_awake_mode: idle  # idle (default) | closed-display (macOS)
+```
+
+The default `idle` mode uses the OS-native, unprivileged turn-scoped inhibitor:
+`/usr/bin/caffeinate -i -w <Hermes PID>` (macOS), `systemd-inhibit`
+(Linux), or `SetThreadExecutionState` (Windows). Display sleep may still occur.
+The inhibitor is shared by concurrent turns and released when the last turn exits,
+including error and interrupt paths. The macOS `-w` binding also releases the
+assertion when Hermes is killed unexpectedly.
+
+On macOS, `closed-display` additionally uses the system-wide PowerManagement
+`pmset -a disablesleep` setting. Hermes invokes this macOS system command directly;
+Amphetamine is not installed or required. It is opt-in because it requires a one-time,
+passwordless sudo rule for exactly these two commands:
+
+```text
+/usr/bin/pmset -a disablesleep 1
+/usr/bin/pmset -a disablesleep 0
+```
+
+An administrator can provision the allowlist as `/etc/sudoers.d/hermes-power-protect`
+using `visudo`:
+
+```sudoers
+Cmnd_Alias PMSET_HERMES_POWER = /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0
+%admin ALL=(ALL) NOPASSWD: PMSET_HERMES_POWER
+```
+
+Hermes never asks for a sudo password from inside an agent turn. To install the
+Hermes-specific rule with the native macOS administrator prompt, run this once
+in an interactive session:
+
+```bash
+hermes setup power
+```
+
+The Desktop app exposes the same setup from Settings → Advanced; enabling the
+closed-display toggle opens the native macOS administrator prompt. The toggle is
+unavailable on other operating systems.
+
+If the rule is not installed or the command fails, Hermes logs the limitation and falls back to idle-only
+protection rather than blocking the turn on an interactive prompt. Hermes records ownership and the previous
+value in a user-only state journal. On the next Hermes startup,
+any dead owner is removed; if no live Hermes owner remains, the previous value is restored. A warning is
+shown to the active driver. Hermes never changes an unknown `SleepDisabled=1` value that has no Hermes
+ownership record.
+
+The closed-display mode is intended for macOS hardware that supports the
+requested clamshell behavior. It does not keep the display lit, and it does not
+claim to override firmware, thermal, or other hardware-enforced sleep paths.
+
+
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys

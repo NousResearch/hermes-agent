@@ -944,8 +944,12 @@ export const ja = defineLocale({
       autosaveFailed: '自動保存に失敗しました',
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
-      keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeTitle: 'エージェント実行中はスリープさせない',
+      keepAwakeDesc: 'エージェントの各ターン実行中だけシステムスリープを防止します。画面は暗くできます。',
+      closedDisplayTitle: '画面を閉じてもシステムスリープを防止（実験的）',
+      closedDisplayDesc: 'macOSのみ。初回の管理者設定が必要で、Macのモデル・電源・ディスプレイにより動作が異なります。',
+      closedDisplaySetupUnavailable: 'Power Protectの設定はmacOS Desktopでのみ利用できます。',
+      closedDisplaySetupFailed: 'Power Protectの設定がキャンセルまたは失敗しました。実験的オプションは無効のままです。'
     },
     screenshot: {
       enabledTitle: 'スクリーンショットのショートカット',

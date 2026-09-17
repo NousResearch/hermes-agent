@@ -987,8 +987,13 @@ export const en: Translations = {
       invalidJson: 'Invalid config JSON',
       toolsetsWipeConfirm:
         'Remove all enabled toolsets? This disables memory, terminal, web search, delegation, and most other tools until you re-enable them.',
-      keepAwakeTitle: 'Keep computer awake',
-      keepAwakeDesc: 'Stop this machine from sleeping so long or overnight runs keep going. The display can still dim.',
+      keepAwakeTitle: 'Keep computer awake during agent runs',
+      keepAwakeDesc: 'Prevent system sleep only while an agent turn is executing. The display can still dim.',
+      closedDisplayTitle: 'Prevent system sleep with display closed (Experimental)',
+      closedDisplayDesc:
+        'macOS only. Requires one-time administrator setup and may vary by Mac model, power, and display.',
+      closedDisplaySetupUnavailable: 'Power Protect setup is available only in the macOS Desktop app.',
+      closedDisplaySetupFailed: 'Power Protect setup was cancelled or failed. The experimental option remains off.',
       disableF12Title: 'Disable F12 DevTools',
       disableF12Desc: 'Block F12 from opening Developer Tools. Ctrl+Shift+I (or Cmd+Opt+I on Mac) still works.',
       attachmentSizeTitle: 'Max preview / image load size',

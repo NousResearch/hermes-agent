@@ -575,6 +575,10 @@ SETUP_SECTIONS = [
 
 def run_setup_wizard(args):
     """Run setup with navigation control scoped to this invocation."""
+    if getattr(args, "section", None) == "power":
+        from hermes_cli.power_setup import run_power_setup
+
+        return run_power_setup(args)
     with _setup_navigation_scope():
         try:
             return _run_setup_wizard_impl(args)

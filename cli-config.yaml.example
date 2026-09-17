@@ -1092,6 +1092,12 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Prevent idle/system sleep only while an agent turn is executing.
+  # macOS idle mode uses unprivileged caffeinate; closed-display mode is
+  # experimental and requires `hermes setup power` once on macOS.
+  # stay_awake: false
+  # stay_awake_mode: idle             # idle | closed-display
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

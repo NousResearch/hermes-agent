@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   check-no-committed-infographics:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     outputs:
       review_status: ${{ steps.infographic-check.outputs.review_status }}

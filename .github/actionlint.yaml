@@ -1,9 +1,10 @@
-# actionlint knows only GitHub-hosted runner labels. An org admin names the
-# larger runners. Each one therefore reads as "unknown runner label" and hides
-# the real findings, unless this file declares it.
+# actionlint knows only GitHub-hosted runner labels. This org runs
+# self-hosted runners only (no paid larger-runner tiers), so the pool's
+# labels are declared here. Anything else reading as "unknown runner
+# label" — including hosted labels like ubuntu-latest — is a real finding:
+# it means a workflow drifted back onto GitHub-hosted runners.
 self-hosted-runner:
   labels:
-    - ubuntu-latest-96-core
-    - ubuntu-latest-32-core
-    - ubuntu-latest-32-arm-core
-    - windows-latest-32-core
+    - self-hosted
+    - infra
+    - autonomy

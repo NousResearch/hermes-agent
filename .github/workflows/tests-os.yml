@@ -3,7 +3,7 @@ name: OS-specific tests
 # Runs the tests that can only be trusted on their own host OS.
 #
 # The main Python suite (.github/workflows/tests.yml) runs on
-# ubuntu-latest and covers everything that is either platform-agnostic or
+# self-hosted and covers everything that is either platform-agnostic or
 # genuinely Linux-specific. Tests whose subject is macOS- or
 # Windows-specific behaviour carry a marker (see the ``_OS_MARKS`` block
 # comment in tests/conftest.py) and are SKIPPED on Linux, because faking
@@ -11,8 +11,8 @@ name: OS-specific tests
 # reproducing any of the OS behaviour that branch exists for. This workflow
 # is where those markers actually execute:
 #
-#   macos    → ``-m macos_only``     on macos-latest
-#   windows  → ``-m windows_only``   on windows-latest
+#   macos    → ``-m macos_only``     on self-hosted
+#   windows  → ``-m windows_only``   on self-hosted
 #
 # Deliberately NOT sliced. The marked set is small (tens of tests, not
 # thousands), so one plain ``pytest`` process per OS is both faster and far
@@ -58,10 +58,10 @@ jobs:
       matrix:
         include:
           - name: macOS-only tests
-            runner: macos-latest
+            runner: self-hosted
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            runner: self-hosted
             marker: windows_only
     steps:
       - name: Checkout code

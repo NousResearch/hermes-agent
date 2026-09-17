@@ -1109,6 +1109,14 @@ function Test-ManagedNodeInUse {
     # Win32_Process.CommandLine is available on Windows PowerShell 5.1 and
     # 7+ (the Get-Process .CommandLine ETS property is 7.4+ only), and a
     # single CIM query beats a per-process property access loop.
+    # Get-CimInstance is Windows-only: on PowerShell Core on Linux/macOS
+    # (self-hosted CI pools) the cmdlet does not exist and the call is a
+    # hard CommandNotFoundException even under -ErrorAction SilentlyContinue.
+    # The Windows file-lock concern does not apply on Unix, so the check is
+    # a no-op there.
+    if (-not (Get-Command -Name Get-CimInstance -ErrorAction SilentlyContinue)) {
+        return $false
+    }
     return @(
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {

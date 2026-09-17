@@ -33,7 +33,7 @@ jobs:
   # flake inputs. On push the classifier fails open and every lane is true.
   detect:
     name: Detect affected areas
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     outputs:
       nix: ${{ steps.classify.outputs.nix }}
@@ -54,13 +54,39 @@ jobs:
     # takes minutes and not seconds when the cache misses. `nix flake check`
     # builds 21 checks, and --max-jobs defaults to the core count. It uses the
     # wider runner with no more configuration.
-    runs-on: ubuntu-latest-32-core
+    runs-on: self-hosted
     timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # The runner host already runs the nix daemon with the required config
+      # (experimental-features = nix-command flakes, fallback, tarball-ttl —
+      # see /etc/nix/nix.conf). cachix/install-nix-action cannot reinstall
+      # onto a live daemon ("Text file busy"), so probe for a usable host
+      # nix first and only install when absent.
+      - name: Probe for usable host nix
+        id: hostnix
+        run: |
+          # The runner unit's PATH does not include the nix profile, so probe
+          # the well-known host locations as well. This is a self-hosted
+          # runner on the machine that runs the nix daemon.
+          for cand in "$(command -v nix || true)" \
+                       /nix/var/nix/profiles/default/bin/nix \
+                       "$HOME/.nix-profile/bin/nix"; do
+            if [ -n "$cand" ] && [ -x "$cand" ]; then
+              nixbin="$(dirname "$cand")"
+              echo "$nixbin" >> "$GITHUB_PATH"
+              if "$cand" flake --help >/dev/null 2>&1; then
+                echo "available=true" >> "$GITHUB_OUTPUT"
+                echo "Host nix $("$cand" --version) usable at $cand; skipping install"
+                exit 0
+              fi
+            fi
+          done
+          echo "available=false" >> "$GITHUB_OUTPUT"
       - name: Install Nix
+        if: steps.hostnix.outputs.available != 'true'
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
         with:
           extra_nix_config: |
@@ -69,8 +95,13 @@ jobs:
             # build failure. Build it here instead.
             fallback = true
             # Each source archive is fetched one time in a run, and not one
-            # time for each evaluation.
+            # time per evaluation.
             tarball-ttl = 3600
+      - name: Verify nix is usable
+        run: |
+          command -v nix >/dev/null 2>&1 || { echo "::error::nix not found after install steps" >&2; exit 1; }
+          nix flake --help >/dev/null 2>&1 || { echo "::error::nix lacks flake support" >&2; exit 1; }
+          echo "nix $(nix --version) ready"
 
       # Restores /nix/store from the GitHub Actions cache. The store holds the
       # whole dependency closure, so a hit turns a build of several minutes

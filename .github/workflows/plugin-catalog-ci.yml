@@ -15,12 +15,19 @@ on:
     paths:
       - "plugin-catalog/**"
 
+# One run per branch (per workflow for schedules): a newer push to the
+# same branch supersedes and cancels the run in flight (U104). Schedules
+# key on the workflow alone - there is no branch to key on.
+concurrency:
+  group: github.workflow-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   structural:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -42,7 +49,7 @@ jobs:
           python3 scripts/validate_plugin_catalog.py plugin-catalog/
 
   pinned-source-validate:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

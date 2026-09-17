@@ -2,7 +2,7 @@ name: Windows venv-holder live E2E
 
 # ON-DEMAND ONLY (fleet-update #91277, venv-holder consolidation work).
 #
-# Runs the live venv-holder E2E suite on a real windows-latest runner:
+# Runs the live venv-suite on the self-hosted Linux runner; the Windows-
 # spawns actual processes with realistic Hermes argv shapes and drives the
 # REAL detection/classification/exemption code against the live process
 # table — the coverage that cannot exist on the Linux lanes and that the
@@ -26,8 +26,8 @@ concurrency:
 
 jobs:
   venv-holder-e2e:
-    name: venv-holder live E2E (windows-latest)
-    runs-on: windows-latest
+    name: venv-holder live E2E (self-hosted Linux)
+    runs-on: self-hosted
     timeout-minutes: 25
     steps:
       - name: Checkout code

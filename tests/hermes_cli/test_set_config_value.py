@@ -554,6 +554,9 @@ class TestSchemaValidation:
         assert saved[section][name] == expected
         out = capsys.readouterr().out
         assert "not a recognized config key" in out
+        # Nested paths are written but never env-bridged: the top-level-only footer must not print.
+        assert "bridged to the environment" not in out
+        assert "Use --force" in out
         if suggestion is None:
             assert "Did you mean" not in out
         else:

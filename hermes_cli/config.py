@@ -3532,10 +3532,15 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "but Hermes may not read it.", Colors.YELLOW))
     if suggestion:
         print(color(f"  Did you mean: {suggestion}", Colors.YELLOW))
-    print(color(
-        "  (Custom top-level keys are supported and bridged to the "
-        "environment for skills/external tools. Use --force to skip "
-        "this notice.)", Colors.DIM))
+    # The env bridge covers custom TOP-LEVEL keys only; an unseeded nested path (``stt.provider``)
+    # is written but not bridged, so the footer would be a false promise there.
+    if len(_split_key_path(key)) == 1:
+        print(color(
+            "  (Custom top-level keys are supported and bridged to the "
+            "environment for skills/external tools. Use --force to skip "
+            "this notice.)", Colors.DIM))
+    else:
+        print(color("  (Use --force to skip this notice.)", Colors.DIM))
 
 
 def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:

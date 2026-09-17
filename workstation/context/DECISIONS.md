@@ -84,6 +84,67 @@ components. Neither is allowed to perform ordinary task work or weaken Policy
 Engine/approval boundaries. External A2A/ACP/UHP protocols are adapters into
 the canonical event/resource contracts, never alternative state owners.
 
+## D-014 — Canonical TaskRun is the execution-attempt authority
+
+A canonical Agent Task, its execution attempt, a compiled WorkPlan and a
+BrowserTask are related identities with different lifecycles. They must not be
+collapsed into a mega-entity and must not substitute for one another.
+
+- `tasks.id` remains the canonical Agent Task responsibility identity.
+- Existing Kanban `task_runs.id` / `tasks.current_run_id` remains the canonical
+  execution-attempt authority. Do not add another Run store.
+- WorkPlan/WorkItem own deterministic compiled-plan progress and must persist
+  their canonical TaskRun lineage.
+- A deterministic `work_<hash>` or equivalent durable-plan identity is an
+  `execution_key`/plan identity, never a replacement canonical Task id.
+- BrowserTask remains the durable semantic identity for browser work; its live
+  page is a process-local lease. BrowserTask persistence may remain Task-scoped,
+  while mutations are fenced by TaskRun/operation identity.
+- Worker/process/browser handles are live operational evidence, not durable
+  proof of successful outcome.
+
+Every mutating Workstation effect must be attributable to one canonical TaskRun
+or explicitly classified as a human/system action outside agent-run authority.
+Legacy records that cannot be bound safely must be classified for reconciliation;
+the runtime must not invent lineage from convenience or transcript prose.
+
+## D-015 — Canonical commit precedes terminal journal and projections
+
+Execution, acceptance, verification, canonical lifecycle commit and UI/journal
+projection are separate stages.
+
+For agent-owned completion:
+
+1. the active TaskRun must still own the Task;
+2. required acceptance/evidence must be satisfied;
+3. the canonical Kanban transition must commit using the existing run-fencing
+   mechanism (`expected_run_id` or its canonical successor);
+4. only after that commit may `TASK_COMPLETED`, Human Card writeback or terminal
+   UI/resource projections be emitted.
+
+A failed/stale CAS is a superseded/rejected completion attempt, not a completed
+Task. Human/manual override remains possible only as a separate explicit and
+audited authority path.
+
+For external mutable effects, timeout or loss of acknowledgement after dispatch
+must enter an explicit uncertainty/reconciliation state. It must never be treated
+as proof that the effect did not happen and must never authorize a blind retry.
+
+These rules are the execution-level meaning of `One Hermes State`: one authority
+per domain, shared causal lineage and reconcilable projections — **not** one
+physical database.
+
+## D-016 — Reliability gate precedes further feature expansion
+
+The 2026-09-17 `CANONICAL_EXECUTION_RELIABILITY_GATE.md` is the immediate roadmap
+handoff. Historical V1 #1.5 and all later feature/polish work remain preserved but
+do not outrank the gate.
+
+The gate is closed only by invariant/regression evidence, including real
+restart/Windows/Electron paths where relevant. A green unit suite or an
+"Implemented contract" label is not sufficient to promote product-level causal
+reliability.
+
 ## Changing a decision
 
 A replacement decision must state which decision it supersedes, why the old invariant no longer holds, how migration/backward compatibility is handled, and which tests prove the new contract. Do not silently drift architecture through implementation-only changes.

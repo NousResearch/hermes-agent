@@ -6716,9 +6716,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
     disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
     from tools.send_message_tool import _send_telegram
+    from tools.send_message_senders import _coerce_bool_flag
+    _extra = getattr(pconfig, "extra", None) or {}
     return await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
-        disable_link_previews=disable_link_previews, force_document=force_document)
+        disable_link_previews=_coerce_bool_flag(_extra.get("disable_link_previews")),
+        force_document=force_document,
+        rich_enabled=_coerce_bool_flag(_extra.get("rich_messages")),
+        allow_cjk=_coerce_bool_flag(_extra.get("allow_cjk_rich_messages")))
 
 
 def interactive_setup() -> None:

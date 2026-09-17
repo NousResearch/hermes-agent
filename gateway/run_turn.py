@@ -2347,12 +2347,13 @@ class GatewayTurnMixin:
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            # Automatic failure diagnostic (the task produced no requested result to deliver).
             with suppress(Exception):
-                await adapter.send(
-                    chat_id=source.chat_id,
-                    content=(f"❌ Your background task \"{_bg_prompt_preview(prompt)}\" failed before finishing. "
-                             "Send /bg again to retry, or /agents to see what is still running."),
-                    metadata=_thread_metadata,
+                await adapter.emit_warning(
+                    source.chat_id,
+                    (f"❌ Your background task \"{_bg_prompt_preview(prompt)}\" failed before finishing. "
+                     "Send /bg again to retry, or /agents to see what is still running."),
+                    metadata=_thread_metadata, logical_platform=source.platform,
                 )
 
     def _mcp_reload_refresh_cached_agents(self, multiplex: bool, profile) -> None:

@@ -16,7 +16,7 @@ import shlex
 import sys
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -981,8 +981,21 @@ class GatewayShutdownMixin:
             except Exception as e:
                 logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
                 continue
-            if await self._send_shutdown_notice(adapter, chat_id, msg, "active chat", platform_str, metadata=metadata):
-                notified.add(dedup_key)
+            # Automatic interrupt diagnostic, resolved under the session's own profile scope (same
+            # shape as the stall watcher). The requester's own chat on an in-chat /restart is the
+            # requested outcome of that command and is never suppressed.
+            async def _send_active(adapter=adapter, chat_id=chat_id, platform_str=platform_str,
+                                   metadata=metadata, dedup_key=dedup_key):
+                if await self._send_shutdown_notice(adapter, chat_id, msg, "active chat", platform_str, metadata=metadata):
+                    notified.add(dedup_key)
+            from gateway.warning_notifications import present_notification
+            from gateway.run import _async_profile_runtime_scope
+            scope = (_async_profile_runtime_scope(self._resolve_profile_home_for_source(source))
+                     if source is not None else nullcontext())
+            async with scope:
+                presented = await present_notification(_send_active, platform=platform, diagnostic=restart_key != dedup_key)
+            if not presented:
+                notified.add(dedup_key)  # suppressed: latch so the home-channel pass does not re-target it
         if self._restart_requested and restart_source is not None:
             logger.debug("Skipping home-channel shutdown notifications for in-chat restart")
             return
@@ -1014,11 +1027,14 @@ class GatewayShutdownMixin:
                 )
                 continue
             # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
-            if await self._send_shutdown_notice(
-                adapter, str(home.chat_id), msg, "home channel", platform.value,
-                **({"metadata": metadata} if metadata else {}),
-            ):
-                notified.add(dedup_key)
+            async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
+                if await self._send_shutdown_notice(
+                    adapter, str(home.chat_id), msg, "home channel", platform.value,
+                    **({"metadata": metadata} if metadata else {}),
+                ):
+                    notified.add(dedup_key)
+            from gateway.warning_notifications import present_notification
+            await present_notification(_send_home, platform=platform)
 
     # Agent finalization / resource cleanup
     @staticmethod

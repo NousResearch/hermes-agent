@@ -23651,6 +23651,11 @@
             "title": "Prompt",
             "type": "string"
           },
+          "destination": {
+            "default": "profile_env",
+            "title": "Destination",
+            "type": "string"
+          },
           "metadata": {
             "anyOf": [
               {

@@ -162,13 +162,28 @@ def _wire_callbacks(sid: str):
     from tools.project_tools import set_project_workspace_callback
 
     def secret_cb(env_var, prompt, metadata=None):
-        pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
+        destination = (metadata or {}).get("destination", "profile_env")
+        pl = {
+            "prompt": prompt,
+            "env_var": env_var,
+            "destination": destination,
+            **({"metadata": metadata} if metadata else {}),
+        }
         val = _ask("secret", sid, pl)
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
-        if (metadata or {}).get("destination") == "bitwarden_sm":
-            from agent.secret_sources.bitwarden_write import store_bitwarden_secret
-            stored = store_bitwarden_secret(env_var, val)
+        if destination == "bitwarden_sm":
+            try:
+                from agent.secret_sources.bitwarden_write import store_bitwarden_secret
+                stored = store_bitwarden_secret(env_var, val)
+            except Exception:
+                return {
+                    "success": False,
+                    "stored_as": env_var,
+                    "validated": False,
+                    "skipped": False,
+                    "error": "Bitwarden secret storage failed.",
+                }
         else:
             from hermes_cli.config import save_env_value_secure
             stored = save_env_value_secure(env_var, val)

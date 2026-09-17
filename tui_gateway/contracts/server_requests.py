@@ -115,6 +115,7 @@ server_request("sudo", params=SudoRequestParams, result=ValueResult,
 class SecretRequestParams(ServerRequestParams):
     env_var: str
     prompt: str
+    destination: str = "profile_env"
     metadata: dict[str, JsonValue] | None = None
 
 

@@ -3735,6 +3735,7 @@ export interface SecretRequestParams {
   session_id: string
   env_var: string
   prompt: string
+  destination?: string
   metadata?: Record<string, unknown> | null
 }
 export interface VaultUnlockRequestParams {

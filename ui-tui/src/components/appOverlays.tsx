@@ -164,7 +164,11 @@ export function PromptZone({
           icon="🔑"
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          sub={`store ${overlay.secret.envVar} in ${
+            overlay.secret.destination === 'bitwarden_sm'
+              ? 'the configured Bitwarden Secrets Manager project'
+              : 'the active profile .env'
+          }`}
           t={theme}
         />
       </PromptCell>

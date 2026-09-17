@@ -182,7 +182,9 @@ describe('dismissSensitivePrompt', () => {
   it('clears a secret overlay even when its request already expired (nothing left to answer)', () => {
     resetOverlayState()
     resetServerRequestsForTests()
-    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
+    patchOverlayState({
+      secret: { destination: 'profile_env', envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' }
+    })
     const sys = vi.fn()
 
     dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)

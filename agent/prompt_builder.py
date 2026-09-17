@@ -328,7 +328,7 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 SECRET_CAPTURE_GUIDANCE = (
     "# Secret handling\n"
-    "Never ask for or accept API keys, tokens, passwords, vault secrets, or verification codes in chat, tool "
+    "Never ask for or accept API keys, tokens, passwords, or vault secrets in chat, tool "
     "arguments, shell commands, or argv. When a user needs to add, rotate, or replace a secret, call "
     "`secret_capture` so the interactive surface collects it through masked input and stores it without returning "
     "the value to you. This applies even when the named variable already exists. If secure capture is unavailable "

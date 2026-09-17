@@ -140,11 +140,18 @@ describe('PromptOverlays', () => {
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
     rememberServerRequest({ fail: vi.fn(), id: 'secret-1', method: 'secret', params: {}, respond })
-    setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-1', sessionId: 's1' })
+    setSecretRequest({
+      destination: 'bitwarden_sm',
+      envVar: 'TEST_SECRET',
+      prompt: 'Paste a secret',
+      requestId: 'secret-1',
+      sessionId: 's1'
+    })
 
     renderPrompts()
 
     expect(screen.getByText('TEST_SECRET')).toBeTruthy()
+    expect(screen.getByText('Configured Bitwarden Secrets Manager project')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
@@ -160,7 +167,13 @@ describe('PromptOverlays', () => {
 
     $activeSessionId.set('s1')
     $gateway.set({ request } as never)
-    setSecretRequest({ envVar: 'TEST_SECRET', prompt: 'Paste a secret', requestId: 'secret-1', sessionId: 's1' })
+    setSecretRequest({
+      destination: 'profile_env',
+      envVar: 'TEST_SECRET',
+      prompt: 'Paste a secret',
+      requestId: 'secret-1',
+      sessionId: 's1'
+    })
 
     renderPrompts()
 

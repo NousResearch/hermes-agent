@@ -1638,6 +1638,45 @@ class TestGatewaySessionDbRecovery:
             assert any(r.levelno == logging.ERROR for r in caplog.records)
             assert log_store._transcript_append_failures["s-esc"] == threshold
 
+    def test_rebuild_fts_once_no_db_guard_does_not_burn_cooldown(self, monkeypatch):
+        """A call with no usable DB (db is None, or lacks rebuild_fts) must not stamp
+        _fts_rebuild_last_attempt_at, since no rebuild was actually attempted. Otherwise
+        a single no-op call burns the 5-minute cooldown window for a real subsequent
+        attempt once a DB becomes available."""
+        store = object.__new__(SessionStore)
+        store._db = None
+        store._fts_rebuild_last_attempt_at = None
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+
+        assert store._rebuild_fts_once() is False
+        assert store._fts_rebuild_last_attempt_at is None
+
+        # A DB without rebuild_fts should likewise not stamp the cooldown.
+        class DbWithoutRebuild:
+            pass
+
+        store._db = DbWithoutRebuild()
+        assert store._rebuild_fts_once() is False
+        assert store._fts_rebuild_last_attempt_at is None
+
+        # Once a real DB is available, the very next call should be able to attempt
+        # immediately -- not be blocked by a cooldown that was never legitimately started.
+        class FakeDb:
+            def __init__(self):
+                self.rebuild_calls = 0
+
+            def rebuild_fts(self):
+                self.rebuild_calls += 1
+                return 1
+
+        fake_db = FakeDb()
+        store._db = fake_db
+        assert store._rebuild_fts_once() is True
+        assert fake_db.rebuild_calls == 1
+        assert store._fts_rebuild_last_attempt_at == clock["now"]
+
     def test_pending_queue_caps_at_max(self):
         """Pending queue should drop oldest messages when exceeding the cap
         to prevent unbounded memory growth on persistent DB failure."""

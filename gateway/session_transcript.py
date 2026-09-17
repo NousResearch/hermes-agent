@@ -393,10 +393,10 @@ class SessionTranscriptMixin:
         last_attempt = self._fts_rebuild_last_attempt_at
         if last_attempt is not None and (now - last_attempt) < self._FTS_REBUILD_COOLDOWN_SECONDS:
             return False
-        self._fts_rebuild_last_attempt_at = now
         db = self._db
         if db is None or not hasattr(db, "rebuild_fts"):
             return False
+        self._fts_rebuild_last_attempt_at = now
         # WAL split-brain guard: skip when a foreign process holds state.db.
         foreign_holders = None
         if hasattr(db, "_foreign_state_db_holders"):

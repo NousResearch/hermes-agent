@@ -52,10 +52,11 @@ def _ack_frame(event_id: str, status: str = "accepted") -> bytes:
 
 
 class ForwardServer:
-    def __init__(self, path: str, *, replies=None, hang: bool = False):
+    def __init__(self, path: str, *, replies=None, hang: bool = False, hang_ids=None):
         self.path = path
         self.replies = list(replies or [])
         self.hang = hang
+        self.hang_ids = set(hang_ids or [])
         self.frames = []
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._thread = None
@@ -88,10 +89,12 @@ class ForwardServer:
                             break
                         payload += chunk
                     self.frames.append(json.loads(payload.decode("utf-8")))
+                    event_id = self.frames[-1].get("event", {}).get("id")
                     if self.hang:
                         threading.Event().wait(timeout=2)
                         return
-                    event_id = self.frames[-1].get("event", {}).get("id")
+                    if event_id in self.hang_ids:
+                        continue
                     reply = self.replies.pop(0) if self.replies else _ack_frame(event_id)
                     conn.sendall(reply)
         except OSError:

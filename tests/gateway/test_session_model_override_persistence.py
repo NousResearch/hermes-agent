@@ -141,6 +141,21 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
 
 
+def test_runner_rehydrates_partial_override_without_null_route_fields(store_factory):
+    """Legacy model-only overrides must stay partial after rehydration."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(session_key, {"model": "gpt-5.6-sol"})
+
+    runner = _make_runner(store_factory())
+    runner._rehydrate_session_model_override(session_key)
+
+    assert runner._session_model_overrides[session_key] == {
+        "model": "gpt-5.6-sol"
+    }
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None

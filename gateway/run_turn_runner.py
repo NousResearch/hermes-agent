@@ -557,16 +557,17 @@ class TurnRunner:
             with suppress(Exception):
                 raw_limit = int(adapter.max_message_length_for_chat(ctx.source.chat_id) or 4000)
                 len_fn = adapter.message_len_fn_for_chat(ctx.source.chat_id)
+        is_matrix = getattr(adapter, "name", "") == "matrix" or ctx.source.platform == Platform.MATRIX
         return self._ProgressEditState(
             adapter=adapter, progress_lines=[], progress_msg_id=None,
-            # "separate" = one message per tool (pre-v0.9 behavior)
-            can_edit=ctx.progress_grouping != "separate",
+            # Matrix always edits one root. Other platforms honor tool_progress_grouping.
+            can_edit=is_matrix or ctx.progress_grouping != "separate",
             _progress_len_fn=len_fn,
             # Leave room for platform quirks / formatting; tiny test adapters keep a usable limit.
             _PROGRESS_TEXT_LIMIT=max(1, raw_limit - (64 if raw_limit > 128 else 0)),
             # Overflow edits pass metadata (Telegram topic/thread routing) only when edit_message takes it.
             _edit_accepts_metadata=bool(ctx._progress_metadata) and _accepts_keyword(adapter.edit_message, "metadata"),
-            is_matrix=(getattr(adapter, "name", "") == "matrix" or ctx.source.platform == Platform.MATRIX),
+            is_matrix=is_matrix,
         )
 
     async def _edit_progress_message(self, st, message_id: str, content: str):

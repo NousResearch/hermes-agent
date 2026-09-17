@@ -55,7 +55,9 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
     "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
     "mattermost": _TIER_MEDIUM,
-    "matrix": _TIER_MEDIUM,
+    # Matrix persists tool progress as one m.replace pane. Opt out with tool_progress: off.
+    # streaming stays None so top-level StreamingConfig still applies.
+    "matrix": {**_TIER_HIGH},
     "feishu": _TIER_MEDIUM,
     "buzz": _TIER_MEDIUM,  # Nostr: edits in place but channels are shared community spaces
     "signal": _TIER_LOW,

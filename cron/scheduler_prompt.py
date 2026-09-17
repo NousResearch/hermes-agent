@@ -51,6 +51,27 @@ def _job_skill_names(job: dict) -> list[str]:
 
 
 _MAX_CONTEXT_CHARS = 8000
+_CONTEXT_RESPONSE_MARKER = "\n## Response\n"
+
+
+def _context_output_excerpt(text: str) -> str:
+    """Keep the part of a saved cron output that carries the previous answer.
+
+    A saved run is laid out as ``header + ## Prompt + ## Response``, where the
+    prompt echo can embed thousands of chars of runtime-loaded skill text. A
+    head truncation at ``_MAX_CONTEXT_CHARS`` therefore kept only the prompt
+    echo and never the answer, so ``context_from``/``continuity`` injected
+    boilerplate instead of the previous run's result. Prefer header + response,
+    and truncate from the tail so the newest text survives.
+    """
+    if _CONTEXT_RESPONSE_MARKER in text:
+        head, response = text.split(_CONTEXT_RESPONSE_MARKER, 1)
+        header = head.split("\n## Prompt", 1)[0].strip()
+        parts = [part for part in (header, "## Response", response.strip()) if part]
+        text = "\n\n".join(parts)
+    if len(text) > _MAX_CONTEXT_CHARS:
+        text = "[... output truncated ...]\n\n" + text[-_MAX_CONTEXT_CHARS:]
+    return text
 
 _SELF_CONTEXT_INTRO = (
     "The following is this job's most recent output from its previous run. Use it for "
@@ -105,9 +126,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                 if candidate and not silent_audit:
                     latest_output = candidate
                     break
-            if len(latest_output) > _MAX_CONTEXT_CHARS:
-                latest_output = (
-                    latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
+            latest_output = _context_output_excerpt(latest_output)
             if not latest_output:
                 continue  # silent skip — empty output
             if is_self:

@@ -440,3 +440,31 @@ class TestContinuityFlag:
         assert "previous run" in prompt.lower()
 
 
+class TestContextExcerptKeepsPreviousAnswer:
+    """Regression: a saved run is ``header + ## Prompt (skill text) + ## Response``.
+
+    Truncating from the head at ``_MAX_CONTEXT_CHARS`` kept only the prompt echo,
+    so ``context_from``/continuity injected thousands of chars of skill boilerplate
+    and never the previous run's answer.
+    """
+
+    def test_response_survives_head_truncation(self, cron_env):
+        from cron.jobs import create_job, OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job_a = create_job(prompt="Monitor", schedule="every 1h")
+        output_dir = OUTPUT_DIR / job_a["id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        prompt_echo = "S" * 20000  # larger than _MAX_CONTEXT_CHARS
+        (output_dir / "2026-04-22_10-00-00.md").write_text(
+            "# Cron Job: Monitor\n**Status:** ok\n\n## Prompt\n"
+            f"{prompt_echo}\n\n## Response\nTHE-ANSWER-42\n",
+            encoding="utf-8",
+        )
+
+        job_b = create_job(
+            prompt="Summarize the news", schedule="every 2h", context_from=job_a["id"]
+        )
+        prompt = _build_job_prompt(job_b)
+        assert "THE-ANSWER-42" in prompt
+        assert prompt_echo not in prompt

@@ -22,6 +22,10 @@ type Stage = 'provider' | 'key' | 'model' | 'reasoning' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
+/** Configured providers only: rows the backend marks `authenticated === false` (no key / needs setup) are hidden. Unknown (undefined) stays visible. */
+export const configuredProviders = (providers: ModelOptionProvider[]) =>
+  providers.filter(p => p.authenticated !== false)
+
 /** Rows of the effort step (step 3/3): the shared ladder, the off state, then
  *  "keep current" (empty value = no `--reasoning` flag on the emitted command). */
 export const REASONING_PICKER_ROWS: ReadonlyArray<{ label: string; value: string }> = [
@@ -101,11 +105,11 @@ export function ModelPicker({
     gw.request<ModelOptionsResult>('model.options', {
       ...(sessionId ? { session_id: sessionId } : {}),
       ...(initialRefresh ? { refresh: true } : {}),
-      // The TUI picker shows the full provider universe with setup
-      // affordances ("paste KEY to activate"), so opt into unconfigured
-      // rows — the backend now defaults to the configured subset for
-      // desktop chat pickers (#56974).
-      include_unconfigured: true
+      // The picker lists configured providers only — unconfigured rows (no key
+      // / needs setup) stay out; add keys via `hermes model` / `hermes auth`.
+      // The backend already defaults to that subset; the client guard below
+      // covers rows flagged `authenticated === false`.
+      include_unconfigured: false
     })
       .then(raw => {
         const r = asRpcResult<ModelOptionsResult>(raw)
@@ -117,7 +121,7 @@ export function ModelPicker({
           return
         }
 
-        const next = r.providers ?? []
+        const next = configuredProviders(r.providers ?? [])
         setProviders(next)
         setCurrentModel(String(r.model ?? ''))
         setProviderIdx(
@@ -137,13 +141,14 @@ export function ModelPicker({
       })
   }, [gw, initialRefresh, sessionId])
 
-  const names = useMemo(() => providerDisplayNames(providers), [providers])
+  const visibleProviders = useMemo(() => configuredProviders(providers), [providers])
+  const names = useMemo(() => providerDisplayNames(visibleProviders), [visibleProviders])
 
   // Provider rows carry their display name so fuzzy filtering can match on
   // name + slug while keeping the name/provider pairing intact across ranking.
   const providerRows = useMemo(
-    () => providers.map((p, i) => ({ provider: p, name: names[i] ?? p.name ?? p.slug })),
-    [providers, names]
+    () => visibleProviders.map((p, i) => ({ provider: p, name: names[i] ?? p.name ?? p.slug })),
+    [visibleProviders, names]
   )
 
   // providerIdx / modelIdx always index into the *displayed* (filtered) lists.

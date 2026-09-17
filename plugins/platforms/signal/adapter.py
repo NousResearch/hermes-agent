@@ -33,8 +33,8 @@ from gateway.platforms.helpers import redact_phone
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
-from gateway.platforms.signal_format import markdown_to_signal
-from gateway.platforms.signal_rate_limit import (
+from .signal_format import markdown_to_signal
+from .signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
@@ -112,7 +112,8 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
         dst_path = src_path[:-4] + ".m4a"
         try:
             proc = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", src_path, "-c:a", "copy", "-movflags",
-                                   "+faststart", dst_path], capture_output=True, timeout=10)
+                                   "+faststart", dst_path], capture_output=True, timeout=10,
+                                   stdin=subprocess.DEVNULL)
             if proc.returncode != 0:
                 logger.warning("Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
                                proc.returncode, proc.stderr.decode("utf-8", "replace")[:300])
@@ -978,6 +979,151 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("getContact", {"account": self.account, "contactAddress": chat_id})
         name = (result.get("name") or result.get("profileName")) if isinstance(result, dict) else None
         return {"name": name or chat_id, "type": "dm", "chat_id": chat_id}
+
+
+
+def _is_connected(config) -> bool:
+    """True when SIGNAL_HTTP_URL + SIGNAL_ACCOUNT are present (status / setup)."""
+    return validate_signal_config(config)
+
+
+def _env_enablement():
+    """Seed PlatformConfig.extra from env so gateway status sees Signal before connect()."""
+    from gateway.platforms._shared import seed_extra_from_env
+    url = (_sig_secret("SIGNAL_HTTP_URL", "") or "").strip()
+    account = (_sig_secret("SIGNAL_ACCOUNT", "") or "").strip()
+    if not (url and account):
+        return None
+    return seed_extra_from_env(
+        (
+            ("SIGNAL_HTTP_URL", "http_url", None),
+            ("SIGNAL_ACCOUNT", "account", None),
+            ("SIGNAL_IGNORE_STORIES", "ignore_stories", None),
+        ),
+        home_env="SIGNAL_HOME_CHANNEL",
+    )
+
+
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+    """Out-of-process delivery so deliver=signal cron jobs work without a live gateway adapter."""
+    extra = getattr(pconfig, "extra", None) or {}
+    from .standalone import _send_signal
+    return await _send_signal(extra, chat_id, message, media_files=media_files)
+
+
+def interactive_setup() -> None:
+    """`hermes gateway setup` flow (lazy hermes_cli imports keep the plugin importable outside the CLI)."""
+    import shutil
+
+    from hermes_cli.setup import (
+        get_env_value, print_error, print_header, print_info, print_success, print_warning,
+        prompt, prompt_yes_no, save_env_value,
+    )
+    from hermes_cli.setup_platforms import declines_reconfigure
+
+    print_header("Signal")
+    if declines_reconfigure("Signal", "Reconfigure Signal?", "SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"):
+        return
+
+    print_info("Connect Hermes to Signal via a signal-cli HTTP daemon.")
+    if shutil.which("signal-cli"):
+        print_success("signal-cli found on PATH.")
+    else:
+        print_warning("signal-cli not found on PATH.")
+        print_info("Install options:")
+        print_info("  Linux:  download from https://github.com/AsamK/signal-cli/releases")
+        print_info("  macOS:  brew install signal-cli")
+        print_info("  Docker: bbernhard/signal-cli-rest-api")
+        print_info("After installing, link your account and start the daemon:")
+        print_info('  signal-cli link -n "HermesAgent"')
+        print_info("  signal-cli --account +YOURNUMBER daemon --http 127.0.0.1:8080")
+
+    existing_url = get_env_value("SIGNAL_HTTP_URL") or "http://127.0.0.1:8080"
+    url = (prompt("signal-cli HTTP URL", default=existing_url) or existing_url).strip()
+    if not url:
+        print_warning("HTTP URL is required — skipping Signal setup")
+        return
+
+    print_info("Testing connection...")
+    try:
+        import httpx
+        resp = httpx.get(f"{url.rstrip('/')}/api/v1/check", timeout=10.0)
+        if resp.status_code == 200:
+            print_success("signal-cli daemon is reachable!")
+        else:
+            print_warning(f"signal-cli responded with status {resp.status_code}.")
+            if not prompt_yes_no("Continue anyway?", False):
+                return
+    except Exception as e:
+        print_warning(f"Could not reach signal-cli at {url}: {e}")
+        if not prompt_yes_no("Save this URL anyway? (you can start signal-cli later)", True):
+            return
+    save_env_value("SIGNAL_HTTP_URL", url)
+
+    existing_account = get_env_value("SIGNAL_ACCOUNT") or ""
+    print_info("Enter your Signal account phone number in E.164 format (e.g. +15551234567).")
+    account = (prompt("Account number", default=existing_account) or existing_account).strip()
+    if not account:
+        print_error("Account number is required.")
+        return
+    save_env_value("SIGNAL_ACCOUNT", account)
+
+    print_info("The gateway DENIES all users by default for security.")
+    print_info("Enter phone numbers or UUIDs of allowed users (comma-separated).")
+    default_allowed = get_env_value("SIGNAL_ALLOWED_USERS") or account
+    allowed = prompt("Allowed users", default=default_allowed)
+    save_env_value("SIGNAL_ALLOWED_USERS", (allowed or default_allowed).replace(" ", ""))
+
+    if prompt_yes_no("Enable group messaging? (disabled by default for security)", False):
+        existing_groups = get_env_value("SIGNAL_GROUP_ALLOWED_USERS") or ""
+        groups = prompt("Group IDs (* for all groups)", default=existing_groups or "*")
+        save_env_value("SIGNAL_GROUP_ALLOWED_USERS", groups or existing_groups or "*")
+
+    print_success("Signal configuration saved to ~/.hermes/.env")
+    print_info(f"URL: {url}")
+    print_info(f"Account: {account}")
+    print_info("Restart the gateway for changes to take effect: hermes gateway restart")
+
+
+_YAML_BRIDGE = (
+    ("require_mention", "SIGNAL_REQUIRE_MENTION", "lower"),
+)
+
+
+def _apply_yaml_config(yaml_cfg: dict, signal_cfg: dict) -> dict | None:
+    """``apply_yaml_config_fn``: config.yaml signal: keys → SIGNAL_* env (env wins) + extra."""
+    from gateway.platforms._shared import apply_yaml_bridge
+    return apply_yaml_bridge(signal_cfg, _YAML_BRIDGE)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="signal",
+        label="Signal",
+        adapter_factory=SignalAdapter,
+        check_fn=check_signal_requirements,
+        validate_config=validate_signal_config,
+        is_connected=_is_connected,
+        required_env=["SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"],
+        install_hint="Install signal-cli and run it as an HTTP daemon (https://github.com/AsamK/signal-cli).",
+        setup_fn=interactive_setup,
+        env_enablement_fn=_env_enablement,
+        apply_yaml_config_fn=_apply_yaml_config,
+        allowed_users_env="SIGNAL_ALLOWED_USERS",
+        allow_all_env="SIGNAL_ALLOW_ALL_USERS",
+        cron_deliver_env_var="SIGNAL_HOME_CHANNEL",
+        standalone_sender_fn=_standalone_send,
+        max_message_length=MAX_MESSAGE_LENGTH,
+        emoji="📡",
+        pii_safe=True,
+        allow_update_command=True,
+        platform_hint=(
+            "You are on Signal. Standard markdown (**bold**, *italic*, ~~strike~~, # headers, `code`) auto-converts to "
+            "Signal formatting; bullets render as •. No tables — use bullets or labeled lines. "
+            "Images (.png, .jpg, .webp) send as photos, other files as documents; ![alt](url) sends as photos."
+        ),
+    )
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

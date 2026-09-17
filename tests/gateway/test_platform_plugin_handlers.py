@@ -239,7 +239,7 @@ def test_all_connectable_adapters_wire_plugin_handlers():
         str(repo / "gateway" / "platforms" / name)
         for name in (
             "api_server.py", "bluebubbles.py", "msgraph_webhook.py",
-            "qqbot/adapter.py", "signal.py", "webhook.py", "weixin.py",
+            "qqbot/adapter.py", "webhook.py", "weixin.py",
             "whatsapp_cloud.py", "yuanbao.py",
         )
     ]

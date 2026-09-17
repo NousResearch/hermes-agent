@@ -860,7 +860,7 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `logging` | restored-import | `logging` |
 | `logging` | import | `logging` |
 
-### `gateway.platforms.signal`
+### `plugins.platforms.signal.adapter`
 
 | name | kind | new location |
 |---|---|---|

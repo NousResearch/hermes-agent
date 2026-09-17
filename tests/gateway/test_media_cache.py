@@ -129,25 +129,6 @@ class TestWhatsAppCloudParity:
         assert _ext_for_mime(mime) == expected
 
 
-class TestSignalParity:
-    """Historical _EXT_TO_MIME table from signal.py, verbatim."""
-
-    HISTORICAL = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
-        ".gif": "image/gif", ".webp": "image/webp",
-        ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".wav": "audio/wav",
-        ".m4a": "audio/mp4", ".aac": "audio/aac",
-        ".mp4": "video/mp4", ".pdf": "application/pdf",
-        ".zip": "application/zip",
-    }
-
-    @pytest.mark.parametrize("ext,expected", sorted(HISTORICAL.items()))
-    def test_table(self, ext, expected):
-        from gateway.platforms.signal import _ext_to_mime
-        assert _ext_to_mime(ext) == expected
-        assert _ext_to_mime(ext.upper()) == expected
-
-
 class TestQQBotParity:
     """Historical qqbot image path: mimetypes.guess_extension or '.jpg'."""
 

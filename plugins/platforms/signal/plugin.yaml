@@ -1,0 +1,44 @@
+name: signal-platform
+label: Signal
+kind: platform
+version: 1.0.0
+description: >
+  Signal gateway adapter for Hermes Agent via a signal-cli HTTP daemon
+  (SSE inbound, JSON-RPC 2.0 outbound). Requires SIGNAL_HTTP_URL and
+  SIGNAL_ACCOUNT. Phone numbers are treated as PII in logs.
+author: NousResearch
+requires_env:
+  - name: SIGNAL_HTTP_URL
+    description: "signal-cli HTTP daemon URL (e.g. http://127.0.0.1:8080)"
+    prompt: "signal-cli HTTP URL"
+    url: "https://github.com/AsamK/signal-cli"
+    password: false
+  - name: SIGNAL_ACCOUNT
+    description: "Signal account phone number in E.164 format (e.g. +15551234567)"
+    prompt: "Signal account number"
+    password: false
+optional_env:
+  - name: SIGNAL_ALLOWED_USERS
+    description: "Comma-separated Signal users allowed to DM the bot (* for open)"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: SIGNAL_ALLOW_ALL_USERS
+    description: "Allow anyone to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: SIGNAL_GROUP_ALLOWED_USERS
+    description: "Comma-separated group IDs allowed to talk to the bot (* for all groups)"
+    prompt: "Allowed group IDs"
+    password: false
+  - name: SIGNAL_HOME_CHANNEL
+    description: "Default chat for cron / notification delivery"
+    prompt: "Home channel"
+    password: false
+  - name: SIGNAL_HOME_CHANNEL_NAME
+    description: "Display name for the Signal home channel"
+    prompt: "Home channel name"
+    password: false
+  - name: SIGNAL_IGNORE_STORIES
+    description: "Ignore Signal stories (default: true)"
+    prompt: "Ignore stories? (true/false)"
+    password: false

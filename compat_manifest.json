@@ -2067,13 +2067,13 @@
    "target": "logging"
   },
   {
-   "facade": "gateway.platforms.signal",
+   "facade": "plugins.platforms.signal.adapter",
    "name": "DEFAULT_EXT_TO_MIME",
    "kind": "moved-lazy",
    "target": "gateway.platforms.media_cache"
   },
   {
-   "facade": "gateway.platforms.signal",
+   "facade": "plugins.platforms.signal.adapter",
    "name": "TYPING_INTERVAL",
    "kind": "restored-def",
    "target": "(deleted; BASE body restored)"

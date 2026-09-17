@@ -16,20 +16,10 @@ import pytest
 _HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
 
 
-@pytest.fixture(autouse=True)
-def _reset_signal_scheduler():
-    """Drop the process-wide attachment scheduler so each test gets a
-    fresh token bucket."""
-    from gateway.platforms.signal_rate_limit import _reset_scheduler
-    _reset_scheduler()
-    yield
-    _reset_scheduler()
-
 from gateway.config import Platform
 from tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
-    _send_signal,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -491,23 +481,46 @@ class TestSendToPlatformChunking:
             assert len(call.args[2]) <= 2020  # each chunk fits the limit
 
     def test_signal_long_message_is_chunked(self, monkeypatch):
-        """Standalone Signal sends split at the adapter's 8000-char limit.
+        """Signal's plugin standalone sender owns chunking (like Telegram).
 
-        The standalone path (hermes send / cron / MCP) speaks raw JSON-RPC via
-        _send_signal and bypasses SignalAdapter.send(), so the shared
-        truncate_message() pass in _send_to_platform must know Signal's limit
-        (regression for #67279 / #57929 — long sends were rejected whole).
+        ``_send_to_platform`` routes via registry ``standalone_sender_fn`` with no
+        outer shared chunking — exercise that tools boundary with HTTP mocks only.
         """
-        from gateway.platforms.signal import MAX_MESSAGE_LENGTH as SIGNAL_MAX
-        import tools.send_message_tool as smt
+        from gateway.platforms.base import utf16_len
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        import httpx
+
+        discover_plugins()
+        entry = platform_registry.get("signal")
+        assert entry is not None and entry.standalone_sender_fn is not None
+        SIGNAL_MAX = entry.max_message_length
+        assert SIGNAL_MAX > 0
 
         sent = []
 
-        async def fake_send_signal(extra, chat_id, chunk, media_files=None):
-            sent.append(chunk)
-            return {"success": True, "platform": "signal", "chat_id": chat_id}
+        class _AlwaysOkSignalHttp:
+            def __call__(self, *_a, **_kw):
+                return self
 
-        monkeypatch.setattr(smt, "_send_signal", fake_send_signal)
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+            async def post(self, url, json=None):
+                params = (json or {}).get("params") or {}
+                # Capture real sends only (skip pacing-notice RPCs if any).
+                if (json or {}).get("method") == "send" and str(
+                        (json or {}).get("id", "")).startswith("send_"):
+                    sent.append(params.get("message", ""))
+                return SimpleNamespace(
+                    raise_for_status=lambda: None,
+                    json=lambda: {"result": {"timestamp": len(sent)}},
+                )
+
+        monkeypatch.setattr(httpx, "AsyncClient", _AlwaysOkSignalHttp())
 
         long_msg = "word " * ((SIGNAL_MAX // 5) + 500)  # comfortably over limit
         result = asyncio.run(
@@ -520,8 +533,8 @@ class TestSendToPlatformChunking:
             )
         )
         assert result["success"] is True
-        assert len(sent) >= 2, "long Signal message must be split, not sent whole"
-        assert all(len(chunk) <= SIGNAL_MAX for chunk in sent)
+        assert len(sent) >= 2, "long Signal message must be split inside plugin standalone sender"
+        assert all(utf16_len(chunk) <= SIGNAL_MAX for chunk in sent)
         # No truncation footer — content is delivered in full across chunks
         assert all("truncated, full output saved to" not in c for c in sent)
 
@@ -1527,129 +1540,6 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
-
-
-# ---------------------------------------------------------------------------
-# _send_signal — chunking + 429 retry (mirrors gateway adapter behavior)
-# ---------------------------------------------------------------------------
-
-
-class _FakeSignalHttp:
-    """Stand-in for httpx.AsyncClient used as an async context manager.
-
-    Pops a response from the queue per `post` call. Each entry is either
-    a dict (returned from .json()) or an exception instance (raised).
-    Captures (url, payload) per call.
-    """
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def __call__(self, *_a, **_kw):
-        return self
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_a):
-        return False
-
-    async def post(self, url, json=None):
-        self.calls.append({"url": url, "payload": json})
-        if not self.responses:
-            raise AssertionError("Unexpected extra POST")
-        item = self.responses.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        resp = SimpleNamespace(
-            raise_for_status=lambda: None,
-            json=lambda data=item: data,
-        )
-        return resp
-
-
-def _install_signal_http(monkeypatch, fake):
-    """Patch httpx.AsyncClient at the module level so the lazy import in
-    _send_signal picks it up.
-    """
-    import httpx
-    monkeypatch.setattr(httpx, "AsyncClient", fake)
-
-
-def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
-    """Mock asyncio.sleep + time.monotonic in the signal_rate_limit
-    module so the scheduler's acquire loop sees synthetic time advancing
-    during sleep calls, and report_rpc_duration sees the same clock.
-
-    Zero-second sleeps (event-loop yields from fake HTTP posts) are
-    delegated to the real asyncio.sleep so they don't pollute the
-    capture list.
-    """
-    import asyncio as _aio
-    _real_sleep = _aio.sleep
-    offset = [0.0]
-
-    async def fake_sleep(seconds):
-        if seconds > 0:
-            capture.append(seconds)
-            offset[0] += seconds
-        else:
-            await _real_sleep(0)
-
-    monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
-    )
-    monkeypatch.setattr(
-        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
-    )
-
-
-class TestSendSignalChunking:
-    def test_text_only_single_rpc(self, monkeypatch):
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
-        _install_signal_http(monkeypatch, fake)
-
-        result = asyncio.run(
-            _send_signal(
-                {"http_url": "http://localhost:8080", "account": "+15551234567"},
-                "+15557654321",
-                "hello",
-            )
-        )
-
-        assert result["success"] is True
-        assert result["platform"] == "signal"
-        assert result["chat_id"].endswith("4321")
-        assert len(fake.calls) == 1
-        params = fake.calls[0]["payload"]["params"]
-        assert params["message"] == "hello"
-        assert "attachments" not in params
-        assert "textStyle" not in params
-        assert "textStyles" not in params
-
-
-    def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
-        good = tmp_path / "ok.png"
-        good.write_bytes(b"\x89PNG" + b"\x00" * 16)
-
-        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
-        _install_signal_http(monkeypatch, fake)
-
-        result = asyncio.run(
-            _send_signal(
-                {"http_url": "http://localhost:8080", "account": "+15551234567"},
-                "+15557654321",
-                "msg",
-                media_files=[(str(good), False), (str(tmp_path / "missing.png"), False)],
-            )
-        )
-
-        assert result["success"] is True
-        assert "warnings" in result
-        # Only the existing file made it into the RPC
-        params = fake.calls[0]["payload"]["params"]
-        assert len(params["attachments"]) == 1
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

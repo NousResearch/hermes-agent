@@ -378,7 +378,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -1753,13 +1753,26 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
-def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
+def resolve_channel_prompt(
+    config_extra: dict,
+    channel_id: str | Sequence[str] | None = None,
+    parent_id: str | None = None,
+    *fallback_keys: str | None,
+) -> str | None:
     """Per-channel ephemeral prompt from ``config.extra["channel_prompts"]``: exact *channel_id*
-    first, then *parent_id* (threads inherit the parent prompt). Blank prompts count as absent."""
+    first, then *parent_id* (threads inherit the parent prompt), then any *fallback_keys*.
+    Blank prompts count as absent."""
     prompts = config_extra.get("channel_prompts") or {}
     if not isinstance(prompts, dict):
         return None
-    for key in (channel_id, parent_id):
+    candidate_keys: list[Any] = []
+    if isinstance(channel_id, (list, tuple)):
+        candidate_keys.extend(channel_id)
+    else:
+        candidate_keys.append(channel_id)
+    candidate_keys.append(parent_id)
+    candidate_keys.extend(fallback_keys)
+    for key in candidate_keys:
         prompt = prompts.get(key) if key else None
         if prompt is not None and (prompt := str(prompt).strip()):
             return prompt

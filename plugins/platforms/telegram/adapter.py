@@ -6587,6 +6587,52 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_text = None
         return reply_to_id, reply_to_text
 
+    def _resolve_channel_prompt(
+        self,
+        chat_id: str | int | None = None,
+        thread_id: str | int | None = None,
+        *,
+        channel_id: str | int | None = None,
+        parent_id: str | int | None = None,
+    ) -> str | None:
+        """Resolve Telegram per-channel/topic prompt.
+
+        Precedence:
+        1. Composite topic key: ``chat_id:thread_id``
+        2. Legacy topic key: ``thread_id``
+        3. Group fallback: ``chat_id``
+        """
+        from gateway.platforms.base import resolve_channel_prompt
+
+        if chat_id is None and parent_id is not None:
+            chat_id = parent_id
+        if thread_id is None and channel_id is not None and chat_id != channel_id:
+            thread_id = channel_id
+        elif chat_id is None and channel_id is not None:
+            chat_id = channel_id
+
+        chat_id_str = str(chat_id).strip() if chat_id is not None else None
+        if not chat_id_str:
+            chat_id_str = None
+        thread_id_str = str(thread_id).strip() if thread_id is not None else None
+        if not thread_id_str:
+            thread_id_str = None
+
+        extra = getattr(getattr(self, "config", None), "extra", None) or {}
+
+        if thread_id_str and chat_id_str:
+            composite_key = f"{chat_id_str}:{thread_id_str}"
+            return resolve_channel_prompt(extra, composite_key, thread_id_str, chat_id_str)
+        if chat_id_str:
+            if ":" in chat_id_str:
+                c_chat, c_thread = chat_id_str.split(":", 1)
+                return resolve_channel_prompt(extra, chat_id_str, c_thread, c_chat)
+            return resolve_channel_prompt(extra, chat_id_str)
+        if thread_id_str:
+            return resolve_channel_prompt(extra, thread_id_str)
+        return None
+
+
     def _build_message_event(self, message: Message, msg_type: MessageType, update_id: Optional[int] = None) -> MessageEvent:
         """Build a MessageEvent from a Telegram message. ``update_id`` lets ``/restart`` record the
         triggering offset so the new gateway process advances past it."""
@@ -6616,10 +6662,9 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=user_name, thread_id=thread_id_str, chat_topic=chat_topic, message_id=str(message.message_id),
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
-        from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
-        channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        channel_prompt = self._resolve_channel_prompt(_chat_id_str, thread_id_str)
         return MessageEvent(
             text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,

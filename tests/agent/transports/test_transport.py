@@ -155,6 +155,36 @@ class TestAnthropicTransport:
         assert tc.id == "toolu_123"
         assert '"command"' in tc.arguments
 
+    def test_normalize_response_refusal_block_surfaces_text(self, transport):
+        """A native streaming refusal keeps Anthropic's explanation and native stop reason (#113689)."""
+        r = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="refusal", refusal="I can't assist with that request."
+                )
+            ],
+            stop_reason="refusal",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            model="claude-opus-5",
+        )
+        nr = transport.normalize_response(r)
+        assert nr.content == "I can't assist with that request."
+        assert nr.finish_reason == "content_filter"
+        assert nr.provider_data["anthropic_stop_reason"] == "refusal"
+
+    def test_normalize_response_bedrock_guardrail_mapping_untouched(self, transport):
+        """A Bedrock InvokeModel guardrail block still maps to content_filter with no native refusal tag."""
+        r = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="guardrail canned reply")],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            model="claude-sonnet-4-6",
+            model_extra={"amazon-bedrock-guardrailAction": "INTERVENED"},
+        )
+        nr = transport.normalize_response(r)
+        assert nr.finish_reason == "content_filter"
+        assert "anthropic_stop_reason" not in (nr.provider_data or {})
+
 
 
     def test_convert_messages_extracts_system(self, transport):

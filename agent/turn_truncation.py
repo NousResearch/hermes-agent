@@ -603,9 +603,17 @@ def handle_content_policy_refusal(
 
     agent._flush_status_buffer()
     _refusal_log = _refusal_text[:500] + "..." if len(_refusal_text) > 500 else _refusal_text
+    # Native stop reason distinguishes an Anthropic streaming classifier refusal from a Bedrock
+    # guardrail block (both arrive as content_filter); only the anthropic transport sets it.
+    _native_stop = (getattr(_refusal_result, "provider_data", None) or {}).get(
+        "anthropic_stop_reason"
+    )
     logger.warning(
-        "%sModel declined to respond (finish_reason=content_filter). model=%s provider=%s refusal=%s",
-        agent.log_prefix, agent.model, agent.provider,
+        "%sModel declined to respond (finish_reason=content_filter). native_stop_reason=%s model=%s provider=%s refusal=%s",
+        agent.log_prefix,
+        _native_stop or "n/a",
+        agent.model,
+        agent.provider,
         _refusal_log or "(no text)",
     )
     agent._emit_status("⚠️ The model declined to respond to this request (safety refusal).")

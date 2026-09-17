@@ -79,6 +79,10 @@ class AnthropicTransport(ProviderTransport):
                 ordered_blocks.append(clean_block)
             if block.type == "text":
                 text_parts.append(block.text)
+            elif block.type == "refusal":
+                # Streaming classifier refusal (#113689): the refusal block carries the provider's own
+                # explanation; dropping it left handle_content_policy_refusal logging "(no text)".
+                text_parts.append(getattr(block, "refusal", "") or "")
             elif block.type in _THINKING_TYPES:
                 if block.type == "thinking":
                     reasoning_parts.append(block.thinking)
@@ -91,6 +95,10 @@ class AnthropicTransport(ProviderTransport):
                     name = _unprefix_oauth_tool_name(name)
                 tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
+        if getattr(response, "stop_reason", None) == "refusal":
+            # Native classifier refusals and Bedrock guardrail blocks both surface as content_filter
+            # (see response_finish_reason); keep the native stop reason so logs can tell them apart.
+            provider_data["anthropic_stop_reason"] = "refusal"
         # Ordered channel only for the shape the parallel lists reconstruct wrongly.
         signed = any(b.get("type") in _THINKING_TYPES and (b.get("signature") or b.get("data")) for b in ordered_blocks)
         if signed and any(b.get("type") == "tool_use" for b in ordered_blocks):

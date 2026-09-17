@@ -126,28 +126,24 @@ class TestMacosClipboardFileUrl:
             joined = " ".join(str(part) for part in cmd)
             if "clipboard info" in joined:
                 return MagicMock(stdout="«class furl», 28", returncode=0)
-            if "pngpaste" in joined:
-                return MagicMock(returncode=1, stdout=b"", stderr=b"")
-            if "«class PNGf»" in joined:
-                return MagicMock(stdout="fail", returncode=0)
             if "«class furl»" in joined:
                 return MagicMock(stdout=f"{src}\n", returncode=0)
             return MagicMock(stdout="", returncode=1)
         return fake_run
 
-    def test_copied_image_file_is_a_clipboard_image(self, tmp_path):
-        src = tmp_path / "shot.png"
+    @pytest.mark.parametrize("name, expected", [("shot.png", True), ("notes.txt", False)])
+    def test_only_copied_image_files_are_clipboard_images(self, tmp_path, name, expected):
+        src = tmp_path / name
         src.write_bytes(FAKE_PNG)
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
-            assert _macos_has_image() is True
+            assert _macos_has_image() is expected
 
     def test_copied_image_file_saves_as_png(self, tmp_path):
         src = tmp_path / "shot.png"
         src.write_bytes(FAKE_PNG)
         dest = tmp_path / "out.png"
-        with patch("hermes_cli.clipboard.sys.platform", "darwin"), \
-             patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
-            assert save_clipboard_image(dest) is True
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_osascript(dest) is True
         assert dest.read_bytes().startswith(b"\x89PNG")
 
 

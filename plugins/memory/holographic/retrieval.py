@@ -3,6 +3,7 @@ Jaccard similarity and HRR vector similarity, trust-weighted (ported from KIK me
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -12,6 +13,29 @@ if TYPE_CHECKING:
     from .store import MemoryStore
 
 from . import holographic as hrr
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_phases(data: bytes, expected_dim: int) -> "hrr.np.ndarray | None":
+    """Decode a stored vector, returning None for corrupt or mismatched data."""
+    try:
+        vec = hrr.bytes_to_phases(data, dim=expected_dim)
+    except Exception:
+        return None
+    return vec if vec.shape[0] == expected_dim else None
+
+
+def _warn_skipped(operation: str, skipped: int, unit: str = "vector(s)") -> None:
+    if skipped:
+        logger.warning(
+            "%s: skipped %d %s with mismatched/corrupt data; "
+            "run rebuild_all_vectors() to migrate.",
+            operation,
+            skipped,
+            unit,
+        )
+
 
 _FACT_COLUMNS = "fact_id, content, category, tags, trust_score, retrieval_count, helpful_count, created_at, updated_at"
 _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
@@ -47,7 +71,7 @@ class FactRetriever:
         return hrr.encode_atom(word, self.hrr_dim)
 
     def _phases(self, blob: bytes):
-        return hrr.bytes_to_phases(blob, dim=self.hrr_dim)
+        return _safe_phases(blob, self.hrr_dim)
 
     def search(self, query: str, category: str | None = None, min_trust: float = 0.3, limit: int = 10) -> list[dict]:
         """FTS5 candidates (limit*3) → Jaccard + HRR rerank → trust weighting → optional temporal decay
@@ -57,27 +81,36 @@ class FactRetriever:
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
         # so stores whose hrr_vector was never backfilled don't pay for it.
         query_vec = None
+        skipped = 0
         for fact in candidates:
             jaccard = self._jaccard_similarity(query_tokens, self._tokenize(fact["content"]) | self._tokenize(fact.get("tags", "")))
             hrr_sim = 0.5  # neutral
-            if self.hrr_weight > 0 and fact.get("hrr_vector"):
-                fact_vec = self._phases(fact["hrr_vector"])
+            has_vector = self.hrr_weight > 0 and fact.get("hrr_vector")
+            fact_vec = self._phases(fact["hrr_vector"]) if has_vector else None
+            if fact_vec is not None:
                 if query_vec is None:
                     query_vec = hrr.encode_text(query, self.hrr_dim)
                 hrr_sim = _shift(hrr.similarity(query_vec, fact_vec))
+            elif has_vector:
+                skipped += 1
             relevance = self.fts_weight * fact.get("fts_rank", 0.0) + self.jaccard_weight * jaccard + self.hrr_weight * hrr_sim
             fact["score"] = relevance * fact["trust_score"]
             if self.half_life > 0:
                 fact["score"] *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
+        _warn_skipped("search", skipped)
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
         return results
 
-    def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable) -> list[dict]:
+    def _vector_query(self, fallback: str, category: str | None, limit: int, sim_fn: Callable,
+                      *, operation: str, skipped: int = 0) -> list[dict]:
         """Rank every fact vector (optionally per category) by sim_fn; FTS5 fallback when no vectors exist."""
         rows = self._vector_rows(category)
-        return self._rank_by_vector(rows, sim_fn, limit) if rows else self.search(fallback, category=category, limit=limit)
+        if not rows:
+            _warn_skipped(operation, skipped)
+            return self.search(fallback, category=category, limit=limit)
+        return self._rank_by_vector(rows, sim_fn, limit, operation=operation, skipped=skipped)
 
     def probe(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Compositional entity query: unbind bind(entity, ROLE_ENTITY) from the category bank (or each fact vector)
@@ -85,15 +118,25 @@ class FactRetriever:
         if not hrr._HAS_NUMPY:
             return self.search(entity, category=category, limit=limit)
         probe_key = hrr.bind(self._atom(entity.lower()), self._atom(_ROLE_ENTITY))
+        skipped = 0
         if category:  # category bank first, then individual fact vectors
             bank_row = self.store._conn.execute("SELECT vector FROM memory_banks WHERE bank_name = ?", (f"cat:{category}",)).fetchone()
             if bank_row:
-                extracted = hrr.unbind(self._phases(bank_row["vector"]), probe_key)
-                return self._rank_by_vector(self._vector_rows(category), lambda _f, fact_vec: hrr.similarity(extracted, fact_vec), limit)
+                bank_vec = self._phases(bank_row["vector"])
+                if bank_vec is not None:
+                    extracted = hrr.unbind(bank_vec, probe_key)
+                    return self._rank_by_vector(
+                        self._vector_rows(category),
+                        lambda _f, fact_vec: hrr.similarity(extracted, fact_vec),
+                        limit,
+                        operation="probe",
+                    )
+                skipped += 1
         role_content = self._atom(_ROLE_CONTENT)  # loop-invariant: encode once, not per row
         # Does unbinding the probe key leave the fact's content signal?
         return self._vector_query(entity, category, limit, lambda fact, fact_vec: hrr.similarity(
-            hrr.unbind(fact_vec, probe_key), hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)))
+            hrr.unbind(fact_vec, probe_key), hrr.bind(hrr.encode_text(fact["content"], self.hrr_dim), role_content)),
+            operation="probe", skipped=skipped)
 
     def related(self, entity: str, category: str | None = None, limit: int = 10) -> list[dict]:
         """Facts structurally connected to an entity (shared context), not just facts *about* it as in probe.
@@ -104,7 +147,7 @@ class FactRetriever:
         roles = (self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT))  # loop-invariant: encode once
         # A residual similar to ANY role vector means the entity plays a structural role in the fact.
         return self._vector_query(entity, category, limit, lambda _f, fact_vec: max(
-            hrr.similarity(hrr.unbind(fact_vec, entity_vec), role) for role in roles))
+            hrr.similarity(hrr.unbind(fact_vec, entity_vec), role) for role in roles), operation="related")
 
     def reason(self, entities: list[str], category: str | None = None, limit: int = 10) -> list[dict]:
         """Multi-entity compositional query (vector-space JOIN): facts where ALL entities play structural roles.
@@ -115,7 +158,7 @@ class FactRetriever:
         probe_keys = [hrr.bind(self._atom(entity.lower()), role_entity) for entity in entities]
         # AND semantics via min: high only if EVERY entity is structurally present.
         return self._vector_query(" ".join(entities), category, limit, lambda _f, fact_vec: min(
-            hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys))
+            hrr.similarity(hrr.unbind(fact_vec, key), role_content) for key in probe_keys), operation="reason")
 
     def contradict(self, category: str | None = None, threshold: float = 0.3, limit: int = 10) -> list[dict]:
         """Pairs of facts sharing entities (same subject) with low content-vector similarity (different claims). Empty without numpy."""
@@ -127,13 +170,21 @@ class FactRetriever:
         if len(rows) > 500:  # O(n²) guard: only compare the most recently updated facts
             rows = sorted(rows, key=lambda r: r["updated_at"] or r["created_at"], reverse=True)[:500]
         facts = []  # (public dict, lower-cased entity names, phase vector)
+        skipped = 0
         for row in rows:
             fact = dict(row)
+            fact_vec = self._phases(fact.pop("hrr_vector"))
+            if fact_vec is None:
+                skipped += 1
+                continue
             entity_rows = self.store._conn.execute(
                 "SELECT e.name FROM entities e JOIN fact_entities fe ON fe.entity_id = e.entity_id WHERE fe.fact_id = ?",
                 (fact["fact_id"],),
             ).fetchall()
-            facts.append((fact, {r["name"].lower() for r in entity_rows}, self._phases(fact.pop("hrr_vector"))))
+            facts.append((fact, {r["name"].lower() for r in entity_rows}, fact_vec))
+        _warn_skipped("contradict", skipped)
+        if len(facts) < 2:
+            return []
         contradictions = []
         for i, (f1, ents1, vec1) in enumerate(facts):
             for f2, ents2, vec2 in facts[i + 1:]:
@@ -159,11 +210,19 @@ class FactRetriever:
         where = "WHERE hrr_vector IS NOT NULL" + (" AND category = ?" if category else "")
         return self.store._conn.execute(f"SELECT {columns} FROM facts {where}", [category] if category else []).fetchall()
 
-    def _rank_by_vector(self, rows: list, sim_fn: Callable[[dict, object], float], limit: int) -> list[dict]:
-        """Score each row as (sim + 1) / 2 * trust_score (sim shifted to [0, 1]), sorted desc."""
-        scored = [dict(row) for row in rows]
-        for fact in scored:
-            fact["score"] = _shift(sim_fn(fact, self._phases(fact.pop("hrr_vector")))) * fact["trust_score"]
+    def _rank_by_vector(self, rows: list, sim_fn: Callable[[dict, object], float], limit: int,
+                        *, operation: str, skipped: int = 0) -> list[dict]:
+        """Score each valid vector as (sim + 1) / 2 * trust_score, sorted descending."""
+        scored = []
+        for row in rows:
+            fact = dict(row)
+            fact_vec = self._phases(fact.pop("hrr_vector"))
+            if fact_vec is None:
+                skipped += 1
+                continue
+            fact["score"] = _shift(sim_fn(fact, fact_vec)) * fact["trust_score"]
+            scored.append(fact)
+        _warn_skipped(operation, skipped)
         return sorted(scored, key=lambda x: x["score"], reverse=True)[:limit]
 
     def _fts_candidates(self, query: str, category: str | None, min_trust: float, limit: int) -> list[dict]:

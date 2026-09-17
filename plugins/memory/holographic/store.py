@@ -1,5 +1,6 @@
 """SQLite-backed fact store with entity resolution and trust scoring (single-user Hermes memory plugin)."""
 
+import logging
 import os
 import re
 import sqlite3
@@ -7,6 +8,8 @@ import threading
 from pathlib import Path
 
 from . import holographic as hrr
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -68,6 +71,11 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS _meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 """
 
 _HELPFUL_DELTA, _UNHELPFUL_DELTA = 0.05, -0.10
@@ -115,13 +123,18 @@ class MemoryStore:
                 # write lock) open; the explicit commit() calls in _write are then harmless no-ops.
                 conn = sqlite3.connect(self._key, check_same_thread=False, timeout=10.0, isolation_level=None)
                 conn.row_factory = sqlite3.Row
-                entry = MemoryStore._shared[self._key] = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                entry = MemoryStore._shared[self._key] = {
+                    "conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False, "hrr_dim": None,
+                }
             entry["refs"] += 1
             self._entry, self._conn, self._lock = entry, entry["conn"], entry["lock"]
         with self._lock:  # schema initialised once per shared connection
             if not entry["ready"]:
                 self._init_db()
                 entry["ready"] = True
+                entry["hrr_dim"] = self.hrr_dim
+            else:
+                self.hrr_dim = entry["hrr_dim"]
 
     def _init_db(self) -> None:
         """Create schema, enable WAL via the shared fallback helper (NFS/SMB/FUSE degrade gracefully), add hrr_vector to pre-HRR DBs."""
@@ -132,6 +145,38 @@ class MemoryStore:
             from hermes_cli.sqlite_util import add_column_if_missing
             add_column_if_missing(self._conn, "facts", "hrr_vector", "hrr_vector BLOB")
         self._conn.commit()
+        self._load_or_persist_hrr_dim()
+
+    def _load_or_persist_hrr_dim(self) -> None:
+        """Adopt the stored vector dimension, or persist the initial configured value."""
+        configured_dim = self.hrr_dim
+        legacy_row = self._one(
+            "SELECT dim FROM memory_banks WHERE dim IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
+        )
+        seed_dim = int(legacy_row["dim"]) if legacy_row is not None else configured_dim
+        self._write(
+            "INSERT OR IGNORE INTO _meta (key, value) VALUES ('hrr_dim', ?)",
+            (str(seed_dim),),
+        )
+        stored_dim = int(self._one("SELECT value FROM _meta WHERE key = 'hrr_dim'")["value"])
+        if stored_dim != configured_dim:
+            logger.warning(
+                "holographic memory: keeping persisted hrr_dim=%d for %s; "
+                "configured hrr_dim=%d is ignored. Call rebuild_all_vectors(dim=%d) "
+                "to migrate existing vectors if you intended the config change.",
+                stored_dim,
+                self.db_path,
+                configured_dim,
+                configured_dim,
+            )
+        self.hrr_dim = stored_dim
+
+    def _persist_hrr_dim(self, dim: int) -> None:
+        self._write(
+            "INSERT INTO _meta (key, value) VALUES ('hrr_dim', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(dim),),
+        )
 
     def _one(self, sql: str, params=()):
         return self._conn.execute(sql, params).fetchone()
@@ -246,20 +291,62 @@ class MemoryStore:
         self._write("UPDATE facts SET hrr_vector = ? WHERE fact_id = ?", (blob, fact_id))
 
     def _rebuild_bank(self, category: str) -> None:
-        """Full rebuild of a category's memory bank from all its fact vectors."""
+        """Full rebuild of a category bank, excluding corrupt or mismatched vectors."""
         if not self._hrr_available:
             return
+        from .retrieval import _safe_phases, _warn_skipped
+
         bank_name = f"cat:{category}"
         rows = self._conn.execute("SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL", (category,)).fetchall()
         if not rows:
             self._write("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
             return
-        bank_vector = hrr.bundle(*[hrr.bytes_to_phases(row["hrr_vector"], dim=self.hrr_dim) for row in rows])
-        hrr.snr_estimate(self.hrr_dim, len(rows))  # warns when near capacity
+        vectors = []
+        skipped = 0
+        for row in rows:
+            vector = _safe_phases(row["hrr_vector"], self.hrr_dim)
+            if vector is None:
+                skipped += 1
+            else:
+                vectors.append(vector)
+        _warn_skipped(f"_rebuild_bank({category})", skipped)
+        if not vectors:
+            self._write("DELETE FROM memory_banks WHERE bank_name = ?", (bank_name,))
+            return
+        bank_vector = hrr.bundle(*vectors)
+        hrr.snr_estimate(self.hrr_dim, len(vectors))  # warns when near capacity
         self._write("INSERT INTO memory_banks (bank_name, vector, dim, fact_count, updated_at) "
                     "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(bank_name) DO UPDATE SET "
                     "vector = excluded.vector, dim = excluded.dim, fact_count = excluded.fact_count, "
-                    "updated_at = excluded.updated_at", (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, len(rows)))
+                    "updated_at = excluded.updated_at",
+                    (bank_name, hrr.phases_to_bytes(bank_vector), self.hrr_dim, len(vectors)))
+
+    def rebuild_all_vectors(self, dim: int | None = None) -> int:
+        """Recompute every HRR vector and bank, persisting a new dimension only after completion."""
+        with self._lock:
+            if not self._hrr_available:
+                return 0
+            if dim is not None:
+                self.hrr_dim = dim
+
+            rows = self._conn.execute("SELECT fact_id, content, category FROM facts").fetchall()
+            categories: set[str] = set()
+            for row in rows:
+                self._compute_hrr_vector(row["fact_id"], row["content"])
+                categories.add(row["category"])
+            for category in categories:
+                self._rebuild_bank(category)
+
+            if dim is not None:
+                self._persist_hrr_dim(dim)
+                if self._entry is not None:
+                    self._entry["hrr_dim"] = dim
+                logger.warning(
+                    "hrr_dim migrated to %d; store/retriever handles opened before this migration "
+                    "keep their previous dimension until reopened.",
+                    dim,
+                )
+            return len(rows)
 
     @classmethod
     def release_all_under(cls, directory: "str | Path") -> int:

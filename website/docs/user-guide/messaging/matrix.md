@@ -357,28 +357,67 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+E2EE requires the `mautrix` library with encryption extras (`mautrix[encryption]`), which depends on **`python-olm`**. On Linux, install the system `libolm` C library and then the Python extra. On Apple Silicon macOS, Homebrew no longer ships a `libolm` formula; build `python-olm` with GNU gcc instead (see below). Do not install these packages into system Python — use the interpreter from the `hermes` shebang.
 
 ```bash
-# Install mautrix with E2EE support
-pip install 'mautrix[encryption]'
+# Linux: system libolm, then mautrix with E2EE support
+# Debian/Ubuntu
+sudo apt install libolm-dev
+# Fedora
+sudo dnf install libolm-devel
 
-# Or install with hermes extras
+pip install 'mautrix[encryption]'
+# Or, from a git install:
 cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
-You also need `libolm` installed on your system:
+#### Apple Silicon macOS (native `python-olm`)
+
+Stock AppleClang 21 + CMake 4.x cannot build the libolm vendored inside `python-olm`. `olm_build.py` runs CMake first and **does not fall back** to `make static` when CMake is installed but fails. Homebrew `gcc@12` plus `CMAKE_POLICY_VERSION_MINIMUM=3.5` produces a working `_libolm.abi3.so` (static libolm, linked against gcc@12's `libstdc++`).
+
+Verified with Hermes git installs on arm64: macOS 26, AppleClang 21, CMake 4.3–4.4, gcc@12 12.5.0, Python 3.11, `python-olm==3.2.16`, `mautrix==0.21.1`.
 
 ```bash
-# Debian/Ubuntu
-sudo apt install libolm-dev
+# 1. Hermes venv only
+HERMES_PY="$(head -1 "$(command -v hermes)" | sed 's/^#!//')"
 
-# macOS
-brew install libolm
+# 2. Toolchain (do not brew install libolm — the formula is gone on current Homebrew)
+export PATH="/opt/homebrew/bin:$PATH"
+brew install gcc@12 cmake pkg-config openssl@3 libffi
 
-# Fedora
-sudo dnf install libolm-devel
+# 3. Compiler for this shell
+export CC="$(brew --prefix gcc@12)/bin/gcc-12"
+export CXX="$(brew --prefix gcc@12)/bin/g++-12"
+export CMAKE_C_COMPILER="$CC" CMAKE_CXX_COMPILER="$CXX"
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+OPENSSL_PREFIX="$(brew --prefix openssl@3)"
+LIBFFI_PREFIX="$(brew --prefix libffi)"
+export PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$LIBFFI_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export CFLAGS="-I$OPENSSL_PREFIX/include -I$LIBFFI_PREFIX/include ${CFLAGS:-}"
+export LDFLAGS="-L$OPENSSL_PREFIX/lib -L$LIBFFI_PREFIX/lib ${LDFLAGS:-}"
+
+# 4. Build python-olm first (do not lead with mautrix[encryption] — that compiles
+#    python-olm with AppleClang and fails). Then the remaining encryption extras.
+uv pip install --python "$HERMES_PY" --no-cache-dir --force-reinstall 'python-olm==3.2.16'
+uv pip install --python "$HERMES_PY" unpaddedbase64 pycryptodome base58
+# If mautrix itself is missing (for example after hermes update):
+# uv pip install --python "$HERMES_PY" 'mautrix' aiosqlite asyncpg aiohttp-socks
 ```
+
+Verify before restarting the gateway:
+
+```bash
+"$HERMES_PY" -c 'import olm; from mautrix.crypto import OlmMachine; a=olm.Account(); print(bool(a.identity_keys), OlmMachine)'
+otool -L "$("$HERMES_PY" -c 'import olm, pathlib; print(pathlib.Path(olm.__file__).resolve().parent.parent / "_libolm.abi3.so")')"
+```
+
+`olm.Account()` must succeed, and `otool -L` must show `/opt/homebrew/opt/gcc@12/lib/gcc/12/libstdc++.6.dylib`. Do not copy `_libolm.abi3.so` between Macs unless that dylib exists at the same path.
+
+`hermes update` can drop `python-olm` from the venv. gcc@12 stays installed — re-run the `CC`/`CXX` exports and the `uv pip` commands, then `hermes gateway restart`.
+
+:::note
+Intel Macs are untested. [Proxy mode](#proxy-mode-e2ee-on-macos) remains valid if you prefer not to compile on the Mac.
+:::
 
 ### Enable E2EE
 
@@ -621,11 +660,11 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 ### Encryption errors / "could not decrypt event"
 
-**Cause**: Missing encryption keys, `libolm` not installed, or the bot's device isn't trusted.
+**Cause**: Missing encryption keys, `python-olm` / `libolm` not available, or the bot's device isn't trusted.
 
 **Fix**:
-1. Verify `libolm` is installed on your system (see the E2EE section above).
-2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
+1. Confirm crypto imports in the **Hermes** interpreter (`import olm`; `from mautrix.crypto import OlmMachine`). On Apple Silicon, `otool -L` on `_libolm.abi3.so` should show gcc@12's `libstdc++` — `brew install libolm` will not fix a failed `python-olm` build. See [Apple Silicon macOS](#apple-silicon-macos-native-python-olm).
+2. Make sure `MATRIX_E2EE_MODE=required` (or `MATRIX_ENCRYPTION=true`) is set in the correct profile `.env`.
 3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
 
@@ -715,7 +754,7 @@ history, so other clients trust it immediately.
 
 ## Proxy Mode (E2EE on macOS)
 
-Matrix E2EE requires `libolm`, which doesn't compile on macOS ARM64 (Apple Silicon). The `hermes-agent[matrix]` extra is gated to Linux only. If you're on macOS, proxy mode lets you run E2EE in a Docker container on a Linux VM while the actual agent runs natively on macOS with full access to your local files, memory, and skills.
+Native Matrix E2EE on Apple Silicon is supported by building `python-olm` with Homebrew `gcc@12` (see [Apple Silicon macOS](#apple-silicon-macos-native-python-olm)). The `hermes-agent[matrix]` extra remains gated to Linux. Proxy mode is the alternative if you prefer not to compile on the Mac, or if the native build fails: run E2EE in a Docker container on a Linux VM while the agent stays native on macOS with full access to your local files, memory, and skills.
 
 ### How It Works
 

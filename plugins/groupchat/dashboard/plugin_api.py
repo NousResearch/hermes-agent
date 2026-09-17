@@ -57,10 +57,12 @@ def get_settings(profile: str | None = None):
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, "Invalid Groupchat configuration") from exc
         plugins = config.get("plugins") or {}
+        log_directory = str(Path(get_hermes_home()) / "logs")
         return {"settings": settings, "profile": profile or "current",
                 "defaults": validate_settings({}),
                 "available_platforms": available_platforms(),
-                "decision_log_directory": str(Path(get_hermes_home()) / "logs"),
+                "decision_log_directory": log_directory,
+                "log_directory": log_directory,
                 "persistent_context_directory": str(Path(get_hermes_home()) / "groupchat"),
                 "decision_logs": {platform: log_paths(get_hermes_home(), platform)
                                   for platform in available_platforms()},

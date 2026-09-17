@@ -27,11 +27,8 @@ it('never paints the chain of thought, and never un-paints an answer, in any 3-c
     expect(visible).not.toContain('let me think')
     expect(visible).not.toMatch(/<\/?thinking/)
 
-    // A half-arrived tag (`<thin`) is not a tag yet, so those frames sit outside the curve.
-    if (!/<[a-z]*$/i.test(frame)) {
-      expect(norm(visible).startsWith(previous)).toBe(true)
-      previous = norm(visible)
-    }
+    expect(norm(visible).startsWith(previous)).toBe(true)
+    previous = norm(visible)
   }
 
   expect(container.textContent).toBe('Resposta final com acentuação.')

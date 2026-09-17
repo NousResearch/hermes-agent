@@ -18,6 +18,19 @@ const REASONING_BLOCK_RE = new RegExp(`(?:<(${REASONING_TAGS})>[\\s\\S]*?<\\/\\1
 // while prose that merely mentions `<thinking>` mid-sentence survives — the same
 // line agent/think_scrubber.py draws.
 const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[\\s\\S]*$`, 'i')
+
+// A half-arrived open tag (`<thin`) at a block boundary is not a tag yet, so the
+// pass above lets it paint as prose for one frame and then erase it — the same
+// paint/un-paint class as #62774, one frame long. Hold it back the way
+// agent/think_scrubber.py `_hold_partial`/`_max_partial_suffix` does, but only
+// for prefixes of the known tag names so `<div` at a line start still renders.
+const REASONING_TAG_PREFIXES = Array.from(
+  new Set(
+    REASONING_TAGS.split('|').flatMap((tag) => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))),
+  ),
+).join('|')
+
+const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_TAG_PREFIXES})?$`, 'i')
 const PREVIEW_MARKER_RE = /\[Preview:[^\]]+\]\(#preview[:/][^)]+\)/gi
 
 const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
@@ -184,7 +197,7 @@ function stripReasoningBlocks(text: string): string {
     return prev && next && !/\s/.test(prev) && !/\s/.test(next) ? ' ' : ''
   })
 
-  return closed.replace(OPEN_REASONING_BLOCK_RE, '$1')
+  return closed.replace(OPEN_REASONING_BLOCK_RE, '$1').replace(PARTIAL_OPEN_REASONING_TAG_RE, '$1')
 }
 
 function stripEmptyFenceBlocks(text: string): string {

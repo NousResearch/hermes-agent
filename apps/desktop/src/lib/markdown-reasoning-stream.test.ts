@@ -15,6 +15,8 @@ describe('reasoning blocks in streamed markdown', () => {
   it('hides an unterminated block at a block boundary but keeps a mid-sentence mention', () => {
     expect(preprocessMarkdown('<thinking>let me think about the render pipeline')).toBe('')
     expect(preprocessMarkdown('Resposta final.\n<reasoning_scratchpad>checking')).toBe('Resposta final.\n')
+    expect(preprocessMarkdown('Answer.\n<thin')).toBe('Answer.\n')
+    expect(preprocessMarkdown('Answer.\n<div')).toBe('Answer.\n<div')
 
     const quoted = 'O texto acima explica o formato do bloco <thinking> sem nunca fechá-lo'
     expect(preprocessMarkdown(quoted)).toBe(quoted)

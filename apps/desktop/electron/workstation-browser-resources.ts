@@ -67,12 +67,15 @@ function taskExecutionStatus(state: ResourceState, task: BrowserTask): string {
   if (state.paused) {
     return 'hold'
   }
+
   if (task.humanControlLease) {
     return 'waiting-for-human'
   }
+
   if (task.leaseState === 'waiting' || task.sessionHost?.includes('waiting')) {
     return 'waiting-for-human'
   }
+
   if (!taskHasLiveEvidence(state, task.taskId)) {
     return 'stalled'
   }
@@ -83,6 +86,7 @@ function taskExecutionStatus(state: ResourceState, task: BrowserTask): string {
 function taskResource(state: ResourceState, task: BrowserTask, updatedAt: string): WorkstationResource {
   const tabId = taskTabId(state, task.taskId)
   const live = taskHasLiveEvidence(state, task.taskId)
+
   const evidence = [
     state.controlReady ? 'browser://controller' : null,
     live && tabId ? `browser://tab/${tabId}` : null,
@@ -153,6 +157,7 @@ export function buildWorkstationResourceSnapshot(
   now: () => string = () => new Date().toISOString()
 ): WorkstationResourceSnapshot {
   const generatedAt = now()
+
   const resources: WorkstationResource[] = [
     {
       resource_type: 'browser',

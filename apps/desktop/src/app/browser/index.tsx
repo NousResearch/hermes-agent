@@ -63,6 +63,7 @@ function cacheLabel(bytes: number | null): string {
   if (bytes == null) {
     return '—'
   }
+
   const mb = bytes / (1024 * 1024)
 
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`
@@ -184,11 +185,13 @@ export function BrowserView() {
       if (!bridge || !hostRef.current) {
         return
       }
+
       const rect = hostRef.current.getBoundingClientRect()
 
       if (rect.width < 1 || rect.height < 1) {
         return
       }
+
       const bounds = rectToBounds(rect)
       setState(await (attach ? bridge.attach(bounds, 'hub') : bridge.setBounds(bounds, 'hub')))
     },
@@ -199,11 +202,13 @@ export function BrowserView() {
     if (!bridge || !hostRef.current) {
       return
     }
+
     const rect = hostRef.current.getBoundingClientRect()
 
     if (rect.width < 1 || rect.height < 1) {
       return
     }
+
     const bounds = rectToBounds(rect)
     setState(await bridge.transferViewport('hub', bounds))
   }, [bridge])
@@ -221,6 +226,7 @@ export function BrowserView() {
       if (!bridge || !hostRef.current) {
         return
       }
+
       const rect = hostRef.current.getBoundingClientRect()
       const bounds = rectToBounds(rect)
       await bridge.showTask(task.taskId, bounds, 'hub')
@@ -233,6 +239,7 @@ export function BrowserView() {
       if (!bridge) {
         return
       }
+
       await bridge.parkTask(taskId)
     },
     [bridge]
@@ -243,6 +250,7 @@ export function BrowserView() {
       if (!bridge) {
         return
       }
+
       await bridge.hideTask(taskId)
     },
     [bridge]
@@ -253,6 +261,7 @@ export function BrowserView() {
       if (!bridge) {
         return
       }
+
       await bridge.destroyTask(taskId)
     },
     [bridge]
@@ -262,6 +271,7 @@ export function BrowserView() {
     if (!bridge) {
       return
     }
+
     await bridge.clearParkedTasks()
   }, [bridge])
 
@@ -284,6 +294,7 @@ export function BrowserView() {
         if (disposed) {
           return
         }
+
         setState(next)
         requestAnimationFrame(() => void publishBounds(true))
       })
@@ -308,6 +319,7 @@ export function BrowserView() {
     }
 
     let disposed = false
+
     const refresh = () => {
       void bridge
         .resources()
@@ -397,6 +409,7 @@ export function BrowserView() {
     if (!bridge) {
       return
     }
+
     void run(() => bridge.navigate(address))
   }
 

@@ -1,3 +1,5 @@
+import './workstation-browser-runtime'
+
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -30,8 +32,6 @@ import {
   shell,
   systemPreferences
 } from 'electron'
-
-import './workstation-browser-runtime'
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
@@ -6324,11 +6324,14 @@ function getAppIconPath() {
 
 function getAppIcon() {
   const iconPath = getAppIconPath()
+
   if (!iconPath) {
     return undefined
   }
+
   try {
     const img = nativeImage.createFromPath(iconPath)
+
     return img.isEmpty() ? iconPath : img
   } catch {
     return iconPath
@@ -11257,10 +11260,12 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
   // an additional native window on the user's desktop. Production launches
   // retain the normal themed reveal and watchdog fallback.
   const headlessE2E = process.env.HERMES_DESKTOP_E2E_HEADLESS === '1'
+
   if (!headlessE2E) {
     win.once('ready-to-show', controller.reveal)
     win.webContents.once('did-finish-load', controller.scheduleFallback)
   }
+
   win.on('closed', controller.dispose)
 
   return controller
@@ -12396,9 +12401,11 @@ function createWindow() {
   const revealController = wireWindowReveal(createdMainWindow, {
     show: () => {
       createdMainWindow.show()
+
       if (savedWindowState?.isMaximized) {
         createdMainWindow.maximize()
       }
+
       createdMainWindow.focus()
     },
     onRevealed: () => {

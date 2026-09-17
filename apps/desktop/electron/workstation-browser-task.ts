@@ -91,6 +91,7 @@ function validHumanControlLease(value: unknown, taskId: string): value is Browse
   if (!value || typeof value !== 'object') {
     return false
   }
+
   const lease = value as Partial<BrowserHumanControlLease>
 
   return (
@@ -110,6 +111,7 @@ function parsePersistedTask(value: unknown): BrowserTask | null {
   if (!value || typeof value !== 'object') {
     return null
   }
+
   const task = value as Partial<BrowserTask> & { status?: unknown; recoveryState?: unknown }
 
   if (!validText(task.taskId) || !validText(task.createdAt) || !validText(task.updatedAt)) {
@@ -155,9 +157,11 @@ function parsePersistedTask(value: unknown): BrowserTask | null {
     recoveryState: task.recoveryState,
     updatedAt: task.updatedAt
   }
+
   if (validHumanControlLease(task.humanControlLease, parsed.taskId)) {
     parsed.humanControlLease = task.humanControlLease
   }
+
   return parsed
 }
 
@@ -165,6 +169,7 @@ export function normalizeBrowserTaskSnapshot(value: unknown): BrowserTaskSnapsho
   if (!value || typeof value !== 'object') {
     return null
   }
+
   const snapshot = value as { version?: unknown; browserTaskCounter?: unknown; tasks?: unknown }
 
   if (snapshot.version !== BROWSER_TASK_STATE_VERSION) {
@@ -189,6 +194,7 @@ export function normalizeBrowserTaskSnapshot(value: unknown): BrowserTaskSnapsho
     if (!parsed) {
       continue
     }
+
     const current = deduped.get(parsed.taskId)
 
     if (!current || parsed.updatedAt >= current.updatedAt) {
@@ -260,6 +266,7 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
         recoveryState: 'restored',
         updatedAt: timestamp
       }
+
       // A human lease is process-local authority. It must never survive a
       // crash/restart without a fresh human acquisition against the live page.
       delete restored.humanControlLease
@@ -369,11 +376,13 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
       if (other.taskId === taskId || other.status !== 'visible') {
         continue
       }
+
       const otherPage = this.livePage(other.taskId)
 
       if (otherPage) {
         this.bindings.parkPage(other.taskId, otherPage)
       }
+
       Object.assign(other, { status: 'parked' as const, parked: true, updatedAt: timestamp })
       parkedOther = true
     }
@@ -416,6 +425,7 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
     if (!task) {
       return false
     }
+
     // Explicit destroy owns cleanup even when the page is already crashed.
     // Bindings may still need to remove a stale task -> page association.
     const page = this.bindings.pageForTask(taskId)
@@ -423,6 +433,7 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
     if (page) {
       this.bindings.destroyPage(taskId, page)
     }
+
     this.tasks.delete(taskId)
     this.persist()
 
@@ -447,6 +458,7 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
       throw new Error('human control lease TTL must be positive')
     }
+
     const task = this.requireTask(taskId)
     this.expireHumanControl(taskId)
     const timestamp = this.timestamp()
@@ -465,18 +477,22 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
     }
     task.updatedAt = timestamp
     this.persist()
+
     return cloneTask(task)
   }
 
   renewHumanControl(taskId: string, ttlMs: number): BrowserTask {
     const task = this.requireTask(taskId)
     this.expireHumanControl(taskId)
+
     if (!task.humanControlLease) {
       throw new Error(`No active human control lease: ${taskId}`)
     }
+
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
       throw new Error('human control lease TTL must be positive')
     }
+
     const timestamp = this.timestamp()
     task.humanControlLease = {
       ...task.humanControlLease,
@@ -485,38 +501,47 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
     }
     task.updatedAt = timestamp
     this.persist()
+
     return cloneTask(task)
   }
 
   releaseHumanControl(taskId: string): boolean {
     const task = this.requireTask(taskId)
     const hadLease = Boolean(task.humanControlLease)
+
     if (hadLease) {
       delete task.humanControlLease
       task.updatedAt = this.timestamp()
       this.persist()
     }
+
     return hadLease
   }
 
   expireHumanControl(taskId: string): boolean {
     const task = this.requireTask(taskId)
     const lease = task.humanControlLease
+
     if (!lease || Date.parse(lease.expiresAt) > this.now().getTime()) {
       return false
     }
+
     delete task.humanControlLease
     task.updatedAt = this.timestamp()
     this.persist()
+
     return true
   }
 
   hasActiveHumanControl(taskId: string): boolean {
     const task = this.tasks.get(taskId)
+
     if (!task) {
       return false
     }
+
     this.expireHumanControl(taskId)
+
     return Boolean(task.humanControlLease)
   }
 
@@ -550,11 +575,13 @@ export class BrowserTaskLifecycle<Page, ShowContext = void> {
     if (existing) {
       return existing
     }
+
     const page = this.bindings.ensurePage(taskId)
 
     if (!this.bindings.pageIsAlive(page)) {
       throw new Error(`BrowserTask page could not be recovered: ${taskId}`)
     }
+
     task.recoveryState = 'recreated'
     task.updatedAt = this.timestamp()
     this.persist()

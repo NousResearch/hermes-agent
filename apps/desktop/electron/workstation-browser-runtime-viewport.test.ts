@@ -71,6 +71,7 @@ const electron = vi.hoisted(() => {
       if (this.destroyed) {
         return
       }
+
       this.destroyed = true
       this.emit('destroyed')
     }
@@ -265,9 +266,11 @@ test('setBounds ignores stale host geometry and normalizes the owning host bound
 
   runtime.ensure()
   runtime.attach(window as unknown as Electron.BrowserWindow, viewBounds, 'hub')
+
   const view = window.contentView.children[0] as unknown as {
     bounds: { x: number; y: number; width: number; height: number }
   }
+
   assert.ok(view)
   const initialBounds = { ...view.bounds }
 
@@ -325,6 +328,7 @@ test('transferViewport rehomes the same live view between BrowserWindow hosts', 
 test('native window geometry events keep the attached view inside resized content', async () => {
   const runtime = new WorkstationBrowserRuntime(createPersistence('native-resize'))
   const window = new BrowserWindow()
+
   const fakeWindow = window as unknown as {
     contentBounds: { x: number; y: number; width: number; height: number }
     contentView: {

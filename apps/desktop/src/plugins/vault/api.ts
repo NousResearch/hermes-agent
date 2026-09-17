@@ -1,4 +1,5 @@
 import { atom, type PluginRestOptions } from '@hermes/plugin-sdk'
+
 import type { VaultGraph, VaultNote, VaultNoteSummary, VaultSuggestion } from './types'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
@@ -13,6 +14,7 @@ function req<T>(path: string, opts?: PluginRestOptions): Promise<T> {
   if (!rest) {
     return Promise.reject(new Error('Vault API not bound yet (plugin context missing)'))
   }
+
   return rest<T>(path, opts)
 }
 

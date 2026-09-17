@@ -71,6 +71,7 @@ export function getStandardChromeUserAgent(chromiumVersion: string = process.ver
   if (!/^\d+(?:\.\d+){1,3}$/.test(chromiumVersion)) {
     throw new Error('Electron did not provide a valid embedded Chromium version.')
   }
+
   const plat = process.platform
   const suffix = `AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromiumVersion} Safari/537.36`
 
@@ -242,6 +243,7 @@ function workstationControllerFault(
       details: {}
     }
   }
+
   return new WorkstationControllerFault({ error_code, message, ...defaults[error_code], ...options })
 }
 
@@ -250,9 +252,11 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
   if (error instanceof WorkstationControllerFault) {
     return { ...error.structured, resource_ref: error.structured.resource_ref ?? resourceRef }
   }
+
   const message = error instanceof Error ? error.message : String(error)
   const token = message.trim().toLowerCase()
   const base = { message, retry_after_ms: 0, resource_ref: resourceRef, details: { compatibility_path: true } }
+
   if (token === 'human control active' || token.startsWith('human control active:')) {
     return {
       ...base,
@@ -262,6 +266,7 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
       recommended_action: 'WAIT_FOR_RELEASE'
     }
   }
+
   if (token.startsWith('no_bound_browser_tab:') || token === 'no active tab') {
     return {
       ...base,
@@ -271,9 +276,11 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
       recommended_action: 'BIND_OR_NAVIGATE'
     }
   }
+
   if (token === 'ref_required' || token === 'element_unavailable' || token === 'browser_tab_destroyed') {
     return { ...base, error_code: 'STALE_REF', retryable: true, state_changed: true, recommended_action: 'RESNAPSHOT' }
   }
+
   if (token === 'timeout' || token === 'timed out') {
     return {
       ...base,
@@ -283,6 +290,7 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
       recommended_action: 'RETRY_WITH_BACKOFF'
     }
   }
+
   if (token === 'controller_unavailable' || token === 'controller_down') {
     return {
       ...base,
@@ -292,6 +300,7 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
       recommended_action: 'RECONCILE_CONTROLLER'
     }
   }
+
   if (token === 'unsupported_action' || token === 'invalid_extension_options_request') {
     return {
       ...base,
@@ -301,6 +310,7 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
       recommended_action: 'CORRECT_REQUEST'
     }
   }
+
   return {
     ...base,
     error_code: 'CAPABILITY_MISSING',
@@ -578,6 +588,7 @@ function controllerBoundedIdentity(value: unknown, name: string): string | null 
   if (typeof value !== 'string') {
     throw new Error(`invalid ${name}`)
   }
+
   const normalized = value.trim()
 
   // eslint-disable-next-line no-control-regex
@@ -618,6 +629,7 @@ function removeOwnedControlFile(filePath: string, token: string): void {
     if (parsed.token !== token) {
       return
     }
+
     fs.rmSync(filePath, { force: true })
   } catch {
     // Missing/malformed files are safe to ignore at shutdown.
@@ -739,6 +751,7 @@ function detectAuthWall(url: string, title: string, text: string): { detected: b
     '/login/challenge',
     '/gz/account-verification'
   ]
+
   for (const pat of wallUrlPatterns) {
     if (lowerUrl.includes(pat)) {
       return { detected: true, reason: `Verification URL pattern '${pat}' detected` }
@@ -757,6 +770,7 @@ function detectAuthWall(url: string, title: string, text: string): { detected: b
     'confirme que você é humano',
     'cloudflare'
   ]
+
   for (const pat of wallTitlePatterns) {
     if (lowerTitle.includes(pat)) {
       return { detected: true, reason: `Page title indicates verification: "${title}"` }
@@ -775,6 +789,7 @@ function detectAuthWall(url: string, title: string, text: string): { detected: b
     'digite o código que enviamos',
     'turnstile'
   ]
+
   for (const pat of wallTextPatterns) {
     if (lowerText.includes(pat)) {
       return { detected: true, reason: `Verification text detected: "${pat}"` }
@@ -931,6 +946,7 @@ function formatInventory(inv: PageInventory, full: boolean): string {
   if (inv.title) {
     lines.push(`Title: ${inv.title}`)
   }
+
   lines.push('')
 
   if (inv.spaNotice) {
@@ -1016,17 +1032,22 @@ export class WorkstationBrowserRuntime {
 
   state(): WorkstationBrowserState {
     const activeTaskId = this.activeTabId ? (this.entries.get(this.activeTabId)?.ownerTaskId ?? null) : null
+
     if (activeTaskId) {
       this.taskLifecycle().hasActiveHumanControl(activeTaskId)
     }
+
     // hasActiveHumanControl() is also the authoritative expiry boundary. Read
     // the task projection after it runs so state never reports an expired
     // lease that was just removed from the lifecycle owner.
     const tasks = this.listTasks()
+
     const activeTaskLease = activeTaskId
       ? (tasks.find(task => task.taskId === activeTaskId)?.humanControlLease ?? null)
       : null
+
     const activeLease = activeTaskLease ?? this.activeUnboundHumanControlLease()
+
     return {
       runtime: 'electron-chromium',
       ready: this.browserSession !== null,
@@ -1055,12 +1076,15 @@ export class WorkstationBrowserRuntime {
 
   events(taskId: string | null = null, limit = MAX_EVENTS_ENDPOINT): WorkstationEventSnapshot {
     this.ensureBrowserSessionStateRestored()
+
     const boundedLimit = Number.isFinite(limit)
       ? Math.min(MAX_EVENTS_ENDPOINT, Math.max(1, Math.trunc(limit)))
       : MAX_EVENTS_ENDPOINT
+
     const selectedTaskId = typeof taskId === 'string' && taskId.trim() ? taskId.trim() : null
     const knownTaskIds = this.listTasks().map(task => task.taskId)
     const taskIds = selectedTaskId ? (knownTaskIds.includes(selectedTaskId) ? [selectedTaskId] : []) : knownTaskIds
+
     const events = taskIds
       .flatMap(candidate => this.getTaskJournal(candidate))
       .sort((left, right) => String(left.timestamp ?? '').localeCompare(String(right.timestamp ?? '')))
@@ -1154,6 +1178,7 @@ export class WorkstationBrowserRuntime {
       if (!this.taskLifecycle().task(taskId)) {
         this.removePendingTaskTab(taskId)
       }
+
       this.emitState()
       throw error
     }
@@ -1161,9 +1186,11 @@ export class WorkstationBrowserRuntime {
 
   clearParkedTasks(): number {
     this.ensureBrowserSessionStateRestored()
+
     const parked = this.taskLifecycle()
       .listTasks()
       .filter(task => task.status === 'parked')
+
     let count = 0
 
     for (const task of parked) {
@@ -1274,6 +1301,7 @@ export class WorkstationBrowserRuntime {
     if (ownerTaskId) {
       this.taskTabs.set(ownerTaskId, id)
     }
+
     this.wireEntry(entry)
 
     if (activate || !this.activeTabId) {
@@ -1303,6 +1331,7 @@ export class WorkstationBrowserRuntime {
     if (entry.ownerTaskId) {
       this.rememberPendingSessionTab(entry, 'stale', 'page-gone')
     }
+
     this.discardEntry(entry)
 
     if (wasActive) {
@@ -1316,6 +1345,7 @@ export class WorkstationBrowserRuntime {
     if (this.entries.size === 0) {
       this.createTab('about:blank', true)
     }
+
     this.persistBrowserSessionState()
     this.emitState()
 
@@ -1338,6 +1368,7 @@ export class WorkstationBrowserRuntime {
     if (this.attached) {
       this.detachActiveView(false)
     }
+
     this.activeTabId = tabId
 
     if (!this.browserSessionStateRestoring) {
@@ -1371,6 +1402,7 @@ export class WorkstationBrowserRuntime {
     if (!wc) {
       throw new Error('Hermes Browser has no active tab.')
     }
+
     await wc.loadURL(normalizeWorkstationBrowserTarget(value))
     this.emitState()
 
@@ -1423,10 +1455,13 @@ export class WorkstationBrowserRuntime {
   ): WorkstationBrowserState {
     this.ensure()
     this.preferredTaskId = preferredTaskId || null
+
     if (preferredTaskId) {
       const tabId = this.taskTabs.get(preferredTaskId)
+
       if (tabId && this.entries.has(tabId)) {
         const candidate = this.entries.get(tabId)
+
         if (candidate && !candidate.crashed && !candidate.view.webContents.isDestroyed()) {
           if (this.activeTabId !== tabId) {
             this.activateTab(tabId)
@@ -1434,11 +1469,13 @@ export class WorkstationBrowserRuntime {
         }
       }
     }
+
     const entry = this.activeEntry()
 
     if (!entry) {
       return this.state()
     }
+
     const bounds = this.validBounds(window, rawBounds)
 
     if (!bounds) {
@@ -1448,6 +1485,7 @@ export class WorkstationBrowserRuntime {
     if (this.ownerWindow && this.ownerWindow !== window && this.attached) {
       this.detachActiveView(false)
     }
+
     this.ownerWindow = window
     this.bindViewportGeometry(window)
     this.bounds = bounds
@@ -1509,6 +1547,7 @@ export class WorkstationBrowserRuntime {
     if (window && this.ownerWindow && window !== this.ownerWindow) {
       return this.state()
     }
+
     this.detachActiveView(true)
     this.viewportHost = null
     this.preferredTaskId = null
@@ -1564,6 +1603,7 @@ export class WorkstationBrowserRuntime {
     if (!cleanId) {
       return []
     }
+
     const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
     const journalPath = path.join(hermesHome, 'workstation', 'journals', `${cleanId}.jsonl`)
 
@@ -1594,6 +1634,7 @@ export class WorkstationBrowserRuntime {
           if (ts > 0) {
             prevDt = ts
           }
+
           events.push(ev)
         } catch {
           // ignore malformed line
@@ -1610,6 +1651,7 @@ export class WorkstationBrowserRuntime {
     if (this.paused) {
       return this.state()
     }
+
     this.paused = true
     // Do not destroy tabs or auth state. Hidden Chromium keeps its process and
     // profile; pausing is an agent-control gate, not a logout/reset operation.
@@ -1622,6 +1664,7 @@ export class WorkstationBrowserRuntime {
     if (!this.paused) {
       return this.state()
     }
+
     this.paused = false
     this.emitState()
 
@@ -1631,6 +1674,7 @@ export class WorkstationBrowserRuntime {
   takeControl(taskId?: string, sessionId?: string): WorkstationBrowserState {
     this.ensureBrowserSessionStateRestored()
     const scopedTaskId = this.resolveControlTaskId(taskId)
+
     if (scopedTaskId) {
       const entry = this.entryForTask(scopedTaskId, false, sessionId, null, null)
       const pageId = entry && typeof entry.view.webContents.id === 'number' ? entry.view.webContents.id : null
@@ -1646,9 +1690,11 @@ export class WorkstationBrowserRuntime {
       )
     } else {
       const tabId = this.activeTabId
+
       if (!tabId) {
         throw new Error('human control requires an active browser tab scope')
       }
+
       const timestamp = new Date().toISOString()
       this.unboundHumanControlLease = {
         owner: 'human',
@@ -1662,6 +1708,7 @@ export class WorkstationBrowserRuntime {
         renewedAt: this.unboundHumanControlLease ? timestamp : null
       }
     }
+
     this.emitState()
 
     return this.state()
@@ -1670,11 +1717,13 @@ export class WorkstationBrowserRuntime {
   releaseControl(taskId?: string): WorkstationBrowserState {
     this.ensureBrowserSessionStateRestored()
     const scopedTaskId = this.resolveControlTaskId(taskId)
+
     if (scopedTaskId) {
       this.taskLifecycle().releaseHumanControl(scopedTaskId)
     } else {
       this.unboundHumanControlLease = null
     }
+
     this.emitState()
 
     return this.state()
@@ -1683,6 +1732,7 @@ export class WorkstationBrowserRuntime {
   renewControl(taskId?: string): WorkstationBrowserState {
     this.ensureBrowserSessionStateRestored()
     const scopedTaskId = this.resolveControlTaskId(taskId)
+
     if (scopedTaskId) {
       this.taskLifecycle().renewHumanControl(scopedTaskId, HUMAN_CONTROL_LEASE_TTL_MS)
     } else if (this.unboundHumanControlLease) {
@@ -1695,6 +1745,7 @@ export class WorkstationBrowserRuntime {
     } else {
       throw new Error('No active human control lease')
     }
+
     this.emitState()
 
     return this.state()
@@ -1703,11 +1754,13 @@ export class WorkstationBrowserRuntime {
   expireControl(taskId?: string): WorkstationBrowserState {
     this.ensureBrowserSessionStateRestored()
     const scopedTaskId = this.resolveControlTaskId(taskId)
+
     if (scopedTaskId) {
       this.taskLifecycle().expireHumanControl(scopedTaskId)
     } else if (this.unboundHumanControlLease && Date.parse(this.unboundHumanControlLease.expiresAt) <= Date.now()) {
       this.unboundHumanControlLease = null
     }
+
     this.emitState()
 
     return this.state()
@@ -1797,12 +1850,14 @@ export class WorkstationBrowserRuntime {
         const message = error instanceof Error ? error.message : String(error)
         this.recordError(error)
         const structured = normalizeWorkstationControllerError(error)
+
         const status =
           structured.error_code === 'USER_CONTROL_ACTIVE' ||
           structured.error_code === 'NO_BOUND_TAB' ||
           structured.error_code === 'STALE_REF'
             ? 409
             : 400
+
         // Keep `error` for older controller clients while new clients receive
         // a stable code and a recovery action rather than retrying blindly.
         sendJson(res, status, { success: false, error: message, ...structured })
@@ -1851,6 +1906,7 @@ export class WorkstationBrowserRuntime {
     if (!control) {
       return
     }
+
     removeOwnedControlFile(control.controlPath, control.token)
     await new Promise<void>(resolve => control.server.close(() => resolve()))
     this.emitState()
@@ -1860,6 +1916,7 @@ export class WorkstationBrowserRuntime {
     if (this.cacheTimer) {
       clearInterval(this.cacheTimer)
     }
+
     this.cacheTimer = null
     await this.stopControlServer()
     // Persist the structural projection before Electron begins destroying
@@ -1891,8 +1948,10 @@ export class WorkstationBrowserRuntime {
 
   private async executeControlRequest(request: BrowserControlRequest): Promise<Record<string, unknown>> {
     const action = typeof request.action === 'string' ? request.action : ''
+
     const args =
       request.arguments && typeof request.arguments === 'object' ? (request.arguments as Record<string, unknown>) : {}
+
     const taskId = typeof request.task_id === 'string' && request.task_id.trim() ? request.task_id.trim() : 'default'
     const sessionHost = controllerSessionIdentity(request.session_id)
     const kanbanCardId = controllerBoundedIdentity(request.kanban_card_id ?? request.card_id, 'kanban card identity')
@@ -1908,9 +1967,11 @@ export class WorkstationBrowserRuntime {
     if (action === 'browser_extension_load') {
       return this.loadExtensionForController(String(args.extension_id ?? ''), String(args.path ?? ''))
     }
+
     if (action === 'browser_extension_verify') {
       return this.verifyExtensionForController(String(args.extension_id ?? ''))
     }
+
     if (action === 'browser_extension_remove') {
       return this.removeExtensionForController(String(args.extension_id ?? ''))
     }
@@ -1937,6 +1998,7 @@ export class WorkstationBrowserRuntime {
       const entry = this.entryForTask(taskId, true, sessionHost, kanbanCardId, runId)!
       const url = normalizeWorkstationBrowserTarget(String(args.url ?? ''))
       await entry.view.webContents.loadURL(url)
+
       if (
         !this.activeTabId ||
         this.activeTabId === entry.id ||
@@ -1998,16 +2060,22 @@ export class WorkstationBrowserRuntime {
       const extensionId = String(args.extension_id ?? '')
         .trim()
         .toLowerCase()
+
       const optionsPath = String(args.options_path ?? 'options.html').replace(/^[/\\]+/, '')
+
       if (!/^[a-p]{32}$/.test(extensionId) || !optionsPath || optionsPath.includes('..')) {
         throw workstationControllerFault('INVALID_ARGUMENT', 'invalid_extension_options_request')
       }
+
       const verified = this.verifyExtensionForController(extensionId)
+
       if (!verified.loaded) {
         throw new Error('extension_not_loaded')
       }
+
       const optionsUrl = `chrome-extension://${extensionId}/${optionsPath}`
       await entry.view.webContents.loadURL(optionsUrl)
+
       return { ...verified, options_url: optionsUrl }
     }
 
@@ -2020,7 +2088,6 @@ export class WorkstationBrowserRuntime {
         await delay(220)
 
         return this.snapshotForEntry(entry, false)
-
       case 'browser_type': {
         const clear = args.clear !== undefined ? Boolean(args.clear) : !args.append
         const append = Boolean(args.append)
@@ -2043,6 +2110,7 @@ export class WorkstationBrowserRuntime {
         if (entry.view.webContents.navigationHistory.canGoBack()) {
           entry.view.webContents.navigationHistory.goBack()
         }
+
         await delay(220)
 
         return this.snapshotForEntry(entry, false)
@@ -2071,24 +2139,31 @@ export class WorkstationBrowserRuntime {
     const explicit = typeof taskId === 'string' && taskId.trim() ? taskId.trim() : null
     const activeTaskId = this.activeTabId ? (this.entries.get(this.activeTabId)?.ownerTaskId ?? null) : null
     const candidate = explicit ?? activeTaskId ?? this.preferredTaskId
+
     if (candidate && this.taskLifecycle().task(candidate)) {
       return candidate
     }
+
     if (explicit) {
       throw new Error(`BrowserTask not found: ${explicit}`)
     }
+
     return null
   }
 
   private activeUnboundHumanControlLease(): BrowserHumanControlLease | null {
     const lease = this.unboundHumanControlLease
+
     if (!lease) {
       return null
     }
+
     if (Date.parse(lease.expiresAt) <= Date.now() || lease.tabId !== this.activeTabId) {
       this.unboundHumanControlLease = null
+
       return null
     }
+
     return lease
   }
 
@@ -2103,6 +2178,7 @@ export class WorkstationBrowserRuntime {
         `Hermes Browser task ${taskId} is under human control. Release Control before agent actions continue.`
       )
     }
+
     if (taskId === 'default' && this.activeUnboundHumanControlLease()) {
       throw workstationControllerFault(
         'USER_CONTROL_ACTIVE',
@@ -2123,6 +2199,7 @@ export class WorkstationBrowserRuntime {
     if (!lifecycle.task(taskId)) {
       return
     }
+
     this.withBrowserSessionProjectionSuppressed(() => {
       if (sessionHost) {
         lifecycle.bindSessionHost(taskId, sessionHost)
@@ -2161,6 +2238,7 @@ export class WorkstationBrowserRuntime {
           if (entry.id !== this.activeTabId) {
             this.activateTab(entry.id)
           }
+
           this.attach(context.window, context.bounds, context.host ?? 'hub')
         },
         hidePage: (_taskId, entry) => {
@@ -2169,6 +2247,7 @@ export class WorkstationBrowserRuntime {
           if (entry.id === this.activeTabId) {
             this.attached = false
           }
+
           this.applyFrameRate(entry, false)
           this.emitState()
         },
@@ -2195,6 +2274,7 @@ export class WorkstationBrowserRuntime {
     if (this.browserSessionState) {
       return this.browserSessionState
     }
+
     this.browserSessionState = new BrowserSessionStateFilePersistence(
       workstationBrowserSessionStatePath(),
       workstationBrowserTaskStatePath()
@@ -2207,6 +2287,7 @@ export class WorkstationBrowserRuntime {
     if (this.browserTasksRestored) {
       return
     }
+
     this.taskLifecycle().restore()
     this.browserTasksRestored = true
   }
@@ -2215,6 +2296,7 @@ export class WorkstationBrowserRuntime {
     if (this.browserSessionStateRestored || this.browserSessionStateRestoring) {
       return
     }
+
     this.browserSessionStateRestoring = true
     this.browserSessionPersistenceSuppressed = true
 
@@ -2225,6 +2307,7 @@ export class WorkstationBrowserRuntime {
       if (snapshot) {
         this.restoreSessionTabs(snapshot)
       }
+
       this.browserSessionStateRestored = true
     } finally {
       this.browserSessionStateRestoring = false
@@ -2236,6 +2319,7 @@ export class WorkstationBrowserRuntime {
     if (this.pendingSessionTabs.size === 0) {
       this.restoredTabOrder = []
     }
+
     this.persistBrowserSessionState()
   }
 
@@ -2287,6 +2371,7 @@ export class WorkstationBrowserRuntime {
       if (!legacyEntry) {
         return null
       }
+
       this.withBrowserSessionProjectionSuppressed(() =>
         lifecycle.createTask({ taskId, sessionHost, kanbanCardId, runId })
       )
@@ -2298,6 +2383,7 @@ export class WorkstationBrowserRuntime {
     if (entry && !visible) {
       this.withBrowserSessionProjectionSuppressed(() => lifecycle.parkTask(taskId))
     }
+
     this.persistBrowserSessionState()
 
     return entry
@@ -2331,6 +2417,7 @@ export class WorkstationBrowserRuntime {
     if (!create) {
       return null
     }
+
     let restored = this.pendingTabForTask(taskId)
 
     if (restored?.recoveryState === 'stale') {
@@ -2385,15 +2472,19 @@ export class WorkstationBrowserRuntime {
         if (spaCheck?.hasCanvas || spaCheck?.isMaps) {
           for (let wait = 0; wait < 4; wait++) {
             await delay(300)
+
             const reInv = (await wc.executeJavaScript(
               inventoryScript(full ? FULL_TEXT_CHARS : COMPACT_TEXT_CHARS, full ? FULL_ELEMENTS : COMPACT_ELEMENTS),
               true
             )) as PageInventory
+
             if (reInv.elements.length > inv.elements.length) {
               inv = reInv
+
               break
             }
           }
+
           if (inv.elements.length <= 2 && spaCheck?.hasCanvas) {
             inv.spaNotice =
               '[Canvas/WebGL SPA active: scene rendered on canvas. Use Page Text below or browser_extract_items.]'
@@ -2406,6 +2497,7 @@ export class WorkstationBrowserRuntime {
 
     // Proactive Human Handoff: check for auth or verification challenges
     const wall = detectAuthWall(inv.url, inv.title, inv.text)
+
     if (wall.detected) {
       inv.wallDetected = true
       inv.wallReason = wall.reason
@@ -2491,6 +2583,7 @@ export class WorkstationBrowserRuntime {
     await this.cdpClick(wc, point.x, point.y)
 
     const shouldClear = options.clear !== false && !options.append
+
     if (shouldClear) {
       // 1. Try DOM select() on active element
       try {
@@ -2577,10 +2670,12 @@ export class WorkstationBrowserRuntime {
   private async scrollEntry(entry: BrowserEntry, direction: string): Promise<void> {
     const wc = entry.view.webContents
     const sign = direction.toLowerCase() === 'up' ? -1 : 1
+
     const viewport = (await wc.executeJavaScript(
       '({ width: window.innerWidth, height: window.innerHeight })',
       true
     )) as { width?: number; height?: number }
+
     const width = Math.max(2, Number(viewport.width) || 1280)
     const height = Math.max(2, Number(viewport.height) || 720)
     await this.cdp(wc, 'Input.dispatchMouseEvent', {
@@ -2596,6 +2691,7 @@ export class WorkstationBrowserRuntime {
     if (!key) {
       throw new Error('key_required')
     }
+
     const wc = entry.view.webContents
     await this.cdp(wc, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', key })
     await this.cdp(wc, 'Input.dispatchKeyEvent', { type: 'keyUp', key })
@@ -2637,10 +2733,13 @@ export class WorkstationBrowserRuntime {
     args: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     const wc = entry.view.webContents
+
     if (wc.isDestroyed()) {
       throw new Error('browser_tab_destroyed')
     }
+
     const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : null
+
     const limit =
       typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.min(100, Math.max(1, args.limit)) : 20
 
@@ -2676,6 +2775,7 @@ export class WorkstationBrowserRuntime {
     if (this.browserSession) {
       return
     }
+
     const profilePath = workstationBrowserProfilePath()
     fs.mkdirSync(profilePath, { recursive: true })
     this.browserSession = session.fromPath(profilePath, { cache: true })
@@ -2710,6 +2810,7 @@ export class WorkstationBrowserRuntime {
       if (this.downloads.length > 20) {
         this.downloads.pop()
       }
+
       this.emitState()
 
       item.on?.('updated', (_evt: unknown, state: string) => {
@@ -2744,17 +2845,20 @@ export class WorkstationBrowserRuntime {
 
   private extensionRoot(): string {
     const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
+
     return path.resolve(hermesHome, 'workstation', 'extensions')
   }
 
   private extensionInfo(extensionId: string): any | null {
     const all = (this.browserSession as any)?.getAllExtensions?.()
+
     return all && typeof all === 'object' ? (all[extensionId] ?? null) : null
   }
 
   private isLoadedExtensionUrl(url: string): boolean {
     try {
       const parsed = new URL(url)
+
       return parsed.protocol === 'chrome-extension:' && Boolean(this.extensionInfo(parsed.hostname))
     } catch {
       return false
@@ -2766,35 +2870,46 @@ export class WorkstationBrowserRuntime {
     extensionPath: string
   ): Promise<Record<string, unknown>> {
     const id = extensionId.trim().toLowerCase()
+
     if (!/^[a-p]{32}$/.test(id)) {
       throw new Error('invalid_extension_id')
     }
+
     if (!this.browserSession?.loadExtension) {
       throw new Error('extension_loading_unavailable')
     }
+
     const root = this.extensionRoot()
     const expectedPath = path.resolve(root, id)
+
     if (path.resolve(extensionPath) !== expectedPath || !expectedPath.startsWith(`${root}${path.sep}`)) {
       throw new Error('extension_path_outside_workstation_store')
     }
+
     if (!fs.existsSync(path.join(expectedPath, 'manifest.json'))) {
       throw new Error('extension_manifest_missing')
     }
+
     const extension = await this.browserSession.loadExtension(expectedPath, { allowFileAccess: true })
     const loadedId = String((extension as any)?.id ?? '')
+
     if (loadedId && loadedId !== id) {
       ;(this.browserSession as any).removeExtension?.(loadedId)
       throw new Error('extension_id_mismatch')
     }
+
     return this.verifyExtensionForController(id)
   }
 
   private verifyExtensionForController(extensionId: string): Record<string, unknown> {
     const id = extensionId.trim().toLowerCase()
+
     if (!/^[a-p]{32}$/.test(id)) {
       throw new Error('invalid_extension_id')
     }
+
     const extension = this.extensionInfo(id)
+
     return {
       extension_id: id,
       loaded: Boolean(extension),
@@ -2805,13 +2920,17 @@ export class WorkstationBrowserRuntime {
 
   private removeExtensionForController(extensionId: string): Record<string, unknown> {
     const id = extensionId.trim().toLowerCase()
+
     if (!/^[a-p]{32}$/.test(id)) {
       throw new Error('invalid_extension_id')
     }
+
     const loaded = Boolean(this.extensionInfo(id))
+
     if (loaded) {
       ;(this.browserSession as any)?.removeExtension?.(id)
     }
+
     return { extension_id: id, removed: loaded, loaded: false }
   }
 
@@ -2819,6 +2938,7 @@ export class WorkstationBrowserRuntime {
     if (!this.browserSession?.loadExtension) {
       return
     }
+
     const extensionsDir = this.extensionRoot()
 
     if (!fs.existsSync(extensionsDir)) {
@@ -2907,6 +3027,7 @@ export class WorkstationBrowserRuntime {
         if (this.activeTabId === entry.id) {
           this.activeTabId = null
         }
+
         this.persistBrowserSessionState()
         this.emitState()
       }
@@ -2927,6 +3048,7 @@ export class WorkstationBrowserRuntime {
     if (wasActive && this.attached) {
       this.detachActiveView(false)
     }
+
     this.removeChildView(entry)
 
     if (entry.ownerTaskId && this.taskTabs.get(entry.ownerTaskId) === entry.id) {
@@ -3039,6 +3161,7 @@ export class WorkstationBrowserRuntime {
       if (tab.browserTaskId !== taskId) {
         continue
       }
+
       this.pendingSessionTabs.delete(id)
       this.restoredTabOrder = this.restoredTabOrder.filter(candidate => candidate !== id)
 
@@ -3054,6 +3177,7 @@ export class WorkstationBrowserRuntime {
     if (this.restoredTabOrder.length === 0) {
       return
     }
+
     const reordered = new Map<string, BrowserEntry>()
 
     for (const id of this.restoredTabOrder) {
@@ -3092,6 +3216,7 @@ export class WorkstationBrowserRuntime {
       if (!tab || included.has(id)) {
         continue
       }
+
       tabs.push({ ...tab })
       included.add(id)
     }
@@ -3100,6 +3225,7 @@ export class WorkstationBrowserRuntime {
       if (included.has(entry.id)) {
         continue
       }
+
       tabs.push(this.sessionTabFromEntry(entry))
       included.add(entry.id)
     }
@@ -3108,6 +3234,7 @@ export class WorkstationBrowserRuntime {
       if (included.has(id)) {
         continue
       }
+
       tabs.push({ ...tab })
     }
 
@@ -3189,6 +3316,7 @@ export class WorkstationBrowserRuntime {
       emitter.off('unmaximize', this.viewportGeometryListener)
       emitter.off('restore', this.viewportGeometryListener)
     }
+
     this.viewportGeometryWindow = null
     this.viewportGeometryListener = null
   }
@@ -3225,6 +3353,7 @@ export class WorkstationBrowserRuntime {
     if (window.contentView.children.includes(view)) {
       return
     }
+
     window.contentView.addChildView(view)
   }
 

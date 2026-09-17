@@ -7,22 +7,22 @@ import {
   archiveHybridCard,
   archiveHybridColumn,
   cancelHybridCardDelegation,
-  createHybridChecklist,
-  createHybridChecklistItem,
   createHybridBoard,
   createHybridCard,
+  createHybridChecklist,
+  createHybridChecklistItem,
   createHybridColumn,
   delegateHybridCard,
+  deleteHybridChecklist,
+  deleteHybridChecklistItem,
   fetchHybridBoard,
   fetchHybridBoards,
   fetchHybridCard,
-  deleteHybridChecklist,
-  deleteHybridChecklistItem,
   moveHybridCard,
   moveHybridColumn,
   retryHybridCardDelegation,
-  updateHybridChecklistItem,
-  updateHybridCard
+  updateHybridCard,
+  updateHybridChecklistItem
 } from './api'
 import type { HybridActivityItem, HybridBoard, HybridCard, HybridColumn } from './types'
 
@@ -33,11 +33,14 @@ const hybridCardKey = (id: string) => ['kanban', 'hybrid', 'card', id] as const
 function Add({ label, onAdd }: { label: string; onAdd: (name: string) => Promise<unknown> }) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
+
   const submit = async () => {
     if (!value.trim()) {
       return
     }
+
     setBusy(true)
+
     try {
       await onAdd(value.trim())
       setValue('')
@@ -45,6 +48,7 @@ function Add({ label, onAdd }: { label: string; onAdd: (name: string) => Promise
       setBusy(false)
     }
   }
+
   return (
     <div className="flex gap-1">
       <Input aria-label={label} onChange={e => setValue(e.target.value)} value={value} />
@@ -54,10 +58,12 @@ function Add({ label, onAdd }: { label: string; onAdd: (name: string) => Promise
     </div>
   )
 }
+
 function Card({ card, onOpen }: { card: HybridCard; onOpen: (card: HybridCard) => void }) {
   const dragStart = (event: DragEvent<HTMLButtonElement>) => {
     event.dataTransfer.setData('text/hermes-hybrid-card', card.id)
   }
+
   return (
     <button
       className="w-full rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) p-2 text-left text-xs shadow-sm transition hover:border-(--ui-stroke-primary)"
@@ -99,8 +105,10 @@ function Column({
   const drop = async (event: DragEvent<HTMLElement>) => {
     event.preventDefault()
     const colId = event.dataTransfer.getData('text/hermes-hybrid-column')
+
     if (colId && colId !== column.id) {
       const sourceCol = board.columns.find(item => item.id === colId)
+
       if (sourceCol) {
         try {
           await moveHybridColumn(colId, column.id, undefined, sourceCol.revision)
@@ -108,18 +116,23 @@ function Column({
         } catch {
           refresh()
         }
+
         return
       }
     }
 
     const card = event.dataTransfer.getData('text/hermes-hybrid-card')
+
     if (!card) {
       return
     }
+
     const source = board.columns.flatMap(item => item.cards).find(item => item.id === card)
+
     if (!source) {
       return
     }
+
     try {
       await moveHybridCard(card, column.id, source.revision)
       refresh()
@@ -134,7 +147,9 @@ function Column({
         return
       }
     }
+
     setDeleting(true)
+
     try {
       await archiveHybridColumn(column.id)
       refresh()
@@ -198,6 +213,7 @@ function CardActivityDrawer({
     queryFn: () => fetchHybridCard(cardId),
     refetchInterval: 4_000
   })
+
   const card = data?.card
 
   const [title, setTitle] = useState('')
@@ -231,13 +247,17 @@ function CardActivityDrawer({
     if (!title.trim()) {
       return
     }
+
     setSaving(true)
+
     try {
       let currentRevision = card.revision
+
       if (columnId !== card.column_id) {
         const moved = await moveHybridCard(card.id, columnId, currentRevision)
         currentRevision = moved.card.revision
       }
+
       await updateHybridCard(card.id, {
         title: title.trim(),
         description,
@@ -256,7 +276,9 @@ function CardActivityDrawer({
     if (!window.confirm(`Archive card "${card.title}"?`)) {
       return
     }
+
     setDeleting(true)
+
     try {
       await archiveHybridCard(card.id)
       onRefresh()
@@ -267,16 +289,20 @@ function CardActivityDrawer({
   }
 
   const delegation = card.delegation
+
   const terminalDelegation =
     delegation?.state === 'completed' || delegation?.state === 'failed' || delegation?.state === 'cancelled'
+
   const handleDelegate = async () => {
     setDelegating(true)
+
     try {
       if (delegation?.state === 'waiting') {
         await retryHybridCardDelegation(card.id)
       } else {
         await delegateHybridCard(card.id, Boolean(terminalDelegation))
       }
+
       onRefresh()
     } finally {
       setDelegating(false)
@@ -285,6 +311,7 @@ function CardActivityDrawer({
 
   const handleCancelDelegation = async () => {
     setDelegating(true)
+
     try {
       await cancelHybridCardDelegation(card.id)
       onRefresh()
@@ -441,6 +468,7 @@ function CardActivityDrawer({
                   const isAgent = item.actor_type === 'agent'
                   const isHuman = item.actor_type === 'human'
                   const actorLabel = isAgent ? `Agent (${item.actor_id || 'Hermes'})` : isHuman ? 'Human' : 'System'
+
                   const dateStr = new Date(item.created_at * 1000).toLocaleTimeString([], {
                     hour: '2-digit',
                     minute: '2-digit',
@@ -490,24 +518,29 @@ export function HybridBoardPage() {
   const qc = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
   const [openCardId, setOpenCardId] = useState<string | null>(null)
+
   const { data: boardsData } = useQuery({
     queryKey: HYBRID_BOARDS_KEY,
     queryFn: fetchHybridBoards,
     refetchInterval: 8_000
   })
+
   const boards = boardsData?.boards ?? []
   const boardId = selectedId || boards[0]?.id || ''
+
   const { data, isLoading } = useQuery({
     queryKey: hybridBoardKey(boardId),
     queryFn: () => fetchHybridBoard(boardId),
     enabled: Boolean(boardId),
     refetchInterval: 8_000
   })
+
   const board = data?.board
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: HYBRID_BOARDS_KEY })
     void qc.invalidateQueries({ queryKey: hybridBoardKey(boardId) })
+
     if (openCardId) {
       void qc.invalidateQueries({ queryKey: hybridCardKey(openCardId) })
     }
@@ -517,9 +550,11 @@ export function HybridBoardPage() {
     if (!board) {
       return
     }
+
     if (!window.confirm(`Archive board "${board.name}" and all its contents?`)) {
       return
     }
+
     try {
       await archiveHybridBoard(board.id)
       setSelectedId('')

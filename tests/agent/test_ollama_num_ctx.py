@@ -140,7 +140,15 @@ class TestQueryOllamaSupportsVision:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
+def _build_agent(
+    cfg,
+    probed_ctx,
+    base_url="http://localhost:11434/v1",
+    *,
+    model="gemma3:27b",
+    api_key="ollama",
+    provider=None,
+):
     import agent.context_compressor as cc_mod
     with (
         patch("model_tools.get_tool_definitions", return_value=[]),
@@ -157,14 +165,17 @@ def _build_agent(cfg, probed_ctx, base_url="http://localhost:11434/v1"):
         ),
     ):
         from run_agent import AIAgent
-        return AIAgent(
-            model="gemma3:27b",
-            api_key="ollama",
-            base_url=base_url,
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
+        kwargs = {
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
+            "quiet_mode": True,
+            "skip_context_files": True,
+            "skip_memory": True,
+        }
+        if provider is not None:
+            kwargs["provider"] = provider
+        return AIAgent(**kwargs)
 
 
 class TestCompressorClampsToNumCtx:
@@ -190,6 +201,24 @@ class TestCompressorClampsToNumCtx:
         # num_ctx above the resolved window must not RAISE the compressor
         # window: the clamp is one-directional.
         assert agent.context_compressor.context_length == 65536
+
+    def test_stale_num_ctx_does_not_clamp_cloud_session(self):
+        """Leftover model.ollama_num_ctx must not shrink a cloud session.
+
+        The override is an Ollama VRAM cap. Recording it on a cloud agent
+        also forwards num_ctx via extra_body, so both the compressor window
+        and _ollama_num_ctx must stay off the leftover value. #99943.
+        """
+        agent = _build_agent(
+            {"agent": {}, "model": {"ollama_num_ctx": 65536}},
+            probed_ctx=1_000_000,
+            base_url="https://openrouter.ai/api/v1",
+            model="x-ai/grok-4.6",
+            api_key="sk-test",
+            provider="openrouter",
+        )
+        assert agent._ollama_num_ctx is None
+        assert agent.context_compressor.context_length == 1_000_000
 
 
 class TestServedNumCtxSatisfiesTheFloor:

@@ -2107,13 +2107,27 @@ def _inject_context_engine_tools(agent):
 def _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length):
     # Ollama defaults num_ctx to 2048, so detect the max window and send num_ctx per request.
     # model.ollama_num_ctx overrides; model.context_length caps the detected value (VRAM).
+    # The override is an Ollama VRAM cap. A leftover value must not clamp a cloud
+    # session (#99943) or leak num_ctx into extra_body. Remote Ollama
+    # (provider=ollama) still applies.
     agent._ollama_num_ctx: int | None = None
+    _provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    _is_ollama_runtime = _provider == "ollama" or (
+        bool(agent.base_url) and is_local_endpoint(agent.base_url)
+    )
     _override = _model_cfg.get("ollama_num_ctx") if isinstance(_model_cfg, dict) else None
     if _override is not None:
-        try:
-            agent._ollama_num_ctx = int(_override)
-        except (TypeError, ValueError):
-            _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
+        if _is_ollama_runtime:
+            try:
+                agent._ollama_num_ctx = int(_override)
+            except (TypeError, ValueError):
+                _ra().logger.debug("Invalid ollama_num_ctx config value: %r", _override)
+        else:
+            _ra().logger.info(
+                "Ignoring model.ollama_num_ctx=%r for non-local endpoint %s",
+                _override,
+                agent.base_url or f"provider={getattr(agent, 'provider', '')}",
+            )
     if agent._ollama_num_ctx is None and agent.base_url and is_local_endpoint(agent.base_url):
         try:
             # api_key may be a callable (Entra token provider); detection needs a string.

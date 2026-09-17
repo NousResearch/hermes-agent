@@ -600,6 +600,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- canonical context+hook pairing; the hook consumes this file's provider, so splitting files would not change fast-refresh behaviour
 export function useTheme(): ThemeContextValue {
   return useContext(ThemeContext);
 }

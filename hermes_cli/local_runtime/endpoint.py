@@ -8,6 +8,7 @@ its state file appears.
 from __future__ import annotations
 
 from contextlib import suppress
+from contextvars import copy_context
 import json
 import logging
 import threading
@@ -131,7 +132,7 @@ def _kick_managed_boot(config: dict | None) -> None:
         finally:
             _KICK_LOCK.release()
 
-    threading.Thread(target=_boot, daemon=True,
+    threading.Thread(target=copy_context().run, args=(_boot,), daemon=True,
                      name="lr-on-demand-boot").start()
 
 

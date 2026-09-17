@@ -389,12 +389,15 @@ class LSPService:
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 self._last_used[key] = time.time()
-                eventlog.log_active(srv.server_id, root)
-                return await self._attach_root(srv, client, root)
-            spawning = self._spawning.get(key)
-            owner = spawning is None
-            if owner:
-                spawning = self._spawning[key] = asyncio.get_running_loop().create_future()
+            else:
+                client = None
+                spawning = self._spawning.get(key)
+                owner = spawning is None
+                if owner:
+                    spawning = self._spawning[key] = asyncio.get_running_loop().create_future()
+        if client is not None:
+            eventlog.log_active(srv.server_id, root)
+            return await self._attach_root(srv, client, root)
         if not owner:
             try:
                 client = await spawning

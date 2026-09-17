@@ -133,6 +133,17 @@ def test_unknown_tier_normalizes_to_community(mod, tmp_path):
     assert entries[0]["tier"] == "community"
 
 
+def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mod, tmp_path):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "labelled", version="1.4.0", image="https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png")
+    _write_entry(catalog, "offhost", version="1.4.0", image="https://cdn.example.com/banner.png")
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["labelled"]["version"] == "1.4.0" and entries["labelled"]["image"] == "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/banner.png"
+    assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
+
+
 # --------------------------------------------------------------------------
 # Full run: outputs + graceful degradation
 # --------------------------------------------------------------------------

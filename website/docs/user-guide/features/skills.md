@@ -23,7 +23,10 @@ Open **Capabilities → Skills** and switch between **Installed** and **Browse**
 Search stays at the top; the tab switch and actions share one row.
 **Installed** reads the selected profile's actual skills and enabled state;
 it is not inferred from the public catalog. **Browse** is a native catalog UI,
-not an embedded website or a second, smaller catalog.
+not an embedded website or a second, smaller catalog. Cards are the default;
+the list and card icons at the right of the filters switch layouts without
+clearing search or filters. The choice is remembered across Skills and Plugins.
+Click a card for details or use its Install button directly.
 
 Desktop and the public [Skills Hub](/skills) read the same published CDN
 snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).
@@ -698,6 +701,8 @@ in the pending JSON file). Memory writes have the same gate under
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.
+
+Unfiltered searches (CLI, TUI, and the dashboard) are answered from a cached centralized index that covers the external registries. That index is rebuilt periodically, so when it has no match for your query Hermes also asks `skills.sh`, ClawHub, LobeHub and well-known endpoints directly — a skill published minutes ago still shows up. That extra pass gets at most 8 seconds of the search budget, so a slow registry cannot turn a miss into a long wait. Custom GitHub taps are not part of that fallback (search them with `--source github`, or via the index once it catches up), and provider filters such as `--source nvidia` do not trigger it (those registries carry no provider data).
 
 ### Common commands
 

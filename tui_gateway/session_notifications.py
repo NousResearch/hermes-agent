@@ -144,10 +144,11 @@ def _notif_release_turn(session: dict) -> None:
 
 def _notif_claim_turn(session: dict) -> bool:
     """Claim the idle session (running=True) under history_lock; False if a turn is live."""
-    with session["history_lock"]:
-        claimed = not session.get("running")
+    with _session_turn_admission(session) as admitted:
+        if not admitted or session.get("running"):
+            return False
         session["running"] = True
-        return claimed
+        return True
 
 
 def _notif_log_failure(what: str, exc: BaseException) -> None:
@@ -552,8 +553,8 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
     if not has_mailbox(home):
         return False
-    with session["history_lock"]:
-        if any(session.get(key) for key in (
+    with _session_turn_admission(session) as admitted:
+        if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
                 "_auto_continue_scheduled")) or session.get("agent") is None:
             return False

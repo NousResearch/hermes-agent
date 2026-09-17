@@ -79,14 +79,9 @@ def drain(root: Path | None = None) -> None:
 
     root = root if root is not None else _root()
     with retirement.work() as admitted:
-        if not admitted:
-            return
-        if root.is_dir():
+        if admitted and root.is_dir():
             with _FileLock(root / ".drain.lock"):
                 _drain(root)
-        # Receipt replay is work too: it stays behind the same admission as the drain.
-        from cron.executions import reconcile_delivery_projections
-        reconcile_delivery_projections()
 
 
 def _drain(root: Path) -> None:
@@ -102,6 +97,8 @@ def _drain(root: Path) -> None:
             if record["status"] != "queued":
                 continue
             home = Path(record["home"])
+            # A failure notice queued before the target profile opted out is settled as
+            # suppressed at drain time; the policy is the owner's, read from its own config.
             from gateway.warning_notifications import warning_notifications_enabled
             from hermes_cli.config_effective import load_user_config_effective
             if (record.get("for_failure")
@@ -141,8 +138,6 @@ def drain_in_background() -> None:
     home = get_hermes_home().resolve()
     root = home / "cron" / "bot_chat_pending"
     if not root.is_dir():
-        from cron.executions import reconcile_delivery_projections
-        reconcile_delivery_projections()
         return
     from hermes_cli.backend_retirement import retirement
 

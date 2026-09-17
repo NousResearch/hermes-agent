@@ -2030,44 +2030,6 @@ def _fill_missing_next_run(updated: Dict[str, Any]) -> None:
     updated["next_run_at"] = next_run
 
 
-def bind_delivery_execution(job_id: str, execution_id: str) -> None:
-    """Fence asynchronous job projections at run start, under the store lock."""
-    from cron.executions import latest_execution
-
-    def apply(records, _i, job):
-        latest = latest_execution(job_id)
-        if latest and latest["id"] == execution_id:
-            job["delivery_execution_id"] = execution_id
-            save_jobs(records)
-    _with_job(job_id, apply)
-
-
-def update_delivery_projection(job_id: str, execution_id: str, values: dict) -> bool:
-    """CAS delivery-only fields; an older drain cannot clobber a newer run."""
-    allowed = {"last_delivery_queued", "last_delivery_unverified", "last_delivery_error"}
-    if not set(values) <= allowed:
-        raise ValueError("Not a delivery projection")
-
-    def apply(records, _i, job):
-        if job.get("delivery_execution_id") != execution_id:
-            return False
-        # The new execution can have been claimed before it binds its projection.
-        from cron.executions import latest_execution
-        latest = latest_execution(job_id)
-        if not latest or latest["id"] != execution_id:
-            return False
-        # Projection freshness: a 'queued' projection computed by a slower reconciler must
-        # not resurrect job pending after the SAME execution settled terminally in the ledger.
-        if values.get("last_delivery_queued") and latest.get("delivery_outcome") not in (None, "queued"):
-            return False
-        job.update(values)
-        if job.get("last_status") == "delivery_queued" and not job.get("last_delivery_queued"):
-            job["last_status"] = "delivery_failed" if job.get("last_delivery_error") else "ok"
-        save_jobs(records)
-        return True
-    return bool(_with_job(job_id, apply))
-
-
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # ``id`` is a path component under OUTPUT_DIR — changing it would leak path-escape values.

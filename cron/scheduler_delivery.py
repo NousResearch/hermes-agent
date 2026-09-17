@@ -663,18 +663,6 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
-def _mark_manifest_intent(job: dict) -> None:
-    """Durable intent before ANY send of a run that has deferred (Bot Chat) targets.
-
-    Raises: nothing has been sent yet, so the caller reports a truthful pre-send failure and
-    sends nothing. Every exit after a successful mark settles a manifest (_settle_manifest).
-    """
-    if job.get("execution_id") and not job.get("_manifest_intent_marked"):
-        from cron.executions import mark_delivery_manifest_pending
-        mark_delivery_manifest_pending(str(job["execution_id"]))
-        job["_manifest_intent_marked"] = True
-
-
 _BOT_CHAT_STDERR_TAIL = 500
 # stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
 _BOT_CHAT_STDOUT_TAIL = 200
@@ -709,14 +697,15 @@ def _format_failure_streams(result) -> str:
     return redact_sensitive_text(" | ".join(parts), force=True, redact_url_credentials=True)
 
 
-
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None,
                          for_failure: bool = False) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
     string so existing Optional[str] callers cannot misreport admission as delivery.
-    ``profile`` is ``""`` for the job's own profile.
+    ``profile`` is ``""`` for the job's own profile. A ``for_failure`` notice whose target
+    profile hides warning notifications is recorded as ``suppressed`` (a durable
+    disposition, never a send) and flagged on the job.
     """
     import hashlib
     import json
@@ -744,7 +733,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         for_failure = for_failure or bool((deferred or {}).get("for_failure"))
         from gateway.warning_notifications import warning_notifications_enabled
         from hermes_cli.config_effective import load_user_config_effective
-        suppress_notification = for_failure and not warning_notifications_enabled("tui", load_user_config_effective(home / "config.yaml"))
+        suppress_notification = for_failure and not warning_notifications_enabled(
+            "tui", load_user_config_effective(home / "config.yaml"))
         if deferred is not None and not (home / "state.db").is_file():
             return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
@@ -767,8 +757,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             from tools.bot_live_delivery import find_canonical_owner
 
             pending = read_pending(key)
-            # Validate existing identity and settle only never-started requests under
-            # the producer lock. Suppression is a durable disposition, not a send.
+            # Suppression is a durable disposition, not a send: record it under the producer
+            # lock even when a live owner exists, so the deferred lane never replays it.
             if (pending is not None or suppress_notification
                     or (find_canonical_live_owner(home) is None and find_canonical_owner(home))):
                 pending = defer(key, dict(job), content, profile, home,
@@ -777,7 +767,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                 status = pending["status"]
                 target = f"bot-chat:{profile_label}"
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
-                    "status": status, "delivery_id": key, "home": str(home)}
+                    "status": status, "delivery_id": key}
                 if status == "suppressed":
                     job["_notification_all_targets_suppressed"] = True
                 return None if status in ("settled", "suppressed") else f"{target} {status} (receipt {key}): completion unverified; do not resend"
@@ -793,7 +783,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             status = receipt["status"]
             target = f"bot-chat:{profile_label}"
             receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-            receipts[target] = {"status": status, "delivery_id": key, "home": str(home)}
+            receipts[target] = {"status": status, "delivery_id": key}
             logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
                         job_id, profile_label, key, status)
             if status == "settled":
@@ -1176,11 +1166,8 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         return
     job.update(values)
     try:
-        from cron.jobs import update_delivery_projection, update_job
-        if job.get("execution_id"):
-            update_delivery_projection(job["id"], job["execution_id"], values)
-        else:
-            update_job(job["id"], values)
+        from cron.jobs import update_job
+        update_job(job["id"], values)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
 
@@ -1792,8 +1779,6 @@ def _deliver_result(
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_suppressed_targets", None)
     job.pop("_notification_all_targets_suppressed", None)
-    job.pop("_manifest_intent_marked", None)
-    job.pop("_policy_drop_errors", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1810,25 +1795,15 @@ def _deliver_result(
             and any(target["platform"] != BOT_CHAT_PLATFORM for target in targets)):
         from cron.delivery_queue import enqueue_and_wait
 
-        from cron.executions import record_delivery_manifest
-        record_delivery_manifest(job.get("execution_id"), {"external": True})
         _record_delivery_verification(job, [])
         error = enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
         from cron.delivery_queue import get_status
         delivery_status = get_status(external_execution)
         if delivery_status and delivery_status["status"] == "suppressed":
             job["_notification_all_targets_suppressed"] = True
-        from cron.executions import get_execution, _delivery_projection, manifest_pending
-        execution = get_execution(external_execution)
-        projection = _delivery_projection(execution) if execution and execution.get("delivery_manifest") else None
-        job["last_delivery_queued"] = (
-            {"gateway": {"status": "queued", "delivery_id": external_execution}}
-            if (delivery_status and delivery_status["status"] in ("pending", "delivering"))
-            or manifest_pending(execution)  # gateway sent children; their manifest is not recorded yet
-            else projection[1]["last_delivery_queued"] if projection else None)
-        from cron.jobs import update_delivery_projection
-        update_delivery_projection(job["id"], external_execution,
-                                   {"last_delivery_queued": job["last_delivery_queued"]})
+        from cron.jobs import get_job
+        refreshed = get_job(job["id"]) or {}
+        job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
         return error
 
     from gateway.config import load_gateway_config
@@ -1872,7 +1847,6 @@ def _deliver_result(
         "policy (missing file, denied prefix, or strict-mode miss); "
         "see gateway.strict / media_delivery_allow_dirs in config.yaml"
     ] if _policy_dropped > 0 else []
-    job["_policy_drop_errors"] = policy_drop_errors
 
     # Resolve the mirror gate ONCE (default off): successful deliveries are appended to the target
     # chat's session transcript. Mirror the CLEAN, unwrapped output (not the header/footer).
@@ -1893,38 +1867,9 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
-    unverified_targets: list = []
-    if any(t["platform"] == BOT_CHAT_PLATFORM for t in targets) and job.get("execution_id"):
-        # Durable intent BEFORE any send in this run: until the manifest lands, no reader may
-        # treat this run's placeholder/absence of a manifest as terminal. Nothing has been sent,
-        # so a ledger fault here is a truthful pre-send failure and nothing is sent at all.
-        try:
-            _mark_manifest_intent(job)
-        except Exception as exc:
-            msg = f"delivery ledger unavailable before send: {exc}"
-            logger.error("Job '%s': %s", job["id"], msg)
-            return msg
-    try:
-        _deliver_targets(job, targets, content, cleaned_delivery_content, media_files, adapters, loop,
-                         config, user_cfg, notify_delivery, mirror_enabled, mirror_text,
-                         for_failure, delivery_errors, unverified_targets)
-    except BaseException as exc:
-        # Any exit after the mark MUST settle the manifest (possibly with no children), else the
-        # row is pending forever. The exception itself is retained in the manifest error, and a
-        # second failure inside settlement never masks it (the row simply stays pending).
-        try:
-            _settle_manifest(job, targets, delivery_errors + [f"{type(exc).__name__}: {exc}"], unverified_targets)
-        except BaseException as settle_exc:  # noqa: BLE001 - deliberate: preserve the original
-            logger.error("Job '%s': manifest settlement interrupted (%r); row stays pending",
-                         job.get("id"), settle_exc)
-        raise
-    return _settle_manifest(job, targets, delivery_errors, unverified_targets)
-
-
-def _deliver_targets(job, targets, content, cleaned_delivery_content, media_files, adapters, loop,
-                     config, user_cfg, notify_delivery, mirror_enabled, mirror_text,
-                     for_failure, delivery_errors, unverified_targets) -> None:
     for target in targets:
+        # A failure notice for a platform that hides warning notifications is a suppressed
+        # disposition, not a send; requested (non-failure) results are never gated.
         from gateway.warning_notifications import warning_notifications_enabled
         if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
                 and not warning_notifications_enabled(target["platform"], user_cfg)):
@@ -1932,8 +1877,7 @@ def _deliver_targets(job, targets, content, cleaned_delivery_content, media_file
             continue
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:
-            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"],
-                                                 **({"for_failure": True} if for_failure else {}))
+            bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"], for_failure=for_failure)
             if job.pop("_notification_all_targets_suppressed", False):
                 job.setdefault("_notification_suppressed_targets", []).append(dict(target))
             if bot_chat_error:
@@ -1961,58 +1905,13 @@ def _deliver_targets(job, targets, content, cleaned_delivery_content, media_file
             _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
 
-    # Filter-time drops apply to every target; report them once.
+    # Filter-time drops apply to every target; report them once. A run whose every target was
+    # suppressed sent nothing, so there is no drop to report.
     if len(job.get("_notification_suppressed_targets", [])) == len(targets):
         job["_notification_all_targets_suppressed"] = True
-    if not job.get("_notification_all_targets_suppressed"):
-        delivery_errors.extend(job.get("_policy_drop_errors", []))
-
-
-def _settle_manifest(job: dict, targets: list, delivery_errors: list, unverified_targets: list) -> Optional[str]:
-    """Record this run's child manifest (possibly empty) and return the legacy error string.
-
-    Called on EVERY exit of the delivery loop once intent may have been marked: a run that
-    marked intent but ends with no receipt settles through the same durable, replayable
-    manifest path as one with children, so it never stays pending forever.
-    """
+    else:
+        delivery_errors.extend(policy_drop_errors)
     _record_delivery_verification(job, unverified_targets)
-    from cron.executions import record_delivery_manifest
-    bot_receipts = job.get("_bot_chat_delivery_receipts", {})
-    native_count = sum(t["platform"] != BOT_CHAT_PLATFORM for t in targets)
-    native_suppressed = sum(t["platform"] != BOT_CHAT_PLATFORM for t in job.get("_notification_suppressed_targets", []))
-    # Only deferred receipts need mutable terminal projections. Direct native
-    # sends retain legacy delivered-plus-unverified behavior when default-off.
-    if bot_receipts:
-        manifest = {
-            "bot": bot_receipts,
-            "delivered": native_count > native_suppressed or (not bot_receipts and not job.get("_notification_all_targets_suppressed")),
-            "error": "; ".join(delivery_errors) if delivery_errors else None,
-            "unverified": unverified_targets,
-        }
-        try:
-            record_delivery_manifest(job.get("execution_id"), manifest)
-        except Exception:
-            # Post-send bookkeeping: the sends above already happened and the receipts are
-            # durable. The row's pending flag (set before the first send) keeps it queued and
-            # unprunable; the journal is a best-effort copy for the reconciler. Never report a
-            # transport failure, which would discard the pending sibling or invite a resend.
-            logger.exception("Job '%s': delivery manifest not recorded; row stays pending", job.get("id"))
-            if job.get("execution_id"):
-                from cron.executions import journal_manifest
-                journal_manifest(str(job["execution_id"]), manifest)  # never raises
-    elif job.get("_manifest_intent_marked") and job.get("execution_id"):
-        # Intent was marked but no child receipt exists (rejected pre-admission, filtered, or an
-        # exception on the way). Settle through the same durable, replayable manifest path so
-        # the row leaves pending with its errors retained; transient ledger faults replay later.
-        manifest = {"bot": {}, "delivered": native_count > native_suppressed,
-                    "error": "; ".join(delivery_errors) if delivery_errors else None,
-                    "unverified": unverified_targets}
-        try:
-            record_delivery_manifest(job.get("execution_id"), manifest)
-        except Exception:
-            logger.exception("Job '%s': no-receipt manifest not recorded; row stays pending", job.get("id"))
-            from cron.executions import journal_manifest
-            journal_manifest(str(job["execution_id"]), manifest)  # never raises
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

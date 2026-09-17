@@ -329,8 +329,6 @@ def drain(
             with _lock:
                 _ACTIVE_DELIVERIES.discard(row["execution_id"])
         processed += 1
-    from cron.executions import reconcile_delivery_projections
-    reconcile_delivery_projections()
     return processed
 
 

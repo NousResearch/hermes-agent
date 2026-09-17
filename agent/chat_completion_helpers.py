@@ -3072,7 +3072,17 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
-        effective_finish_reason = "length" if has_truncated_tool_args else (finish_reason or "stop")
+        # FAIL-CLOSED (RCA 2026-09-17, S3 follow-up): only stamp 'length' for
+        # unrepairable/sentinel args when the provider gave NO finish_reason.
+        # Shadowing the provider's own reason (e.g. 'tool_calls') as 'length' sent
+        # sentinel responses into the truncation-retry loop (4 boosted retries that
+        # cannot fix an emission defect, then a terminal partial — prod receipt
+        # 19a39d117bb1, 5 dead retries 2026-09-17 14:14–14:15). With the provider's
+        # real reason preserved, the response reaches run_tool_round, the sentinel
+        # call is dropped and the model gets the in-band re-issue error.
+        # finish_reason='length' + sentinel (genuine output cap mid-args) still
+        # retries — that path is unchanged.
+        effective_finish_reason = finish_reason or ("length" if has_truncated_tool_args else "stop")
         provider_stream_error = _provider_stream_error_from_text(
             full_content or "", effective_finish_reason, response=getattr(stream, "response", None))
         if provider_stream_error is not None:

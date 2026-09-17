@@ -526,5 +526,3 @@ def test_task_cockpit_exposes_canonical_lineage(tmp_path):
     assert lineage["execution_key"] == "exec_key_cockpit"
     assert lineage["workplan_id"] == plan.id
     assert "acceptance_status" in lineage
-
-

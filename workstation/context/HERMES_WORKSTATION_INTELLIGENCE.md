@@ -2542,4 +2542,3 @@ O milestone canônico de confiabilidade de execução fecha o ciclo causal entre
 
 6. **Auditabilidade Total no Cockpit:**
    - `task_cockpit()` projeta linhagem canônica ponta a ponta: `task_id`, `run_id`, `execution_key`, `operation_id`, `workplan_id`, `human_card_id`, `acceptance_status` e `acceptance_approved`.
-

@@ -2056,6 +2056,10 @@ def update_delivery_projection(job_id: str, execution_id: str, values: dict) -> 
         latest = latest_execution(job_id)
         if not latest or latest["id"] != execution_id:
             return False
+        # Projection freshness: a 'queued' projection computed by a slower reconciler must
+        # not resurrect job pending after the SAME execution settled terminally in the ledger.
+        if values.get("last_delivery_queued") and latest.get("delivery_outcome") not in (None, "queued"):
+            return False
         job.update(values)
         if job.get("last_status") == "delivery_queued" and not job.get("last_delivery_queued"):
             job["last_status"] = "delivery_failed" if job.get("last_delivery_error") else "ok"

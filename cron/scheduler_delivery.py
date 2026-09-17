@@ -653,6 +653,18 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+def _mark_manifest_intent(job: dict) -> None:
+    """Durable intent before ANY send of a run that has deferred (Bot Chat) targets.
+
+    Raises: nothing has been sent yet, so the caller reports a truthful pre-send failure and
+    sends nothing. Every exit after a successful mark settles a manifest (_settle_manifest).
+    """
+    if job.get("execution_id") and not job.get("_manifest_intent_marked"):
+        from cron.executions import mark_delivery_manifest_pending
+        mark_delivery_manifest_pending(str(job["execution_id"]))
+        job["_manifest_intent_marked"] = True
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None,
                          for_failure: bool = False) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
@@ -1732,6 +1744,8 @@ def _deliver_result(
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_suppressed_targets", None)
     job.pop("_notification_all_targets_suppressed", None)
+    job.pop("_manifest_intent_marked", None)
+    job.pop("_policy_drop_errors", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1810,6 +1824,7 @@ def _deliver_result(
         "policy (missing file, denied prefix, or strict-mode miss); "
         "see gateway.strict / media_delivery_allow_dirs in config.yaml"
     ] if _policy_dropped > 0 else []
+    job["_policy_drop_errors"] = policy_drop_errors
 
     # Resolve the mirror gate ONCE (default off): successful deliveries are appended to the target
     # chat's session transcript. Mirror the CLEAN, unwrapped output (not the header/footer).
@@ -1830,17 +1845,32 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    unverified_targets: list = []
     if any(t["platform"] == BOT_CHAT_PLATFORM for t in targets) and job.get("execution_id"):
-        # Durable intent BEFORE the first deferred send: until the manifest itself lands, no
-        # reader may treat this run's placeholder/absence of a manifest as a terminal disposition.
-        # Nothing has been sent yet, so a ledger fault here is a truthful pre-send failure.
-        from cron.executions import mark_delivery_manifest_pending
+        # Durable intent BEFORE any send in this run: until the manifest lands, no reader may
+        # treat this run's placeholder/absence of a manifest as terminal. Nothing has been sent,
+        # so a ledger fault here is a truthful pre-send failure and nothing is sent at all.
         try:
-            mark_delivery_manifest_pending(str(job["execution_id"]))
+            _mark_manifest_intent(job)
         except Exception as exc:
             msg = f"delivery ledger unavailable before send: {exc}"
             logger.error("Job '%s': %s", job["id"], msg)
             return msg
+    try:
+        _deliver_targets(job, targets, content, cleaned_delivery_content, media_files, adapters, loop,
+                         config, user_cfg, notify_delivery, mirror_enabled, mirror_text,
+                         for_failure, delivery_errors, unverified_targets)
+    except BaseException as exc:
+        # Any exit after the mark MUST settle the manifest (possibly with no children), else the
+        # row is pending forever. The exception itself is retained in the manifest error.
+        _settle_manifest(job, targets, delivery_errors + [f"{type(exc).__name__}: {exc}"], unverified_targets)
+        raise
+    return _settle_manifest(job, targets, delivery_errors, unverified_targets)
+
+
+def _deliver_targets(job, targets, content, cleaned_delivery_content, media_files, adapters, loop,
+                     config, user_cfg, notify_delivery, mirror_enabled, mirror_text,
+                     for_failure, delivery_errors, unverified_targets) -> None:
     for target in targets:
         from gateway.warning_notifications import warning_notifications_enabled
         if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
@@ -1882,7 +1912,16 @@ def _deliver_result(
     if len(job.get("_notification_suppressed_targets", [])) == len(targets):
         job["_notification_all_targets_suppressed"] = True
     if not job.get("_notification_all_targets_suppressed"):
-        delivery_errors.extend(policy_drop_errors)
+        delivery_errors.extend(job.get("_policy_drop_errors", []))
+
+
+def _settle_manifest(job: dict, targets: list, delivery_errors: list, unverified_targets: list) -> Optional[str]:
+    """Record this run's child manifest (possibly empty) and return the legacy error string.
+
+    Called on EVERY exit of the delivery loop once intent may have been marked: a run that
+    marked intent but ends with no receipt settles through the same durable, replayable
+    manifest path as one with children, so it never stays pending forever.
+    """
     _record_delivery_verification(job, unverified_targets)
     from cron.executions import record_delivery_manifest
     bot_receipts = job.get("_bot_chat_delivery_receipts", {})
@@ -1908,15 +1947,19 @@ def _deliver_result(
             if job.get("execution_id"):
                 from cron.executions import journal_manifest
                 journal_manifest(str(job["execution_id"]), manifest)  # never raises
-    elif job.get("execution_id") and any(t["platform"] == BOT_CHAT_PLATFORM for t in targets):
-        # Every Bot Chat target was filtered/rejected before a receipt existed: nothing deferred
-        # remains outstanding, so release the pre-send intent.
+    elif job.get("_manifest_intent_marked") and job.get("execution_id"):
+        # Intent was marked but no child receipt exists (rejected pre-admission, filtered, or an
+        # exception on the way). Settle through the same durable, replayable manifest path so
+        # the row leaves pending with its errors retained; transient ledger faults replay later.
+        manifest = {"bot": {}, "delivered": native_count > native_suppressed,
+                    "error": "; ".join(delivery_errors) if delivery_errors else None,
+                    "unverified": unverified_targets}
         try:
-            from cron.executions import _transaction
-            with _transaction() as conn:
-                conn.execute("UPDATE executions SET delivery_manifest_pending=0 WHERE id=?", (str(job["execution_id"]),))
+            record_delivery_manifest(job.get("execution_id"), manifest)
         except Exception:
-            logger.debug("Job '%s': could not release manifest intent", job.get("id"), exc_info=True)
+            logger.exception("Job '%s': no-receipt manifest not recorded; row stays pending", job.get("id"))
+            from cron.executions import journal_manifest
+            journal_manifest(str(job["execution_id"]), manifest)  # never raises
     return "; ".join(delivery_errors) if delivery_errors else None
 
 

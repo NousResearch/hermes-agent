@@ -86,10 +86,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(conn, "executions", "incident_id", "incident_id TEXT")
     add_column_if_missing(conn, "executions", "incident_generation", "incident_generation INTEGER")
     add_column_if_missing(conn, "executions", "delivery_projection_settled", "delivery_projection_settled INTEGER NOT NULL DEFAULT 0")
-    # Durable intent written BEFORE any deferred (Bot Chat) send: while set, the row's manifest is
-    # incomplete and no reader may project/settle/prune from it. Cleared by the manifest write itself.
-    if add_column_if_missing(conn, "executions", "delivery_manifest_pending", "delivery_manifest_pending INTEGER NOT NULL DEFAULT 0"):
-        _adopt_legacy_outstanding_journals(conn)
     add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
     add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
     conn.execute(
@@ -151,7 +147,6 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
              WHERE status IN ('completed','failed','unknown')
                AND (delivery_outcome IS NULL OR delivery_outcome != 'queued')
                AND (delivery_manifest IS NULL OR delivery_projection_settled=1)
-               AND delivery_manifest_pending=0
              ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
            )""",
         (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
@@ -269,11 +264,7 @@ def finish_execution(
     # classification as restart reconciliation, in particular unknown != failed.
     with _transaction() as conn:
         pending = _fetch(conn, execution_id)
-        if pending and pending.get("delivery_manifest_pending"):
-            # Deferred children were sent but their manifest is not in the ledger yet: the
-            # caller's classification (and any placeholder) is incomplete by construction.
-            delivery_outcome = "queued"
-        elif pending and pending.get("delivery_manifest"):
+        if pending and pending.get("delivery_manifest"):
             projection = _delivery_projection(pending)
             if projection is not None:
                 delivery_outcome = projection[0]
@@ -326,81 +317,32 @@ def record_delivery_manifest(execution_id: Optional[str], manifest: dict) -> Non
 
 
 def _store_manifest(conn, execution_id: str, manifest: dict) -> None:
-    """CAS the manifest onto a row that has none (or only the external placeholder).
-
-    Clearing ``delivery_manifest_pending`` is part of the SAME statement: a storage fault that
-    rejects the manifest leaves the intent flag set, so no reader can misread the placeholder.
-    """
+    """CAS the manifest onto a row that has none (or only the external placeholder)."""
     placeholder = json.dumps({"external": True}, sort_keys=True)
     row = _fetch(conn, execution_id)
     if row and row.get("delivery_manifest") == placeholder:
         manifest = {**manifest, "external": True}
-    conn.execute("UPDATE executions SET delivery_manifest=?, delivery_manifest_pending=0 WHERE id=? AND "
+    conn.execute("UPDATE executions SET delivery_manifest=? WHERE id=? AND "
                  "(delivery_manifest IS NULL OR delivery_manifest=?)",
                  (json.dumps(manifest, sort_keys=True), execution_id, placeholder))
-
-
-def mark_delivery_manifest_pending(execution_id: Optional[str]) -> None:
-    """Record, BEFORE any deferred send, that this run will own child receipts.
-
-    Raises when the ledger cannot take the write: nothing has been sent yet, so the caller
-    may truthfully report a pre-send failure instead of sending without durable intent.
-    """
-    if not execution_id:
-        return
-    with _transaction() as conn:
-        conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=?", (execution_id,))
-
-
-def manifest_pending(record: Optional[dict]) -> bool:
-    """True while the row's deferred-child manifest is not yet in the ledger."""
-    if not record or not record.get("delivery_manifest_pending"):
-        return False
-    manifest = record.get("delivery_manifest")
-    return not (manifest and "bot" in json.loads(manifest))
-
-
-def _adopt_legacy_outstanding_journals(conn) -> None:
-    """Upgrade step: rows whose real manifest is still only in the (pre-flag) journal must carry
-    the authoritative intent BEFORE any reader projects their placeholder. Idempotent."""
-    for execution_id, manifest in journaled_manifests().items():
-        row = _fetch(conn, execution_id)
-        if row is None:
-            continue
-        stored = json.loads(row["delivery_manifest"]) if row.get("delivery_manifest") else {}
-        if "bot" not in stored:
-            conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=?", (execution_id,))
 
 
 def _journal_root() -> Path:
     return (EXECUTIONS_FILE.parent if EXECUTIONS_FILE else get_hermes_home().resolve() / "cron") / "manifest_journal"
 
 
-def journal_manifest(execution_id: str, manifest: dict) -> bool:
-    """Best-effort durable copy of a manifest the ledger could not store (post-send fault).
+def journal_manifest(execution_id: str, manifest: dict) -> None:
+    """Durably record a delivery manifest the ledger could not store (post-send fault).
 
-    The row's ``delivery_manifest_pending`` flag is the authoritative invariant; this journal
-    only lets the reconciler recover the manifest once the ledger accepts writes again.
-    Never raises: a second storage failure is logged, and the row simply stays pending.
+    Source-owned: independent of which receipt store (deferred file or live-owner mailbox)
+    holds the children, and never mutated by receipt consumers. Replayed by
+    :func:`_recover_unrecorded_manifests`; deleted only after the ledger holds it.
     """
-    try:
-        # The row flag is the authoritative fence; re-assert it here (idempotent) so a journal
-        # entry never exists for a row that readers would treat as complete.
-        with _transaction() as conn:
-            conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=?", (execution_id,))
-    except Exception:
-        logging.getLogger(__name__).debug("Could not re-assert manifest intent for %s", execution_id, exc_info=True)
-    try:
-        from utils import atomic_json_write
-        root = _journal_root()
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        atomic_json_write(root / f"{execution_id}.json", {"execution_id": execution_id, "manifest": manifest},
-                          fsync_dir=True, mode=0o600)
-        return True
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Cron delivery manifest for %s could not be journaled; row stays pending", execution_id)
-        return False
+    from utils import atomic_json_write
+    root = _journal_root()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    atomic_json_write(root / f"{execution_id}.json", {"execution_id": execution_id, "manifest": manifest},
+                      fsync_dir=True, mode=0o600)
 
 
 def journaled_manifests() -> Dict[str, dict]:
@@ -422,25 +364,18 @@ def journaled_manifests() -> Dict[str, dict]:
 def _recover_unrecorded_manifests() -> Dict[str, dict]:
     """Replay journaled manifests into the ledger; return what is STILL outstanding.
 
-    Idempotent through the same CAS as the primary write (which also clears the row's pending
-    flag). An entry is removed only once the ledger row actually carries the children.
-    Callers must NOT use the return value as an authority: the row flag is authoritative.
+    Idempotent through the same CAS as the primary write. An entry is removed only once
+    the ledger row actually carries a manifest with the children; while outstanding, the
+    row's placeholder manifest must not be projected or pruned (see callers).
     """
     outstanding: Dict[str, dict] = {}
     for execution_id, manifest in journaled_manifests().items():
         try:
-            # A journal entry IS outstanding intent (legacy rows predating the flag, or a mark
-            # whose re-assert failed). Assert it in its OWN committed transaction first: if the
-            # replay below is rejected by storage, the fence must survive the rollback.
             with _transaction() as conn:
                 row = _fetch(conn, execution_id)
                 if row is None:
                     outstanding[execution_id] = manifest
                     continue
-                conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=? AND "
-                             "(delivery_manifest IS NULL OR instr(delivery_manifest, '\"bot\"')=0)",
-                             (execution_id,))
-            with _transaction() as conn:
                 _store_manifest(conn, execution_id, manifest)
                 row = _fetch(conn, execution_id)
             stored = json.loads(row["delivery_manifest"]) if row and row.get("delivery_manifest") else {}
@@ -458,8 +393,6 @@ def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
     from cron import delivery_queue, bot_chat_delivery
     from tools.bot_live_delivery import read_delivery_result
 
-    if manifest_pending(record):
-        return None  # children were sent; their manifest is not in the ledger yet
     manifest = json.loads(record["delivery_manifest"])
     external_outcome = None
     external_error = None
@@ -514,26 +447,28 @@ def reconcile_delivery_projections() -> None:
     from cron.incidents import _initialize_schema as init_incidents
 
     try:
-        _recover_unrecorded_manifests()
+        outstanding = _recover_unrecorded_manifests()
     except Exception:
         logging.getLogger(__name__).exception("Could not replay journaled cron delivery manifests")
+        outstanding = journaled_manifests()
     with _transaction() as conn:
         records = [dict(row) for row in conn.execute(
             "SELECT * FROM executions WHERE delivery_manifest IS NOT NULL "
             "AND status IN ('completed','failed','unknown')").fetchall()]
     for record in records:
+        if record["id"] in outstanding:
+            # The ledger holds at most the external placeholder for this run while its real
+            # manifest (with pending children) is journaled: an incomplete manifest must not be
+            # projected as a terminal disposition. Stay queued until the replay succeeds.
+            continue
         try:
-            # A pending row (children sent, manifest not yet in the ledger) projects to None
-            # inside _delivery_projection; the CAS below re-checks the flag at write time so a
-            # reader that loaded the row before the flag flipped cannot settle it either.
             projection = _delivery_projection(record)
             if projection is None:
                 continue
             outcome, values = projection
             with _transaction() as conn:
                 conn.execute("UPDATE executions SET delivery_outcome=? WHERE id=? "
-                             "AND delivery_outcome='queued' AND delivery_manifest=? "
-                             "AND delivery_manifest_pending=0",
+                             "AND delivery_outcome='queued' AND delivery_manifest=?",
                              (outcome, record["id"], record["delivery_manifest"]))
                 current = _fetch(conn, record["id"])
                 if not current or current["delivery_outcome"] != outcome:
@@ -550,8 +485,7 @@ def reconcile_delivery_projections() -> None:
                 # completed. A crash above leaves it replayable even under retention.
                 with _transaction() as conn:
                     conn.execute("UPDATE executions SET delivery_projection_settled=1 "
-                                 "WHERE id=? AND delivery_outcome=? AND delivery_manifest=? "
-                                 "AND delivery_manifest_pending=0",
+                                 "WHERE id=? AND delivery_outcome=? AND delivery_manifest=?",
                                  (record["id"], outcome, record["delivery_manifest"]))
         except Exception:
             logging.getLogger(__name__).exception(
@@ -586,8 +520,7 @@ def recover_interrupted_executions() -> int:
             cur = conn.execute(
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
-                       handoff_pending=0, handoff_started_at=NULL,
-                       delivery_outcome=CASE WHEN delivery_manifest_pending=1 THEN 'queued' ELSE delivery_outcome END
+                       handoff_pending=0, handoff_started_at=NULL
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
                      AND handoff_started_at IS ?""",

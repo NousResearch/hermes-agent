@@ -47,6 +47,14 @@ def activate_multi_profile_hosting() -> None:
     set_multiplex_active(True)
 
 
+def _launch_env() -> Dict[str, str]:
+    """The launch profile's env: frozen once multiplexing is active; the LIVE process env before
+    (no secondary has run yet, so it is provably the launch profile's, and freezing it early would
+    miss values the launch process still bridges at startup)."""
+    from agent.secret_scope import is_multiplex_active
+    return capture_launch_env() if is_multiplex_active() else dict(os.environ)
+
+
 def launch_terminal_env() -> Dict[str, str]:
     """The frozen launch ``TERMINAL_*`` overlay for a launch-profile turn's terminal scope.
 
@@ -57,10 +65,14 @@ def launch_terminal_env() -> Dict[str, str]:
 
 
 def launch_secret_scope(launch_home: "str | Path") -> Dict[str, str]:
-    """The launch profile's secret mapping: its ``.env`` + external sources over the frozen
-    launch env (systemd / ``op run`` injection survives the fail-closed flip; a secondary never
-    sees it because its scope is built from its own files only)."""
+    """The launch profile's secret mapping: its ``.env`` + external sources over the launch env
+    (systemd / ``op run`` injection survives the fail-closed flip; a secondary never sees it because
+    its scope is built from its own files only). Bound for EVERY launch-profile body, multiplexing or
+    not, so the body's credential source is decided once at entry: a request that entered while
+    single-profile keeps resolving from this mapping after a concurrent first secondary flips
+    ``get_secret`` to fail closed (``_MULTIPLEX_ACTIVE`` is read on every ``get_secret``, the
+    scope decision was made at entry)."""
     from agent.secret_scope import _is_global_env, build_profile_secret_scope
-    scope = {k: v for k, v in capture_launch_env().items() if not _is_global_env(k)}
+    scope = {k: v for k, v in _launch_env().items() if not _is_global_env(k)}
     scope.update(build_profile_secret_scope(Path(launch_home)))
     return scope

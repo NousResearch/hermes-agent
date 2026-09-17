@@ -1864,7 +1864,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
 
-    # 6. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
+    # 6. Migrate profile-name-keyed session/routing state (session keys, profile_name, heartbeats,
+    # delivery + routing index) from the old name to the new one. A stale ``agent:<old>:*`` routing
+    # key otherwise resolves to a profile that no longer exists on every inbound event.
+    from hermes_cli.profile_identity import _migrate_profile_identity
+    _migrate_profile_identity(old_canon, new_canon, live_mux)
+
+    # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
     if live_mux:
         _notify_multiplexer(new_canon)
     return new_dir

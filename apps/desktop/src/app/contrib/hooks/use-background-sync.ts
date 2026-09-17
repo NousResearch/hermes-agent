@@ -21,7 +21,7 @@ import {
   sessionMatchesStoredId,
   setCurrentCwd
 } from '@/store/session'
-import type { SessionProfileRoute } from '@/store/session-request-router'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
@@ -35,12 +35,39 @@ import type { ClientSessionState } from '../../types'
 import type { GatewayRequester } from '../types'
 
 interface ActiveTranscriptSession {
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerRoute
   profile?: string | null
 }
 
-/** Resolve an active transcript from visible rows or its unique hidden owner. */
-export function resolveActiveTranscriptSession(storedSessionId: string): ActiveTranscriptSession | undefined {
+/** Profile/connection scope used to read an active transcript from storage. */
+export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession | undefined): ProfileScope {
+  if (!stored) {
+    return undefined
+  }
+
+  if (stored.ownerRoute) {
+    return {
+      connectionId: stored.ownerRoute.connectionId,
+      profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
+    }
+  }
+
+  return stored.profile
+}
+
+/** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
+export function resolveActiveTranscriptSession(
+  storedSessionId: string,
+  runtimeSessionId: string
+): ActiveTranscriptSession | undefined {
+  const verifiedOwner = $sessionTiles.get().find(
+    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
+  )?.ownerRoute
+
+  if (verifiedOwner) {
+    return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
+  }
+
   const visible = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
   if (visible) {
@@ -57,7 +84,7 @@ export interface ActiveTranscriptRefreshDeps {
   busyRef: MutableRefObject<boolean>
   requestSequenceRef: MutableRefObject<number>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
-  resolveSession: (storedSessionId: string) => ActiveTranscriptSession | null | undefined
+  resolveSession: (storedSessionId: string, runtimeSessionId: string) => ActiveTranscriptSession | null | undefined
   signatureRef: MutableRefObject<Map<string, string>>
   updateSessionState: (
     sessionId: string,
@@ -72,7 +99,7 @@ function tileRuntimeOwnsLiveState(runtimeId: string): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.needsInput || state.turnLive))
 }
 
-type TileTranscriptTarget = { ownerRoute?: SessionProfileRoute; storedSessionId: string; runtimeId?: string }
+type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
 
 /** Signature key per tile — carries the owner route so two connections/profiles
  *  sharing a stored id (or a tile re-homed to another owner) never alias. */
@@ -152,12 +179,7 @@ export async function reconcileTileTranscripts({
     // Bot tiles are pinned to an exact owner (connection + target profile);
     // read from that backend, not whichever profile is foreground. Tiles
     // without a route keep the legacy local read.
-    const profileScope: ProfileScope = tile.ownerRoute
-      ? {
-          connectionId: tile.ownerRoute.connectionId,
-          profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile
-        }
-      : undefined
+    const profileScope = profileScopeForTranscriptSession(tile)
 
     const signatureKey = tileTranscriptSignatureKey(tile)
 
@@ -222,7 +244,7 @@ export async function reconcileActiveTranscript({
     return
   }
 
-  const stored = resolveSession(storedSessionId)
+  const stored = resolveSession(storedSessionId, runtimeSessionId)
 
   if (!stored) {
     return
@@ -232,12 +254,7 @@ export async function reconcileActiveTranscript({
   requestSequenceRef.current = requestId
 
   try {
-    const profileScope: ProfileScope = stored.ownerRoute
-      ? {
-          connectionId: stored.ownerRoute.connectionId,
-          profile: stored.ownerRoute.targetProfile ?? stored.ownerRoute.profile
-        }
-      : stored.profile
+    const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
 

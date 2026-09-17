@@ -108,6 +108,28 @@ def _stale_purge_prefixes() -> frozenset:
     return frozenset(names) - {"tests"}
 
 
+def _evict_module(modules: dict, name: str) -> bool:
+    """Returns True when *name* was cached in *modules*; also unbinds the evicted module from its
+    parent package.
+
+    The attribute matters: ``from hermes_cli import main_dashboard`` is resolved by
+    ``_handle_fromlist``, which is satisfied by the ATTRIBUTE the import system left on the parent
+    package — so a purged submodule keeps being handed to call-time imports unless the attribute
+    goes too. The parent (``hermes_cli``) is protected and survives the purge, which is how a
+    pre-pull ``main_dashboard`` outlived it and crashed the dashboard cleanup on a symbol the pull
+    had just added (#112604).
+    """
+    dropped = modules.pop(name, None)
+    parent_name, _, child = name.rpartition(".")
+    parent = modules.get(parent_name)
+    # Identity, not name: a same-named module that something else already rebound on the
+    # package is newer than the one evicted here and must stay. ``vars()`` keeps a lazy
+    # package ``__getattr__`` (``providers``) from importing during the purge.
+    if parent is not None and dropped is not None and vars(parent).get(child) is dropped:
+        del vars(parent)[child]
+    return dropped is not None
+
+
 def _purge_stale_hermes_modules() -> None:
     """Evict every cached Hermes module after the checkout changed in-place. Never raises.
 
@@ -127,7 +149,7 @@ def _purge_stale_hermes_modules() -> None:
             and not name.startswith(_STALE_PURGE_PROTECTED_PREFIX)
             # Root-package check: startswith() alone also matches unrelated ``gateway_foo``.
             and name.split(".", 1)[0] in prefixes
-            and modules.pop(name, None) is not None
+            and _evict_module(modules, name)
         ]
         if purged:
             logger.debug("Purged %d stale Hermes module(s) after checkout update", len(purged))
@@ -334,6 +356,12 @@ def _reload_process_scan_modules() -> None:
     bounded_probe_run``. If the update added a new symbol to ``_subprocess_compat`` (as #87134 did with
     ``bounded_probe_run``), the cached OLD module object doesn't have it and the cleanup step crashes with
     ImportError — after the code update itself already succeeded.
+
+    The helpers it imports from ``hermes_cli.main_dashboard`` / ``main_install_repair`` are NOT
+    refreshed here: ``hermes_cli.main`` imports those eagerly at CLI start, so reloading would
+    rewrite the module dict the running update still holds bindings into. The
+    ``_purge_stale_hermes_modules`` eviction, which runs earlier in the update, is what makes the
+    call-time ``from hermes_cli import main_dashboard`` re-read the pulled source (#112604).
     """
     _reload_modules(
         ("hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"),

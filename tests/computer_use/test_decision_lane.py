@@ -54,9 +54,28 @@ def test_backend_order_aux_before_jev():
         reranker=None,
         aux=aux,
         jev=_jev_should_not_run,
+        ladder="default",
     )
     assert decision is not None and decision.backend == "aux"
     assert packet.scores == {"aux": 0.9}
+
+
+def test_backend_order_jev_first_before_aux(monkeypatch):
+    """jev-ultrafast ladder: Jev wins before aux when both would fire."""
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    aux = lambda state, cands: Decision(action="click", target_ref="b1", confidence=0.9, backend="aux")
+    jev = lambda state, cands: Decision(action="click", target_ref="b2", confidence=0.92, backend="jev")
+
+    decision, packet = run_decision_lane(
+        SemanticState(goal_hint="ambiguous"),
+        (_cand("b1", "Save"), _cand("b2", "Save copy")),
+        reranker=None,
+        aux=aux,
+        jev=jev,
+        ladder="jev_first",
+    )
+    assert decision is not None and decision.backend == "jev"
+    assert packet.scores == {"jev": 0.92}
 
 
 def test_rules_abstain_falls_through_to_reranker():

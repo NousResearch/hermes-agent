@@ -1,10 +1,15 @@
 """System-One decision lane substrate for computer use (#113850).
 
 Reframes bounded GUI steps from generation into typed decisions so cheap
-backends can answer without a frontier-model round trip. Backend order:
+backends can answer without a frontier-model round trip. Backend order (``ladder="default"``):
 
     deterministic rules -> local semantic reranker -> fast aux model
     -> Jev (only when TYPESAFE_API_KEY / JEV_API_KEY is set) -> abstain (fail open)
+
+``ladder="jev_first"`` (RFC #112639 / jev-ultrafast demos) prefers Jev when a key
+is configured:
+
+    rules -> Jev -> reranker -> aux -> abstain
 
 Rules, reranker, aux, and Jev stages ship in ``decision_stages``; callers may
 override any stage via the same ``(state, candidates) -> Decision | None`` shape
@@ -25,6 +30,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
 
 ActionKind = Literal["click", "type", "key", "scroll", "wait", "done", "escalate"]
+LadderMode = Literal["default", "jev_first"]
 
 ACTION_KINDS: tuple[str, ...] = ("click", "type", "key", "scroll", "wait", "done", "escalate")
 
@@ -114,6 +120,37 @@ def jev_available() -> bool:
     return any(os.environ.get(name, "").strip() for name in _JEV_KEY_ENV_VARS)
 
 
+def resolve_ladder_mode() -> LadderMode:
+    """Resolve System-One backend order from ``HERMES_CU_SYSTEM_ONE_LADDER``."""
+    raw = os.environ.get("HERMES_CU_SYSTEM_ONE_LADDER", "").strip().lower()
+    if raw == "jev_first":
+        return "jev_first"
+    return "default"
+
+
+def _stage_order(
+    *,
+    ladder: LadderMode,
+    reranker: Stage | None,
+    aux: Stage | None,
+    jev: Stage | None,
+) -> list[tuple[str, Stage | None, bool]]:
+    jev_enabled = jev_available() and jev is not None
+    if ladder == "jev_first" and jev_enabled:
+        return [
+            ("rules", rules_stage, True),
+            ("jev", jev, True),
+            ("reranker", reranker, reranker is not None),
+            ("aux", aux, aux is not None),
+        ]
+    return [
+        ("rules", rules_stage, True),
+        ("reranker", reranker, reranker is not None),
+        ("aux", aux, aux is not None),
+        ("jev", jev, jev_enabled),
+    ]
+
+
 def default_verifier(state: SemanticState, decision: Decision) -> bool:
     """Reject decisions whose target ref is missing or incompatible with the action."""
     if decision.action in {"wait", "done", "escalate", "scroll", "key"}:
@@ -141,21 +178,18 @@ def run_decision_lane(
     jev: Stage | None = None,
     verifier: Verifier | None = None,
     confidence_threshold: float = CONFIDENCE_THRESHOLD,
+    ladder: LadderMode | None = None,
 ) -> tuple[Decision | None, DecisionPacket]:
     """Run the backend order; return (decision, packet). None = fail open.
 
     The Jev stage runs only when ``jev_available()`` and a ``jev`` callable
-    is injected.
+    is injected. Use ``ladder="jev_first"`` (or env) for jev-ultrafast demos.
     """
     cands = tuple(candidates)
     started = time.monotonic()
     scores: dict[str, float] = {}
-    stages: list[tuple[str, Stage | None, bool]] = [
-        ("rules", rules_stage, True),
-        ("reranker", reranker, True),
-        ("aux", aux, True),
-        ("jev", jev, jev_available() and jev is not None),
-    ]
+    mode = ladder or resolve_ladder_mode()
+    stages = _stage_order(ladder=mode, reranker=reranker, aux=aux, jev=jev)
     chosen: Decision | None = None
     chosen_backend: str | None = None
     for name, stage, enabled in stages:

@@ -526,6 +526,99 @@ async def test_passive_context_survives_restart_and_is_consumed_after_dispatch(
 
 
 @pytest.mark.anyio
+async def test_new_group_room_announces_derived_role_once(tmp_path):
+    settings = {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    }
+    adapter = Adapter(Platform.MATRIX, settings)
+    gate = adapter.conversation_policy().relevance
+    first_message = event(Platform.MATRIX, text="Hello everyone")
+    first_message.metadata["conversation_mentioned"] = False
+
+    assert await gate._bootstrap_room_context("same-room", first_message) == "ASK_AI"
+    gate._call_model_chain = AsyncMock(return_value=json.dumps({
+        "answer_priority": "ASK_AI",
+        "relevance_factor": 45,
+        "names": ["Helper"],
+        "relation": "I help this room evaluate technical proposals.",
+        "announcement": (
+            "I will help evaluate technical proposals in this room. "
+            "Tell me if you want a different focus or participation level."
+        ),
+    }))
+
+    await gate._update_context(
+        "same-room", ["Automatically discovered group room."]
+    )
+
+    expected = (
+        "👋 I will help evaluate technical proposals in this room. "
+        "Tell me if you want a different focus or participation level."
+    )
+    assert adapter.sent == [("same-room", expected)]
+    context_xml = (tmp_path / "RELEVANCE_CONTEXT.xml").read_text()
+    assert "<role_announcement_state>sent</role_announcement_state>" in context_xml
+
+    gate._call_model_chain = AsyncMock(return_value=json.dumps({
+        "answer_priority": "ASK_AI",
+        "relevance_factor": 55,
+        "names": ["Helper"],
+        "relation": "I help this room evaluate technical proposals proactively.",
+        "announcement": "This must not be posted after initial setup.",
+    }))
+    await gate._update_context("same-room", ["Be slightly more proactive."])
+    await gate._announce_room_role("same-room")
+
+    assert adapter.sent == [("same-room", expected)]
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
+async def test_failed_role_announcement_is_retried_after_restart(tmp_path):
+    settings = {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    }
+    first = Adapter(Platform.MATRIX, settings)
+    first_gate = first.conversation_policy().relevance
+    first_message = event(Platform.MATRIX, text="Hello everyone")
+    first_message.metadata["conversation_mentioned"] = False
+    await first_gate._bootstrap_room_context("same-room", first_message)
+    first_gate._call_model_chain = AsyncMock(return_value=json.dumps({
+        "answer_priority": "ASK_AI",
+        "relevance_factor": 50,
+        "names": ["Helper"],
+        "relation": "I support this room with technical reviews.",
+        "announcement": (
+            "I support technical reviews here. Tell me if this role should change."
+        ),
+    }))
+    first.fail_send = True
+
+    await first_gate._update_context(
+        "same-room", ["Automatically discovered group room."]
+    )
+
+    failed_xml = (tmp_path / "RELEVANCE_CONTEXT.xml").read_text()
+    assert "<role_announcement_state>ready</role_announcement_state>" in failed_xml
+    assert first.sent == []
+    await first.disconnect()
+
+    second = Adapter(Platform.MATRIX, settings)
+    second_gate = second.conversation_policy().relevance
+    await second_gate._announce_room_role("same-room")
+
+    assert second.sent == [(
+        "same-room",
+        "👋 I support technical reviews here. Tell me if this role should change.",
+    )]
+    recovered_xml = (tmp_path / "RELEVANCE_CONTEXT.xml").read_text()
+    assert "<role_announcement_state>sent</role_announcement_state>" in recovered_xml
+    await second.disconnect()
+
+
+@pytest.mark.anyio
 async def test_plain_own_name_is_an_immediate_direct_address(tmp_path):
     adapter = Adapter(Platform.MATRIX, {
         "relevance": {"enabled": True},

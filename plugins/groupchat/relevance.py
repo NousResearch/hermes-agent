@@ -191,6 +191,7 @@ class _RoomContext:
     relevance_factor: int = 50
     relation: str = ""
     names: List[str] = dataclasses.field(default_factory=list)
+    role_announcement_state: str = ""
 
 
 @dataclasses.dataclass
@@ -380,6 +381,7 @@ class IntelligentReactionGate:
         self._context_update_scheduled: Dict[str, bool] = {}
         self._context_update_handle: Dict[str, Optional[asyncio.TimerHandle]] = {}
         self._last_context_update: Dict[str, float] = {}
+        self._role_announcement_inflight: Set[str] = set()
         # Path to the in-repo Hermes skill that documents the XML schema.
         self._skill_file = (
             Path(__file__).resolve().parents[2]
@@ -744,6 +746,9 @@ class IntelligentReactionGate:
                     relevance_factor=factor,
                     relation=relation,
                     names=names,
+                    role_announcement_state=_child_text(
+                        room, "role_announcement_state"
+                    ).lower(),
                 )
                 for key in (rid, alias):
                     if key:
@@ -846,6 +851,12 @@ class IntelligentReactionGate:
                 "Automatisch angelegter Direktchat." if is_dm
                 else "Automatisch angelegter Gruppenraum; Modellanreicherung ausstehend.",
             )
+            # Group rooms announce their enriched role once.  DMs do not need
+            # a public introduction, and pre-existing/manual room entries are
+            # never opted in implicitly.
+            self._set_child_text(
+                room_el, "role_announcement_state", "sent" if is_dm else "pending"
+            )
             if room_el.find("names") is None:
                 ET.SubElement(room_el, "names")
             ET.indent(root, space="  ")
@@ -899,6 +910,12 @@ class IntelligentReactionGate:
             return
 
         user_id = msg_event.user_id or ""
+
+        # Recover a role announcement that became ready immediately before a
+        # gateway restart.  The persisted state keeps ordinary messages from
+        # creating announcement tasks after the introduction has been sent.
+        if self._get_room_context(room).role_announcement_state == "ready":
+            self._spawn(self._announce_room_role(room))
 
         # Some Matrix relation/redaction updates normalize to a text event
         # without any visible body. They carry no prompt for an agent and must
@@ -2505,6 +2522,7 @@ class IntelligentReactionGate:
     ) -> None:
         if not room or not corrections:
             return
+        announcement_ready = False
         async with self._context_write_lock:
             current_xml = ""
             if self._context_file.exists():
@@ -2529,6 +2547,9 @@ class IntelligentReactionGate:
                     if not self._save_self_context(current_xml):
                         raise OSError("atomic context commit failed")
                     logger.info("Conversation IR: updated %s", self._context_file)
+                    announcement_ready = self._role_announcement_state(
+                        current_xml, room
+                    ) == "ready"
             except Exception as exc:
                 logger.warning(
                     "Conversation IR: context update failed (%s)", type(exc).__name__
@@ -2536,6 +2557,90 @@ class IntelligentReactionGate:
                 # Re-queue failed corrections so the next attempt can retry.
                 self._pending_corrections.setdefault(room, [])[:0] = corrections
                 self._last_context_update[room] = 0.0
+        if announcement_ready:
+            await self._announce_room_role(room)
+
+    @staticmethod
+    def _room_element(root: ET.Element, room: str) -> Optional[ET.Element]:
+        rooms_el = root.find("rooms")
+        if rooms_el is None:
+            return None
+        for room_el in rooms_el.findall("room"):
+            if room_el.get("id") == room or room_el.get("alias") == room:
+                return room_el
+        return None
+
+    @classmethod
+    def _role_announcement_state(cls, xml: str, room: str) -> str:
+        try:
+            room_el = cls._room_element(ET.fromstring(xml), room)
+        except ET.ParseError:
+            return ""
+        if room_el is None:
+            return ""
+        return (room_el.findtext("role_announcement_state") or "").strip().lower()
+
+    async def _set_role_announcement_state(
+        self, room: str, expected: str, state: str
+    ) -> str:
+        """Atomically move an announcement state and return its message text."""
+        async with self._context_write_lock:
+            try:
+                xml = self._context_file.read_text(encoding="utf-8")
+                root = ET.fromstring(xml)
+            except (OSError, ET.ParseError):
+                return ""
+            room_el = self._room_element(root, room)
+            if room_el is None:
+                return ""
+            current = (
+                room_el.findtext("role_announcement_state") or ""
+            ).strip().lower()
+            if current != expected:
+                return ""
+            text = (room_el.findtext("role_announcement_text") or "").strip()
+            self._set_child_text(room_el, "role_announcement_state", state)
+            ET.indent(root, space="  ")
+            updated = (
+                ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                .decode("utf-8")
+                .replace(
+                    "<?xml version='1.0' encoding='UTF-8'?>",
+                    '<?xml version="1.0" encoding="UTF-8"?>',
+                )
+            )
+            if not self._save_self_context(updated):
+                return ""
+            return text
+
+    async def _announce_room_role(self, room: str) -> None:
+        """Post the automatically derived room role once and invite correction."""
+        if not room or room in self._role_announcement_inflight:
+            return
+        self._role_announcement_inflight.add(room)
+        try:
+            text = await self._set_role_announcement_state(
+                room, "ready", "sent"
+            )
+            if not text:
+                return
+            message = f"👋 {text}"
+            try:
+                result = await self._adapter.send(room, message)
+                if not getattr(result, "success", False):
+                    raise RuntimeError("role announcement delivery failed")
+            except Exception as exc:
+                # A definite delivery failure may be retried on the next room
+                # event.  Marking sent before transport avoids duplicate posts
+                # when delivery succeeds but the process exits before cleanup.
+                await self._set_role_announcement_state(room, "sent", "ready")
+                logger.warning(
+                    "Conversation IR: role announcement failed for %s (%s)",
+                    room,
+                    type(exc).__name__,
+                )
+        finally:
+            self._role_announcement_inflight.discard(room)
 
     @staticmethod
     def _get_or_create_room_element(root: ET.Element, room: str) -> ET.Element:
@@ -2606,6 +2711,14 @@ class IntelligentReactionGate:
                 ET.SubElement(root, "rooms")
 
         rc = self._get_room_context(room)
+        room_el_before = self._room_element(root, room)
+        announcement_state = (
+            (room_el_before.findtext("role_announcement_state") or "")
+            .strip()
+            .lower()
+            if room_el_before is not None
+            else ""
+        )
         prompt = (
             "Maintain this chat agent's RELEVANCE_CONTEXT.xml. Create or update a complete room context describing who the agent is, its responsibilities and room behavior. "
             "Existing context may be incomplete or wrong; prioritize SOUL/AGENTS and the learning note.\n\n"
@@ -2620,7 +2733,8 @@ class IntelligentReactionGate:
             "Prefer ASK_AI or WHEN_MENTIONED for vague requests. relevance_factor is 1-99. "
             "names lists all mention spellings, including first name, lowercase, with/without AI and full mention. "
             "relation is English prose (maximum 400 words) describing name/role, responsibilities, persona summary and behavior in this specific room. "
-            'Format: {"answer_priority": "ASK_AI", "relevance_factor": 50, "names": ["..."], "relation": "..."}'
+            "For a newly discovered group room, announcement is a complete, brief first-person message in the likely room language (maximum 320 characters). It describes the role and explicitly invites people to redefine the focus or level of participation. It must be safe to post publicly and omit internal file names and private instructions. "
+            'Format: {"answer_priority": "ASK_AI", "relevance_factor": 50, "names": ["..."], "relation": "...", "announcement": "..."}'
         )
 
         try:
@@ -2660,6 +2774,22 @@ class IntelligentReactionGate:
                 self._set_child_text(room_el, "answer_priority", priority)
                 self._set_child_text(room_el, "relevance_factor", str(factor))
                 self._set_child_text(room_el, "relation", relation)
+                if announcement_state == "pending" and priority != "ALWAYS":
+                    announcement = str(data.get("announcement", "")).strip()
+                    if not announcement:
+                        announcement = re.split(r"(?<=[.!?])\s+", relation, 1)[0]
+                        announcement += (
+                            " Tell me if you want me to change this role or "
+                            "participate more or less proactively."
+                        )
+                    announcement = " ".join(announcement.split())[:320]
+                    if announcement:
+                        self._set_child_text(
+                            room_el, "role_announcement_text", announcement
+                        )
+                        self._set_child_text(
+                            room_el, "role_announcement_state", "ready"
+                        )
                 # Update the <names> list.
                 existing = room_el.find("names")
                 if existing is not None:

@@ -105,6 +105,12 @@ bypass delayed relevance scoring. Conversations clearly addressed to another
 participating local agent stay passive until an open message invites a useful
 contribution.
 
+When Groupchat derives an agent's role for a newly discovered group room, the
+agent posts one short introduction describing that role and explicitly invites
+people in the room to redefine its focus or level of participation. The
+announcement state is stored with the room context so gateway restarts and
+later context corrections do not repeat the introduction.
+
 The outbound guard suppresses deterministic acknowledgement/silence patterns
 and can classify short replies with the configured filter model. German and
 English defaults are included; additional languages can be configured as regex

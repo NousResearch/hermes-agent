@@ -75,9 +75,9 @@ def catalog() -> tuple[Guarantee, ...]:
         Guarantee(
             "structured-security-reasons",
             "Security decisions expose a closed, machine-readable reason-code vocabulary.",
-            "gap",
-            (),
-            "Approval results currently rely on several local keys and free-text descriptions.",
+            "partial",
+            ("tests/tools/test_approval_reason_codes.py",),
+            "Approval denials, pending decisions, and hard floors are covered; other tool families still need migration.",
         ),
         Guarantee(
             "raise-only-policy-composition",

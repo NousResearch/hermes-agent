@@ -51,6 +51,9 @@ vi.mock('@/store/session', () => ({
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 vi.mock('@/store/session-states', () => reconnectStateMocks)
 
+const notificationMocks = vi.hoisted(() => ({ notifyParkedBackendScope: vi.fn() }))
+vi.mock('@/store/notifications', () => notificationMocks)
+
 const {
   activeGateway,
   touchSecondaryGateways,
@@ -724,6 +727,80 @@ describe('secondary stalled-dial budget', () => {
 
     expect(reopened).not.toBeNull()
     expect(getConnectionFor.mock.calls.length).toBe(parkedDials + 1)
+  })
+
+  it('surfaces a terminal retryable notice when a FOREGROUND-PINNED scope parks (#93892 parking variant)', async () => {
+    vi.useFakeTimers()
+
+    // A mounted tile (or the primary thread) is pinned to this scope: it issued
+    // its resume once and has no further demand to make, so a silent park would
+    // leave it loading forever.
+    const foregroundScopes = new Set<string>(['conn:homelab::bot-a'])
+    configureGatewayRegistry({ foregroundScopes: () => foregroundScopes, onEvent: vi.fn() } as never)
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(new Error('Local backend start for "bot-a" timed out while waiting for a free slot.'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    // Parked AND surfaced — never a silent permanent loading state.
+    expect(notificationMocks.notifyParkedBackendScope).toHaveBeenCalledTimes(1)
+
+    const notice = notificationMocks.notifyParkedBackendScope.mock.calls[0][0] as {
+      scope: string
+      retry: () => void
+    }
+
+    expect(notice.scope).toBe('conn:homelab::bot-a')
+
+    const parkedDials = getConnectionFor.mock.calls.length
+
+    // The notice's retry re-arms a fresh budget and redials the scope.
+    getConnectionFor.mockResolvedValue(descriptorFor('homelab', 'bot-a'))
+    notice.retry()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getConnectionFor.mock.calls.length).toBe(parkedDials + 1)
+    expect(socket.connectionState).toBe('open')
+  })
+
+  it('keeps the silent bounded park for a background (unpinned) scope', async () => {
+    vi.useFakeTimers()
+
+    const getConnectionFor = vi
+      .fn()
+      .mockResolvedValueOnce(descriptorFor('homelab', 'bot-a'))
+      .mockRejectedValue(new Error('Local backend start for "bot-a" timed out while waiting for a free slot. (background)'))
+
+    installDesktop({ getConnectionFor })
+
+    await ensureGatewayForAgent('homelab', 'bot-a')
+    const socket = gatewayMocks.instances[0] as unknown as { connectionState: string }
+    socket.connectionState = 'closed'
+
+    reconnectSecondaryGateways()
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let index = 0; index < 20; index += 1) {
+      await vi.advanceTimersByTimeAsync(20_000)
+    }
+
+    // No foreground surface owns it, so it parks quietly; its next routed
+    // request re-arms it (bounded retry is the point of the park, #103375).
+    expect(notificationMocks.notifyParkedBackendScope).not.toHaveBeenCalled()
   })
 })
 

@@ -667,9 +667,17 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes,
     platforms where POSIX mode bits are advisory (Windows): falls back to a
     plain write rather than failing the media write.
     """
+    # Disallowed runs collapse to a single "-" rather than being deleted. Deleting
+    # them glues words together ("Screenshot 2026-09-15 at 11.12.26" would become
+    # "Screenshot2026-09-15at11.12.26"), which costs the very thing the stem is
+    # kept for: a batch of screenshots that still reads, and still sorts, by its
+    # capture timestamp. Leading/trailing separators are trimmed, and a stem that
+    # sanitizes down to nothing (or to "." / "..") is dropped entirely.
     stem = Path(filename if isinstance(filename, str) else "").stem
-    stem = re.sub(r"[^A-Za-z0-9._-]", "", stem)[:64]
-    suffix = f"_{stem}" if stem else ""
+    stem = stem.replace("\x00", "").strip()
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")
+    stem = re.sub(r"-{2,}", "-", stem)[:64]
+    suffix = f"_{stem}" if stem and stem not in {".", ".."} else ""
     filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{suffix}{ext}"
     try:
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

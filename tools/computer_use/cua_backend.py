@@ -16,7 +16,10 @@ import subprocess
 import sys
 import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from tools.computer_use.readiness import ReadinessResult
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
@@ -351,6 +354,20 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         payload = dict(args) if args else {}
         payload.setdefault("session", self._session_id)
         return self._session.call_tool(name, payload, timeout=timeout)
+
+    def verify_readiness(self, *, pid: int, window_id: int, expect: List[Dict[str, Any]],
+                         timeout_ms: int = 2000, stable_samples: int = 1,
+                         include_screenshot: bool = False) -> "ReadinessResult":
+        """Bounded readiness check via the driver's ``verify_state`` tool (RFC #112639).
+
+        Fails closed as ``unknown`` when the driver does not advertise the tool.
+        Stated consumer: the guarded desktop-run executor uses this as the
+        per-step confirmation signal instead of a capture + model round trip.
+        """
+        from tools.computer_use.readiness import verify_readiness
+        return verify_readiness(self, pid=pid, window_id=window_id, expect=expect,
+                                timeout_ms=timeout_ms, stable_samples=stable_samples,
+                                include_screenshot=include_screenshot)
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit

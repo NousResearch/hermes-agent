@@ -138,6 +138,17 @@ class TestGetHermesHome:
 
         assert get_hermes_home() == local_appdata / "hermes"
 
+    def test_override_unexpanded_tilde_expands_under_home(self, tmp_path, monkeypatch):
+        """A literal '~' override (shells like fish don't expand it) resolves
+        under HOME instead of scaffolding a stray '~/' tree at the cwd (#114353)."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        token = set_hermes_home_override("~/.hermes-override-tilde")
+        try:
+            assert get_hermes_home() == tmp_path / ".hermes-override-tilde"
+        finally:
+            reset_hermes_home_override(token)
+
 
 class TestGetProcessHermesHome:
     """Tests for get_process_hermes_home() — process launch scope.
@@ -151,6 +162,18 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+    def test_env_unexpanded_tilde_expands_under_home(self, tmp_path, monkeypatch):
+        """A literal '~' in HERMES_HOME (fish leaves it unexpanded in env
+        assignments) must resolve under HOME, never against the cwd (#114353)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", "~/.hermes-literal-tilde")
+
+        resolved = get_process_hermes_home()
+        assert resolved == tmp_path / ".hermes-literal-tilde"
+        assert resolved.is_absolute()
+        assert not (tmp_path / "~").exists()
 
 
 

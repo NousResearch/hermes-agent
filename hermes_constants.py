@@ -102,7 +102,7 @@ def get_hermes_home() -> Path:
     """Hermes home: context-local override → ``HERMES_HOME`` env var → platform default."""
     override = get_hermes_home_override()
     if override:
-        return Path(override)
+        return Path(override).expanduser()
     if not os.environ.get("HERMES_HOME", "").strip():
         _warn_profile_fallback_once()
     return get_process_hermes_home()
@@ -154,7 +154,11 @@ def get_process_hermes_home() -> Path:
     request is scoped to another profile (e.g. embedded ``/chat`` under ``--open-profile``).
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else _get_platform_default_hermes_home()
+    if not val:
+        return _get_platform_default_hermes_home()
+    # fish leaves a literal '~' unexpanded in env assignments; without this the
+    # home resolves against the cwd and a full Hermes tree scaffolds at <cwd>/~ (#114353).
+    return Path(val).expanduser()
 
 
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,

@@ -107,7 +107,7 @@ def _schema(name: str, description: str, properties: dict[str, tuple[str, str]],
 
 TOOL_SCHEMAS = [
     _schema("mem0_search", "Search the user's memories by meaning; returns facts ranked by relevance. Use this before answering any question that may depend on what you know about the user (preferences, facts, history, people, projects, past decisions). For multi-part or multi-hop questions, call it several times — vary the wording and run follow-up searches on what earlier results reveal; one search is rarely enough.",
-            {"query": ("string", "What to search for."), "top_k": ("integer", "Max results (default: 10, max: 50)."), "rerank": ("boolean", "Rerank results for relevance (default: false, platform mode only).")}, ["query"]),
+            {"query": ("string", "What to search for."), "top_k": ("integer", "Max results (default: 10, max: 50)."), "rerank": ("boolean", "Rerank results for relevance (default: false).")}, ["query"]),
     _schema("mem0_add", "Store a durable fact about the user, verbatim (no LLM extraction). Call this the moment the user states a lasting preference, correction, decision, or personal detail worth recalling on future turns — don't wait to be asked to remember. Skip transient chit-chat and facts you've already stored.",
             {"content": ("string", "The fact to store.")}, ["content"]),
     _schema("mem0_update", "Replace the text of an existing memory by its ID (take the ID from a mem0_search result). Use when a stored fact has changed or was wrong — correct it in place instead of adding a duplicate.",
@@ -251,9 +251,10 @@ class Mem0MemoryProvider(MemoryProvider):
         return self._backend.add(messages, user_id=self._user_id, agent_id=self._agent_id, infer=infer, metadata=metadata)
 
     def system_prompt_block(self) -> str:
-        # Mirror _create_backend precedence (oss > host > platform). Rerank is a Mem0 Platform feature only.
+        # Mirror _create_backend precedence (oss > host > platform). Rerank is available in every
+        # mode; on the self-hosted server it needs a configured reranker.
         mode_label = "OSS (self-hosted)" if self._mode == "oss" else "self-hosted (HTTP API)" if self._host else "platform (cloud API)"
-        rerank_note = " Rerank is available on search." if (self._mode == "platform" and not self._host) else ""
+        rerank_note = " Rerank is available on search." if not (self._mode == "platform" and self._host) else ""
         return f"# Mem0 Memory\nActive. Mode: {mode_label}. User: {self._user_id}.\n{_PROMPT_BODY}{rerank_note}"
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:

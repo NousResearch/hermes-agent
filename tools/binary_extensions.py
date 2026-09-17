@@ -30,10 +30,25 @@ OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
 })
 
 
+# SQLite journal sidecars (``x.db-wal``, ``x.sqlite3-shm``, ``x.db-journal``)
+# hang their marker off the database's own extension, so the final ``.suffix``
+# is ".db-wal" — never in any extension set — and both the read guard and the
+# write guard would treat the raw page bytes as text.
+_SQLITE_SIDECAR_MARKERS = ("-wal", "-shm", "-journal")
+
+
 def _has_extension_in(path: str, extensions: frozenset) -> bool:
-    """Case-insensitive check on the final ``.suffix``; pure string, no I/O."""
+    """Case-insensitive check on the final ``.suffix``; pure string, no I/O.
+    A SQLite sidecar counts as its database's extension."""
     dot = path.rfind(".")
-    return dot != -1 and path[dot:].lower() in extensions
+    if dot == -1:
+        return False
+    suffix = path[dot:].lower()
+    for marker in _SQLITE_SIDECAR_MARKERS:
+        if suffix.endswith(marker):
+            suffix = suffix[: -len(marker)]
+            break
+    return suffix in extensions
 
 
 def has_binary_extension(path: str) -> bool:

@@ -7,6 +7,7 @@ allowing new-.pdf creation (raw PDF syntax is text-authorable).
 """
 
 import json
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -33,6 +34,20 @@ def _make_minimal_docx(path: Path) -> None:
             "<w:t>Quarterly numbers look good.</w:t></w:r></w:p></w:body>"
             "</w:document>",
         )
+
+
+def _make_wal_db(path: Path) -> Path:
+    """Create a WAL-mode SQLite db whose ``-wal`` sidecar holds unflushed pages."""
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE t (name TEXT)")
+    conn.execute("INSERT INTO t VALUES ('alpha')")
+    conn.commit()
+    conn.close()  # sqlite keeps the -wal until checkpoint; it exists here
+    wal = Path(str(path) + "-wal")
+    if not wal.exists():
+        wal.write_bytes(b"\x37\x7f\x06\x82alpha")
+    return wal
 
 
 class TestExtensionHelpers:
@@ -120,6 +135,19 @@ class TestWriteFileToolGuard:
         assert not result.get("error")
         assert pdf.exists()
 
+    def test_write_file_rejects_sqlite_wal_sidecar(self, tmp_path: Path):
+        # ".db-wal" is not a suffix in BINARY_EXTENSIONS; the sidecar must still
+        # count as its database's extension or text lands in the WAL.
+        db = tmp_path / "state.db"
+        wal = _make_wal_db(db)
+        original = wal.read_bytes()
+        result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
+        assert result.get("error"), "text write into .db-wal must be refused"
+        assert wal.read_bytes() == original
+        conn = sqlite3.connect(db)
+        assert conn.execute("PRAGMA integrity_check;").fetchone()[0] == "ok"
+        conn.close()
+
     def test_write_file_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"
         result = json.loads(write_file_tool(str(target), "hello world"))
@@ -173,6 +201,15 @@ class TestPatchToolGuard:
         result = json.loads(patch_tool(mode="patch", patch=v4a))
         err = result.get("error") or ""
         assert "binary document" not in err.lower()
+
+    def test_patch_replace_rejects_sqlite_wal_sidecar(self, tmp_path: Path):
+        wal = _make_wal_db(tmp_path / "state.db")
+        original = wal.read_bytes()
+        result = json.loads(
+            patch_tool(mode="replace", path=str(wal),
+                       old_string="alpha", new_string="beta"))
+        assert result.get("error"), "patch into .db-wal must be refused"
+        assert wal.read_bytes() == original
 
     def test_patch_replace_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"

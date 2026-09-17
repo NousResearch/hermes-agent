@@ -23,6 +23,9 @@ def _ctx(name: str, default: "str | None" = "") -> contextvars.ContextVar:
 _approval_session_key: contextvars.ContextVar[str] = _ctx("approval_session_key")
 _approval_turn_id: contextvars.ContextVar[str] = _ctx("approval_turn_id")
 _approval_tool_call_id: contextvars.ContextVar[str] = _ctx("approval_tool_call_id")
+_approval_tool_context: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "approval_tool_context", default=None
+)
 # Hermes session id (observability identity, distinct from the gateway routing session_key), forwarded to approval
 # hooks so observer plugins attach marks to the REAL session scope — otherwise they fall back to a synthetic "default"
 # session whose scope never closes, so close-time exporters never ship them.
@@ -97,6 +100,26 @@ def reset_current_observability_context(tokens: _Tokens) -> None:
     _approval_session_id.reset(session_token)
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
+
+
+def set_current_tool_context(tool_name: str, tool_call_id: str, tool_args: dict) -> contextvars.Token:
+    """Bind the exact post-middleware tool call while its approval gate runs."""
+    return _approval_tool_context.set(
+        {
+            "tool_name": tool_name or "",
+            "tool_call_id": tool_call_id or "",
+            "tool_args": dict(tool_args or {}),
+        }
+    )
+
+
+def reset_current_tool_context(token: contextvars.Token) -> None:
+    _approval_tool_context.reset(token)
+
+
+def get_current_tool_context() -> dict | None:
+    value = _approval_tool_context.get()
+    return dict(value) if value is not None else None
 
 
 def get_current_session_key(default: str = "default") -> str:

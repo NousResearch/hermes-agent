@@ -1274,30 +1274,69 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
-def _batched_retire_count(
-    count: int,
+def _image_block_count(msg: Dict[str, Any]) -> int:
+    """Number of API image BLOCKS in a message.
+
+    The provider counts blocks, not messages: one ``tool_result`` carrying three
+    screenshots is three blocks against the per-request limit.
+    """
+    content = msg.get("content")
+    inner = content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
+    return sum(1 for p in inner if _is_image_part(p)) if isinstance(inner, list) else 0
+
+
+def _reserved_image_blocks(api_messages: List[Dict[str, Any]]) -> int:
+    """Image blocks the send path must count but must never rewrite (user uploads).
+
+    They occupy the provider's per-request budget exactly like tool screenshots, so
+    ignoring them lets a mixed session sail past the limit; rewriting them would
+    silently discard something the user attached by hand.
+    """
+    return sum(
+        _image_block_count(m)
+        for m in api_messages
+        if isinstance(m, dict) and m.get("role") != "tool"
+    )
+
+
+def _outbound_image_retire_count(
+    block_counts_newest_first: List[int],
     sizes_newest_first: List[int],
     *,
+    reserved_blocks: int,
     limit: int,
     budget: int,
     batch: int,
     keep_newest: int,
 ) -> int:
-    """How many of the OLDEST image-bearing messages to retire, in whole batches.
+    """How many of the OLDEST image-bearing tool messages to retire, in whole batches.
 
     The send path recomputes eviction from scratch on a fresh clone every turn, so the
     retire count must be a step function of the overshoot: a fixed ``min(batch, ...)``
-    would cap total eviction at one batch forever and let the outbound count grow past
-    the provider limit unbounded, while ``count - limit + batch`` would advance the
-    frontier on every new image again. Rounding the overshoot up to a batch multiple
-    keeps the request within ``limit``/``budget`` and moves the frontier once per batch.
+    caps total eviction at one batch forever and lets the outbound request grow past the
+    provider limit unbounded, while an exact ``count - limit`` target moves the frontier
+    on every new image and re-invalidates the cached prefix each turn. Extending by whole
+    batches keeps the request within ``limit``/``budget`` and moves the frontier once per
+    batch.
+
+    ``keep_newest`` is a FLOOR, not a trigger. When reserved user uploads alone fill the
+    ceiling, retiring every tool screenshot would leave the model blind on the very frames
+    it was asked about, which is worse than the stricter dimension cap the limit avoids.
     """
-    if count <= limit and sum(sizes_newest_first) <= budget:
+    total = len(block_counts_newest_first)
+    if (reserved_blocks + sum(block_counts_newest_first) <= limit
+            and sum(sizes_newest_first) <= budget):
         return 0
-    retire = -(-max(count - limit, 0) // batch) * batch
-    while retire < count and sum(sizes_newest_first[: count - retire]) > budget:
-        retire += batch
-    return max(0, min(retire, count - max(keep_newest, 0)))
+
+    max_retire = max(total - max(keep_newest, 0), 0)
+    retire = 0
+    while retire < max_retire:
+        retire = min(retire + batch, max_retire)
+        kept = total - retire
+        if (reserved_blocks + sum(block_counts_newest_first[:kept]) <= limit
+                and sum(sizes_newest_first[:kept]) <= budget):
+            break
+    return retire
 
 
 def _image_payload_bytes(msg: Dict[str, Any]) -> int:
@@ -1326,20 +1365,22 @@ def evict_stale_outbound_tool_images(
     on an exact byte prefix, so every retirement re-writes the whole conversation. A count
     of N retires one more message on each new image, making every turn a full-prefix miss.
 
-    Keeping images until the request nears the API's own per-request image and byte limits,
-    then retiring a batch, costs one slower turn per batch instead of one per image, and
-    costs nothing at all while the request is under the limits.
+    The limit is counted in API image BLOCKS, so a ``tool_result`` carrying several
+    screenshots weighs several blocks, and user uploads are counted against the ceiling
+    without ever being rewritten. ``keep_newest`` is a floor that keeps the newest tool
+    frames reachable when reserved uploads alone fill the ceiling.
     """
     images = [
-        (i, size)
+        (i, _image_block_count(api_messages[i]), size)
         for i in range(len(api_messages) - 1, -1, -1)
         if isinstance(api_messages[i], dict)
         and api_messages[i].get("role") == "tool"
         and (size := _image_payload_bytes(api_messages[i])) > 0
     ]
-    retire = _batched_retire_count(
-        len(images),
-        [s for _, s in images],
+    retire = _outbound_image_retire_count(
+        [blocks for _, blocks, _ in images],
+        [s for _, _, s in images],
+        reserved_blocks=_reserved_image_blocks(api_messages),
         limit=_OUTBOUND_IMAGE_LIMIT,
         budget=_OUTBOUND_IMAGE_BUDGET_BYTES,
         batch=_IMAGE_EVICTION_BATCH,
@@ -1349,7 +1390,7 @@ def evict_stale_outbound_tool_images(
         return 0
 
     pruned = 0
-    for i, _ in images[-retire:]:
+    for i, _, _ in images[-retire:]:
         new_msg = _strip_images_from_tool_msg(api_messages[i])
         if new_msg is not None:
             api_messages[i] = new_msg

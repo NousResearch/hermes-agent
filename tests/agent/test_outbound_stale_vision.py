@@ -64,6 +64,26 @@ def _image_bearing_tool_ids(messages: list[dict]) -> list[str]:
     ]
 
 
+def _outbound_image_blocks(messages: list[dict]) -> int:
+    """Total API image blocks in the request, the way the provider counts them."""
+    total = 0
+    for m in messages:
+        content = m.get("content")
+        inner = (
+            content.get("content")
+            if isinstance(content, dict) and content.get("_multimodal")
+            else content
+        )
+        if isinstance(inner, list):
+            total += sum(
+                1
+                for p in inner
+                if isinstance(p, dict)
+                and p.get("type") in ("image_url", "input_image", "image")
+            )
+    return total
+
+
 class TestOutboundStaleVisionEviction:
     def test_sanitize_alone_keeps_every_screenshot(self):
         """The previous send chokepoint does not close #89296 by itself."""
@@ -125,6 +145,124 @@ class TestOutboundStaleVisionEviction:
             f"frontier moved {moves} times over {len(span)} images (frontier={frontier}); "
             "each move rewrites a cached row and restarts the prefix"
         )
+
+    def test_multi_image_tool_results_count_as_blocks(self):
+        """The provider limit counts image BLOCKS, not tool messages.
+
+        Eight tool results carrying three screenshots each are 24 API blocks against a
+        20-block ceiling. Counting one unit per message sees only 8 and evicts nothing.
+        """
+        history: list[dict] = [{"role": "user", "content": "start"}]
+        for i in range(8):
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": f"call_{i}",
+                            "type": "function",
+                            "function": {
+                                "name": "vision_analyze",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                }
+            )
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": f"call_{i}",
+                    "content": [
+                        {"type": "text", "text": f"shot {i}"},
+                        *[
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,AAA{i}{k}"},
+                            }
+                            for k in range(3)
+                        ],
+                    ],
+                }
+            )
+        outbound = sanitize_api_messages(history)
+        assert evict_stale_outbound_tool_images(outbound) > 0, (
+            "24 image blocks across 8 messages must trip the 20-block ceiling"
+        )
+        assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT
+
+    def test_user_uploads_count_against_the_ceiling(self):
+        """Uploads occupy the provider's budget, so they must force tool eviction.
+
+        Holding the tool-screenshot count fixed and adding uploads must increase the
+        number of retired screenshots; ignoring uploads leaves the request over the limit.
+        """
+        def outbound_for(n_uploads: int) -> list[dict]:
+            history: list[dict] = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look"},
+                        *[
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,U{k}"},
+                            }
+                            for k in range(n_uploads)
+                        ],
+                    ],
+                }
+            ]
+            for i in range(16):
+                history.extend(_image_tool(i))
+            outbound = sanitize_api_messages(history)
+            evict_stale_outbound_tool_images(outbound)
+            return outbound
+
+        assert evict_stale_outbound_tool_images(sanitize_api_messages(
+            [{"role": "user", "content": "start"}]
+            + [m for i in range(16) for m in _image_tool(i)]
+        )) == 0, "16 screenshots alone are under the ceiling"
+
+        for n_uploads in (8, 12):
+            outbound = outbound_for(n_uploads)
+            assert _outbound_image_blocks(outbound) <= _OUTBOUND_IMAGE_LIMIT, (
+                f"{n_uploads} uploads + 16 screenshots left the request over the ceiling"
+            )
+            user = next(m for m in outbound if m.get("role") == "user")
+            intact = sum(
+                1 for p in user["content"]
+                if isinstance(p, dict) and p.get("type") == "image_url"
+            )
+            assert intact == n_uploads, "user uploads must never be rewritten"
+
+    def test_keep_newest_is_a_floor_when_uploads_fill_the_ceiling(self):
+        """Reserved uploads alone over the limit must not blind the model.
+
+        Retiring every screenshot cannot bring the request under the ceiling here, so
+        the newest frames have to survive rather than be stripped for no benefit.
+        """
+        history: list[dict] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    *[
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,U{k}"},
+                        }
+                        for k in range(_OUTBOUND_IMAGE_LIMIT + 1)
+                    ],
+                ],
+            }
+        ]
+        for i in range(5):
+            history.extend(_image_tool(i))
+        outbound = sanitize_api_messages(history)
+        evict_stale_outbound_tool_images(outbound)
+        assert len(_image_bearing_tool_ids(outbound)) == _MAX_KEEP_TOOL_IMAGES
 
     def test_does_not_rewrite_persisted_history(self):
         from agent.conversation_loop import _clone_message_for_send

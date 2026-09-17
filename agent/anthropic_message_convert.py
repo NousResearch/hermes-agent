@@ -607,24 +607,39 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
     matches its prompt cache on an exact byte prefix, so a count-based window that retires
     one more block per new screenshot makes every turn a full-prefix miss. Holding images
     until the limit and then dropping a batch costs one slower turn per batch instead.
+
+    The ceiling is counted in image blocks, so a ``tool_result`` holding several
+    screenshots weighs several blocks, and user-uploaded images are reserved against the
+    limit without ever being rewritten. ``_MAX_KEEP_SCREENSHOTS`` is a floor: when reserved
+    uploads alone fill the ceiling the newest frames still reach the model.
     """
-    blocks = [
-        block
+    reserved = sum(
+        1
+        for msg in result
+        for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        if _block_type(block) == "image"
+    )
+    carriers = [
+        (block, sum(1 for b in block["content"] if b.get("type") == "image"))
         for msg in reversed(result)
         for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "tool_result"
         and isinstance(block.get("content"), list)
         and _has_block_type(block["content"], {"image"})
     ]
-    if len(blocks) <= _OUTBOUND_IMAGE_LIMIT:
+    total_blocks = reserved + sum(n for _, n in carriers)
+    if total_blocks <= _OUTBOUND_IMAGE_LIMIT:
         return
-    # Overshoot rounded UP to a whole batch: this runs statelessly on every request, so a fixed
-    # one-batch retire would stop enforcing the limit after the first batch, and an exact
+    # Extend by whole batches: this runs statelessly on every request, so a fixed one-batch
+    # retire would stop enforcing the limit after the first batch, and an exact
     # "limit minus batch" target would move the frontier on every new screenshot.
-    overshoot = len(blocks) - _OUTBOUND_IMAGE_LIMIT
-    retire = -(-overshoot // _SCREENSHOT_EVICTION_BATCH) * _SCREENSHOT_EVICTION_BATCH
-    retire = min(retire, max(len(blocks) - _MAX_KEEP_SCREENSHOTS, 0))
-    for block in blocks[-retire:]:
+    max_retire = max(len(carriers) - _MAX_KEEP_SCREENSHOTS, 0)
+    retire = 0
+    while retire < max_retire:
+        retire = min(retire + _SCREENSHOT_EVICTION_BATCH, max_retire)
+        if reserved + sum(n for _, n in carriers[: len(carriers) - retire]) <= _OUTBOUND_IMAGE_LIMIT:
+            break
+    for block, _ in carriers[-retire:] if retire else []:
         placeholder = _text_block("[screenshot removed to save context]")
         block["content"] = [
             placeholder if b.get("type") == "image" else b for b in block["content"]

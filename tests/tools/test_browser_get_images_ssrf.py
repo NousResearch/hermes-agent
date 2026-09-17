@@ -74,6 +74,13 @@ def test_skips_guard_when_private_urls_allowed(monkeypatch):
     assert result["count"] == 1
 
 
+def test_get_images_js_is_single_line_for_argv(monkeypatch):
+    """#113838: the eval payload travels as one argv element; a newline would
+    truncate it on Windows cmd into a syntax error."""
+    assert "\n" not in browser_tool._GET_IMAGES_JS
+    assert "\r" not in browser_tool._GET_IMAGES_JS
+
+
 def test_guard_does_not_block_on_failed_eval(monkeypatch):
     """If the eval itself fails, browser_get_images returns its own error — no guard needed."""
     def _run(task_id, command, args=None, **kwargs):

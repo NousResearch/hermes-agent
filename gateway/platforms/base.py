@@ -4161,7 +4161,8 @@ class BasePlatformAdapter(ABC):
                 platform=str(getattr(source.platform, "value", source.platform)),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
-                adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+                adapter_profile=getattr(delivery_adapter, "_owner_profile", None),
+                reply_to=str(_ledger_id) if _ledger_id else None)
             await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
         except Exception:

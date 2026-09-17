@@ -441,9 +441,9 @@ Set `cron_job` on a route to fire an **existing cron job** whenever an event arr
 
 How it works:
 
-1. The event passes the same HMAC auth, rate limiting, `events`/`filters`/`script` filtering, and idempotency as any other route.
+1. The event passes the same HMAC auth, rate limiting, and `events`/`filters`/`script` filtering as any other route.
 2. The route's `prompt` template is rendered from the payload and injected into the job as **transient per-run context** (the same rail as `cronjob(action='run', prompt=...)` — the job's stored prompt is never mutated).
-3. The job fires through the same at-most-once claim the scheduler uses, so a webhook burst cannot double-fire a job that is already running, and the job's own delivery target receives the output.
+3. Hermes preflights the referenced job under the routed profile and acquires the scheduler's at-most-once fire claim **before** acknowledging the POST. Only then is the delivery ID consumed and `202 Accepted` returned; a worker runs the claimed snapshot without claiming again. Unknown, paused, disabled, completed, or busy targets return a retryable `503` with a generic error and leave the delivery ID unconsumed so the producer can retry.
 
 ### Example: fire a PR-review job on review feedback
 
@@ -477,8 +477,8 @@ The job reference is validated when you create the subscription, so typos surfac
 
 - `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
 - The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
-- Paused/disabled jobs are not fired; the event is logged and dropped.
-- The POST returns `202 Accepted` immediately; the job runs in the background.
+- Paused, disabled, completed, unknown, or otherwise unrunnable jobs are not fired. The POST returns retryable `503` with a generic error and does **not** consume the delivery ID, so the producer can retry after the job is resumed. A job that is already running is also `503` (there is no second fire queue).
+- The POST returns `202 Accepted` only after the fire claim is acquired; the claimed run then executes in the background.
 
 ---
 

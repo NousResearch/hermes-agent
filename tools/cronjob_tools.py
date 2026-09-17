@@ -341,24 +341,19 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": False, "error": str(e)}
 
 
-def execute_job_for_event(
-    job_ref: str, extra_prompt: Optional[str] = None
-) -> Dict[str, Any]:
-    """Fire an existing cron job in response to an external event.
+def admit_job_for_event(job_ref: str) -> Dict[str, Any]:
+    """Resolve and durably claim a cron job for an event trigger without running it.
 
-    Public entry point for event-driven triggers (the webhook adapter's
-    ``cron_job`` routes). Resolves ``job_ref`` (ID or name) and
-    fires it through the exact same claimed-run body a manual
-    ``cronjob(action='run')`` uses, so at-most-once claiming, in-flight
-    dedupe, delivery, and ``[SILENT]`` handling stay identical across the
-    scheduler / manual / event paths.
+    Webhook ``cron_job`` routes call this synchronously under the routed
+    profile before acknowledging the producer. Unknown, ambiguous, paused,
+    disabled, completed, unrunnable, or already-claimed targets return
+    ``{"claimed": False, "success": False, "error": ...}``. A win returns
+    ``{"claimed": True, "success": True, "job": claimed_snapshot}`` so a
+    later ``_run_claimed_job`` can execute without claiming again.
 
-    ``extra_prompt`` is injected as transient per-run context (the job's
-    stored prompt is never mutated), exactly like ``action='run'`` with a
-    ``prompt`` argument.
-
-    Returns the ``_execute_job_now`` result shape:
-    ``{"claimed": bool, "success": bool, "error": str|None}``.
+    Uses ``claim_job_for_fire(..., manual=True)`` (same CAS as
+    ``cronjob(action='run')``) so an event does not consume the next
+    scheduled occurrence.
     """
     try:
         job = resolve_job_ref(job_ref)
@@ -370,7 +365,38 @@ def execute_job_for_event(
             "success": False,
             "error": f"Cron job '{job_ref}' not found.",
         }
-    return _execute_job_now(job, extra_prompt=extra_prompt)
+    claimed_job, err = _claim_for_manual_run(job["id"], "event trigger")
+    if err is not None:
+        return err
+    return {"claimed": True, "success": True, "job": claimed_job}
+
+
+def execute_job_for_event(
+    job_ref: str, extra_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Fire an existing cron job in response to an external event.
+
+    Public entry point for event-driven triggers. Resolves ``job_ref``
+    (ID or name), acquires the at-most-once fire claim, then runs the
+    claimed snapshot through the same body a manual ``cronjob(action='run')``
+    uses so in-flight dedupe, delivery, and ``[SILENT]`` handling stay
+    identical across the scheduler / manual / event paths.
+
+    ``extra_prompt`` is injected as transient per-run context (the job's
+    stored prompt is never mutated), exactly like ``action='run'`` with a
+    ``prompt`` argument.
+
+    Returns the ``_execute_job_now`` result shape:
+    ``{"claimed": bool, "success": bool, "error": str|None}``.
+    """
+    admitted = admit_job_for_event(job_ref)
+    if not admitted.get("claimed"):
+        return {
+            "claimed": False,
+            "success": False,
+            "error": admitted.get("error"),
+        }
+    return _run_claimed_job(admitted["job"], extra_prompt=extra_prompt)
 
 
 def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[str]:

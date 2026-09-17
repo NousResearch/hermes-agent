@@ -417,6 +417,9 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
+        workspace_cwd, workspace_err = self._parse_workspace_header(request)
+        if workspace_err is not None:
+            return workspace_err
         try:
             body = await request.json()
         except Exception:
@@ -504,7 +507,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
-            relay_metadata=relay_metadata,
+            relay_metadata=relay_metadata, workspace_cwd=workspace_cwd,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
             # and the client can resume the session by sending it again). A fingerprint-derived
@@ -555,7 +558,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
-            route="chat_completions",
+            route="chat_completions", context={"workspace": workspace_cwd},
         )
         if err is not None:
             return err
@@ -600,7 +603,8 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: List[str], route: str) -> tuple:
+        log_label: str, fingerprint_keys: List[str], route: str,
+        context: Optional[Dict[str, Any]] = None) -> tuple:
         """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
         -> ``((result, usage), None)`` or ``(None, 500 response)``.
 
@@ -617,7 +621,7 @@ class OpenAICompatRoutesMixin:
             if idempotency_key:
                 principal_scope = self._run_idempotency_scope(request)
                 scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
-                fp = _make_request_fingerprint(body, keys=fingerprint_keys)
+                fp = _make_request_fingerprint(body, keys=fingerprint_keys, context=context)
                 result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
                 result, usage = await compute()
@@ -772,6 +776,9 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
+        workspace_cwd, workspace_err = self._parse_workspace_header(request)
+        if workspace_err is not None:
+            return workspace_err
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -861,7 +868,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
+            **agent_overrides, route=route, relay_metadata=relay_metadata, workspace_cwd=workspace_cwd)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -894,7 +901,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
-            route="responses",
+            route="responses", context={"workspace": workspace_cwd},
         )
         if err is not None:
             return err

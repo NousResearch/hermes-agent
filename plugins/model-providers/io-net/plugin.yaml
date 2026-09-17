@@ -1,4 +1,4 @@
-name: ionet-provider
+name: io-net-provider
 kind: model-provider
 version: 1.0.0
 description: IO Intelligence (io.net) OpenAI-compatible open-models API

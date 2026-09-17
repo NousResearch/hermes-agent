@@ -1307,31 +1307,39 @@ class TestIonetProvider:
 
     def test_ionet_profile_loads(self):
         from providers import get_provider_profile
-        profile = get_provider_profile("ionet")
+        profile = get_provider_profile("io-net")
         assert profile is not None
-        assert profile.name == "ionet"
+        assert profile.name == "io-net"
         assert profile.display_name == "IO Intelligence"
         assert profile.base_url == "https://api.intelligence.io.solutions/api/v1"
         assert "IONET_API_KEY" in profile.env_vars
 
     def test_ionet_alias_resolves(self):
         from providers import get_provider_profile
-        profile = get_provider_profile("io-intelligence")
-        assert profile is not None
-        assert profile.name == "ionet"
+        for alias in ("ionet", "io-intelligence", "io_net"):
+            profile = get_provider_profile(alias)
+            assert profile is not None
+            assert profile.name == "io-net"
 
     def test_ionet_registered_in_provider_registry(self):
         from hermes_cli.auth import PROVIDER_REGISTRY
-        assert "ionet" in PROVIDER_REGISTRY
-        pconfig = PROVIDER_REGISTRY["ionet"]
+        assert "io-net" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["io-net"]
         assert pconfig.auth_type == "api_key"
         assert pconfig.inference_base_url == "https://api.intelligence.io.solutions/api/v1"
 
     def test_ionet_runtime_resolves_chat_completions(self, monkeypatch):
         monkeypatch.setenv("IONET_API_KEY", "io-key")
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="ionet")
-        assert result["provider"] == "ionet"
+        result = resolve_runtime_provider(requested="io-net")
+        assert result["provider"] == "io-net"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "io-key"
         assert result["base_url"] == "https://api.intelligence.io.solutions/api/v1"
+
+    def test_ionet_models_dev_env_var_honored(self, monkeypatch):
+        monkeypatch.setenv("IOINTELLIGENCE_API_KEY", "io-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="ionet")
+        assert result["provider"] == "io-net"
+        assert result["api_key"] == "io-key"

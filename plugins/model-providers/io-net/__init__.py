@@ -5,9 +5,10 @@ from providers.base import ProviderProfile
 
 
 ionet = ProviderProfile(
-    name="ionet", aliases=("io-intelligence", "io_net"), display_name="IO Intelligence",
+    name="io-net", aliases=("ionet", "io-intelligence", "io_net"), display_name="IO Intelligence",
     description="IO Intelligence — io.net's OpenAI-compatible API for open-weight models",
-    signup_url="https://io.net/docs/guides/intelligence/api-keys-and-secrets", env_vars=("IONET_API_KEY", "IONET_BASE_URL"),
+    signup_url="https://io.net/docs/guides/intelligence/api-keys-and-secrets",
+    env_vars=("IONET_API_KEY", "IOINTELLIGENCE_API_KEY", "IONET_BASE_URL"),
     base_url="https://api.intelligence.io.solutions/api/v1", auth_type="api_key",
     default_aux_model="zai-org/GLM-5.3-Flash",
     fallback_models=(

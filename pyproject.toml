@@ -488,6 +488,7 @@ alibabacloud-dingtalk = false
 anthropic = false
 asyncpg = false
 azure-identity = false
+bitwarden-sdk = false
 boto3 = false
 brotlicffi = false
 certifi = false

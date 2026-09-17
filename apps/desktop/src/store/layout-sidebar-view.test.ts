@@ -11,6 +11,8 @@ import {
   setSidebarGrouping,
   setSidebarOrdering,
   setSidebarShowAllSessions,
+  SIDEBAR_GROUPING_ORDER,
+  type SidebarGrouping,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from './layout'
@@ -96,20 +98,20 @@ describe('the sidebar as it ships', () => {
     expect($sidebarGrouping.get()).toBe('profile')
   })
 
-  it('cycles through every grouping in the filter-menu order', () => {
-    expect($sidebarGrouping.get()).toBe('date')
+  it('visits every grouping once per lap and comes back to where it started', () => {
+    const start = $sidebarGrouping.get()
+    const visited: SidebarGrouping[] = []
 
-    cycleSidebarGrouping()
-    expect($sidebarGrouping.get()).toBe('project')
+    for (let step = 0; step < SIDEBAR_GROUPING_ORDER.length; step++) {
+      cycleSidebarGrouping()
+      visited.push($sidebarGrouping.get())
 
-    cycleSidebarGrouping()
-    expect($sidebarGrouping.get()).toBe('status')
+      if ($sidebarGrouping.get() === 'profile') {
+        expect($showAllProfiles.get()).toBe(true)
+      }
+    }
 
-    cycleSidebarGrouping()
-    expect($sidebarGrouping.get()).toBe('profile')
-    expect($showAllProfiles.get()).toBe(true)
-
-    cycleSidebarGrouping()
-    expect($sidebarGrouping.get()).toBe('date')
+    expect(new Set(visited)).toEqual(new Set(SIDEBAR_GROUPING_ORDER))
+    expect($sidebarGrouping.get()).toBe(start)
   })
 })

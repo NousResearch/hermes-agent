@@ -252,10 +252,10 @@ export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
 /** How the recents list is divided. `date` is the sidebar's long-standing
  *  default (Today / Yesterday / Last week dividers). `profile` only means
  *  anything while the sidebar is showing every profile at once. */
-export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
-/** The one ordering of groupings: the filter menu lists them in it and the
- *  `view.cycleSidebarGrouping` keybind walks it, so the two cannot drift. */
-export const SIDEBAR_GROUPING_ORDER: readonly SidebarGrouping[] = ['date', 'project', 'status', 'profile']
+export const SIDEBAR_GROUPING_ORDER = ['date', 'project', 'status', 'profile'] as const
+/** Derived from the order so a new grouping cannot exist without a slot in the
+ *  filter menu and the `view.cycleSidebarGrouping` keybind, which both walk it. */
+export type SidebarGrouping = (typeof SIDEBAR_GROUPING_ORDER)[number]
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */

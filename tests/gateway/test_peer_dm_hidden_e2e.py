@@ -15,6 +15,8 @@ auth check, and SQLite query in the resolution chain is the real thing.
 import asyncio
 import json
 import threading
+import time
+import urllib.request
 from types import SimpleNamespace
 
 import pytest
@@ -178,3 +180,52 @@ def test_peer_dm_reaches_compressed_hidden_bot_chat_e2e(
     # No duplicate "Bot Chat" row was minted; the title still lives on the root.
     assert gw.db.get_session_by_title("Bot Chat")["id"] == gw.hidden_id
 
+
+# ── the resurrection must not run on the gateway's event loop ────────────────
+
+_BLOCK_S = 1.5
+
+
+def _get(url: str, query: str) -> float:
+    """Issue one authenticated GET and return how long it took."""
+    req = urllib.request.Request(f"{url}/api/sessions?{query}",
+                                 headers={"Authorization": f"Bearer {API_KEY}"})
+    started = time.monotonic()
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        resp.read()
+    return time.monotonic() - started
+
+
+def test_a_slow_bot_chat_resurrection_does_not_stall_the_gateway(peer_gateway, monkeypatch):
+    """The canonical Bot Chat lookup is the first step of every `hermes peer dm`, and when the row
+    is archived this branch UN-ARCHIVES it — a write. A write that meets a busy database retries in
+    a `time.sleep` loop against the 20 s write patience, so running it on the loop thread stalls the
+    whole gateway: every other request, every socket, every relay RPC waits it out. This drives a
+    real gateway over a real socket and asks the only question that matters: is it still serving?"""
+    entered = threading.Event()
+
+    def _slow_unarchive(session_id):
+        entered.set()
+        time.sleep(_BLOCK_S)
+        return False  # nothing to re-list; the point is the wait, not the outcome
+
+    # Hidden rows are excluded without include_hidden, so the empty listing takes the branch.
+    monkeypatch.setattr(peer_gateway.db, "get_session_by_title",
+                        lambda title: {"id": peer_gateway.hidden_id, "archived": True})
+    monkeypatch.setattr(peer_gateway.db, "unarchive_recoverable_session", _slow_unarchive)
+
+    blocked = {}
+    caller = threading.Thread(
+        target=lambda: blocked.update(elapsed=_get(peer_gateway.url, "title=Bot%20Chat")))
+    caller.start()
+    try:
+        assert entered.wait(timeout=10), "the resurrection branch never ran"
+        # The gateway is now inside that write. A trivial listing must still be served.
+        elapsed = _get(peer_gateway.url, "title=Ordinary%20Chat")
+    finally:
+        caller.join(timeout=30)
+
+    assert elapsed < _BLOCK_S / 2, (
+        f"a concurrent listing waited {elapsed:.2f}s behind the resurrection write — "
+        "the gateway loop is blocked")
+    assert blocked["elapsed"] >= _BLOCK_S  # the slow request really did carry the whole wait

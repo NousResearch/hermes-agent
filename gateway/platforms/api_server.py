@@ -2801,8 +2801,13 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
                 # the tui_gateway lookups heal.
                 from tools.bot_mode_probe import BOT_CHAT_TITLE
-                stale = db.get_session_by_title(title_filter) if title_filter == BOT_CHAT_TITLE else None
-                if stale and stale.get("archived") and db.unarchive_recoverable_session(stale["id"]):
+                # Off-loop like the listing above: un-archiving WRITES, and a write that meets a
+                # busy database retries against _WRITE_PATIENCE_S in a time.sleep loop. On the loop
+                # thread that stalls the whole gateway — every other request, socket and relay RPC.
+                stale = (await asyncio.to_thread(db.get_session_by_title, title_filter)
+                         if title_filter == BOT_CHAT_TITLE else None)
+                if stale and stale.get("archived") and await asyncio.to_thread(
+                        db.unarchive_recoverable_session, stale["id"]):
                     sessions = await _list()
             except Exception:
                 pass  # resolution degrades to today's no-row behavior

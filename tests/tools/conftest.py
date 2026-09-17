@@ -55,6 +55,29 @@ def _materialize_mcp_sdk_symbols():
     yield
 
 
+@pytest.fixture
+def require_mcp_2_sdk():
+    """Skip tests that pin mcp 2.0-only behaviour when an older SDK is installed.
+
+    The runtime deliberately supports both SDK generations (the dual
+    streamable-client probe in mcp_tool), so a stale ``mcp`` distribution
+    imports fine and presence-only guards let these tests through — where
+    they fail later with opaque SDK errors. Compare the installed
+    distribution against the 2.0.0 pin carried by the ``[mcp]`` extra so the
+    outcome is an explicit skip with an actionable reason.
+    """
+    from importlib.metadata import PackageNotFoundError, version as dist_version
+
+    from packaging.version import Version
+
+    try:
+        found = dist_version("mcp")
+    except PackageNotFoundError:
+        pytest.skip("mcp SDK not installed; install the [mcp] extra")
+    if Version(found) < Version("2.0.0"):
+        pytest.skip(f"requires mcp>=2.0.0 (found {found}); install the [mcp] extra")
+
+
 @pytest.fixture(autouse=True)
 def _clear_web_result_cache():
     """Reset the web_search TTL memo between tests.

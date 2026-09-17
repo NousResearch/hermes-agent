@@ -289,15 +289,16 @@ def _upsert_incident_for_failure(
     job: dict, error: str, *, output_file: Optional[Any] = None
 ) -> tuple[bool, Optional[str]]:
     """Record a durable failure incident (grouped by job + error signature). Returns
-    ``(acked, incident_id)``; acked=True when the signature's incident is already ``closed`` ->
-    suppress the per-run ping. Store errors log at debug; the caller delivers as if none existed."""
+    ``(acked, incident_id)``; acked=True when the signature's incident is already ``closed``
+    (operator ack) or ``alerted`` (a ping already went out) -> suppress the per-run ping.
+    Store errors log at debug; the caller delivers as if none existed."""
     try:
         from cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
             job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
         incident = get_incident(incident_id)
-        acked = bool(incident and incident.get("state") == "closed")
+        acked = bool(incident and incident.get("state") in ("closed", "alerted"))
         return acked, incident_id
     except Exception as exc:
         logger.debug(

@@ -335,3 +335,34 @@ def test_cli_list_and_ack(monkeypatch, tmp_path, capsys):
         incident_action="ack", state=None, incident_id=None
     )
     assert cron_incidents(missing_args) == 1
+def test_alerted_signature_suppresses_repeat_ping(monkeypatch, tmp_path):
+    """Once a failure ping has gone out (``alerted``), the same signature stays
+    silent on later runs until the job recovers or the error changes (#113665).
+    Unit level: the upsert gate treats ``alerted`` like ``closed``."""
+    inc = _point_db(monkeypatch, tmp_path)
+    job = _job()
+    acked, inc_id = sched._upsert_incident_for_failure(job, "repeat boom")
+    assert acked is False and inc_id is not None
+    sched._mark_incident_alerted(inc_id)
+    assert inc.get_incident(inc_id)["state"] == "alerted"
+    acked_again, same_id = sched._upsert_incident_for_failure(job, "repeat boom")
+    assert acked_again is True, "alerted signature must not re-ping"
+    assert same_id == inc_id
+
+
+def test_second_run_silent_once_ping_went_out(monkeypatch, tmp_path):
+    """End to end through the scheduler tick: first failure delivers, and once
+    the post-delivery mark fires the same failure goes silent (#113665)."""
+    inc = _point_db(monkeypatch, tmp_path)
+    deliveries = []
+    job = _job()
+    with cron_jobs.use_cron_store(tmp_path):
+        cron_jobs.save_jobs([job])
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
+        assert len(deliveries) == 1
+        rows = inc.list_incidents()
+        assert len(rows) == 1
+        # Production marks the incident alerted once the ping leaves the process.
+        sched._mark_incident_alerted(rows[0]["id"])
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
+        assert len(deliveries) == 1, "alerted signature must not re-ping per run"

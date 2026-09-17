@@ -5,6 +5,7 @@ client instead of a 401 round trip on the cached one, including while a per-mode
 hides the entry from ``peek()``.
 """
 
+import importlib
 import time
 
 import pytest
@@ -17,8 +18,14 @@ MODEL = "claude-sonnet-4-5"
 
 def _seed(provider: str, token: str, *, model_cooldown: str | None = None) -> None:
     row = {
-        "id": "entry-1", "label": "pooled", "auth_type": "oauth", "priority": 1, "source": "manual",
-        "access_token": token, "refresh_token": f"rt-{token}", "expires_at": time.time() + 3600,
+        "id": "entry-1",
+        "label": "pooled",
+        "auth_type": "oauth",
+        "priority": 1,
+        "source": "manual",
+        "access_token": token,
+        "refresh_token": f"rt-{token}",
+        "expires_at": time.time() + 3600,
     }
     if model_cooldown:
         row["model_cooldowns"] = {model_cooldown: time.time() + 600}
@@ -29,11 +36,24 @@ def _seed(provider: str, token: str, *, model_cooldown: str | None = None) -> No
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(aux, "_client_cache", {})
+    # Stub borrowed-credential readers so ~/.claude/.credentials.json ambient state does not leak.
+    try:
+        _mod = importlib.import_module("agent.anthropic_credentials")
+        monkeypatch.setattr(
+            _mod,
+            "read_claude_code_credentials",
+            lambda *_args, **_kwargs: None,
+            raising=False,
+        )
+    except Exception:
+        pass
     return tmp_path / "hermes"
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai-codex"])
-def test_pool_token_rotation_changes_cache_key_and_hides_the_secret(isolated_home, provider):
+def test_pool_token_rotation_changes_cache_key_and_hides_the_secret(
+    isolated_home, provider
+):
     """Same entry id, new token -> different key; the token itself never enters the key."""
     _seed(provider, "tok-old")
     before = aux._client_cache_key(provider, async_mode=False, model=MODEL)
@@ -63,8 +83,13 @@ def _seed_two(provider: str, first_token: str, second_token: str) -> None:
     rows = []
     for idx, token in ((1, first_token), (2, second_token)):
         rows.append({
-            "id": f"entry-{idx}", "label": f"pooled-{idx}", "auth_type": "oauth", "priority": idx,
-            "source": "manual", "access_token": token, "refresh_token": f"rt-{token}",
+            "id": f"entry-{idx}",
+            "label": f"pooled-{idx}",
+            "auth_type": "oauth",
+            "priority": idx,
+            "source": "manual",
+            "access_token": token,
+            "refresh_token": f"rt-{token}",
             "expires_at": time.time() + 3600,
         })
     write_credential_pool(provider, rows)

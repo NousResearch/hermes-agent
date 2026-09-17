@@ -61,9 +61,35 @@ class TestImageCacheFilename:
             self._PNG, ext=".png", filename="Screenshot 2026-09-15 at 11.12.26.png"
         )
 
+        # Spaces collapse to "-" instead of vanishing: deleting them would glue the
+        # words into "Screenshot2026-09-15at11.12.26" and cost the readable,
+        # sortable capture timestamp the stem is preserved for.
         assert re.fullmatch(
-            r"img_[0-9a-f]{12}_Screenshot2026-09-15at11.12.26\.png", os.path.basename(path)
+            r"img_[0-9a-f]{12}_Screenshot-2026-09-15-at-11\.12\.26\.png",
+            os.path.basename(path),
         )
+
+    def test_collapses_separator_runs_and_trims_the_edges(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(
+            self._PNG, ext=".png", filename="  photo   from (phone) !!.png"
+        )
+
+        assert re.fullmatch(
+            r"img_[0-9a-f]{12}_photo-from-phone\.png", os.path.basename(path)
+        )
+
+    def test_drops_a_stem_that_sanitizes_to_nothing(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        emoji_only = cache_image_from_bytes(self._PNG, ext=".png", filename="\u4e2d\u6587\u56fe.png")
+        dots_only = cache_image_from_bytes(self._PNG, ext=".png", filename="...png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(emoji_only))
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(dots_only))
 
     def test_strips_path_components_and_falls_back_without_a_filename(self, tmp_path, monkeypatch):
         import gateway.platforms.base as base

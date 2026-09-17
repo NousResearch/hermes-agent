@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
 import type { Locale } from './types'
@@ -347,5 +348,127 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('ja')
 
     vi.useRealTimers()
+  })
+
+  it('re-reads display.language when the active gateway profile settles', async () => {
+    // Regression for #113980: the boot-time read resolves through the default
+    // profile, but the window's active profile lands later — the chrome must
+    // follow the settled profile's language, not the boot-time default's.
+    $activeGatewayProfile.set('default')
+
+    const getConfig = vi
+      .fn()
+      .mockResolvedValueOnce({ display: { language: 'en' } }) // boot read: default profile
+      .mockResolvedValue({ display: { language: 'zh-Hans' } }) // settle re-read: window profile
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn()
+    }
+
+    try {
+      render(
+        <I18nProvider configClient={configClient}>
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+
+      act(() => {
+        $activeGatewayProfile.set('coder')
+      })
+
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('zh'))
+      expect(getConfig).toHaveBeenCalledTimes(2)
+    } finally {
+      $activeGatewayProfile.set('default')
+    }
+  })
+
+  it('a late boot-time read never overrides the settled profile language', async () => {
+    // The boot read (default profile) and the settle re-read (window profile)
+    // can be in flight at once; the late boot answer must not clobber the
+    // settled profile's language.
+    $activeGatewayProfile.set('default')
+
+    const resolvers: Array<(config: HermesConfigRecord) => void> = []
+
+    const getConfig = vi.fn().mockImplementation(
+      () =>
+        new Promise<HermesConfigRecord>(resolve => {
+          resolvers.push(resolve)
+        })
+    )
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn()
+    }
+
+    try {
+      render(
+        <I18nProvider configClient={configClient}>
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(1))
+
+      act(() => {
+        $activeGatewayProfile.set('coder')
+      })
+
+      await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(2))
+
+      // The settle re-read (coder profile: zh) lands first.
+      await act(async () => {
+        resolvers[1]({ display: { language: 'zh-Hans' } })
+      })
+      expect(screen.getByTestId('locale').textContent).toBe('zh')
+
+      // The stale boot read (default profile: en) lands late — no clobber.
+      await act(async () => {
+        resolvers[0]({ display: { language: 'en' } })
+      })
+      expect(screen.getByTestId('locale').textContent).toBe('zh')
+    } finally {
+      $activeGatewayProfile.set('default')
+    }
+  })
+
+  it('a profile settle never overrides a language the user picked', async () => {
+    $activeGatewayProfile.set('default')
+
+    const getConfig = vi.fn().mockResolvedValue({ display: { language: 'en' } })
+
+    const configClient: I18nConfigClient = {
+      getConfig,
+      saveConfig: vi.fn().mockResolvedValue({ ok: true })
+    }
+
+    try {
+      render(
+        <I18nProvider configClient={configClient}>
+          <LanguageProbe target="ja" />
+        </I18nProvider>
+      )
+
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
+
+      fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ja'))
+
+      act(() => {
+        $activeGatewayProfile.set('coder')
+      })
+
+      // The settle re-read fires but the explicit pick wins.
+      await waitFor(() => expect(getConfig.mock.calls.length).toBeGreaterThan(2))
+      await act(async () => {})
+      expect(screen.getByTestId('locale').textContent).toBe('ja')
+    } finally {
+      $activeGatewayProfile.set('default')
+    }
   })
 })

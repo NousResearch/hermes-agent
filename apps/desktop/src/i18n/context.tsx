@@ -2,6 +2,7 @@ import { applyDocumentLocale, isRecord } from '@hermes/shared/i18n'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { TRANSLATIONS } from './catalog'
 import {
@@ -96,6 +97,11 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   // Set once the user picks a language through setLocale: a startup read that
   // resolves (or fails) after that must never overwrite an explicit choice.
   const userLocaleRef = useRef(false)
+  // The boot-time read and a profile-settle re-read can be in flight at once;
+  // only the newest run may paint, so a late boot answer (default profile)
+  // cannot clobber the settled profile's language (#113980).
+  const loadGenerationRef = useRef(0)
+  const cancelLoadRef = useRef<(() => void) | null>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -104,14 +110,27 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     applyDocumentLocale(locale)
   }, [locale])
 
-  useEffect(() => {
+  const loadLocale = useCallback(() => {
     if (!configClient) {
       return
     }
 
+    // Cancel any in-flight run before starting the next one.
+    cancelLoadRef.current?.()
+
     let cancelled = false
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     let retryCount = 0
+    const generation = (loadGenerationRef.current += 1)
+    const isCurrent = () => !cancelled && generation === loadGenerationRef.current
+
+    cancelLoadRef.current = () => {
+      cancelled = true
+
+      if (retryTimer) {
+        clearTimeout(retryTimer)
+      }
+    }
 
     // The desktop races its own backend at startup: the renderer mounts before
     // the backend is ready, so the first /api/config call can time out. We keep
@@ -122,14 +141,14 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
     const MAX_LOCALE_RETRIES = 10
     const LOCALE_RETRY_DELAY_MS = 3_000
 
-    const loadLocale = () => {
+    const runLoad = () => {
       setIsLoadingConfig(true)
       setConfigLoadError(null)
 
-      return configClient
+      configClient
         .getConfig()
         .then(async config => {
-          if (cancelled || userLocaleRef.current) {
+          if (!isCurrent() || userLocaleRef.current) {
             return
           }
 
@@ -146,12 +165,12 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
           // until the user explicitly picks a language.
           const machineProfile = await window.hermesDesktop?.getMachineProfile?.().catch(() => null)
 
-          if (!cancelled && !userLocaleRef.current) {
+          if (isCurrent() && !userLocaleRef.current) {
             setLocaleState(resolveInitialLocale(undefined, machineProfile?.locale))
           }
         })
         .catch(error => {
-          if (cancelled || userLocaleRef.current) {
+          if (!isCurrent() || userLocaleRef.current) {
             return
           }
 
@@ -161,27 +180,60 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
           if (retryCount < MAX_LOCALE_RETRIES) {
             retryCount += 1
             retryTimer = setTimeout(() => {
-              loadLocale()
+              if (isCurrent()) {
+                runLoad()
+              }
             }, LOCALE_RETRY_DELAY_MS)
           }
         })
         .finally(() => {
-          if (!cancelled) {
+          if (isCurrent()) {
             setIsLoadingConfig(false)
           }
         })
     }
 
+    runLoad()
+  }, [configClient])
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write: cleanup cancels the in-flight load (request token), not an atom mirror
+  useEffect(() => {
+    if (!configClient) {
+      return
+    }
+
     loadLocale()
 
     return () => {
-      cancelled = true
-
-      if (retryTimer) {
-        clearTimeout(retryTimer)
-      }
+      cancelLoadRef.current?.()
+      cancelLoadRef.current = null
     }
-  }, [configClient, initialLocale])
+  }, [configClient, initialLocale, loadLocale])
+
+  // Re-read the persisted language when the profile scope settles: the
+  // boot-time read resolves through the default profile, but the window's
+  // active profile lands later — and the user can switch profiles afterward.
+  // Without this the chrome keeps the default profile's language until the
+  // next restart (#113980).
+  useEffect(() => {
+    if (!configClient) {
+      return
+    }
+
+    // nanostores subscribe fires immediately with the current value, which the
+    // boot-time read above already covers — only real changes re-read.
+    let isFirstCall = true
+
+    return $activeGatewayProfile.subscribe(() => {
+      if (isFirstCall) {
+        isFirstCall = false
+
+        return
+      }
+
+      loadLocale()
+    })
+  }, [configClient, loadLocale])
 
   const setLocale = useCallback(
     async (next: Locale) => {

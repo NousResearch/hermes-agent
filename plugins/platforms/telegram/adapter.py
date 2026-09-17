@@ -2247,13 +2247,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] Telegram polling stalled: no getUpdates progress for %.0fs "
             "(generation %d). Rebuilding the long-poll consumer through the reconnect ladder instead of staying silently deaf.",
             self.name, stalled_for, getattr(self, "_polling_generation", 0))
-        self._send_path_degraded = True
-        if getattr(self, "_running", False):
-            self._mark_degraded()
-        self._spawn_polling_recovery(
-            asyncio.get_running_loop(),
-            self._handle_polling_network_error(
-                _PollingStallError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for)))
+        self._schedule_polling_recovery(
+            _PollingStallError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for),
+            reason="polling stall watchdog")
 
     def _verifier_stale(self, generation: int, progress: asyncio.Event) -> bool:
         """True when a verifier's generation no longer matters (progressed, fatal, replaced, torn down)."""

@@ -298,10 +298,73 @@ class TestMcpTest:
         )
         from hermes_cli.mcp_config import cmd_mcp_test
 
-        cmd_mcp_test(_make_args(name="ink"))
+        assert cmd_mcp_test(_make_args(name="ink")) == 0
         out = capsys.readouterr().out
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    def test_test_unknown_server_exit_code_two(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://mcp.ml.ink/mcp"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 2
+        out = capsys.readouterr().out
+        assert "not found in config" in out
+
+    def test_test_connection_failure_exit_code_one(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://mcp.ml.ink/mcp"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        assert cmd_mcp_test(_make_args(name="ink")) == 1
+        out = capsys.readouterr().out
+        assert "Connection failed" in out
+
+    def test_dispatcher_propagates_test_exit_code(self, tmp_path, capsys, monkeypatch):
+        """`hermes mcp test` exits non-zero on failure instead of always 0."""
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://mcp.ml.ink/mcp"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import mcp_command
+
+        with pytest.raises(SystemExit) as excinfo:
+            mcp_command(_make_args(name="ink", mcp_action="test"))
+        assert excinfo.value.code == 1
+
+    def test_test_success_via_dispatcher_exits_cleanly(self, tmp_path, capsys, monkeypatch):
+        """A successful connect must not raise SystemExit with a bogus code."""
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://mcp.ml.ink/mcp"},
+        })
+
+        def mock_probe(name, config, **kw):
+            return [("create_service", "Deploy")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import mcp_command
+
+        mcp_command(_make_args(name="ink", mcp_action="test"))
+        out = capsys.readouterr().out
+        assert "Connected" in out
 
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""

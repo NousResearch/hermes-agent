@@ -28,8 +28,8 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
-    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, make_message_cb, make_step_cb,
-    make_thinking_cb, make_tool_progress_cb,
+    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, flush_open_tool_calls, make_message_cb,
+    make_step_cb, make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
@@ -222,6 +222,8 @@ class _TurnCallbacks:
     approval_cb: Any = None
     edit_approval_requester: Any = None
     streamed: bool = False
+    tool_call_ids: Any = None
+    tool_call_meta: Any = None
 
 
 class HermesACPAgent(SlashCommandsMixin, acp.Agent):
@@ -831,12 +833,25 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
         except Exception:
             logger.exception("Executor error for session %s", session_id)
+            self._flush_turn_tool_calls(cbs, session_id, conn, loop)
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        self._flush_turn_tool_calls(cbs, session_id, conn, loop)
         return await self._finish_turn(state, session_id, conn, result, pre_turn_hermes_id, cbs.streamed)
+
+    def _flush_turn_tool_calls(
+        self, cbs: _TurnCallbacks, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """Close any tool call the turn left open, so no bubble spins after the turn ends."""
+        if not conn or cbs.tool_call_ids is None:
+            return
+        try:
+            flush_open_tool_calls(conn, session_id, loop, cbs.tool_call_ids, cbs.tool_call_meta or {})
+        except Exception:
+            logger.debug("Could not flush open ACP tool calls for %s", session_id, exc_info=True)
 
     def _wire_turn_callbacks(
         self, state: SessionState, session_id: str, conn: Any, loop: asyncio.AbstractEventLoop
@@ -846,9 +861,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if conn:
             tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
             tool_call_meta: dict[str, dict[str, Any]] = {}
+            cbs.tool_call_ids, cbs.tool_call_meta = tool_call_ids, tool_call_meta
+            # Shared with the step callback so a runtime that projects
+            # ``tool.completed`` closes each call once, not twice.
+            turn_state: dict[str, Any] = {}
             policy_getter = lambda: self._edit_approval_policy_for_state(state)  # noqa: E731
             cbs.tool_progress_cb = make_tool_progress_cb(
-                conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter
+                conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
+                turn_state=turn_state,
             )
             # Per-session allocator: a new turn must never reuse a previous turn's
             # assistant messageId (ACP clients replace the bubble with that id).
@@ -856,7 +876,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 state.message_ids = AssistantMessageIdAllocator()
             state.message_ids.close()  # new turn -> next chunk opens a fresh id
             cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
-            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta, turn_state)
             message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:

@@ -310,3 +310,84 @@ class TestAssistantMessageIds:
                    side_effect=lambda c, s, l, u: sent.append(u)):
             cb("text")
         assert sent[0].message_id is None
+
+
+class TestToolCallsAlwaysReachATerminalStatus:
+    """A tool call left ``in_progress`` makes a finished turn look like it ran nothing.
+
+    Paseo read four Hermes tool calls as never-run on 2026-09-17: the step
+    callback only fires on the *next* step, so a turn's last tools stayed open,
+    and a denied edit projects no ``tool.completed`` at all."""
+
+    def _patch(self):
+        return patch("acp_adapter.events.asyncio.run_coroutine_threadsafe")
+
+    def test_tool_completed_closes_the_call_without_waiting_for_another_step(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        ids = {"read": deque(["tc-1"])}
+        cb = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, {"tc-1": {"args": {"path": "a"}}})
+        with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
+            rcts.return_value = MagicMock(spec=Future)
+            cb("tool.completed", "read", None, None, result="file body")
+        btc.assert_called_once_with("tc-1", "read", result="file body", function_args={"path": "a"}, snapshot=None)
+        assert "read" not in ids
+
+    def test_step_callback_does_not_close_a_second_call_after_tool_completed(self, mock_conn, event_loop_fixture):
+        """Both closers pop the same FIFO, so the fallback must stand down once completions arrive."""
+        from collections import deque
+
+        ids, turn_state = {"read": deque(["tc-1", "tc-2"])}, {}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, {}, turn_state=turn_state)
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, {}, turn_state)
+        with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
+            rcts.return_value = MagicMock(spec=Future)
+            progress("tool.completed", "read", None, None, result="first")
+            step(1, [{"name": "read", "result": "first"}])
+        assert [c.args[0] for c in btc.call_args_list] == ["tc-1"]
+        assert list(ids["read"]) == ["tc-2"]
+
+    def test_step_callback_still_closes_when_no_completion_is_ever_projected(self, mock_conn, event_loop_fixture):
+        from collections import deque
+
+        ids = {"read": deque(["tc-1"])}
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, {}, {})
+        with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete") as btc:
+            rcts.return_value = MagicMock(spec=Future)
+            step(1, [{"name": "read", "result": "body"}])
+        btc.assert_called_once_with("tc-1", "read", result="body", function_args=None, snapshot=None)
+
+    def test_a_todo_plan_update_survives_the_completion_path(self, mock_conn, event_loop_fixture):
+        """The plan panel is fed by the step callback, not by the close it now skips."""
+        from collections import deque
+
+        ids, turn_state = {"todo": deque(["tc-1"])}, {}
+        progress = make_tool_progress_cb(mock_conn, "s", event_loop_fixture, ids, {}, turn_state=turn_state)
+        step = make_step_cb(mock_conn, "s", event_loop_fixture, ids, {}, turn_state)
+        todos = '{"todos": [{"content": "ship it", "status": "in_progress"}]}'
+        with self._patch() as rcts, patch("acp_adapter.events.build_tool_complete"):
+            rcts.return_value = MagicMock(spec=Future)
+            progress("tool.completed", "todo", None, None, result=todos)
+            step(1, [{"name": "todo", "result": todos}])
+        sent = [c.args[1] for c in mock_conn.session_update.call_args_list]
+        assert any(isinstance(u, AgentPlanUpdate) for u in sent)
+
+    def test_flush_fails_a_call_the_turn_never_reported(self, mock_conn, event_loop_fixture):
+        """A denied edit projects no completion; ``failed`` is the honest end state, not ``completed``."""
+        from collections import deque
+
+        from acp_adapter.events import flush_open_tool_calls
+
+        ids, meta = {"edit": deque(["tc-denied"])}, {"tc-denied": {"args": {}}}
+        with self._patch() as rcts:
+            rcts.return_value = MagicMock(spec=Future)
+            assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, ids, meta) == 1
+        update = mock_conn.session_update.call_args_list[0].args[1]
+        assert update.status == "failed"
+        assert ids == {} and meta == {}
+
+    def test_flush_is_a_no_op_when_every_call_is_closed(self, mock_conn, event_loop_fixture):
+        from acp_adapter.events import flush_open_tool_calls
+
+        assert flush_open_tool_calls(mock_conn, "s", event_loop_fixture, {}, {}) == 0
+        mock_conn.session_update.assert_not_called()

@@ -833,6 +833,18 @@ def build_tool_complete(
     )
 
 
+def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
+    """Create a ToolCallUpdate for a call that ended without ever reporting a result.
+
+    A blocked or permission-denied call projects no ``tool.completed``, so the
+    turn ends with its bubble still spinning; ``failed`` is the honest terminal
+    state — the tool did not produce a result."""
+    return acp.update_tool_call(
+        tool_call_id, kind=get_tool_kind(tool_name), status="failed",
+        content=[_text("This tool call ended without a result (blocked, denied, or interrupted).")],
+    )
+
+
 def extract_locations(arguments: Args) -> List[ToolCallLocation]:
     """Extract file-system locations from tool arguments."""
     if not (path := arguments.get("path")):

@@ -651,6 +651,9 @@ def _repair_venv_on_current_checkout(
     _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
     _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
     _m()._reapply_plugin_python_dependencies()
+    # Heal memory-provider bridge packages last. The steps above may have stripped them
+    # (parity with the git-pull and ZIP paths, #113741).
+    _m()._refresh_active_memory_provider_dependencies()
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
     # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
     # based on a narrow 7-package import probe (#58004 review).
@@ -742,6 +745,9 @@ def _repair_current_checkout(
             _m()._restore_active_tool_dependencies(
                 active_tool_dependencies, repair_prefix, env=repair_env)
             _m()._reapply_plugin_python_dependencies()
+            # Heal memory-provider bridge packages last. The swapped-in venv was built
+            # from uv.lock alone (parity with the pull/ZIP/venv-repair paths, #113741).
+            _m()._refresh_active_memory_provider_dependencies()
         current_checkout_complete = _repair_node_deps_on_current_checkout(
             _print_verified_update_completion, assume_yes=assume_yes, gateway_mode=gateway_mode,
             pre_update_snapshot_id=pre_update_snapshot_id,

@@ -143,14 +143,16 @@ class OnePasswordLoginBackend(LoginBackend):
     def _connect_meta(item, vault_id):
         handle = f"op:connect:{vault_id}:{item.get('id')}"
         OnePasswordLoginBackend._connect_ids(handle)
-        origin = _first_origin([u.get("href", "") for u in item.get("urls", [])])
-        if not origin:
+        origins = _all_origins([u.get("href", "") for u in item.get("urls", [])])
+        if not origins:
             return None
+        origin = origins[0]
         username = next((f.get("value") for f in item.get("fields", []) if f.get("purpose") == "USERNAME"), None)
         return VaultItemMeta(id=handle, kind="login", label=str(item.get("title") or origin),
                              has_otp=OnePasswordLoginBackend._connect_otp_seed(item) is not None,
                              origin=origin, created_at=str(item.get("createdAt") or ""),
-                             identifier_type="username" if username else None, identifier=username)
+                             identifier_type="username" if username else None, identifier=username,
+                             allowed_origins=_web_origins(origins))
 
     def is_unlocked(self) -> bool:
         try:

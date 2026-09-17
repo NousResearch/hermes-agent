@@ -21,7 +21,9 @@ def test_connect_native_metadata_resolution_and_fail_closed(monkeypatch):
         def do_GET(self):
             requests.append((self.path, self.headers.get('Authorization')))
             item = {'id': I, 'vault': {'id': V}, 'category': 'LOGIN', 'title': 'Example',
-                    'urls': [{'href': 'https://example.com/login'}]}
+                    'urls': [{'href': 'https://example.com/login'},
+                             {'href': 'https://accounts.example.com/signin'},
+                             {'href': 'androidapp://example'}]}
             routes = {'/v1/vaults': [{'id': V}], f'/v1/vaults/{V}/items': [item],
                       f'/v1/vaults/{V}/items/{I}': dict(item, fields=[
                           {'purpose': 'USERNAME', 'value': 'synthetic@example.com'},
@@ -42,6 +44,8 @@ def test_connect_native_metadata_resolution_and_fail_closed(monkeypatch):
         assert SYNTHETIC_VALUE not in repr(items)
         meta = backend.get_meta(items[0].id)
         assert meta.identifier == 'synthetic@example.com'
+        assert meta.allowed_origins == items[0].allowed_origins == (
+            'https://example.com', 'https://accounts.example.com')
         assert backend.resolve_password(items[0].id) == SYNTHETIC_VALUE
         assert all(auth == 'Bearer scoped-token' for _, auth in requests)
         for status in (401, 403, 302, 500):
@@ -70,7 +74,9 @@ def _connect_server(item_fields):
         def log_message(self, *_): pass
         def do_GET(self):
             item = {'id': I, 'vault': {'id': V}, 'category': 'LOGIN', 'title': 'Example',
-                    'urls': [{'href': 'https://example.com/login'}]}
+                    'urls': [{'href': 'https://example.com/login'},
+                             {'href': 'https://accounts.example.com/signin'},
+                             {'href': 'androidapp://example'}]}
             routes = {'/v1/vaults': [{'id': V}], f'/v1/vaults/{V}/items': [item],
                       f'/v1/vaults/{V}/items/{I}': dict(item, fields=item_fields)}
             self.send_response(200); self.end_headers()

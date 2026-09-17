@@ -1,0 +1,41 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: remoet
+description: Search open tech jobs and read hiring companies, no account needed (Remoet).
+source: https://docs.remoet.dev/mcp
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). No authentication required for the job search
+# tools (verified live: initialize, tools/list, search_jobs and get_listing
+# all succeed anonymously). The server lists 24 tools; the other 22 act on a
+# user's Remoet account and return an in-band error without one, so the
+# default selection keeps only the two keyless tools.
+
+transport:
+  type: http
+  url: https://api.remoet.dev/mcp
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - search_jobs
+    - get_listing
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - remoet
+    - tech jobs
+  hosts:
+    - remoet.dev
+
+post_install: |
+  No account or credentials needed for search_jobs and get_listing. Start a
+  new session and ask for open roles by stack, company, location or seniority.
+
+  The other Remoet tools act on a user's account (profile, stars, jobs
+  feed). Connecting an account is covered at https://docs.remoet.dev/mcp.

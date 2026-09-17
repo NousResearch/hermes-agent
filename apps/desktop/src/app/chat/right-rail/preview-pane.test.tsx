@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { $previewTabs, closeRightRail, openPreview } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
@@ -41,6 +42,7 @@ describe('PreviewPane console state', () => {
 
   afterEach(() => {
     cleanup()
+    closeRightRail()
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     vi.unstubAllGlobals()
@@ -149,6 +151,68 @@ describe('PreviewPane console state', () => {
     })
 
     expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
+  })
+
+  it('opens a file HTML preview in the system browser instead of a silent pop-out', async () => {
+    const openBrowserWindow = vi.fn(async () => ({ ok: true }))
+    const openExternal = vi.fn(async () => undefined)
+    const previousDesktop = window.hermesDesktop
+
+    window.hermesDesktop = {
+      ...previousDesktop,
+      openBrowserWindow,
+      openExternal
+    }
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          tabId="file:file:///work/demo.html"
+          target={{
+            kind: 'file',
+            label: 'demo.html',
+            path: '/work/demo.html',
+            previewKind: 'html',
+            renderMode: 'preview',
+            source: '/work/demo.html',
+            url: 'file:///work/demo.html'
+          }}
+        />
+      )
+    })
+
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+
+    expect(openExternal).toHaveBeenCalledWith('file:///work/demo.html')
+    expect(openBrowserWindow).not.toHaveBeenCalled()
+
+    window.hermesDesktop = previousDesktop
+  })
+
+  it('still pops a URL tab into its own window', async () => {
+    const openBrowserWindow = vi.fn(async () => ({ ok: true }))
+    const previousDesktop = window.hermesDesktop
+    const target = { kind: 'url' as const, label: 'Example', source: 'https://example.com', url: 'https://example.com' }
+
+    window.hermesDesktop = {
+      ...previousDesktop,
+      openBrowserWindow
+    }
+    openPreview(target)
+    const tabId = $previewTabs.get()[0]!.id
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane tabId={tabId} target={target} />)
+    })
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Pop out' }))
+
+    expect(openBrowserWindow).toHaveBeenCalledWith(tabId)
+
+    window.hermesDesktop = previousDesktop
   })
 
   it('drives the webview from the bar and tracks its history', async () => {

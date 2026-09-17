@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { normalizePreviewAddress, PreviewBrowserBar } from './preview-browser-bar'
+import { normalizePreviewAddress, PreviewBrowserBar, previewBrowserBarWindowAction } from './preview-browser-bar'
 
 const baseProps = {
   canGoBack: false,
@@ -371,5 +371,67 @@ describe('PreviewBrowserBar', () => {
     fireEvent.click(rendered.getByRole('button', { name: 'Pop in' }))
 
     expect(onPopIn).toHaveBeenCalledOnce()
+  })
+})
+
+describe('previewBrowserBarWindowAction', () => {
+  it.each([
+    {
+      expected: 'pop-in' as const,
+      input: {
+        canOpenBrowserWindow: true,
+        isBrowserWindow: true,
+        tabId: 'url:https://example.com',
+        targetKind: 'url' as const
+      },
+      name: 'already-popped Browser window'
+    },
+    {
+      expected: 'pop-out' as const,
+      input: {
+        canOpenBrowserWindow: true,
+        isBrowserWindow: false,
+        tabId: 'url:https://example.com',
+        targetKind: 'url' as const
+      },
+      name: 'docked URL tab that can leave the rail'
+    },
+    {
+      expected: 'open-external' as const,
+      input: {
+        canOpenBrowserWindow: false,
+        isBrowserWindow: false,
+        tabId: 'url:https://example.com',
+        targetKind: 'url' as const
+      },
+      name: 'URL tab when the shell cannot pop out'
+    },
+    {
+      expected: 'open-external' as const,
+      input: {
+        canOpenBrowserWindow: true,
+        isBrowserWindow: false,
+        tabId: 'file:file:///work/demo.html',
+        targetKind: 'file' as const
+      },
+      name: 'file HTML tab even when pop-out IPC exists'
+    },
+    {
+      expected: 'open-external' as const,
+      input: {
+        canOpenBrowserWindow: true,
+        isBrowserWindow: false,
+        tabId: 'artifact:card',
+        targetKind: 'artifact' as const
+      },
+      name: 'artifact tab'
+    },
+    {
+      expected: 'open-external' as const,
+      input: { canOpenBrowserWindow: true, isBrowserWindow: false, targetKind: 'url' as const },
+      name: 'URL tab with no tab id'
+    }
+  ])('chooses $expected for a $name', ({ expected, input }) => {
+    expect(previewBrowserBarWindowAction(input)).toBe(expected)
   })
 })

@@ -1814,6 +1814,18 @@ display:
   # edit-in-place "⏳ Working — N min" heartbeat). Override under
   # display.platforms.telegram.
 
+  # Per-chat override: display.platforms.<platform>.chats.<chat_id>.<key>
+  # wins over the platform block (chat → platform → global), keyed by the
+  # chat id Hermes logs per message. One chat can go quiet (or loud) without
+  # touching the rest of the platform. Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         chats:
+  #           "-1004294267446":
+  #             tool_progress: off
+  #             streaming: false   # final-answer-first in just this group
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and

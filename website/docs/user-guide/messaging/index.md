@@ -934,6 +934,21 @@ use their turn policy; independent notifications and deferred deliveries evaluat
 policy at their own delivery boundary. Already delivered messages are not removed.
 Suppression does not fix an underlying failure or add another logging destination.
 
+
+---
+
+These settings can also be scoped to one chat — `display.platforms.<platform>.chats.<chat_id>.<key>` wins over the platform block, so a single noisy group can go quiet (or a quiet one go verbose) without touching the rest of the platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      chats:
+        "-1004294267446":           # just this group
+          tool_progress: 'off'
+          streaming: false           # final-answer-first in this chat only
+```
+
 ### Progress bubble cleanup (opt-in)
 
 Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:

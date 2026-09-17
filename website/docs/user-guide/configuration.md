@@ -2358,6 +2358,19 @@ From the CLI, use the canonical path — `hermes config set display.platforms.te
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
+Any of these settings can also be scoped to a single chat: `display.platforms.<platform>.chats.<chat_id>.<key>` wins over the platform block (chat → platform → global), keyed by the chat id Hermes logs for each message. One chat can go quiet (or loud) without touching the rest of the platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      tool_progress: verbose        # platform-wide default
+      chats:
+        "-1004294267446":           # just this group
+          tool_progress: 'off'
+          streaming: false          # final-answer-first in this chat only
+```
+
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.

@@ -69,13 +69,14 @@ _fd_usage_lock = threading.Lock()
 _fd_usage_cache: "tuple[float, Optional[int]]" = (0.0, None)
 
 
-def _proc_fd_targets(pid: int) -> Iterator[str]:
-    """readlink() of every entry in /proc/<pid>/fd (unreadable links skipped).
-    Raises OSError when the fd directory itself cannot be listed."""
+def _proc_fd_targets(pid: int) -> "Iterator[tuple[str, str]]":
+    """Yield ``(readlink target, fd path)`` for every entry in /proc/<pid>/fd (unreadable
+    links skipped). Raises OSError when the fd directory itself cannot be listed."""
     fd_dir = f"/proc/{pid}/fd"
     for fd in os.listdir(fd_dir):
+        fd_path = f"{fd_dir}/{fd}"
         try:
-            yield os.readlink(f"{fd_dir}/{fd}")
+            yield os.readlink(fd_path), fd_path
         except OSError:
             continue
 
@@ -100,7 +101,7 @@ def _fd_soft_limit() -> Optional[int]:
         return None
     try:
         soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    except (OSError, ValueError):
+    except (AttributeError, OSError, ValueError):
         return None
     if soft in (resource.RLIM_INFINITY, -1):
         return None
@@ -159,7 +160,10 @@ class _PathReadBudget:
     def register(self, db: "SessionDB") -> None:
         with self._lock:
             self._members.add(db)
-            handles = len(self._members)
+            # Only writable handles carry the cost the warning names (writer connection, write
+            # lock, close-time checkpoint). Read-only attaches (dashboard routers, status/lookup
+            # one-shots) open per request by design and must not trip it.
+            handles = sum(1 for member in self._members if not member.read_only)
             warn = (handles > _HANDLES_PER_PATH_WARN and not self._duplicate_handles_warned)
             if warn:
                 self._duplicate_handles_warned = True

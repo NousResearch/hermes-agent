@@ -76,6 +76,11 @@ Hermes detects this endpoint and creates its native Gemini adapter. Internally, 
 - tool results → Gemini `functionResponse` parts
 - streaming responses → OpenAI-shaped stream chunks for the Hermes loop
 
+Tool parameter type arrays such as `"type": ["number", "null"]` are translated
+into Gemini's scalar type plus `nullable` form. Multi-type unions keep every
+alternative through `anyOf`, including nested properties and array items. This
+happens automatically; no MCP server or provider configuration change is needed.
+
 :::note Gemini 3 thought signatures
 For Gemini 3 tool use, Hermes preserves the `thoughtSignature` values attached to function-call parts and replays them on the next tool turn. That covers the validation-critical path for multi-step agent workflows.
 
@@ -97,6 +102,15 @@ If you previously set `GEMINI_BASE_URL` to the `/openai` URL, remove it or chang
 ```bash
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 ```
+
+Host-root base URLs on the Google host are normalized automatically: if the URL
+doesn't end with an API version segment (`v1beta`, `v1alpha`, `v1`, ...), Hermes
+appends `/v1beta` for you, so `GEMINI_BASE_URL=https://generativelanguage.googleapis.com`
+works the same as spelling out the `/v1beta` suffix. The same normalization
+applies to the Gemini TTS base URL (`tts.gemini.base_url`). Chat requests only
+take the native Gemini path when the base URL points at
+`generativelanguage.googleapis.com`; a proxy on another host is treated as an
+OpenAI-compatible endpoint, so configure it with its `/openai`-style URL.
 
 ## Available Models
 

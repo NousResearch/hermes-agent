@@ -278,8 +278,18 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
             failed.append((pid, str(e)))
 
 
+# SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
+# hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
+# join(1.0) + PTY_REGISTRY.close_all() (≤1.5s per attached Chat PTY, serial). A SIGKILL inside
+# that window skips close_all(), so the ui-tui / tui_gateway.entry children outlive the backend
+# and keep the deleted state.db-wal inode open — the next hermes start refuses with a FATAL
+# DeletedWalGenerationError (#111912). The orphan reaper's 1.5s (`_reap_orphaned_desktop_local_serves`)
+# is deliberately shorter: it runs on the Desktop boot path under a 10s ready-probe.
+_POSIX_TERM_GRACE_SECONDS = 10.0
+
+
 def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
-    """SIGTERM, wait up to ~3s for graceful exit, SIGKILL survivors."""
+    """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors."""
     import signal as _signal
     import time as _time
 
@@ -297,7 +307,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     for pid in pids:
         _send(pid, _signal.SIGTERM)
-    deadline = _time.monotonic() + 3.0
+    deadline = _time.monotonic() + _POSIX_TERM_GRACE_SECONDS
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
     while pending and _time.monotonic() < deadline:
         _time.sleep(0.1)
@@ -345,13 +355,29 @@ def _kill_stale_dashboard_processes(
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
+    pid_launchd: dict[int, tuple[str, str, int | None]] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    # macOS: a backend supervised by a launchd job (LaunchAgent / LaunchDaemon) must come back
+    # through launchd, never as a detached argv respawn — the respawn holds the job's port, the
+    # job then fails every KeepAlive restart with "port already in use", and the running backend
+    # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
+    # too, so it can say that a KeepAlive job will undo the stop.
+    launchd_jobs = _dash._loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+
+    def _launchd_owner(pid: int, cmdline: list[str] | None):
+        return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
+
     if restart_managed and sys.platform != "win32":
         for pid in pids:
             pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
             pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
-            if not pid_service[pid] and (cmdline := _dash._dashboard_cmdline_for_pid(pid)):
+            if pid_service[pid]:
+                continue
+            cmdline = _dash._dashboard_cmdline_for_pid(pid)
+            if launchd_jobs and (job := _launchd_owner(pid, cmdline)):
+                pid_launchd[pid] = job
+            elif cmdline:
                 # Manual process: exact argv + HERMES_HOME for the respawn and its profile cap.
                 # Manually-started process: preserve its exact argv so we can respawn it after the update
                 # (#40449, #68934). Snapshot HERMES_HOME before the kill so per-profile caps still work
@@ -363,6 +389,10 @@ def _kill_stale_dashboard_processes(
                     not in already_restarted_units]
             if not pids:
                 return _empty_result()
+    elif launchd_jobs:
+        for pid in pids:
+            if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
+                pid_launchd[pid] = job
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -372,10 +402,16 @@ def _kill_stale_dashboard_processes(
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
     if killed and restart_managed:
-        unrecovered = _restart_killed_backends(killed, pid_service, pid_cgroup, pid_cmdline, pid_home)
+        unrecovered = _restart_killed_backends(
+            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd)
     else:
         unrecovered = list(killed)
-        if killed:
+        # A stopped launchd job with KeepAlive restarts itself: say so instead of a misleading
+        # "restart it yourself" hint, and give the command that actually keeps it down.
+        for target in sorted({f"{d}/{l}" for p in killed if (j := pid_launchd.get(p)) for d, l, _ in (j,)}):
+            print(f"  ⚠ PID(s) supervised by launchd job {target}: a KeepAlive job restarts itself.\n"
+                  f"    To keep it down: launchctl bootout {target}")
+        if any(p not in pid_launchd for p in killed):
             print("  Restart the dashboard when you're ready:\n    hermes dashboard --port <port>")
     return {"matched": list(pids), "killed": list(killed), "failed": list(failed),
             "unrecovered": list(unrecovered)}
@@ -383,9 +419,11 @@ def _kill_stale_dashboard_processes(
 
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
-    pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None]) -> list[int]:
-    """Update path: restart systemd units, respawn manual argv (detached, headless, logged to
-    logs/dashboard-restart.log; one per profile, no ``--port 0``). Returns PIDs not brought back."""
+    pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
+    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
+    """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
+    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
+    Returns PIDs not brought back."""
     # Two categories: Without this, a remote backend (hermes serve) under Restart=on-failure never comes
     # back after our clean SIGTERM, and the Desktop can't reconnect (#68934). Filtered so Desktop
     # ``serve|dashboard --port 0`` backends are not resurrected and duplicates collapse to one per profile
@@ -397,6 +435,7 @@ def _restart_killed_backends(
     respawn_candidates: list[tuple[int, list[str], str | None]] = []
     for pid in killed:
         svc_name = pid_service.get(pid)
+        launchd_job = (pid_launchd or {}).get(pid)
         if svc_name:
             if svc_name in seen_services:
                 continue
@@ -405,6 +444,24 @@ def _restart_killed_backends(
                 print(f"    ✓ restarted systemd service {svc_name}")
             else:
                 failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
+                unrecovered.append(pid)
+        elif launchd_job:
+            # launchd owns the backend: the job brings it back (KeepAlive, or the kickstart below),
+            # and success means launchd reports a fresh supervised PID — an argv respawn would sit
+            # on the job's port and leave it failing forever.
+            domain, label, old_pid = launchd_job
+            target = f"{domain}/{label}"
+            if target in seen_services:
+                continue
+            seen_services.add(target)
+            if _dash._restart_launchd_job(domain, label, old_pid):
+                print(f"    ✓ restarted launchd job {target}")
+            else:
+                # A LaunchDaemon (system domain) can only be kickstarted by root; the hint must
+                # be the command that works from the shell the operator is actually in.
+                sudo = "sudo " if domain.startswith("system") and os.geteuid() != 0 else ""  # windows-footgun: ok — launchd jobs exist only on macOS
+                failed_restarts.append(
+                    (target, f"launchd is not supervising a fresh process; run: {sudo}launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
         elif pid in pid_cmdline:
             respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
@@ -492,12 +549,37 @@ def _is_desktop_local_serve_cmdline(command: str) -> bool:
     Long-lived headless serves (``--host <tailscale-ip> --port 9119``) must never match —
     those are operator-managed remote backends that legitimately run with ppid 1.
     """
-    cmd = command.lower()
-    if "serve" not in cmd or ("hermes" not in cmd and "hermes_cli" not in cmd):
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    # Canonical token matcher, never argv substrings: ``kanban --preserve-cache`` contains "serve" and
+    # ``vim notes about hermes serve`` contains both markers — this predicate decides a kill.
+    if _hermes_holder_subcommand(command) != "serve":
         return False
-    has_loopback = any(tok in cmd for tok in (
-        "--host 127.0.0.1", "--host=127.0.0.1", "--host localhost", "--host=localhost"))
-    return has_loopback and ("--port 0" in cmd or "--port=0" in cmd)
+    tokens = command.lower().split()
+    host = _flag_value(tokens, "--host")
+    return host in ("127.0.0.1", "localhost") and _flag_value(tokens, "--port") == "0"
+
+
+def _flag_value(tokens: list[str], flag: str) -> str | None:
+    """``--flag value`` / ``--flag=value`` from split argv, or None."""
+    for i, tok in enumerate(tokens):
+        if tok == flag and i + 1 < len(tokens):
+            return tokens[i + 1]
+        if tok.startswith(flag + "="):
+            return tok.partition("=")[2]
+    return None
+
+
+def _process_ancestors(pid: int, *, max_depth: int = 8) -> list[int]:
+    """Parent chain of *pid* (nearest first), stopping at init / a lookup failure / *max_depth*."""
+    chain: list[int] = []
+    current = pid
+    while len(chain) < max_depth:
+        parent = _process_ppid(current)
+        if parent is None or parent <= 1 or parent == pid or parent in chain:
+            break
+        chain.append(parent)
+        current = parent
+    return chain
 
 
 def _process_ppid(pid: int) -> int | None:
@@ -524,9 +606,10 @@ _HEX32 = set("0123456789abcdef")
 
 
 def _hermes_home_dir() -> Path:
-    """Resolved Hermes home (HERMES_HOME override or ~/.hermes)."""
-    override = os.environ.get("HERMES_HOME", "").strip()
-    return Path(override).expanduser() if override else Path.home() / ".hermes"
+    """The process's Hermes home: remote-backend locks are a process-level asset, so a request scoped
+    to another profile must still see the same lock dir."""
+    from hermes_constants import get_process_hermes_home
+    return get_process_hermes_home()
 
 
 def _is_hex(value: object, length: int) -> bool:
@@ -555,16 +638,35 @@ def _valid_lockfile_payload(parsed: object, ownership_id: str) -> bool:
     return parsed["logPath"].endswith(f"/{ownership_id}/{parsed['spawnNonce']}.log")
 
 
+def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
+    """Every dir the Desktop may have written ``desktop-ssh/<ownershipId>/backend.lock.json`` under.
+
+    The Desktop writes SSH locks beneath the ROOT home (``~/.hermes/desktop-ssh``), but a profile
+    backend (``hermes --profile X serve``) runs with ``HERMES_HOME=<root>/profiles/X`` — scanning only
+    the process home found no lock there and its reaper killed the sibling profile's live SSH
+    backend on every profile switch (#89811)."""
+    if base_dir is not None:
+        return [base_dir]
+    from hermes_constants import get_default_hermes_root
+    roots: list[Path] = []
+    for home in (_hermes_home_dir(), get_default_hermes_root()):
+        root = home / _REMOTE_LOCK_SUBDIR
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
 def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
     """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
     (best-effort: a bad record contributes no PID; never raises)."""
     import json
-    root = base_dir if base_dir is not None else _hermes_home_dir() / _REMOTE_LOCK_SUBDIR
     owned: set[int] = set()
-    try:
-        entries = list(root.iterdir()) if root.is_dir() else []
-    except OSError:
-        return owned
+    entries: list[Path] = []
+    for root in _remote_lock_roots(base_dir):
+        try:
+            entries.extend(root.iterdir() if root.is_dir() else [])
+        except OSError:
+            continue
     for entry in entries:
         ownership_id = entry.name
         lock_path = entry / "backend.lock.json"

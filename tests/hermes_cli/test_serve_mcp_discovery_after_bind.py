@@ -17,8 +17,8 @@ from tests.hermes_cli.test_dashboard_auth_gate import _stub_uvicorn_run
 
 
 def _reset_discovery_state(monkeypatch):
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", False)
-    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", None)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", set())
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_deferred", None)
 
 

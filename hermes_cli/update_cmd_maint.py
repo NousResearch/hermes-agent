@@ -25,13 +25,14 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 _UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "tools.lazy_deps"
 
-#: Package prefixes whose cached modules go stale when the checkout changes under this
-#: process; purged (not reloaded) so any LATER import chain resolves against fresh source.
-_STALE_PURGE_PREFIXES = "hermes_cli", "gateway", "tools", "tui_gateway", "agent"
-
 #: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
 #: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
-_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_cli.hermes_logging"})
+#: Two root modules carry process-wide identity state and are refreshed in place by
+#: ``_reload_updated_runtime_modules`` instead: ``hermes_logging`` (a fresh copy starts a SECOND
+#: QueueListener over the same log files while the first keeps running) and ``hermes_constants``
+#: (its ``_HERMES_HOME_OVERRIDE`` ContextVar — a token taken through the old module cannot reset a
+#: fresh module's var, and an override set before the purge would silently vanish).
+_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_logging", "hermes_constants"})
 
 #: The updater's own module family (``update_cmd*``, ``update_receipt``, ``update_inventory``,
 #: ``update_lock``, ...) is protected as a prefix: these hold per-run state — the open receipt
@@ -46,7 +47,25 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
 _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
-_SQLITE_WAL_BUG_DETAIL = "SQLite {} still has the WAL-reset corruption bug"
+#: Reinstalling through the official installer swaps in a Python whose SQLite is safe; the
+#: one-liner differs per OS (mirrors ``uninstall._REINSTALL_HINT``). windows -> command
+_REINSTALL_ONE_LINER = {
+    True: "iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
+    False: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+}
+
+
+def _sqlite_partial_completion_lines(sqlite_version: str) -> list[str]:
+    """Shared ``⚠ Update partially complete`` wording for a vulnerable post-update SQLite, so the
+    two completion banners cannot drift. The lead names the consequence, the second line the
+    exact fix command."""
+    from hermes_cli.update_cmd import _m
+    return [
+        f"⚠ Update partially complete — your Python's SQLite ({sqlite_version}) has a known "
+        "corruption bug. Hermes works, but sessions could be damaged.",
+        f"  Fix: run the installer again ({_REINSTALL_ONE_LINER[bool(_m()._is_windows())]}) "
+        "which installs a safe Python, then run `hermes doctor` to confirm.",
+    ]
 
 
 def _load_updates_cfg() -> dict:
@@ -70,6 +89,47 @@ def _reload_modules(names, *, modules, log) -> None:
             log(module_name, exc)
 
 
+def _stale_purge_prefixes() -> frozenset:
+    """Top-level names the checkout owns, for the post-pull purge.
+
+    Scanned, not listed: a hardcoded tuple stops covering each newly added top-level module
+    without anything failing, and the symbol that breaks the next update is in whichever one
+    drifted out — ``utils`` gaining ``base_url_origin`` / ``file_signature`` were the field cases.
+    """
+    from hermes_cli.update_cmd import _m
+    names = set()
+    for entry in Path(_m().PROJECT_ROOT).iterdir():
+        if entry.suffix == ".py" and entry.is_file():
+            names.add(entry.stem)
+        elif (entry / "__init__.py").is_file():
+            names.add(entry.name)
+    # ``tests`` is owned by the checkout but never purged: the in-process purge tests would
+    # otherwise re-import a fresh copy of the very test module their monkeypatches point at.
+    return frozenset(names) - {"tests"}
+
+
+def _evict_module(modules: dict, name: str) -> bool:
+    """Returns True when *name* was cached in *modules*; also unbinds the evicted module from its
+    parent package.
+
+    The attribute matters: ``from hermes_cli import main_dashboard`` is resolved by
+    ``_handle_fromlist``, which is satisfied by the ATTRIBUTE the import system left on the parent
+    package — so a purged submodule keeps being handed to call-time imports unless the attribute
+    goes too. The parent (``hermes_cli``) is protected and survives the purge, which is how a
+    pre-pull ``main_dashboard`` outlived it and crashed the dashboard cleanup on a symbol the pull
+    had just added (#112604).
+    """
+    dropped = modules.pop(name, None)
+    parent_name, _, child = name.rpartition(".")
+    parent = modules.get(parent_name)
+    # Identity, not name: a same-named module that something else already rebound on the
+    # package is newer than the one evicted here and must stay. ``vars()`` keeps a lazy
+    # package ``__getattr__`` (``providers``) from importing during the purge.
+    if parent is not None and dropped is not None and vars(parent).get(child) is dropped:
+        del vars(parent)[child]
+    return dropped is not None
+
+
 def _purge_stale_hermes_modules() -> None:
     """Evict every cached Hermes module after the checkout changed in-place. Never raises.
 
@@ -82,13 +142,14 @@ def _purge_stale_hermes_modules() -> None:
     with _best_effort('Could not purge stale Hermes modules: %s'):
         importlib.invalidate_caches()
         modules = _m().sys.modules
+        prefixes = _stale_purge_prefixes()
         purged = [
             name for name in list(modules)
             if name not in _STALE_PURGE_PROTECTED
             and not name.startswith(_STALE_PURGE_PROTECTED_PREFIX)
             # Root-package check: startswith() alone also matches unrelated ``gateway_foo``.
-            and name.split(".", 1)[0] in _STALE_PURGE_PREFIXES
-            and modules.pop(name, None) is not None
+            and name.split(".", 1)[0] in prefixes
+            and _evict_module(modules, name)
         ]
         if purged:
             logger.debug("Purged %d stale Hermes module(s) after checkout update", len(purged))
@@ -295,6 +356,12 @@ def _reload_process_scan_modules() -> None:
     bounded_probe_run``. If the update added a new symbol to ``_subprocess_compat`` (as #87134 did with
     ``bounded_probe_run``), the cached OLD module object doesn't have it and the cleanup step crashes with
     ImportError — after the code update itself already succeeded.
+
+    The helpers it imports from ``hermes_cli.main_dashboard`` / ``main_install_repair`` are NOT
+    refreshed here: ``hermes_cli.main`` imports those eagerly at CLI start, so reloading would
+    rewrite the module dict the running update still holds bindings into. The
+    ``_purge_stale_hermes_modules`` eviction, which runs earlier in the update, is what makes the
+    call-time ``from hermes_cli import main_dashboard`` re-read the pulled source (#112604).
     """
     _reload_modules(
         ("hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"),
@@ -316,7 +383,7 @@ def _finish_dashboard_update_cleanup(
 
     See #83595.
     """
-    from hermes_cli.update_cmd import _m, _reload_process_scan_modules
+    from hermes_cli.update_cmd import _m, _record_update_step, _reload_process_scan_modules
     if node_failures:
         print()
         print("  ℹ Leaving running dashboard process(es) untouched because the")
@@ -325,9 +392,22 @@ def _finish_dashboard_update_cleanup(
 
     _reload_process_scan_modules()
 
-    stop_result = _m()._kill_stale_dashboard_processes(
-        restart_managed=True, already_restarted_units=already_restarted_units
-    )
+    try:
+        stop_result = _m()._kill_stale_dashboard_processes(
+            restart_managed=True, already_restarted_units=already_restarted_units
+        )
+    except Exception as exc:
+        # Isolated like every sibling post-update step: this runs in the pre-pull interpreter
+        # against pulled code, and a symbol gap here (#112604) used to abort the fleet matrix,
+        # reconciliation and the inner receipt finalize that follow it. A dashboard/serve left
+        # on pre-update code is still caught by the survivor probe → reconciliation (exit 1).
+        logger.warning("Post-update dashboard cleanup failed: %s", exc)
+        _record_update_step("dashboard_cleanup", False, f"{type(exc).__name__}: {exc}")
+        print()
+        print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
+        print("  If one is still running, restart it so it serves the updated code:")
+        print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
+        return
     if not stop_result.get("unrecovered"):
         return
 
@@ -405,8 +485,8 @@ def _print_verified_update_completion(message: str) -> bool:
         _print_update_completion(message)
         return True
     print()
-    print(f"⚠ Update partially complete — {_SQLITE_WAL_BUG_DETAIL.format(sqlite_info.sqlite_version_string)}.")
-    print("  Rebuild the Hermes venv with a uv-managed Python, restart Hermes, then verify with `hermes doctor`.")
+    for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
+        print(line)
     return False
 
 
@@ -440,21 +520,16 @@ def _print_update_summary(*, node_failures: list, desktop_build_ok: bool, pre_up
             parts.append(f"Node.js dependencies for {', '.join(node_failures)} did not refresh")
         if not desktop_build_ok:
             parts.append("the desktop app was not rebuilt and is still on the previous build")
-        if not sqlite_runtime_ok and sqlite_info is not None:
-            parts.append(_SQLITE_WAL_BUG_DETAIL.format(sqlite_info.sqlite_version_string))
-        print("⚠ Update partially complete — " + "; ".join(parts) + ".")
+        if parts:
+            print("⚠ Update partially complete — " + "; ".join(parts) + ".")
         if node_failures:
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
         if not desktop_build_ok:
             print("  Run `hermes desktop` to retry the desktop rebuild.")
         if not sqlite_runtime_ok:
-            print(
-                "  The Python runtime remediation did not complete. Run `hermes "
-                "update` again; if SQLite is unchanged, rebuild the Hermes venv "
-                "with a uv-managed Python, restart Hermes, then verify with "
-                "`hermes doctor`."
-            )
+            for line in _sqlite_partial_completion_lines(sqlite_info.sqlite_version_string):
+                print(line)
     else:
         _print_update_completion(_update_complete_message(pre_update_version))
     return desktop_build_ok and sqlite_runtime_ok
@@ -933,6 +1008,14 @@ def _refresh_cua_driver_after_update() -> None:
         install_cua_driver(upgrade=True, require_confirmed_update=True, show_installer_progress=False)
 
 
+def _print_checkpoint_footprint_notice() -> None:
+    """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
+    from tools.checkpoint_manager import checkpoint_footprint_notice
+    notice = checkpoint_footprint_notice()
+    if notice:
+        print(f"\n\033[1;33mℹ  {notice}\033[0m")
+
+
 def _print_plugin_compat_notice() -> None:
     """Installed plugins importing paths that the Sep 2026 decomposition scheduled for removal."""
     from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
@@ -941,6 +1024,11 @@ def _print_plugin_compat_notice() -> None:
         return
     colour = "\033[1;31m" if removal_in_effect() else "\033[1;33m"
     print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
+
+
+def _print_profiles_without_credentials_notice() -> None:
+    from hermes_cli.profile_credential_audit import print_profiles_without_credentials_notice
+    print_profiles_without_credentials_notice()
 
 
 def _print_post_update_notices_and_self_heals() -> None:
@@ -963,10 +1051,22 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('hermes-acp launcher self-heal failed: %s', _ensure_acp_launcher),
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
+        ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
+        # Named profiles stopped inheriting the root auth.json (#111724): name every profile that
+        # now has no provider of its own so nobody finds out from a dead bot.
+        ('Profile credential notice failed: %s', _print_profiles_without_credentials_notice),
+        # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
+        # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
+        ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
     ):
         with _best_effort(message):
             step()
+
+
+def _migrate_relay_exporter_env() -> None:
+    from hermes_cli.relay_plugin_migrate import run_relay_migration_after_update
+    run_relay_migration_after_update()
 
 
 def _run_post_update_maintenance(

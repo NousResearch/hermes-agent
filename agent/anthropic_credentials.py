@@ -1,8 +1,9 @@
 """Anthropic credential sources, OAuth flows, and token resolution.
 
 ``resolve_anthropic_token()`` order: ``ANTHROPIC_TOKEN`` / ``CLAUDE_CODE_OAUTH_TOKEN``,
-``ANTHROPIC_API_KEY``, ``~/.claude/.credentials.json`` / macOS Keychain, then the
-``auth.json`` credential pool. ``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and
+``ANTHROPIC_API_KEY``, Hermes-owned OAuth grants in the ``auth.json`` credential
+pool, then ``~/.claude/.credentials.json`` / macOS Keychain as a borrowed fallback.
+``~/.hermes/.anthropic_oauth.json`` (Hermes PKCE) and
 the Claude Code file are *singletons*: ``credential_pool._seed_from_singletons()``
 re-reads them on every ``load_pool()``, so a failed write here is a failed refresh
 (``CredentialPersistError``), not a cache miss.
@@ -17,7 +18,6 @@ import logging
 import os
 import platform
 import secrets
-import stat
 import subprocess
 import threading
 import time
@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 from agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
@@ -81,22 +82,9 @@ def _load_json_if_exists(path: Path, what: str) -> Optional[Any]:
 
 
 def _atomic_write_private_json(path: Path, payload: Any) -> None:
-    """Write *payload* via a 0o600 O_EXCL temp file + fsync + os.replace: the token is never briefly umask-readable
-    (write_text + chmod had a TOCTOU window); the random suffix avoids collisions with concurrent writers and
-    crashed leftovers. The parent dir's mode is left alone (~/.claude/ is owned by Claude Code)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
-    try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
+    """0600-from-creation temp file + fsync + atomic replace (the token is never briefly umask-readable).
+    The parent dir's mode is left alone (~/.claude/ is owned by Claude Code)."""
+    atomic_json_write(path, payload, mode=0o600)
 
 
 def _commit_private_json(path: Path, payload: Any, what: str) -> None:
@@ -424,7 +412,7 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
-def _resolve_anthropic_pool_token() -> Optional[str]:
+def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
     """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
     refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
@@ -435,6 +423,8 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
     for entry in entries:
+        if skip_borrowed and entry.source == "claude_code":
+            continue
         # access_token may be an explicit null on a persisted entry; None.strip() would crash the resolver.
         token = (getattr(entry, "access_token", None) or "").strip()
         if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH or not token:
@@ -452,16 +442,44 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
-def resolve_anthropic_token() -> Optional[str]:
-    """Resolve an Anthropic token from all sources in priority order (see module docstring)."""
+def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Optional[str]:
+    """Return *token* unless the pool holds an active cooldown for it on *model*.
+
+    Only model-aware callers (the API-call paths) are gated: diagnostics that
+    resolve a token without a model (usage display, model discovery) keep it.
+    """
+    if not token or not model:
+        return token or None
+    try:
+        from agent.credential_pool import load_pool
+        if load_pool("anthropic").token_is_blocked(token, model=model):
+            return None
+    except Exception:
+        # Credential discovery must remain available when the pool store is
+        # unavailable or malformed.
+        logger.debug("Failed to check Anthropic model cooldown", exc_info=True)
+    return token
+
+
+def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
+    """Resolve an Anthropic token from all sources in priority order (see module docstring).
+
+    With *model*, a token the credential pool has benched for that model resolves to ``None``
+    instead of being handed straight back to the caller that just saw it rate-limited."""
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return _prefer_refreshable_claude_code_token(token, _read_creds()) or token
+        return _available_anthropic_token(
+            _prefer_refreshable_claude_code_token(token, _read_creds()) or token, model,
+        )
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
-        return api_key
-    return _resolve_claude_code_token_from_credentials(_read_creds()) or _resolve_anthropic_pool_token()
+        return _available_anthropic_token(api_key, model)
+    # The pool's claude_code row mirrors the same externally owned refresh grant.
+    return _available_anthropic_token(
+        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
+        model,
+    )
 
 
 def run_oauth_setup_token() -> Optional[str]:
@@ -486,17 +504,6 @@ def run_oauth_setup_token() -> Optional[str]:
 
 def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
-
-
-def _root_hermes_oauth_file() -> Optional[Path]:
-    """Global-root ``.anthropic_oauth.json`` inside a named profile (None in classic mode); used to commit a
-    rotation of a grant the profile borrowed via the pool's root fallback."""
-    try:
-        from hermes_constants import get_default_hermes_root
-        root = get_default_hermes_root()
-        return None if root.resolve(strict=False) == get_hermes_home().resolve(strict=False) else root / ".anthropic_oauth.json"
-    except Exception:
-        return None
 
 
 def _generate_pkce() -> tuple:
@@ -568,14 +575,13 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 
 
 def _write_hermes_oauth_credentials(
-    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int], *, target: Optional[Path] = None
+    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int],
 ) -> None:
-    """Commit refreshed hermes_pkce tokens to ~/.hermes/.anthropic_oauth.json (``CredentialPersistError`` on failure).
-    ``target`` lets a named profile commit a grant it BORROWED from the global root back to the ROOT singleton
-    instead of forking a copy under its own HERMES_HOME; without this write-through the next ``load_pool()``
-    re-seeds the stale (consumed) pair from the file over the rotated pool entry."""
+    """Commit refreshed hermes_pkce tokens to ``<HERMES_HOME>/.anthropic_oauth.json`` (``CredentialPersistError``
+    on failure); without it the next ``load_pool()`` re-seeds the stale (consumed) pair from the file over the
+    rotated pool entry."""
     _commit_private_json(
-        target if target is not None else _get_hermes_oauth_file(),
+        _get_hermes_oauth_file(),
         {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
         "Hermes OAuth credentials",
     )

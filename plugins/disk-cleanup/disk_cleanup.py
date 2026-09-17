@@ -85,7 +85,9 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
-    "patches", "projects", "skins", "themes", "contributors"})
+    "patches", "projects", "skins", "themes", "contributors",
+    # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
+    "workspace", "plans", "home"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
@@ -98,24 +100,25 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "auth.json", "hermes-agent",
     # User-authored project trees — never sweep empty directories inside these (#75403).
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
-    # named test_* or tmp_* (#75403, also #32164, #37721).
+    # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace``, ``plans`` and ``home`` are the
+    # per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "patches", "projects", "skins", "themes", "contributors",
-    "profiles", "backups", "optional-skills"})
+    "profiles", "backups", "optional-skills", "workspace", "plans", "home"})
 
-@functools.lru_cache(maxsize=1)  # built lazily so HERMES_HOME resolves once
-def _protected_cron_paths() -> frozenset:
+@functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
+def _protected_cron_paths(home: Path) -> frozenset:
     """Defense-in-depth for quick(): EXACT cron control-plane paths (``cron/``, ``output/`` root,
     ``jobs.json``, ``.tick.lock``) never deleted regardless of stored category (stale tracked.json).
     Never widen to everything under ``cron/output/``: run artifacts there are disposable; only
     wholesale deletion of ``output/`` is fatal."""
-    return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (get_hermes_home() / parent,)
+    return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (home / parent,)
                      for x in (base, base / "output", base / "jobs.json", base / ".tick.lock"))
 
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(), regardless of what the stored category
 # says. This is a defense-in-depth guard against stale tracked.json entries from before #34840.
 def _is_protected_cron_path(p: Path) -> bool:
-    return str(p.resolve()) in _protected_cron_paths()
+    return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
 
 
 def fmt_size(n: float) -> str:

@@ -21,11 +21,15 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from gateway.platforms.base import (BasePlatformAdapter, MessageEvent, MessageType, SendResult,
-                                    cache_document_from_bytes, cache_image_from_bytes)
+from gateway.platforms.base import (
+    BasePlatformAdapter, SendResult,
+    cache_document_from_bytes, cache_image_from_bytes,
+)
+from gateway.platforms.helpers import cancel_task
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
-from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port
+from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, send_error
 
 logger = logging.getLogger(__name__)
 
@@ -489,11 +493,8 @@ class EmailAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling and disconnect."""
         self._running = False
-        if self._poll_task:
-            self._poll_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poll_task
-            self._poll_task = None
+        await cancel_task(self._poll_task)
+        self._poll_task = None
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
@@ -586,13 +587,17 @@ class EmailAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _allow_all_senders() -> bool:
-        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS)."""
-        return (_get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in _TRUTHY)
+        """True when the operator opted into any sender (EMAIL_ or GATEWAY_ALLOW_ALL_USERS).
+
+        Both names go through the scoped reader: under multiplex ``os.environ`` is the DEFAULT
+        profile's opt-in, and borrowing it opened every secondary mailbox to any sender."""
+        return any(_get_secret(name, "").strip().lower() in _TRUTHY
+                   for name in ("EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS"))
 
     @staticmethod
     def _allowlist_in_effect() -> bool:
         """True when EMAIL_/GATEWAY_ALLOWED_USERS gates access (without one the gateway default-denies, so the spoofable From: grants nothing)."""
-        return bool(_get_secret("EMAIL_ALLOWED_USERS", "").strip() or os.getenv("GATEWAY_ALLOWED_USERS", "").strip())
+        return any(_get_secret(name, "").strip() for name in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"))
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""
@@ -637,7 +642,8 @@ class EmailAdapter(BasePlatformAdapter):
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
-            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
+            source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
+                                     message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -695,9 +701,11 @@ class EmailAdapter(BasePlatformAdapter):
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
 
-    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
-        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising."""
-        msg, msg_id, _ = self._new_reply(to_addr, body)
+    def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
+                         reply_to_msg_id: Optional[str] = None) -> str:
+        """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
+        An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
+        msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
         for path, name in files:
             try:
                 _attach_file(msg, path, name)
@@ -714,10 +722,10 @@ class EmailAdapter(BasePlatformAdapter):
         return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> None:
+                                   metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
         """One email per batch: local files attached, URL images linked in the body (no remote download); base-class fallback on failure."""
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         from urllib.parse import unquote as _unquote
         body_parts, local_paths = [], []
         for image_url, alt_text in images:
@@ -730,12 +738,13 @@ class EmailAdapter(BasePlatformAdapter):
             else:
                 logger.warning("[Email] Skipping missing image: %s", local_path)
         if not local_paths and not body_parts:
-            return
+            return SendResult(success=False, error="no valid images in batch")
         try:
-            await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
+        return SendResult(success=True, message_id=message_id)
 
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
@@ -746,11 +755,14 @@ class EmailAdapter(BasePlatformAdapter):
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name), "[Email] Send document failed: %s")
+        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to),
+                                    "[Email] Send document failed: %s")
 
-    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None) -> str:
+    def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
+                                    reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
-        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False)
+        return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False,
+                                     reply_to_msg_id=reply_to_msg_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""
@@ -766,7 +778,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
     if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
+        return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
         for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
@@ -781,7 +793,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             from tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
         except Exception:
-            return {"error": f"Email send failed: {e}"}
+            return send_error(f"Email send failed: {e}")
 
 
 def _is_connected(config) -> bool:
@@ -792,15 +804,11 @@ def _is_connected(config) -> bool:
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 
-def _build_adapter(config):
-    """Factory wrapper that constructs EmailAdapter from a PlatformConfig."""
-    return EmailAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="email", label="Email", adapter_factory=_build_adapter, check_fn=check_email_requirements, is_connected=_is_connected,
+        name="email", label="Email", adapter_factory=EmailAdapter, check_fn=check_email_requirements, is_connected=_is_connected,
         required_env=["EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
         install_hint="Email uses the Python stdlib (smtplib/imaplib) — no extra deps", allowed_users_env="EMAIL_ALLOWED_USERS",
         allow_all_env="EMAIL_ALLOW_ALL_USERS", cron_deliver_env_var="EMAIL_HOME_ADDRESS", standalone_sender_fn=_standalone_send,

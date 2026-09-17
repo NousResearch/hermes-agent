@@ -115,9 +115,21 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
         return None
 
 
+# Toolsets gated by a multi-path setup (several providers / managed auth) declare no single
+# `requires_env`, so the generic branch would call a missing credential a "system dependency".
+# Name the real fix instead (#9516).
+_TOOLSET_SETUP_HINTS: dict[str, str] = {
+    "image_gen": "(image generation unavailable — check the provider selection and its key or SDK with 'hermes tools')",
+}
+
+
+def _setup_gated(item: dict) -> bool:
+    return bool(item.get("missing_vars") or item.get("env_vars") or item.get("name") in _TOOLSET_SETUP_HINTS)
+
+
 def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
-    """Filter unavailable API-key toolsets to those enabled for the CLI."""
-    api_key_unavailable = [item for item in unavailable if item.get("missing_vars") or item.get("env_vars")]
+    """Filter unavailable setup-gated toolsets (missing key OR setup hint) to those enabled for the CLI."""
+    api_key_unavailable = [item for item in unavailable if _setup_gated(item)]
     enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     return api_key_unavailable if enabled_toolsets is None else [i for i in api_key_unavailable if str(i.get("name") or "") in enabled_toolsets]
 
@@ -136,13 +148,15 @@ _BUILTIN_TERMINAL_BACKENDS = {"local", "docker", "singularity", "modal", "manage
 def _check_docker_backend(terminal_env: str, running_in_container: bool, issues: list[str]) -> None:
     if terminal_env == "docker":
         if not _safe_which("docker"):
-            _fail_and_issue("docker not found", "(required for TERMINAL_ENV=docker)", "Install Docker or change TERMINAL_ENV", issues)
+            _fail_and_issue("Docker not installed", "(needed for the 'docker' terminal backend)",
+                            "Install Docker, or run `hermes setup terminal` to switch backend.", issues)
         else:
             # `docker version` hits /version, which socket proxies (tecnativa) allow by default; `docker info`
             # needs /info and is commonly blocked, giving a false "daemon not running". The backend itself
             # probes with `docker version` too (environments/docker.py).
-            _require(_run_ok(["docker", "version"], timeout=10), ("docker", "(daemon running)"), ("docker daemon not running", ""),
-                     "Start Docker daemon", issues)
+            _require(_run_ok(["docker", "version"], timeout=10), ("docker", "(daemon running)"),
+                     ("Docker daemon not running", "(needed for the 'docker' terminal backend)"),
+                     "Start Docker, or run `hermes setup terminal` to switch backend.", issues)
     elif _safe_which("docker"):
         check_ok("docker", "(optional)")
     elif _is_termux():
@@ -154,7 +168,8 @@ def _check_docker_backend(terminal_env: str, running_in_container: bool, issues:
 def _check_ssh_backend(issues: list[str]) -> None:
     ssh_host = os.getenv("TERMINAL_SSH_HOST")
     if not ssh_host:
-        return _fail_and_issue("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)", "Set TERMINAL_SSH_HOST in .env", issues)
+        return _fail_and_issue("SSH host not configured", "(needed for the 'ssh' terminal backend)",
+                               "run `hermes setup terminal` and enter the SSH host and user.", issues)
     ssh_user, ssh_port, ssh_key = (os.getenv(f"TERMINAL_SSH_{k}") for k in ("USER", "PORT", "KEY"))
     cmd = ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
     if ssh_port:
@@ -174,7 +189,8 @@ def _require(cond, ok, bad, issue: str, issues: list[str]) -> None:
 
 def _check_daytona_backend(issues: list[str]) -> None:
     _require(os.getenv("DAYTONA_API_KEY"), ("Daytona API key", "(configured)"),
-             ("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)"), "Set DAYTONA_API_KEY environment variable", issues)
+             ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
+             "run `hermes setup terminal` (Daytona) to enter it.", issues)
     try:
         from daytona import Daytona  # noqa: F401 — SDK presence check
         check_ok("daytona SDK", "(installed)")
@@ -445,7 +461,8 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:
         env_vars = item.get("missing_vars") or item.get("env_vars") or []
-        check_warn(item["name"], f"(missing {', '.join(env_vars)})" if env_vars else "(system dependency not met)")
+        detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
+        check_warn(item["name"], detail)
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)

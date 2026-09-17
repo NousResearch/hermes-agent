@@ -422,16 +422,18 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
-    EXTRACTED text, so the model may write it back). Opaque formats are always rejected;
-    .pdf only when OVERWRITING an existing file (raw PDF syntax is text-authorable).
+    EXTRACTED text, so the model may write it back). Opaque document formats and
+    SQLite sidecars (-wal/-shm/-journal) are always rejected; .pdf and every other
+    BINARY_EXTENSIONS suffix only when OVERWRITING an existing file (raw PDF syntax
+    is text-authorable and text fixtures named ``*.db`` exist).
 
     ``read_file`` auto-extracts .docx/.xlsx/.pptx (and PDF, via anydoc) to readable text, so the model
     plausibly believes it holds the file's contents and tries to write the edited text back with
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
     """
+    ext = os.path.splitext(filepath)[1].lower()
     if has_opaque_document_extension(filepath):
-        ext = os.path.splitext(filepath)[1].lower()
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -443,7 +445,6 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
     # WAL dropped next to a live database is picked up on the next open.
     if is_sqlite_sidecar(filepath):
-        ext = os.path.splitext(filepath)[1].lower()
         return (
             f"Refusing to write plain text to binary SQLite sidecar '{filepath}' ({ext}). "
             "A -wal/-shm/-journal file holds raw database pages that SQLite "
@@ -469,7 +470,6 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
                         "text back would destroy the document. Use the pdf skill or a PDF "
                         "library via the terminal to modify it. (Creating a NEW .pdf file "
                         "is allowed.)")
-                ext = os.path.splitext(filepath)[1].lower()
                 return (
                     f"Refusing to overwrite existing binary file '{filepath}' ({ext}) "
                     "with plain text — read_file showed you extracted or mojibake "

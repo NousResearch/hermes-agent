@@ -23,17 +23,31 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.observability.loop_diagnostics_integration import (
-    _human_readable,
-    _load_enabled,
-    _metrics_path,
-    attach_failure_diagnosis,
-)
-from hermes_cli.observability.loop_diagnostics_engine import (
-    diagnose,
-    load_trace,
-    trace_path_for,
-)
+import importlib
+
+
+def _integ():
+    """Live ``loop_diagnostics_integration`` module.
+
+    Resolved at CALL time, not import time. A sibling test may purge every
+    ``hermes_cli.*`` entry from ``sys.modules`` (see
+    ``test_kanban_cli_dispatch_passthrough.isolated_kanban_home``) to force a
+    fresh config load. That orphans any module-level reference bound here at
+    collection time: the tests would then exercise a stale module object whose
+    ``_emit_event`` is NOT the one the fixtures patch, and every assertion on
+    captured events would see an empty list.
+
+    Everything in this module that reads integration internals goes through
+    these accessors so the object under test is always the live one.
+    """
+    return importlib.import_module(
+        "hermes_cli.observability.loop_diagnostics_integration"
+    )
+
+
+def _engine():
+    """Live ``loop_diagnostics_engine`` module (same purge hazard as ``_integ``)."""
+    return importlib.import_module("hermes_cli.observability.loop_diagnostics_engine")
 
 SCHEMA_VERSION = "hermes.loop_diagnostics.v1"
 
@@ -43,10 +57,33 @@ SCHEMA_VERSION = "hermes.loop_diagnostics.v1"
 # ---------------------------------------------------------------------------
 
 
+def _live_recorder_module():
+    """Return the CURRENT ``loop_diagnostics_recorder`` module object.
+
+    A sibling test (e.g. ``test_kanban_cli_dispatch_passthrough``) may purge
+    every ``hermes_cli.*`` entry from ``sys.modules`` to get a fresh config
+    load. When that happens the previously imported module object is orphaned:
+    patching IT would leave the live module's ``load_recorder_config`` intact,
+    so ``_integ()._load_enabled()`` (which does a function-local import and therefore
+    resolves the live object) would read the real, disabled config and every
+    test here would silently see ``enabled=False``.
+
+    Re-importing inside the fixture body binds the module actually in
+    ``sys.modules`` at test time, so ``monkeypatch.setattr`` lands on the
+    object the code under test will use.
+    """
+    import importlib
+    import hermes_cli.observability.loop_diagnostics_recorder as _rec
+
+    # Re-resolve from sys.modules: after a purge, a stale reference can linger
+    # in this test module's globals, so reload rather than trust it.
+    return importlib.import_module("hermes_cli.observability.loop_diagnostics_recorder")
+
+
 @pytest.fixture
 def enabled_cfg(monkeypatch):
     """Force the integration config to enabled=True for the test."""
-    import hermes_cli.observability.loop_diagnostics_recorder as recorder_mod
+    recorder_mod = _live_recorder_module()
 
     def fake_load_config(config=None):
         return {
@@ -61,7 +98,7 @@ def enabled_cfg(monkeypatch):
 
 @pytest.fixture
 def disabled_cfg(monkeypatch):
-    import hermes_cli.observability.loop_diagnostics_recorder as recorder_mod
+    recorder_mod = _live_recorder_module()
 
     def fake_load_config(config=None):
         return {
@@ -204,19 +241,19 @@ def test_disabled_config_no_side_effects(disabled_cfg, tmp_path, monkeypatch):
     _capture(monkeypatch, conn)
     trace = _write_trace(tmp_path, 7, _failure_trace(7))
 
-    result = attach_failure_diagnosis(
+    result = _integ().attach_failure_diagnosis(
         conn, "t_int", run_id=7, outcome="crashed", error="boom",
         trace_path=trace, board="default",
     )
     assert result is None
     assert conn.events == []
     assert not (tmp_path / "loop-traces" / "t_int" / "7.diagnosis.json").exists()
-    assert not _metrics_path().exists()
+    assert not _integ()._metrics_path().exists()
 
 
 def test_diagnose_on_failure_false_skips(enabled_cfg, tmp_path, monkeypatch):
     """diagnose_on_failure=False -> skipped even when enabled=True."""
-    import hermes_cli.observability.loop_diagnostics_recorder as recorder_mod
+    recorder_mod = _live_recorder_module()
 
     def fake_load_config(config=None):
         return {
@@ -231,7 +268,7 @@ def test_diagnose_on_failure_false_skips(enabled_cfg, tmp_path, monkeypatch):
     _capture(monkeypatch, conn)
     trace = _write_trace(tmp_path, 8, _failure_trace(8))
 
-    result = attach_failure_diagnosis(
+    result = _integ().attach_failure_diagnosis(
         conn, "t_int", run_id=8, outcome="crashed", error="boom",
         trace_path=trace, board="default",
     )
@@ -250,7 +287,7 @@ def test_enabled_writes_diagnosis_file_and_event(enabled_cfg, tmp_path, monkeypa
     _capture(monkeypatch, conn)
     trace = _write_trace(tmp_path, 9, _failure_trace(9))
 
-    result = attach_failure_diagnosis(
+    result = _integ().attach_failure_diagnosis(
         conn, "t_int", run_id=9, outcome="blocked", error="read_file failed",
         trace_path=trace, board="default",
     )
@@ -302,8 +339,8 @@ def test_enabled_writes_diagnosis_file_and_event(enabled_cfg, tmp_path, monkeypa
     assert "intervention=" in payload["summary"]
 
     # Metrics row.
-    assert _metrics_path().exists()
-    lines = _metrics_path().read_text(encoding="utf-8").strip().splitlines()
+    assert _integ()._metrics_path().exists()
+    lines = _integ()._metrics_path().read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 1
     metric = json.loads(lines[0])
     assert metric["task_id"] == "t_int"
@@ -324,7 +361,7 @@ def test_missing_trace_unknown_escalate(enabled_cfg, tmp_path, monkeypatch):
     conn = _FakeConn()
     _capture(monkeypatch, conn)
 
-    result = attach_failure_diagnosis(
+    result = _integ().attach_failure_diagnosis(
         conn, "t_int", run_id=99, outcome="crashed", error="boom",
         board="default",
     )
@@ -358,7 +395,7 @@ def test_engine_error_emits_diagnosis_failed(enabled_cfg, tmp_path, monkeypatch)
     monkeypatch.setattr(engine_mod, "diagnose", boom)
 
     trace = _write_trace(tmp_path, 10, _failure_trace(10))
-    result = attach_failure_diagnosis(
+    result = _integ().attach_failure_diagnosis(
         conn, "t_int", run_id=10, outcome="crashed", error="original worker error",
         trace_path=trace, board="default",
     )
@@ -370,9 +407,9 @@ def test_engine_error_emits_diagnosis_failed(enabled_cfg, tmp_path, monkeypatch)
     assert ev[2]["original_error"] == "original worker error"
 
     # Metrics recorded the failure.
-    assert _metrics_path().exists()
+    assert _integ()._metrics_path().exists()
     metric = json.loads(
-        _metrics_path().read_text(encoding="utf-8").strip().splitlines()[0]
+        _integ()._metrics_path().read_text(encoding="utf-8").strip().splitlines()[0]
     )
     assert metric["status"] == "diagnosis_error"
 
@@ -382,7 +419,7 @@ def test_missing_run_id_emits_skipped(enabled_cfg, tmp_path, monkeypatch):
     conn = _FakeConn()
     _capture(monkeypatch, conn)
 
-    result = attach_failure_diagnosis(
+    result = _integ().attach_failure_diagnosis(
         conn, "t_int", run_id=None, outcome="crashed", error="boom",
         board="default",
     )
@@ -408,7 +445,7 @@ def test_human_readable_shape():
         "interventions": [{"kind": "retry_from_checkpoint", "action_id": "42:1"}],
         "explanation": "Action 42:2 failed because its data predecessor 42:1 failed",
     }
-    s = _human_readable(r)
+    s = _integ()._human_readable(r)
     assert "diagnosis=root_cause_found" in s
     assert "category=input_invalid" in s
     assert "root=42:1" in s
@@ -418,12 +455,12 @@ def test_human_readable_shape():
 
 def test_human_readable_unknown():
     r = {"status": "unknown", "category": "unknown", "interventions": []}
-    s = _human_readable(r)
+    s = _integ()._human_readable(r)
     assert s == "diagnosis=unknown category=unknown"
 
 
 def test_config_loader_shape(enabled_cfg):
     """load_recorder_config returns diagnose_on_failure when stubbed."""
-    cfg = _load_enabled()
+    cfg = _integ()._load_enabled()
     assert cfg.get("enabled") is True
     assert cfg.get("diagnose_on_failure") is True

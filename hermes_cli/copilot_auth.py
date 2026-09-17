@@ -407,7 +407,32 @@ def _fetch_exchange_with_retry(req, timeout: float, fp: str) -> dict:
 
 
 def _cache_entry_fresh(cached) -> bool:
-    return bool(cached) and time.time() < cached[1] - _JWT_REFRESH_MARGIN_SECONDS
+    return bool(cached) and exchanged_token_expiry_fresh(cached[1])
+
+
+def exchanged_token_expiry(raw_token: str, api_token: str) -> Optional[float]:
+    """Expiry for the exact exchanged bearer derived from ``raw_token``, if known."""
+    if not raw_token or not api_token:
+        return None
+    fp = _token_fingerprint(raw_token)
+    cached = _jwt_cache.get(fp) or _load_jwt_from_disk(fp)
+    if not cached or cached[0] != api_token:
+        return None
+    expires_at = float(cached[1] or 0)
+    return expires_at or None
+
+
+def exchanged_token_expiry_fresh(expires_at: float) -> bool:
+    """Whether an exchanged bearer expiry remains outside the normal refresh margin."""
+    return time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS
+
+
+def fresh_exchanged_token(raw_token: str) -> Optional[tuple[str, float, Optional[str]]]:
+    """Current fresh exchange for ``raw_token`` without initiating network work."""
+    if not raw_token:
+        return None
+    cached = _jwt_cache.get(_token_fingerprint(raw_token))
+    return cached if _cache_entry_fresh(cached) else None
 
 
 def exchange_copilot_token(

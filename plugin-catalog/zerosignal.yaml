@@ -6,10 +6,13 @@ description: ZeroSignal — private, pay-per-request inference through the local
 maintainer: TxnLab
 tier: community
 category: models
+requires_hermes: ">=0.21"
 docs_url: https://github.com/TxnLab/hermes-zerosignal-provider#readme
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
+  # ZEROSIGNAL_API_KEY is a placeholder: Hermes needs a non-empty value, the
+  # proxy ignores it (the wallet is the credential). Any string works.
   requires_env:
     - ZEROSIGNAL_API_KEY

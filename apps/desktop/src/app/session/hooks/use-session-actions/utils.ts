@@ -1435,14 +1435,16 @@ export function dropListedSession(storedSessionId: string): void {
   setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
+export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
+  return isMessagingSource(session.source)
+    ? 'messaging'
+    : normalizeSessionSource(session.source) === 'cron'
+      ? 'cron'
+      : 'sessions'
+}
+
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
-  const target: ListedSessionSlice =
-    slice ??
-    (isMessagingSource(session.source)
-      ? 'messaging'
-      : normalizeSessionSource(session.source) === 'cron'
-        ? 'cron'
-        : 'sessions')
+  const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
 
   const prepend = (prev: SessionInfo[]) => [
     session,
@@ -1467,7 +1469,7 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
-  setSessions(prev => [
+  const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => {
       if (sessionMatchesStoredId(existing, storedSessionId)) {
@@ -1476,7 +1478,17 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 
       return (existing._lineage_root_id ?? existing.id) !== lineage
     })
-  ])
+  ]
+  // A resolve can observe a source move (cross-room /resume rewrites the row to
+  // source='matrix', #113827): the row belongs to its current slice, and the
+  // stale copy in every other slice must go or the session shows twice.
+  const evict = (prev: SessionInfo[]) =>
+    prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
+  const target = listedSliceTarget(session)
+
+  setSessions(target === 'sessions' ? prepend : evict)
+  setMessagingSessions(target === 'messaging' ? prepend : evict)
+  setCronSessions(target === 'cron' ? prepend : evict)
 }
 
 // Every session row reachable through the profile-scoped project tree —

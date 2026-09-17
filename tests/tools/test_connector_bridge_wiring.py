@@ -115,13 +115,39 @@ def test_resolve_legacy_connector_single_shape_routes_to_sentinel():
         ({"calls": [{"name": "tool_search"}]}, "itself a bridge tool"),
         ({"calls": [{"name": "x", "arguments": "not json {"}]}, "not valid JSON"),
         ({"calls": [{"name": "x", "arguments": 42}]}, "must be an object"),
-        ({"calls": "nope"}, "non-empty array"),
+        ({"calls": "nope"}, "not valid JSON"),
+        ({"calls": "[]"}, "non-empty array"),
+        ({"calls": "42"}, "non-empty array"),
     ],
 )
 def test_normalize_rejects_malformed_batches(bad, expected_fragment):
     entries, err = normalize_tool_call_entries(bad)
     assert entries == []
     assert expected_fragment in (err or "")
+
+
+def test_normalize_accepts_json_string_batch_envelope():
+    # Some models stringify the batch envelope; per-entry `arguments` strings
+    # are already parsed, so the envelope deserves the same tolerance.
+    entries, err = normalize_tool_call_entries({
+        "calls": json.dumps([
+            {"name": "session_search", "arguments": {"query": "x"}},
+            {"name": "other_tool", "arguments": json.dumps({"k": 1})},
+        ])
+    })
+    assert err is None
+    assert entries == [
+        {"name": "session_search", "arguments": {"query": "x"}},
+        {"name": "other_tool", "arguments": {"k": 1}},
+    ]
+
+
+def test_normalize_accepts_json_string_single_object_envelope():
+    entries, err = normalize_tool_call_entries({
+        "calls": json.dumps({"name": "session_search", "arguments": {"query": "x"}})
+    })
+    assert err is None
+    assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
 
 
 # ---------------------------------------------------------------------------

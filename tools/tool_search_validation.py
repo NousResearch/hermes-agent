@@ -141,9 +141,10 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
 
     Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
     and, tolerantly, the legacy single shape ``{"name": ..., "arguments": ...}``
-    (a single call is a batch of one). Each entry's ``arguments`` is coerced to
-    a dict (JSON strings parsed, ``None`` → ``{}``). Returns ``(entries, None)``
-    or ``([], error_message)``.
+    (a single call is a batch of one). A JSON-stringified form of either shape is
+    parsed (models sometimes double-encode the envelope). Each entry's
+    ``arguments`` is coerced to a dict (JSON strings parsed, ``None`` → ``{}``).
+    Returns ``(entries, None)`` or ``([], error_message)``.
     """
     raw_calls = args.get("calls")
     if raw_calls is None:
@@ -151,6 +152,13 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if not str(args.get("name") or "").strip():
             return [], "tool_call requires 'calls' (an array of {name, arguments})"
         raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
+    if isinstance(raw_calls, str):
+        # Tolerate the model emitting the batch envelope as a JSON string —
+        # mirrors the per-entry `arguments` handling below.
+        try:
+            raw_calls = json.loads(raw_calls)
+        except json.JSONDecodeError as e:
+            return [], f"tool_call 'calls' is not valid JSON: {e}"
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:

@@ -1835,7 +1835,7 @@ class TestStaleFallbackCandidateSkip:
 
         assert result.choices[0].message.content == "openrouter-serves"
         assert mock_fb.call_count == 2
-        assert mock_fb.call_args_list[1].kwargs.get("reason") == "stale fallback credential"
+        assert mock_fb.call_args_list[1].kwargs.get("reason") == "fallback candidate unavailable"
         mock_mark.assert_called_once_with(
             "anthropic", base_url="https://api.anthropic.com", reason="stale fallback credential",
         )

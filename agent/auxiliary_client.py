@@ -110,7 +110,9 @@ def aux_probe_mode():
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
-from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
+from agent.auxiliary_health import (
+    _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_unavailable_reason,
+)
 from agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, nous_credential_failure_detail,
     record_nous_credential_failure)
@@ -3921,12 +3923,13 @@ def _plan_fallback_candidate(
 
 def _quarantine_fallback_candidate(
     task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *,
-    base_url: str = "", tag: str = "",
+    base_url: str = "", tag: str = "", why: str = "has a stale/unrefreshable credential",
 ) -> None:
-    """Refresh unavailable or still 401s: token is dead. Quarantine the candidate so the caller moves on."""
+    """The candidate cannot serve this walk (dead token, or a capacity error such as a quota 429):
+    mark it unhealthy so the ordered re-walk skips it and the caller moves on to the next entry."""
     _mark_provider_unhealthy(fb_provider or fb_label, base_url=base_url, reason="stale fallback credential")
-    logger.warning("Auxiliary %s%s: fallback candidate %s has a stale/unrefreshable "
-                   "credential (%s) — skipping to next fallback", task or "call", tag, fb_label, fb_err)
+    logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
+                   task or "call", tag, fb_label, why, fb_err)
 
 
 def _plan_fallback_auth_retry(
@@ -3957,7 +3960,9 @@ def _call_fallback_candidate_sync(
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
-    provider and return None so the caller moves on. Non-auth errors raise.
+    provider and return None so the caller moves on. A capacity error (quota/rate-limit 429, 402,
+    connection, route-incompatible model, malformed response) also quarantines and returns None so
+    the ordered chain advances to the next configured entry (#106367); other errors raise.
 
     ``effective_timeout`` is the task-level deadline; a configured-chain candidate with its own ``timeout``
     entry gets that instead, so a fallback tuned differently from the primary is allowed its own budget
@@ -3990,7 +3995,13 @@ def _call_fallback_candidate_sync(
         return _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
-            raise
+            capacity = fallback_candidate_unavailable_reason(fb_err)
+            if capacity is None:
+                raise
+            _quarantine_fallback_candidate(
+                task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
+                why=f"is out of capacity ({capacity})")
+            return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
         failed_destination = destination
@@ -3999,7 +4010,7 @@ def _call_fallback_candidate_sync(
             try:
                 return _send_recovering(*retry)
             except Exception as retry_err:
-                if not _is_auth_error(retry_err):
+                if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err, base_url=failed_destination.base_url,
@@ -4034,7 +4045,13 @@ async def _call_fallback_candidate_async(
         return await _send_recovering(fb_client, fb_kwargs, destination)
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
-            raise
+            capacity = fallback_candidate_unavailable_reason(fb_err)
+            if capacity is None:
+                raise
+            _quarantine_fallback_candidate(
+                task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
+                tag=" (async)", why=f"is out of capacity ({capacity})")
+            return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
         failed_destination = destination
@@ -4043,7 +4060,7 @@ async def _call_fallback_candidate_async(
             try:
                 return await _send_recovering(*retry)
             except Exception as retry_err:
-                if not _is_auth_error(retry_err):
+                if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
         _quarantine_fallback_candidate(
             task, fb_label, fb_provider, fb_err,
@@ -7376,9 +7393,10 @@ def _next_fallback_after_quarantine(
     task: Optional[str], resolved_provider: str, is_auto: bool, route: _LadderRoute,
     failed_model: Optional[str], failure_scope: Any,
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Next candidate after a fallback entry was quarantined mid-request: remaining configured
-    entries (task chain, then main chain on auto) before the discovery chain."""
-    reason = "stale fallback credential"
+    """Next candidate after a fallback entry was quarantined mid-request (dead credential or a
+    capacity error): remaining configured entries (task chain, then main chain on auto) before the
+    discovery chain."""
+    reason = "fallback candidate unavailable"
     fb = _try_configured_fallback_chain(
         task, resolved_provider or "auto", reason=reason, failed_model=failed_model,
         failed_base_url=route.base_info, failure_scope=failure_scope)
@@ -7453,20 +7471,23 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model,
             failed_base_url=route.base_info, failure_scope=_chain_failure_scope)
-    if fb_client is not None:
-        # Second pass: the candidate credential was stale and quarantined — re-walk the CONFIGURED
-        # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
-        # their turn), then discovery where the selection policy allows it.
-        for _pass in range(2):
-            _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
-            fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
-            if fb_resp is not None:
-                return fb_resp
-            if _pass == 0:
-                fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
-                    task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
-                if fb_client is None:
-                    break
+    # Ordered walk: a candidate that returns None was quarantined (dead credential or a capacity
+    # error such as a quota 429) and is now unhealthy, so re-walking the CONFIGURED chains first
+    # lands on the next entry, then discovery where the selection policy allows it (#106367).
+    # Bounded by construction: every pass quarantines its candidate and the walk stops as soon as
+    # re-selection hands back a lane already tried, so each lane is attempted at most once.
+    tried_lanes: set = set()
+    while fb_client is not None:
+        lane = (fb_label, fb_model, str(getattr(fb_client, "base_url", "") or ""))
+        if lane in tried_lanes:
+            break
+        tried_lanes.add(lane)
+        _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+        fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
+        if fb_resp is not None:
+            return fb_resp
+        fb_client, fb_model, fb_label = _next_fallback_after_quarantine(
+            task, resolved_provider, is_auto, route, _chain_failed_model, _chain_failure_scope)
     # All fallback layers exhausted — one user-visible warning, then re-raise.
     logger.warning("Auxiliary %s%s: %s on %s and all fallbacks exhausted "
                    # All fallback layers exhausted — emit a single user-visible warning so the operator

@@ -38,3 +38,18 @@ def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = No
     return ""
 
 
+
+
+def fallback_candidate_unavailable_reason(exc: Exception) -> Optional[str]:
+    """Why a fallback candidate cannot serve this walk (``_FALLBACK_REASONS`` label), or None.
+
+    The same capacity classes that admitted the primary failure into the chain (payment/quota,
+    rate limit, connection, route-incompatible model, malformed response) mean "this lane is out
+    for now, try the next configured one"; anything else (a 400 request-shape error, a ValueError)
+    is the caller's bug and must still propagate. Auth errors are excluded on purpose: they have
+    their own refresh-then-quarantine path in the candidate helpers (#106367)."""
+    from agent.auxiliary_client import _FALLBACK_REASONS
+    return next(
+        (label for predicate, label in _FALLBACK_REASONS if label != "auth error" and predicate(exc)),
+        None,
+    )

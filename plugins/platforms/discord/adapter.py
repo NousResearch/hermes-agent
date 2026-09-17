@@ -548,6 +548,7 @@ def _clean_discord_id(entry: str) -> str:
 _GATE_ENV_KEYS = (
     "DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES", "DISCORD_ALLOWED_CHANNELS",
     "DISCORD_IGNORED_CHANNELS", "DISCORD_NO_THREAD_CHANNELS", "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_IGNORE_OTHER_USER_MENTIONS",
     "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", "DISCORD_ALLOW_ALL_USERS", "DISCORD_ALLOW_BOTS",
     "GATEWAY_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
 )
@@ -1463,11 +1464,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel) and (
             message.mentions or raw_self_mention
         ):
+            other_humans_mentioned = any(
+                mentioned != self._client.user
+                and not getattr(mentioned, "bot", False)
+                for mentioned in message.mentions
+            )
             other_bots_mentioned = any(
-                mentioned.bot and mentioned != self._client.user
+                getattr(mentioned, "bot", False)
+                and mentioned != self._client.user
                 for mentioned in message.mentions
             )
             if other_bots_mentioned and not raw_self_mention:
+                return False, False
+            if (
+                self._discord_ignore_other_user_mentions()
+                and other_humans_mentioned
+                and not raw_self_mention
+            ):
                 return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
@@ -4642,6 +4655,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Return whether Discord channel messages require a bot mention."""
         return self._extra_or_env_flag("require_mention", "DISCORD_REQUIRE_MENTION", "true", truthy=False)
 
+    def _discord_ignore_other_user_mentions(self) -> bool:
+        """Return whether messages mentioning another human stay silent.
+
+        This opt-in gate applies to server channels and threads, including
+        free-response channels. Direct messages are excluded by the admission
+        path because mentions there are references inside a bot conversation.
+        """
+        configured = self._gate_raw(
+            "ignore_other_user_mentions",
+            "DISCORD_IGNORE_OTHER_USER_MENTIONS",
+        )
+        if isinstance(configured, str):
+            return configured.lower() in {"true", "1", "yes", "on"}
+        return bool(configured)
+
     def _discord_max_attachment_bytes(self) -> int:
         """Per-attachment byte cap; 0 = unlimited (whole attachment is held in memory). Default 32 MiB."""
         configured = self.config.extra.get("max_attachment_bytes")
@@ -6997,6 +7025,7 @@ _YAML_BOOL_ENV_KEYS = (
     ("require_mention", "DISCORD_REQUIRE_MENTION"),
     ("thread_require_mention", "DISCORD_THREAD_REQUIRE_MENTION"),
     ("bots_require_inline_mention", "DISCORD_BOTS_REQUIRE_INLINE_MENTION"),
+    ("ignore_other_user_mentions", "DISCORD_IGNORE_OTHER_USER_MENTIONS"),
 )
 # (public websocket_* key, legacy liveness_* alias, env bridge var)
 _YAML_WEBSOCKET_LIVENESS_KEYS = (
@@ -7121,7 +7150,8 @@ def register(ctx) -> None:
         # YAML→env bridge: ``discord:`` config keys → ``DISCORD_*`` env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of ``config.yaml`` ``discord:`` keys
         # (require_mention, free_response_channels, auto_thread, reactions, ignored_channels,
-        # allowed_channels, no_thread_channels, allow_mentions.*, reply_to_mode, thread_require_mention)
+        # allowed_channels, no_thread_channels, allow_mentions.*, reply_to_mode,
+        # thread_require_mention, ignore_other_user_mentions)
         # into ``DISCORD_*`` env vars that the adapter reads via ``os.getenv()``. Replaces the hardcoded
         # block that used to live in ``gateway/config.py``. Hook contract: #24836.
         apply_yaml_config_fn=_apply_yaml_config,

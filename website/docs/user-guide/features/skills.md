@@ -441,7 +441,25 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
-- **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
+- **Non-existent paths are skipped with a warning**: If a configured directory doesn't exist (a typo, or a glob such as `~/.agents/skills/*` — globs are *not* expanded), Hermes ignores the entry and logs a warning naming the path. Useful for optional shared directories that may not be present on every machine.
+
+### Narrowing the external index with patterns
+
+`external_dirs` accepts literal directories only, so when several profiles share one large skills root, every profile indexes everything. Two optional pattern lists under `skills` narrow **only the external tier**:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills
+  external_include: ["workflow/*", "devops/*", "github"]
+  external_exclude: ["workflow/vendor/*"]
+```
+
+- Patterns are matched case-sensitively against the skill's path relative to its external root, its frontmatter `name`, every path prefix (so `workflow/*` also keeps `workflow/deep/nested/skill`), and — for a pattern with no slash — the top-level directory (so `github` selects that category).
+- `external_exclude` always wins over `external_include`.
+- An empty `external_include` filters nothing, so existing configs are unaffected; a config with neither key behaves exactly as before.
+- **Index-only**: this narrows the system-prompt index. A filtered skill is still discoverable via `skills_list`, loadable with `skill_view(name)`, and usable as a slash command — it is not uninstalled. Use `skills.disabled` when a skill must become unavailable everywhere.
+- The profile's own `skills/` directory (and project-local skills) are never filtered by these patterns.
 
 ### Example
 

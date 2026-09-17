@@ -77,6 +77,7 @@ it('starts structured goals collapsed and preserves manual queue expansion when 
       error: null,
       loading: false,
       pendingAction: null,
+      actionError: null,
       snapshot: {
         goal: {
           title: 'Structured goal',

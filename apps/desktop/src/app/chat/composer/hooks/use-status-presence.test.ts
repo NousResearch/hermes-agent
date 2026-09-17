@@ -15,6 +15,7 @@ const mockEntry = (overrides?: Partial<SessionControlEntry>): SessionControlEntr
   error: null,
   loading: false,
   pendingAction: null,
+  actionError: null,
   snapshot: {
     goal: null,
     heartbeat: null,

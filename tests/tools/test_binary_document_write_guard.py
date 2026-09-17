@@ -6,6 +6,7 @@ friends), and must refuse to OVERWRITE an existing .pdf — while still
 allowing new-.pdf creation (raw PDF syntax is text-authorable).
 """
 
+import contextlib
 import json
 import sqlite3
 import zipfile
@@ -38,18 +39,25 @@ def _make_minimal_docx(path: Path) -> None:
         )
 
 
-def _make_wal_db(path: Path) -> Path:
-    """Create a WAL-mode SQLite db whose ``-wal`` sidecar holds unflushed pages."""
+@contextlib.contextmanager
+def _make_wal_db(path: Path):
+    """Yield the ``-wal`` sidecar of a WAL-mode SQLite db with unflushed pages.
+
+    SQLite deletes -wal/-shm when the last connection closes, so the
+    connection is held open for the duration: the sidecar on disk is a real
+    WAL, not fake bytes.
+    """
     conn = sqlite3.connect(path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("CREATE TABLE t (name TEXT)")
-    conn.execute("INSERT INTO t VALUES ('alpha')")
-    conn.commit()
-    conn.close()  # sqlite keeps the -wal until checkpoint; it exists here
-    wal = Path(str(path) + "-wal")
-    if not wal.exists():
-        wal.write_bytes(b"\x37\x7f\x06\x82alpha")
-    return wal
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (name TEXT)")
+        conn.execute("INSERT INTO t VALUES ('alpha')")
+        conn.commit()
+        wal = Path(str(path) + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0, "WAL sidecar not materialised"
+        yield wal
+    finally:
+        conn.close()
 
 
 class TestExtensionHelpers:
@@ -145,19 +153,19 @@ class TestWriteFileToolGuard:
         # refused too — otherwise a garbage WAL lands next to a live database.
         db = tmp_path / "state.db"
         if sidecar_exists:
-            wal = _make_wal_db(db)
-            original = wal.read_bytes()
+            with _make_wal_db(db) as wal:
+                original = wal.read_bytes()
+                result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
+                # The no-baseline overwrite guard would also refuse; pin the binary
+                # refusal so the message steers the model to sqlite3, not to read_file.
+                assert "binary" in result.get("error", ""), result
+                assert wal.read_bytes() == original
         else:
             sqlite3.connect(db).close()
             wal = Path(str(db) + "-wal")
             assert not wal.exists()
-        result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
-        # The no-baseline overwrite guard would also refuse; pin the binary
-        # refusal so the message steers the model to sqlite3, not to read_file.
-        assert "binary" in result.get("error", ""), result
-        if sidecar_exists:
-            assert wal.read_bytes() == original
-        else:
+            result = json.loads(write_file_tool(str(wal), "CREATE TABLE x(y);"))
+            assert "binary" in result.get("error", ""), result
             assert not wal.exists()
 
     def test_write_file_plain_text_unaffected(self, tmp_path: Path):
@@ -215,13 +223,15 @@ class TestPatchToolGuard:
         assert "binary document" not in err.lower()
 
     def test_patch_replace_rejects_sqlite_wal_sidecar(self, tmp_path: Path):
-        wal = _make_wal_db(tmp_path / "state.db")
-        original = wal.read_bytes()
-        result = json.loads(
-            patch_tool(mode="replace", path=str(wal),
-                       old_string="alpha", new_string="beta"))
-        assert result.get("error"), "patch into .db-wal must be refused"
-        assert wal.read_bytes() == original
+        with _make_wal_db(tmp_path / "state.db") as wal:
+            original = wal.read_bytes()
+            result = json.loads(
+                patch_tool(mode="replace", path=str(wal),
+                           old_string="alpha", new_string="beta"))
+            # Pin the binary refusal: the no-baseline guard would otherwise
+            # mask a regression in sidecar detection.
+            assert "binary" in result.get("error", ""), result
+            assert wal.read_bytes() == original
 
     def test_patch_replace_plain_text_unaffected(self, tmp_path: Path):
         target = tmp_path / "notes.txt"

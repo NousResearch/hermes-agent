@@ -127,15 +127,11 @@ def read_update_marker_state(*, path: Path | None = None) -> str:
 
     age = time.time() - started_at
     if age > UPDATE_MARKER_MAX_AGE_SECONDS:
-        with suppress(OSError):
-            marker.unlink()
         return "absent"
     liveness = _pid_liveness(pid)
     if liveness is None:
         return "unknown"
     if not liveness:
-        with suppress(OSError):
-            marker.unlink()
         return "absent"
     return "live"
 

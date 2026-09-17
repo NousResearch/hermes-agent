@@ -163,6 +163,13 @@ def test_dispatch_marker_state_stays_unknown_while_marker_is_partial(marker):
     assert marker.exists()
 
 
+def test_dispatch_marker_reader_does_not_remove_proven_stale_marker(marker):
+    marker.write_text(f"{DEAD_PID}\n{int(time.time())}\n", encoding="utf-8")
+
+    assert read_update_marker_state(path=marker) == "absent"
+    assert marker.exists(), "dispatch authorization never removes a replacement-prone marker path"
+
+
 def test_context_manager_releases_even_on_exception(marker):
     with pytest.raises(RuntimeError):
         with UpdateLock(path=marker) as lock:

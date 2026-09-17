@@ -48,6 +48,12 @@ deepseek = DeepSeekProfile(
     description="DeepSeek — native DeepSeek API", signup_url="https://platform.deepseek.com/",
     fallback_models=("deepseek-v4-pro", "deepseek-flash"), base_url="https://api.deepseek.com/v1",
     default_aux_model="deepseek-flash",
+    # V4 models think by default and the API's own output cap is low: without an
+    # explicit max_tokens the thinking + a large tool-call body exceed it, the
+    # response truncates (finish_reason='length') and the incomplete tool call is
+    # refused — a dead turn / dead subagent. 65536 mirrors the qwen-oauth profile,
+    # which declares the same cap for the same reasoning-model failure mode.
+    default_max_tokens=65536,
 )
 
 register_provider(deepseek)

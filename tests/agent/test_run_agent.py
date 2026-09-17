@@ -4605,6 +4605,36 @@ class TestRunConversation:
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
+    def test_truncated_tool_call_stops_retrying_when_the_cap_cannot_grow(self, agent):
+        """#110126 layer 3: once the request already carries the cap a retry would send,
+        the remaining retries are billed no-ops — stop after the first one."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        agent.max_tokens = 65536  # the retry cannot boost past what was already sent
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        with (
+            patch("model_tools.handle_function_call") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                _mock_response(content="", finish_reason="length", tool_calls=[bad_tc]),
+                _mock_response(content="", finish_reason="length", tool_calls=[bad_tc]),
+                _mock_response(content="Done!", finish_reason="stop"),
+            ]
+            result = agent.run_conversation("write the report")
+
+        # Retry 1 goes out; retries 2-4 would repeat the same cap, so they are not sent.
+        assert agent.client.chat.completions.create.call_count == 2
+        mock_hfc.assert_not_called()
+        assert result["completed"] is False
+        assert result["final_response"] == "Response truncated due to output length limit"
+
     def test_stub_stall_mid_tool_call_recovers_within_3_retries(self, agent):
         """A network stream stall mid tool-call (PARTIAL_STREAM_STUB_ID) must
         retry up to 3 times rather than hard-failing after one — and recover

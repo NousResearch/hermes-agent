@@ -95,7 +95,7 @@ def test_two_concurrent_clients_each_use_their_own_loop_and_overrides(monkeypatc
     assert getattr(feishu_adapter._ws_isolation_state, "connect_kwargs", None) is None
 
 
-def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch):
+def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch, caplog):
     """#113662: with the SDK's reconnect ladder disabled, a receive-loop death
     used to strand ``start()`` in ``run_until_complete(_select())`` forever —
     the thread stayed alive on a deaf socket and the supervisor's executor
@@ -137,6 +137,12 @@ def test_dead_receive_loop_unparks_start_and_exits_the_thread(monkeypatch):
     # The executor future completes: _run_official_feishu_ws_client ran its
     # full teardown, which is what _supervise_websocket_thread awaits.
     assert stub._ws_thread_loop is None
+    # The root cause is logged (with traceback) next to the supervisor's
+    # rebuild line instead of dying unretrieved in the SDK's bare create_task.
+    deaths = [r for r in caplog.records if "receive loop died" in r.getMessage()]
+    assert deaths, "expected the receive-loop death to be logged"
+    assert deaths[0].exc_info is not None
+    assert "simulated half-open peer" in caplog.text
 
 
 def test_live_receive_loop_keeps_start_parked(monkeypatch):

@@ -1056,6 +1056,15 @@ def _install_lark_ws_isolation(ws_client_module: Any) -> None:
             async def _receive_message_loop_exit_notify(self: Any) -> None:
                 try:
                     await original_receive_loop(self)
+                except Exception:
+                    # The bare create_task above leaves this exception unretrieved;
+                    # log the root cause here so it survives next to the supervisor's
+                    # rebuild line instead of dying inside the SDK (#113662).
+                    logger.exception(
+                        "[Feishu] lark WS receive loop died; stopping the worker "
+                        "loop so the supervisor can rebuild"
+                    )
+                    raise
                 finally:
                     # ``Client.start()`` parks in ``run_until_complete(_select())``, which only
                     # returns when this worker loop stops, and the receive loop runs as a bare

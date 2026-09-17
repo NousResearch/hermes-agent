@@ -1177,3 +1177,57 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+class TestGetRealHomeFallback:
+    """Exhausted candidates must fall back to the platform temp dir, never "/tmp"."""
+
+    def _profile_env(self, tmp_path, monkeypatch, home_value, tilde_value):
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "home").mkdir(parents=True)
+        profile_home = str(hermes_home / "home")
+        env = {
+            "HERMES_HOME": str(hermes_home),
+            "HOME": home_value,
+            "HERMES_REAL_HOME": "",
+            "USERPROFILE": "",
+            "HOMEDRIVE": "",
+            "HOMEPATH": "",
+        }
+        for key in ("HERMES_REAL_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+            monkeypatch.delenv(key, raising=False)
+        # Only "~" maps to the stub; every other path must expand normally or
+        # _norm_home_path() would compare identical constants.
+        real_expanduser = os.path.expanduser
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: tilde_value if p == "~" else real_expanduser(p)
+        )
+        return env, profile_home
+
+    def test_fallback_returns_platform_tempdir(self, tmp_path, monkeypatch):
+        import tempfile
+
+        hermes_home = tmp_path / ".hermes"
+        (hermes_home / "home").mkdir(parents=True)
+        profile_home = str(hermes_home / "home")
+        env = {
+            "HERMES_HOME": str(hermes_home),
+            "HOME": profile_home,
+            "HERMES_REAL_HOME": "",
+            "USERPROFILE": "",
+            "HOMEDRIVE": "",
+            "HOMEPATH": "",
+        }
+        for key in ("HERMES_REAL_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"):
+            monkeypatch.delenv(key, raising=False)
+        real_expanduser = os.path.expanduser
+        monkeypatch.setattr(
+            os.path, "expanduser", lambda p: profile_home if p == "~" else real_expanduser(p)
+        )
+        assert hermes_constants.get_real_home(env) == tempfile.gettempdir()
+
+    def test_usable_candidate_beats_fallback(self, tmp_path, monkeypatch):
+        real_home = tmp_path / "real"
+        real_home.mkdir()
+        env, _ = self._profile_env(tmp_path, monkeypatch, str(real_home), str(real_home))
+        assert hermes_constants.get_real_home(env) == str(real_home)

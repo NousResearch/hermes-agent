@@ -835,8 +835,19 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
     verdict, reason = "done", ""
     try:
-        verdict, reason, _, _, _ = judge_goal(goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                                              last_response=evidence.strip())
+        # Headless handoff checks run outside any agent turn: bind the per-task relay-affinity
+        # scope (mirrors kanban_specify) so the relay does not reject the judge call (#113669).
+        from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+        affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task.id}")
+        try:
+            # Fail-open on transport failure belongs to the shared gate fix (#73119);
+            # this gate only ensures the headless call carries a scope.
+            verdict, reason, _, _, _ = judge_goal(
+                goal=f"{task.title}\n\n{task.body or ''}".strip(),
+                last_response=evidence.strip())
+        finally:
+            if affinity_token is not None:
+                reset_affinity_scope(affinity_token)
     except Exception as judge_exc:
         import logging as _logging
 

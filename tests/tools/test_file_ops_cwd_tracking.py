@@ -106,6 +106,41 @@ class TestShellFileOpsCwdTracking:
         assert result.exit_code == 0
         assert "fixed-content" in result.stdout
 
+    def test_exec_ignores_poisoned_host_cwd_on_container_backend(self, tmp_path):
+        """A workspace override can set env.cwd to a raw host path (#113894).
+
+        Desktop/TUI/gateway surfaces register a workspace cwd via
+        ``register_task_env_overrides``/``record_session_cwd``, which (unlike
+        environment CREATION) does not re-run the container-cwd sanity check.
+        On a container backend (e.g. docker), a host-style override like
+        ``C:\\Users\\rashi\\...`` lands directly on the live env. Every
+        _exec() previously trusted that live cwd unconditionally, so the
+        wrapper's own ``cd -- <host path>`` failed and the raw shell error
+        leaked into write_file's response. _exec() must detect the
+        unusable container cwd and fall back to the last known-good cwd
+        instead of handing it to the backend.
+        """
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "target.txt").write_text("workspace-content\n", encoding="utf-8")
+
+        env = _FakeEnv(start_cwd=str(workspace))
+        ops = ShellFileOperations(env, cwd=str(workspace), env_type="docker")
+
+        # Simulate the poisoning: a workspace override lands the raw host
+        # path directly on the live env, bypassing the creation-time guard.
+        env.cwd = r"C:\Users\rashi\OneDrive\Documents\ai_workspace"
+
+        result = ops._exec("cat target.txt")
+
+        assert result.exit_code == 0, (
+            f"exec failed with poisoned cwd instead of falling back: {result.stdout!r}"
+        )
+        assert "workspace-content" in result.stdout
+        assert env.calls[-1]["cwd"] != r"C:\Users\rashi\OneDrive\Documents\ai_workspace", (
+            "the unusable host cwd was handed to the backend instead of being discarded"
+        )
+
     def test_patch_returns_success_only_when_file_actually_written(self, tmp_path):
         """Safety rail: patch_replace success must reflect the real file state.
 

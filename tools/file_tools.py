@@ -310,7 +310,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _resolve_container_task_id,
-        get_session_cwd, record_session_cwd)
+        get_session_cwd, record_session_cwd, _get_env_config)
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
@@ -357,8 +357,14 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 _last_activity[task_id] = time.time()
             _start_cleanup_thread()
             logger.info("%s environment ready for task %s", env_type, task_id[:8])
+        else:
+            # Same source _create_terminal_env_for_file_ops would have used —
+            # needed so _exec() can re-validate a live cwd that a workspace
+            # override registered directly onto this (possibly pre-existing,
+            # e.g. terminal-tool-created) environment (#113894).
+            env_type = _get_env_config()["env_type"]
 
-    file_ops = ShellFileOperations(terminal_env)
+    file_ops = ShellFileOperations(terminal_env, env_type=env_type)
     with _file_ops_lock:
         _file_ops_cache[task_id] = file_ops
     return file_ops

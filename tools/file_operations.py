@@ -30,6 +30,7 @@ from tools.file_operations_common import (
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
 from tools.file_operations_search import SearchMixin
+from tools.terminal_tool_config import _is_container_backend, _is_unusable_container_cwd
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +178,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     patches "succeed" with a plausible diff while landing in the wrong directory).
     """
 
-    def __init__(self, terminal_env, cwd: str = None):
+    def __init__(self, terminal_env, cwd: str = None, env_type: str = None):
         self.env = terminal_env
+        self.env_type = env_type
         # Never os.getcwd(): that is the HOST path, absent inside container backends.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
@@ -192,13 +194,27 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Run ``command`` on the backend. cwd: explicit arg → live ``env.cwd`` →
-        init-time ``self.cwd``. ``stdin_data`` is piped (bypasses ARG_MAX)."""
+        init-time ``self.cwd``. ``stdin_data`` is piped (bypasses ARG_MAX).
+
+        A gateway/TUI/desktop surface can register a workspace override (or the
+        terminal tool can record a session cwd) that lands directly on the live
+        env without going through the container-cwd sanity check applied at
+        environment creation (``_is_unusable_container_cwd``, see #50636/#54447).
+        On a container backend that leaves ``env.cwd`` holding a raw host path,
+        and every exec would ``cd`` into it and fail (#113894). Re-apply the same
+        guard the terminal tool already applies per command
+        (``terminal_tool._resolve_command_cwd``) so a poisoned live cwd falls
+        back to the last known-good ``self.cwd`` instead of failing outright.
+        """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        live_cwd = getattr(self.env, 'cwd', None)
+        if live_cwd and _is_container_backend(self.env_type) and _is_unusable_container_cwd(live_cwd):
+            live_cwd = None
+        effective_cwd = cwd or live_cwd or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
         # A stdin write failure with a clean child exit is still a failure: the

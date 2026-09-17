@@ -45,6 +45,8 @@ class StateDelta:
     matched: int = 0
     ambiguous: Tuple[Ambiguity, ...] = ()
     mean_confidence: float = 1.0
+    # (old, new, confidence) per bound pair — the bindings match_measurement audits.
+    matched_pairs: Tuple[Tuple[SemanticElement, SemanticElement, float], ...] = ()
 
     @property
     def changed_element_ratio(self) -> float:
@@ -106,8 +108,29 @@ def diff_states(old: GuiStateV0, new: GuiStateV0) -> StateDelta:
                 reason=f"{len(fuzzy)} fuzzy candidates share role+name",
             ))
             added.append(ne)  # unbound: counted as added, ambiguity recorded alongside
+            continue
         else:
-            added.append(ne)
+            # Relabel pass: same role, parent AND geometry, but the name changed. This is
+            # the "Working…" → "Complete" status flip and the Render → Export relabel: the
+            # same control with new text. The name change is recorded in `changed`, at a
+            # 0.5 confidence that reflects the disagreement. Several candidates here mean
+            # the geometry evidence itself is ambiguous: surface, do not bind.
+            relabeled = [oe for i, oe in enumerate(old.elements)
+                         if not used_old[i] and oe.role == ne.role
+                         and oe.parent == ne.parent and oe.rel_geom == ne.rel_geom]
+            if len(relabeled) == 1:
+                oe = relabeled[0]
+                used_old[old_index[id(oe)]] = True
+                matched_pairs.append((oe, ne, 0.5))
+            elif len(relabeled) > 1:
+                ambiguous.append(Ambiguity(
+                    element=ne,
+                    candidate_keys=tuple((c.role, c.name, c.parent) for c in relabeled),
+                    reason=f"{len(relabeled)} relabel candidates share role+parent+geometry",
+                ))
+                added.append(ne)
+            else:
+                added.append(ne)
 
     removed = [oe for i, oe in enumerate(old.elements) if not used_old[i]]
 
@@ -127,6 +150,7 @@ def diff_states(old: GuiStateV0, new: GuiStateV0) -> StateDelta:
         added=tuple(added), removed=tuple(removed), changed=tuple(changed),
         matched=len(matched_pairs), ambiguous=tuple(ambiguous),
         mean_confidence=(sum(confidences) / len(confidences)) if confidences else 1.0,
+        matched_pairs=tuple(matched_pairs),
     )
 
 

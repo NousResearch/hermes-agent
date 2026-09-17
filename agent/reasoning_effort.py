@@ -84,6 +84,26 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
+#: Qwen 3.8 family thinking templates (live-verified 2026-09-17 on Qwen3.8-Flash GGUF served by
+#: llama.cpp llama-server): the template hard-raises on any level outside ``xhigh`` (its default)
+#: / ``medium`` / ``low`` — and it raises as an HTTP 500 (a server_error, not a clean 400), so the
+#: client's retry loop burns all its attempts on a deterministic template rejection. ``none`` is
+#: consumed server-side before template rendering and works. ``minimal`` and ``high`` both reach
+#: the raise. Declared set, not a predicate: ``minimal`` clamps to ``low`` (nearest weaker),
+#: ``high`` clamps to ``medium``.
+QWEN38_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "xhigh")
+
+_QWEN38_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])qwen[.\-]?3[.\-]?8(?!b)(?:[^a-z0-9]|$)")
+
+
+def is_qwen38_model(model: Optional[str]) -> bool:
+    """Qwen 3.8 family slug (``qwen3.8-flash-next``, ``qwen38-27b``, ``qwen-3.8``, vendor-prefixed
+    forms). Boundary-matched like the K3 regex, and the ``(?!b)`` guard rejects the Qwen3-era
+    size spelling ``qwen3-8b`` / ``qwen3:8b`` (version 3, eight-billion params — NOT a 3.8) whose
+    digits align identically; ``qwen3.80``-style future strings never match either."""
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bool(_QWEN38_SLUG_RE.search(bare))
+
 
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.

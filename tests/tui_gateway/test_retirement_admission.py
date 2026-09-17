@@ -29,6 +29,11 @@ class Transport:
 def test_queued_and_running_rpc_hold_admission_until_the_response(runtime, monkeypatch):
     from hermes_cli.web_server_idle_proof import idle_proof
 
+    from tui_gateway.contracts.base import Result
+
+    class RetirementResult(Result):
+        done: bool
+
     server, fence = runtime
     release_pool, entered, release_handler = (threading.Event() for _ in range(3))
     transport = Transport()
@@ -36,7 +41,7 @@ def test_queued_and_running_rpc_hold_admission_until_the_response(runtime, monke
     def handler(rid, params):
         entered.set()
         assert release_handler.wait(10)
-        return server._ok(rid, {"done": True})
+        return server._ok(rid, RetirementResult(done=True))
 
     monkeypatch.setitem(server._methods, "test.retirement", handler)
     monkeypatch.setattr(server, "_LONG_HANDLERS", {"test.retirement"})

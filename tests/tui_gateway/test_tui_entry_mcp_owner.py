@@ -30,16 +30,26 @@ def test_wait_falls_through_to_shared_owner(monkeypatch):
     monkeypatch.setattr(
         mcp_startup, "start_background_mcp_discovery", lambda **kw: None
     )
-    thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait, daemon=True)
     thread.start()
     monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {hermes_home_key(): thread})
+    joined = []
+    real_join = thread.join
 
-    start = time.monotonic()
-    entry.wait_for_mcp_discovery(timeout=2.0)
-    elapsed = time.monotonic() - start
+    def join_owner(timeout=None):
+        joined.append(timeout)
+        release.set()
+        real_join(timeout)
 
-    assert not thread.is_alive()
-    assert elapsed >= 0.04
+    monkeypatch.setattr(thread, "join", join_owner)
+    try:
+        entry.wait_for_mcp_discovery(timeout=2.0)
+        assert joined == [2.0]
+        assert not thread.is_alive()
+    finally:
+        release.set()
+        real_join(2.0)
 
 
 def test_wait_noop_when_no_owner_has_a_thread(monkeypatch):

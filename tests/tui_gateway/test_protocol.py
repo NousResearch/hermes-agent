@@ -371,7 +371,7 @@ def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expe
     assert settle(server_requests, req)
     assert server_requests.cancel("s1") == 0
     assert req.answered is True
-    assert req.result == expected
+    assert req.result.model_dump(exclude_unset=True) == expected
     assert req.event.is_set()
 
 
@@ -395,7 +395,7 @@ def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, mo
 
     monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
 
-    assert server_requests.send("sudo", "s1", _request_params("sudo", "s1"), timeout=0.001) == {"value": "yes"}
+    assert server_requests.send("sudo", "s1", _request_params("sudo", "s1"), timeout=0.001).value == "yes"
     assert cancels == []
     assert not server_requests._open
 

@@ -69,6 +69,27 @@ class GatewayProfileReconcileMixin:
         sigs = self._served_profile_signatures if isinstance(self._served_profile_signatures, dict) else {}
         self._served_profile_signatures = {name: sigs.get(name) or profile_serve_signature(home)
                                            for name, home in homes.items()}
+        self._warn_orphaned_session_namespaces(homes)
+
+    def _warn_orphaned_session_namespaces(self, homes: Dict[str, "Path"]) -> None:
+        """Warn once per boot when sessions sit under a namespace no served profile claims.
+
+        Session keys carry ``agent:<profile>:``, so a namespace change (rename, or a config
+        default flip like ``multiplex_profiles``) makes every prior key stop resolving and each
+        chat silently restart empty. Detection only — migrating is the operator's call
+        (``hermes profiles migrate-identity``), because guessing a target could merge two
+        profiles' histories. Never raises: this must not be able to block boot.
+        """
+        if getattr(self, "_orphan_namespace_checked", False):
+            return
+        self._orphan_namespace_checked = True
+        with _log_suppressed(logging.DEBUG, "orphaned-namespace check failed", exc_info=True):
+            from gateway.session_orphan_guard import warn_orphaned_namespaces
+
+            active = getattr(self, "_primary_profile_name", None) or "default"
+            live = set(homes) | {active}
+            for home in homes.values():
+                warn_orphaned_namespaces(Path(home) / "state.db", live)
 
     # ── watcher ───────────────────────────────────────────────────────────────────────────────────
 

@@ -971,16 +971,33 @@ class _CodexResponseAssembler:
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))
-        pending_key = None
+        announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
+        pending_keys = []
         if "function_call" in str(_event_field(done_item, "type", "")):
-            pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
-        announced_sequence, announced_index = self.announced_output_order.get(pending_key or done_id, (None, None))
+            done_call_id = _event_field(done_item, "call_id", "")
+            if isinstance(done_call_id, str) and done_call_id.strip():
+                # A stable call_id is exclusive: conflicting item/index identities
+                # must not evict unrelated calls, even when no alias matches.
+                pending_keys = [key for key, pending in self.pending_function_calls.items()
+                                if _event_field(pending["item"], "call_id") == done_call_id]
+                announced_sequence, announced_index = None, None
+            else:
+                # Without a stable call_id, retain item-id then index association,
+                # as used by argument events (which never carry a call_id).
+                pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+                if pending_key is not None:
+                    pending_keys = [pending_key]
+            if pending_keys:
+                announced_alias = min((self.pending_function_calls[key] for key in pending_keys),
+                                      key=lambda pending: pending["sequence"])
+                announced_sequence, announced_index = announced_alias["sequence"], announced_alias["output_index"]
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # Confirmed by the authoritative done event; never settle it twice.
-        self.pending_function_calls.pop(pending_key or done_id, None)
+        # The done payload is authoritative for every pending alias of this call.
+        for pending_key in pending_keys:
+            self.pending_function_calls.pop(pending_key, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
             if commentary_text:

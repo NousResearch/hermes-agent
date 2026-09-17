@@ -10,13 +10,15 @@ import pytest
 from agent.codex_runtime import _consume_codex_event_stream
 
 
-@pytest.mark.parametrize(('completion', 'done_order'), [
-    ('item_done', (0, 1)),
-    pytest.param('item_done', (1, 0), id='item_done_reversed'),
-    ('arguments_done', (0, 1)),
-    ('deltas', (0, 1)),
+@pytest.mark.parametrize(('completion', 'done_order', 'indexed'), [
+    ('item_done', (0, 1), True),
+    pytest.param('item_done', (1, 0), True, id='item_done_reversed'),
+    ('arguments_done', (0, 1), True),
+    ('deltas', (0, 1), True),
+    pytest.param('item_done', (0, 1), False, id='call_id_without_indexes'),
+    pytest.param('item_done', (1, 0), False, id='call_id_without_indexes_reversed'),
 ])
-def test_rotating_item_ids_preserve_distinct_calls_and_arguments(completion, done_order):
+def test_rotating_item_ids_preserve_distinct_calls_and_arguments(completion, done_order, indexed):
     events = []
     for index in range(2):
         events.append({
@@ -49,6 +51,13 @@ def test_rotating_item_ids_preserve_distinct_calls_and_arguments(completion, don
                          'call_id': f'call_{index}', 'name': 'diagnostic_echo',
                          'arguments': json.dumps({'text': f'authoritative-{index}'})},
             })
+    if not indexed:
+        for event in events:
+            index = event.pop('output_index')
+            # Argument events have no call_id: without an index, keep their
+            # item_id stable. Only the completed item rotates its identity.
+            if 'item_id' in event:
+                event['item_id'] = f'announced_{index}'
     events.append({'type': 'response.completed', 'response': {'status': 'completed'}})
     response = _consume_codex_event_stream(events, model='diagnostic')
     def field(item, name):

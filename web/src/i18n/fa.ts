@@ -175,6 +175,12 @@ export const fa = defineLocale({
 
   sessions: {
     title: "نشست‌ها",
+    renameSession: "تغییر نام نشست",
+    exportSession: "خروجی گرفتن از نشست",
+    exportSessionTooltip: "خروجی JSON نشست",
+    sessionTitlePlaceholder: "عنوان نشست",
+    saveTitle: "ذخیره عنوان",
+    cancelRename: "لغو تغییر نام",
     history: "تاریخچه",
     overview: "مرور",
     filterChats: "گفتگوها",
@@ -281,6 +287,10 @@ export const fa = defineLocale({
 
   models: {
     modelsUsed: "مدل‌های استفاده‌شده",
+    expensiveWarningTitle: "هشدار مدل پرهزینه",
+    resetAuxiliaryModels: "بازنشانی مدل‌های کمکی",
+    newPresetNamePlaceholder: "نام پیش‌تنظیم جدید",
+    selectMoaModel: "انتخاب مدل MoA",
     estimatedCost: "هزینه تخمینی",
     tokens: "توکن",
     sessions: "نشست",
@@ -305,6 +315,8 @@ export const fa = defineLocale({
   },
 
   cron: {
+    jobIdsPlaceholder: "هر خط یک شناسه کار",
+    editJob: "ویرایش کار",
     confirmDeleteMessage:
       "این وظیفه از زمان‌بندی حذف می‌شود. این اقدام قابل بازگشت نیست.",
     confirmDeleteTitle: "حذف وظیفه زمان‌بندی‌شده؟",
@@ -479,6 +491,9 @@ export const fa = defineLocale({
 
   skills: {
     title: "مهارت‌ها",
+    editSkillMd: "ویرایش SKILL.md",
+    learnUrlPlaceholder: "https://docs.example.com/api  (با web_extract واکشی می‌شود)",
+    learnTextPlaceholder: "مثلاً چطور گزارش هزینه ثبت می‌کنم: پرتال را باز کن، …",
     searchPlaceholder: "جستجو در مهارت‌ها و مجموعه‌های ابزار...",
     enabledOf: "{enabled}/{total} فعال",
     all: "همه",
@@ -546,6 +561,7 @@ export const fa = defineLocale({
   },
 
   env: {
+    jumpToSection: "پرش به بخش",
     changesNote:
       "تغییرات بلافاصله روی دیسک ذخیره می‌شوند. نشست‌های فعال به‌طور خودکار کلیدهای جدید را می‌گیرند.",
     confirmClearMessage:
@@ -766,6 +782,17 @@ export const fa = defineLocale({
         "کپی تصویر در این مرورگر پشتیبانی نمی‌شود — به‌جای آن از دانلود استفاده کنید.",
       tweet_text: 'فقط "{tier_part}{name}" را در Hermes Agent ☤ باز کردم',
     },
+  },
+
+  chat: {
+    reconnect: "اتصال مجدد گفتگو",
+    newSession: "شروع جلسه گفتگوی جدید",
+    copyLastTooltip: "کپی آخرین پاسخ دستیار به‌صورت مارک‌داون خام",
+    copyLast: "کپی آخرین پاسخ دستیار",
+    showSidePanel: "نمایش پنل کناری گفتگو",
+    showSidePanelTitle: "نمایش پنل کناری (مدل + نشست‌ها)",
+    collapseSidePanel: "جمع‌کردن پنل کناری گفتگو",
+    collapseSidePanelTitle: "جمع‌کردن پنل کناری",
   },
 
   kanban: {

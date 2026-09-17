@@ -217,6 +217,7 @@ function UseAsMenu({
   mainAuxTask: string | null;
   onAssigned(): void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -345,7 +346,7 @@ function UseAsMenu({
       )}
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={t.models?.expensiveWarningTitle ?? "Expensive Model Warning"}
         description={pendingConfirm?.message}
         destructive
         confirmLabel="Switch anyway"
@@ -596,7 +597,7 @@ function AuxiliaryTasksModal({
           size="icon"
           onClick={onClose}
           className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          aria-label={t.common.close}
         >
           <X />
         </Button>
@@ -691,7 +692,7 @@ function AuxiliaryTasksModal({
           open={confirmReset}
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
-          title="Reset auxiliary models"
+          title={t.models?.resetAuxiliaryModels ?? "Reset auxiliary models"}
           description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
           destructive
           confirmLabel="Reset all"
@@ -847,7 +848,7 @@ function MoaModelsModal({
             <Button size="sm" ghost disabled={presetNames.length <= 1} onClick={deletePreset}>Delete</Button>
             <input
               className="border border-border bg-background px-2 py-1 text-xs"
-              placeholder="new preset name"
+              placeholder={t.models.newPresetNamePlaceholder}
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
             />
@@ -907,7 +908,7 @@ function MoaModelsModal({
           key={`moa-picker-${refreshKey}-${selected}-${picker.kind}-${picker.kind === "reference" ? picker.index : "agg"}`}
           loader={api.getModelOptions}
           alwaysGlobal
-          title="Select MoA Model"
+          title={t.models.selectMoaModel}
           onApply={async ({ provider, model }) => {
             if ((provider || "").toLowerCase() === "moa") {
               setError("MoA presets can't reference or aggregate the Mixture of Agents provider (no recursive MoA).");

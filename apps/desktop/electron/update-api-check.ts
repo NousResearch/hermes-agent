@@ -109,3 +109,86 @@ export function parseCompare(payload: unknown): { behind: number; commits: Compa
 
   return { behind: ahead, commits }
 }
+
+/** GitHub's rate-limit headers off a failed response, when it carried them. */
+export function rateLimitFromHeaders(headers: Record<string, string | string[] | undefined>): {
+  rateLimitRemaining: number | null
+  rateLimitReset: number | null
+} {
+  const num = (name: string) => {
+    const raw = headers[name]
+    const value = Number.parseInt(Array.isArray(raw) ? raw[0] : String(raw ?? ''), 10)
+
+    return Number.isFinite(value) ? value : null
+  }
+
+  return { rateLimitRemaining: num('x-ratelimit-remaining'), rateLimitReset: num('x-ratelimit-reset') }
+}
+
+export interface UpdateCheckFailure {
+  statusCode?: number
+  code?: string
+  message?: string
+  /** `x-ratelimit-remaining` on the failed response; 0 marks a genuine rate limit. */
+  rateLimitRemaining?: number | null
+  /** `x-ratelimit-reset` (unix seconds) on the failed response. */
+  rateLimitReset?: number | null
+  /** Whether the failed request carried a GITHUB_TOKEN / GH_TOKEN credential. */
+  authenticated?: boolean
+}
+
+/**
+ * One line a user can act on (or paste into a bug report) instead of the
+ * generic "couldn't reach the update server": which host, which failure.
+ * #105855 was a run of GitHub outages that read as a Hermes bug because the
+ * UI hid the cause.
+ *
+ * A 403 with `x-ratelimit-remaining: 0` is the anonymous per-IP budget spent
+ * by every client behind one exit (office NAT, VPN, proxy) — waiting an hour
+ * does not help when the neighbours refill it, so the line names the fix the
+ * user actually has (a GITHUB_TOKEN in the environment) and the real reset
+ * time. Any other 403/429 is reported as what it is rather than as a rate
+ * limit the user did not cause.
+ */
+export function describeUpdateCheckFailure(error: UpdateCheckFailure | null | undefined, now = Date.now()): string {
+  const status = error?.statusCode
+  const code = error?.code
+
+  if ((status === 403 || status === 429) && error?.rateLimitRemaining === 0) {
+    const resetMs = typeof error.rateLimitReset === 'number' ? error.rateLimitReset * 1000 - now : NaN
+    const minutes = Number.isFinite(resetMs) && resetMs > 0 ? Math.ceil(resetMs / 60_000) : null
+    const when = minutes === null ? 'within an hour' : minutes === 1 ? 'in about a minute' : `in about ${minutes} minutes`
+
+    return error.authenticated
+      ? `GitHub API rate limit reached for your GITHUB_TOKEN (HTTP ${status}) — it resets ${when}.`
+      : `GitHub API rate limit reached (HTTP ${status}): anonymous requests are limited to 60 per hour per network ` +
+          `address, shared with everyone behind the same connection. It resets ${when}; ` +
+          `setting GITHUB_TOKEN in the environment lifts the limit.`
+  }
+
+  if (typeof status === 'number' && status >= 500) {
+    return `GitHub is having trouble (HTTP ${status} from api.github.com) — check githubstatus.com and try again later.`
+  }
+
+  if (typeof status === 'number') {
+    return `api.github.com answered HTTP ${status}.`
+  }
+
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return 'DNS lookup for api.github.com failed — check your connection or proxy.'
+  }
+
+  if (code === 'ETIMEDOUT' || error?.message === 'timeout') {
+    return 'api.github.com did not answer within 10 seconds.'
+  }
+
+  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
+    return `Connection to api.github.com failed (${code}) — a firewall or proxy may be blocking it.`
+  }
+
+  if (typeof code === 'string' && /CERT|SSL|TLS/i.test(code)) {
+    return `TLS handshake with api.github.com failed (${code}) — a proxy may be intercepting HTTPS.`
+  }
+
+  return `api.github.com: ${error?.message || String(error)}`
+}

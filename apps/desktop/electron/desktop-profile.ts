@@ -139,7 +139,11 @@ export function createDesktopProfilePreferences(
     options.onDefaultChanged?.(null)
   }
 
-  function profileChanged(connectionId: null | string, oldName: string, newName: null | string) {
+  function profileChanged(connectionId: null | string, oldName: string, newName: null | string, backendMode: string) {
+    if (backendMode === 'local' && readActive() === oldName) {
+      remember(newName || 'default')
+    }
+
     const route = getDefault()
 
     if (route?.connectionId !== connectionId || route?.profile !== oldName) {
@@ -159,7 +163,12 @@ export function createDesktopProfilePreferences(
     }
   }
 
-  function afterProfileRequest(connectionId: null | string, request: ProfileRenameRequest, response: unknown) {
+  function afterProfileRequest(
+    connectionId: null | string,
+    request: ProfileRenameRequest,
+    response: unknown,
+    backendMode: string
+  ) {
     if (response && typeof response === 'object') {
       const result = response as Record<string, unknown>
 
@@ -172,9 +181,9 @@ export function createDesktopProfilePreferences(
     const deleted = profileNameFromDeleteRequest(request)
 
     if (renamed) {
-      profileChanged(connectionId, renamed.oldName, renamed.newName)
+      profileChanged(connectionId, renamed.oldName, renamed.newName, backendMode)
     } else if (deleted) {
-      profileChanged(connectionId, deleted, null)
+      profileChanged(connectionId, deleted, null, backendMode)
     }
   }
 

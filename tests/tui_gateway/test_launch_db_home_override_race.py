@@ -46,6 +46,23 @@ def test_get_db_first_touch_under_foreign_override_uses_launch_path(launch_db_en
         reset_hermes_home_override(token)
 
 
+def test_get_db_follows_a_process_home_redirected_after_import(monkeypatch, tmp_path):
+    """The launch handle resolves ``HERMES_HOME`` at first use, not at import (#112692): a harness
+    that redirects the env after ``tui_gateway.server`` is imported must not open the import-time
+    home's state.db. Only the context-local override is ignored (#102526), never the process env."""
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+    monkeypatch.setenv("HERMES_HOME", str(redirected))
+    try:
+        db = server._get_db()
+        assert db is not None
+        assert db.db_path.resolve() == (redirected / "state.db").resolve()
+    finally:
+        registry.close_all()
+
+
 def test_insights_get_reads_the_requested_profile_store_not_the_launch_handle(launch_db_env, monkeypatch, tmp_path):
     """``insights.get {profile}`` was ``scoped=True`` then ``_get_db()``: a scoped first touch pinned
     the launch handle to the foreign store. It must count the requested profile's sessions through

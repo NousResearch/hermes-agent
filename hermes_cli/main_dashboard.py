@@ -443,7 +443,8 @@ def _install_hangup_protection(gateway_mode: bool = False):
 
         import datetime as _dt
 
-        log_file.write(f"\n=== hermes update started {_dt.datetime.now().isoformat(timespec='seconds')} ===\n")
+        stage = "continued on the pulled code" if os.environ.get("HERMES_UPDATE_POST_SWAP") == "1" else "started"
+        log_file.write(f"\n=== hermes update {stage} {_dt.datetime.now().isoformat(timespec='seconds')} ===\n")
 
         state["log_file"] = log_file
         sys.stdout = _UpdateOutputStream(state["prev_stdout"], log_file)

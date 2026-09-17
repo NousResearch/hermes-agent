@@ -426,6 +426,17 @@ class TestFleetClassification:
         assert ok is False
         assert "version unknown" in capsys.readouterr().out
 
+    def test_identity_pending_row_gets_restart_aware_copy(self, capsys):
+        """#112634: a gateway this update relaunched that has not stamped yet must not be told to
+        restart — it was just restarted on the new code. Still non-fatal."""
+        ok = ur.print_fleet_version_matrix(
+            [{"profile": "default", "pid": 34516, "code_sha": None, "state": "unknown", "identity_pending": True}]
+        )
+        assert ok is False
+        out = capsys.readouterr().out
+        assert "code identity not published yet" in out and "hermes gateway status" in out
+        assert "predates version stamping" not in out
+
 
 class TestGatewayStatusStamping:
     def test_runtime_status_record_carries_code_identity(self, monkeypatch):

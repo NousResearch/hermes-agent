@@ -18,7 +18,8 @@ from typing import Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted,
+    LOCAL_RUNTIME_ROOT_DIRS, clear_named_profile_deleted, mark_named_profile_deleted, named_profile_has_identity,
+    named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
@@ -310,7 +311,7 @@ def profile_exists(name: str) -> bool:
         return False
     if canon == "default":
         return True
-    return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
+    return named_profile_is_live(profile_dir)
 
 
 def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
@@ -330,7 +331,12 @@ def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
 
 
 def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
-    """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones."""
+    """Sorted named-profile dirs (valid ids, never ``default``); ``live_only`` skips tombstones.
+
+    A dir is a profile only when it carries an identity marker (``named_profile_has_identity``):
+    cron/logging side-effects and pre-tombstone ghost shells leave marker-less dirs that must
+    not be listed, served, ticked, or ``.env``-seeded — that seeding is what turned a ghost
+    shell into a "real" profile on the next ``hermes update`` (#95188, #94823, #99392)."""
     profiles_root = _get_profiles_root()
     if not profiles_root.is_dir():
         return []
@@ -339,16 +345,19 @@ def _iter_named_profile_dirs(*, live_only: bool = True) -> List[Path]:
         if entry.is_dir()
         and entry.name != "default"
         and _PROFILE_ID_RE.match(entry.name)
+        and named_profile_has_identity(entry)
         and not (live_only and named_profile_is_deleted(entry))
     ]
 
 
 def list_profile_names() -> List[str]:
-    """Cheap name-only listing (``default`` + profile dirs). Unlike :func:`list_profiles` this
-    reads NO per-profile config — safe for hot paths (cron target listings, create validation)."""
+    """Cheap name-only listing (``default`` + LIVE profile dirs). Unlike :func:`list_profiles` this
+    reads NO per-profile config — safe for hot paths (cron target listings, create validation).
+    Tombstoned shells are skipped like everywhere else: a stale process that re-mkdirs a deleted
+    profile's directory must not resurface it as a ``bot-chat:<name>`` cron target."""
     names = ["default"]
     with contextlib.suppress(OSError):
-        names.extend(entry.name for entry in _iter_named_profile_dirs(live_only=False))
+        names.extend(entry.name for entry in _iter_named_profile_dirs())
     return names
 
 
@@ -536,6 +545,9 @@ class ProfileInfo:
     description_auto: bool = False
     # Presentation-only display name; resolution/comparison/spawn always use ``name``.
     display_name: str = ""
+    # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
+    # the Bots roster shows. Presentation-only, like ``display_name``.
+    bot_title: str = ""
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -576,6 +588,22 @@ def _read_config_model(profile_dir: Path) -> tuple:
     return None, None
 
 
+def launch_model_seed(source_cfg: dict) -> dict:
+    """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus,
+    when that block points at a custom ``providers:`` gateway (self-hosted / local endpoint), that
+    provider's definition — ``model.provider: my-gateway`` alone is "Unknown provider" on the first
+    turn. ``{}`` when the launch profile has no model."""
+    model_cfg = source_cfg.get("model")
+    if not model_cfg:
+        return {}
+    seed = {"model": model_cfg}
+    providers = source_cfg.get("providers")
+    name = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    if isinstance(providers, dict) and name in providers:
+        seed["providers"] = {name: providers[name]}
+    return seed
+
+
 def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
     profiles stay independent islands afterwards."""
@@ -587,9 +615,9 @@ def _seed_model_config(profile_dir: Path) -> None:
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         source = get_hermes_home() / "config.yaml"
-        model_cfg = read_user_config_raw(source).get("model") if source.is_file() else None
-        if model_cfg:
-            config_path.write_text(yaml.safe_dump({"model": model_cfg}, sort_keys=False), encoding="utf-8")
+        seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
+        if seed:
+            config_path.write_text(yaml.safe_dump(seed, sort_keys=False), encoding="utf-8")
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
@@ -675,10 +703,17 @@ def read_profile_meta(profile_dir: Path) -> dict:
     defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
     break ``hermes profile list``."""
     data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
+    ui_meta = data.get("ui_meta")
+    bot_title = ""
+    if isinstance(ui_meta, dict):
+        hermes_bots = ui_meta.get("hermes-bots")
+        if isinstance(hermes_bots, dict):
+            bot_title = str(hermes_bots.get("title") or "").strip()
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
+        "bot_title": bot_title,
     }
 
 
@@ -927,12 +962,17 @@ def create_profile(
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists() and named_profile_is_deleted(profile_dir):
-        # Empty shells left by post-delete mkdir may be replaced. Identity files mean the
-        # leftover is not a shell — fail closed, no rmtree.
-        if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
-            raise _profile_exists_error(canon)
-        shutil.rmtree(profile_dir)
+    if profile_dir.exists() and not named_profile_has_identity(profile_dir):
+        if named_profile_is_deleted(profile_dir):
+            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace.
+            shutil.rmtree(profile_dir)
+        else:
+            # A live marker-less dir is invisible to ``profile list`` but may still hold user
+            # files (skills/, memories/, cron/jobs.json): fail closed and name it, never rmtree.
+            raise FileExistsError(
+                f"Cannot create profile '{canon}': {profile_dir} exists but carries no profile identity "
+                "file, so it is not listed as a profile. Move or remove that directory first."
+            )
     if profile_dir.exists():
         raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
@@ -1945,7 +1985,7 @@ def resolve_profile_env(profile_name: str) -> str:
     if canon == "default":
         return str(root)
     profile_dir = root / "profiles" / canon
-    if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
+    if not named_profile_is_live(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
 

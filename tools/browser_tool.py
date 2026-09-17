@@ -67,11 +67,13 @@ except Exception:
 
 try:
     from tools.url_safety import (
+        _is_declared_fake_ip,
         is_safe_url as _is_safe_url,
         is_always_blocked_url as _is_always_blocked_url,
         normalize_url_for_request as _normalize_url_for_request,
     )
 except Exception:
+    _is_declared_fake_ip = lambda ip: False  # noqa: E731 — no declaration known: keep the private verdict
     _is_safe_url = lambda url: False  # noqa: E731 — fail-closed: block all if safety module unavailable
     _is_always_blocked_url = lambda url: True  # noqa: E731 — fail-closed on the floor too
     _normalize_url_for_request = lambda url: url  # noqa: E731 — best-effort fallback
@@ -263,7 +265,9 @@ _PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".internal")
 def _url_is_private(url: str) -> bool:
     """True when the URL's host is (or resolves to) a private/LAN/loopback/CGNAT address.
     Routing oracle only: DNS failures are NOT private (the configured backend surfaces the
-    error); obvious names short-circuit the DNS hop."""
+    error); obvious names short-circuit the DNS hop. A local proxy's declared fake-ip sentinel
+    (``security.fake_ip_ranges``) is not private: the name is public, the cloud browser resolves
+    it itself, so routing it to the local sidecar would send every URL local on such a host."""
     import ipaddress
     import socket
     from urllib.parse import urlparse
@@ -273,6 +277,8 @@ def _url_is_private(url: str) -> bool:
             ip = ipaddress.ip_address(host)
         except ValueError:
             return None
+        if _is_declared_fake_ip(ip):
+            return False
         return ip.is_private or ip.is_loopback or ip.is_link_local or ip in ipaddress.ip_network("100.64.0.0/10")
 
     try:

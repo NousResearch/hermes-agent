@@ -208,3 +208,16 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 `vision_analyze` 工具本身遵循相同的路由逻辑。当当前主模型支持视觉，**且**其提供商支持在工具结果中包含图像内容（目前为 Anthropic、OpenAI、Azure-OpenAI 和 Gemini 3.x 技术栈），`vision_analyze` 会跳过辅助描述器，直接将原始图像像素作为多模态工具结果信封返回。主模型在下一轮会原生看到图像——无辅助调用、无文本摘要信息损失、无额外延迟。
 
 对于纯文本主模型（或工具结果通道不支持图像的提供商），`vision_analyze` 回退到旧路径：请求已配置的辅助视觉模型描述图像，并以纯文本形式返回描述。无论哪种情况，调用工具的签名相同——工具在运行时根据当前模型决定采用哪条路径。
+
+### 原生嵌入伴随整个会话：`vision.embed_target_bytes` 与 `vision.max_calls_per_image`
+
+原生 `vision_analyze` 的结果会把图片烘焙进工具结果，而该结果会在本会话之后的每一次 API 调用中重复发送。`config.yaml` 中的两个键用于限制这笔反复产生的开销：
+
+```yaml
+vision:
+  embed_target_bytes: 262144   # 单次嵌入的字节预算；限制在 64 KiB..4 MiB（默认 256 KB）
+  max_calls_per_image: 3       # 未设置 = 委派子代理内为 3，主代理不限
+```
+
+- **`embed_target_bytes`** — 超过预算（或宽于 1568 px）的图片会被缩小为能放进预算的 JPEG。256 KB 足以让普通截图保持廉价，但密集的手机表格截图在这个大小下可能无法辨认；当模型不断称数字"无法读取"时，请调高该值（例如 `1048576`）。原生传递的浏览器截图使用同一预算。
+- **`max_calls_per_image`** — *同一张*图片（包括其区域裁剪；本地路径按解析后的路径比较）在一个会话中最多可被嵌入的次数。达到上限后，工具返回 `"vision_analyze refused: this image has already been loaded into context N time(s) …"` 而不是再次嵌入，让模型基于已看到的内容作答。未设置时只有 `delegate_task` 委派的子代理受限（上限 3）：它们无人值守，无法在循环中途从 CLI 被引导，曾有一次重复加载循环在五个文件上烧掉了 158 次调用。设置一个数字可限制所有会话，`0` 则表示完全不限。

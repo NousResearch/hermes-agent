@@ -9,6 +9,9 @@ import json
 import logging
 import os
 import re
+import threading
+import time
+import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
@@ -18,6 +21,18 @@ from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
+
+# In-flight stage-2 upgrade threads. They bill their aux usage to the session from a daemon thread,
+# so a process that reads the ledger right before exit (``-z --usage-file``) must be able to join
+# them (bounded) instead of racing the write (#112848).
+_UPGRADE_THREADS: "weakref.WeakSet[threading.Thread]" = weakref.WeakSet()
+
+
+def wait_for_title_upgrades(timeout: float = 10.0) -> None:
+    """Bounded join of the auto-title threads still running; never raises."""
+    deadline = time.monotonic() + timeout
+    for thread in list(_UPGRADE_THREADS):
+        thread.join(max(0.0, deadline - time.monotonic()))
 
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
@@ -39,6 +54,9 @@ MAX_DERIVED_TITLE_CHARS = 48
 # answer-shaped output guard in generate_title; port of can1357/oh-my-pi#7306). 12 leaves headroom for
 # legitimate wordy titles while excluding full-sentence answers.
 _MAX_TITLE_WORDS = 12
+# Output budget for the title call: room for a fenced/prefixed JSON reply and for a reasoning model that
+# thinks despite the thinking-disabled request, without letting a runaway reply burn minutes.
+TITLE_MAX_TOKENS = 512
 
 # The example titles shown to the model in the prompt, and the echo-guard
 # set: when the opening message carries little topical signal, a small model
@@ -137,6 +155,16 @@ def _auto_title_enabled() -> bool:
         return True
 
 
+def _model_title_upgrade_enabled() -> bool:
+    """Distinct from ``enabled``: keep the instant derived title, skip the background model call (#85194)."""
+    try:
+        from utils import is_truthy_value
+        return is_truthy_value(_title_config().get("model_upgrade_enabled"), default=True)
+    except Exception:
+        logger.debug("Failed to read title_generation.model_upgrade_enabled", exc_info=True)
+        return True
+
+
 def strip_control_wrappers(text: str) -> str:
     """Remove leading control wrappers (nested too) so a slash-command turn reduces to the prose the user typed."""
     current = (text or "").strip()
@@ -198,14 +226,8 @@ def _first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
 
-def _extract_title_text(content: str) -> str:
-    """Strict JSON, then a loose JSON scan, then first-line prose (a provider ignoring ``response_format`` still titles)."""
-    if not content:
-        return ""
-    raw = content.strip()
-    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
-    if fenced:
-        raw = fenced.group(1).strip()
+def _extract_json_title(raw: str) -> Optional[str]:
+    """Title from a ``{"title": ...}`` payload — strict parse, then a loose ``"title": "..."`` scan; None when absent."""
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and isinstance(parsed.get("title"), str):
@@ -217,6 +239,34 @@ def _extract_title_text(content: str) -> str:
         with suppress(ValueError):
             return json.loads(f'"{match.group(1)}"').strip()
         return match.group(1).strip()
+    return None
+
+
+def _is_truncated_structured_output(raw: str) -> bool:
+    """Structured output the token cap cut before its closing quote/brace/fence (``{"title``, a bare fence opener).
+
+    Checked only after the JSON paths failed, and on structure alone (a JSON-shaped opener, a fence
+    opener that is never closed) so quoted, *emphasized* or ``[WIP]``-prefixed prose titles are
+    untouched (#83903)."""
+    return raw.startswith(('{"', '["', "[{")) or (raw.startswith("```") and raw.count("```") % 2 == 1)
+
+
+def _extract_title_text(content: str) -> str:
+    """Strict JSON, then a loose JSON scan, then first-line prose (a provider ignoring ``response_format`` still titles).
+
+    A truncated structured payload is dropped rather than handed to the prose fallback: the fragment
+    would otherwise be persisted as the session title."""
+    if not content:
+        return ""
+    raw = content.strip()
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", raw, re.DOTALL)
+    if fenced:
+        raw = fenced.group(1).strip()
+    title = _extract_json_title(raw)
+    if title is not None:
+        return title
+    if _is_truncated_structured_output(raw):
+        return ""
     # Prose fallback: scrub <think> blocks so reasoning can't leak into a title.
     try:
         from agent.agent_runtime_helpers import strip_think_blocks
@@ -224,6 +274,19 @@ def _extract_title_text(content: str) -> str:
     except Exception:
         logger.debug("strip_think_blocks unavailable for title output", exc_info=True)
     return _strip_title_prefix(_first_line(raw)).strip("\"'").strip()
+
+
+def _title_from_reasoning(message: Any) -> str:
+    """The ``{"title": ...}`` payload when a reasoning model put it in ``reasoning_content`` / ``reasoning``
+    and left ``content`` empty (glm-5 / minimax under ``json_schema``, #82291). Structured extraction only:
+    chain-of-thought prose is never a title, so there is no prose fallback here."""
+    for field in ("reasoning_content", "reasoning"):
+        text = getattr(message, field, None)
+        if isinstance(text, str) and text.strip():
+            title = _extract_json_title(text.strip())
+            if title:
+                return title
+    return ""
 
 
 def _clean_title(text: str) -> Optional[str]:
@@ -295,11 +358,20 @@ def generate_title(
         "__LANGUAGE_RULE__", _LANGUAGE_RULE_PINNED.format(language=language) if language else _LANGUAGE_RULE_MATCH_USER,
     )
     try:
+        # Use the provider's default temperature instead of forcing 0.3.
+        # Some models (e.g. GPT-5.6) only accept their server-side default
+        # and reject explicit temperature values, causing the daemon title
+        # thread to fail with "Unsupported value: 'temperature'".
+        # See: #72351, #51083, #51157
         response = call_llm(
             task="title_generation",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
+            # A title is a handful of tokens, but 64 was cut mid-JSON by fenced/prefixed replies and by
+            # reasoning models whose thinking survives the disable below (#83903, #82291). A model that
+            # honours the JSON contract stops after ~15 tokens regardless, so the ceiling only costs on
+            # replies that would have been garbage anyway. temperature=None: omitted from the wire so
+            # default-only reasoning models accept the first request (#72351).
+            max_tokens=TITLE_MAX_TOKENS, temperature=None, timeout=timeout, main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
             # The module contract above promises thinking-disabled operation,
             # but nothing enforced it: with the aux default reasoning_effort
@@ -309,7 +381,8 @@ def generate_title(
             # ("```json") as the session title (#91927).
             reasoning_config={"enabled": False},
         )
-        title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
+        message = response.choices[0].message
+        title = _clean_title(_extract_title_text(message.content or "") or _title_from_reasoning(message))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that
         # ignored the task and answered the user's message instead ("I don't have context on X — that's not
         # something I recognize..."). Truncating would store half an assistant blob as the session title,
@@ -524,13 +597,18 @@ def maybe_auto_title(
         logger.debug("Auto-title skipped: auxiliary.title_generation.enabled=false")
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
+    if not _model_title_upgrade_enabled():
+        logger.debug("Instant title persisted; model upgrade disabled by auxiliary.title_generation.model_upgrade_enabled=false")
+        return
     # The thread must resolve auxiliary.title_generation (config, provider key, language) for the
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
     from agent.memory_provider import spawn_context_thread
-    spawn_context_thread(
+    upgrade = spawn_context_thread(
         auto_title_session, name="auto-title",
         args=(session_db, session_id, user_message),
         kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
                     runtime_validator=runtime_validator),
-    ).start()
+    )
+    _UPGRADE_THREADS.add(upgrade)
+    upgrade.start()

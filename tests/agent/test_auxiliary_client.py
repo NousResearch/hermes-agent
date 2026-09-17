@@ -1869,8 +1869,510 @@ class TestStaleFallbackCandidateSkip:
                 )
 
 
+class TestVisionCapabilityWalk:
+    """Public calls use real configuration, selection, ladder, conversion and SDK shaping."""
+
+    @pytest.fixture
+    def routes(self, monkeypatch):
+        from copy import deepcopy
+
+        import httpx
+        from agent import auxiliary_client as aux
+
+        primary = {"provider": "openrouter", "model": "openai/gpt-4o"}
+
+        def entry(model, host="main.example", provider="custom"):
+            return {"provider": provider, "model": model,
+                    "base_url": f"https://{host}/v1", "api_key": "candidate-key",
+                    "api_mode": "chat_completions"}
+
+        config = {
+            "model": {"provider": "openrouter", "default": primary["model"]},
+            "providers": {
+                "openrouter": {"models": {primary["model"]: {"supports_vision": True}}},
+                "custom": {"models": {"known-text": {"supports_vision": False}}},
+            },
+            "auxiliary": {"vision": {
+                "provider": "auto", "model": primary["model"],
+                "fallback_chain": [primary, {"provider": "anthropic", "model": "unavailable"}],
+            }},
+            "fallback_providers": [
+                primary, entry("known-text"), entry("text", provider="kimi-coding"),
+                entry("main-a"), entry("main-b"),
+            ],
+        }
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "https://image.example/photo.png"}},
+        ]}]
+        tools = [{"type": "function", "function": {
+            "name": "annotate", "parameters": {"type": "object"},
+        }}]
+        reasoning = {"enabled": True, "effort": "low"}
+        route_info, requests, errors = {}, [], []
+        faults = {primary["model"]: (429, "Rate limit exceeded"),
+                  "main-a": (400, "image_url unsupported; text-only model")}
+        monkeypatch.setenv("OPENROUTER_API_KEY", "primary-key")
+        # Refresh is an external credential operation. No ladder/selector is mocked.
+        refresh = MagicMock(return_value=False)
+        monkeypatch.setattr(aux, "_refresh_provider_credentials", refresh)
+
+        def respond(request):
+            assert request.url.path.endswith("/chat/completions")
+            payload = json.loads(request.content)
+            requests.append((request, payload, dict(route_info)))
+            fault = faults.get(payload["model"])
+            if fault:
+                status, message = fault
+                return httpx.Response(status, request=request, json={"error": {"message": message}})
+            return httpx.Response(200, request=request, json={
+                "id": "vision-result", "object": "chat.completion", "created": 0,
+                "model": payload["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "described"},
+                             "finish_reason": "stop"}],
+            })
+
+        async def async_send(client, request, **kwargs):
+            return respond(request)
+
+        import openai
+        for cls in (openai.OpenAI, openai.AsyncOpenAI):
+            original = cls._make_status_error
+
+            def record_error(client, *args, _original=original, **kwargs):
+                error = _original(client, *args, **kwargs)
+                errors.append(error)
+                return error
+
+            monkeypatch.setattr(cls, "_make_status_error", record_error)
+        monkeypatch.setattr(httpx.Client, "send", lambda client, request, **kw: respond(request))
+        monkeypatch.setattr(httpx.AsyncClient, "send", async_send)
+
+        async def invoke(async_mode, **overrides):
+            (aux.get_hermes_home() / "config.yaml").write_text(json.dumps(config))
+            kwargs: dict = dict(task="vision", messages=messages, tools=tools, temperature=0.2,
+                          timeout=19, max_tokens=73, reasoning_config=reasoning,
+                          extra_body={"test_marker": "preserved"}, route_info=route_info)
+            kwargs.update(overrides)
+            return await async_call_llm(**kwargs) if async_mode else call_llm(**kwargs)
+
+        return SimpleNamespace(
+            aux=aux, config=config, entry=entry, primary=primary, faults=faults, invoke=invoke,
+            requests=requests, errors=errors, refresh=refresh, route_info=route_info,
+            messages=messages, tools=tools, reasoning=reasoning,
+            original=deepcopy((messages, tools, reasoning)),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    async def test_main_false_does_not_override_candidate_true(self, routes, async_mode):
+        from copy import deepcopy
+
+        r = routes
+        r.config["model"].update(
+            provider="custom:main-only", default="main-text", supports_vision=False,
+            base_url="https://main-only.example/v1", api_key="main-only-key",
+        )
+        r.config["fallback_providers"] = [r.entry("main-b")]
+        r.config["providers"]["custom"]["models"]["main-b"] = {"supports_vision": True}
+        original_config = deepcopy(r.config)
+
+        response = await r.invoke(async_mode)
+
+        assert response.choices[0].message.content == "described"
+        assert [p["model"] for _, p, _ in r.requests] == [r.primary["model"]] * 2 + ["main-b"]
+        request, payload, recorded = r.requests[-1]
+        assert request.url.host == "main.example"
+        assert request.headers["authorization"] == "Bearer candidate-key"
+        assert payload["messages"] == r.original[0]
+        assert payload["tools"] == r.original[1]
+        assert recorded == r.route_info == {"provider": "custom", "model": "main-b"}
+        assert (r.messages, r.tools, r.reasoning) == r.original
+        assert r.config == original_config
+        assert json.loads((r.aux.get_hermes_home() / "config.yaml").read_text()) == original_config
+        assert not r.aux._main_model_supports_vision("custom:main-only", "main-text")
+        r.refresh.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    async def test_main_true_does_not_override_candidate_false(self, routes, async_mode):
+        from copy import deepcopy
+
+        r = routes
+        r.config["model"]["supports_vision"] = True
+        r.config["fallback_providers"] = [r.entry("known-text"), r.entry("main-b")]
+        r.config["providers"]["custom"]["models"].pop("known-text")
+        r.config["custom_providers"] = [
+            {"name": "custom", "models": {"known-text": {"vision": False}}},
+        ]
+        # The unknown custom candidate must not inherit the active provider's verdict either.
+        r.config["providers"]["openrouter"]["models"]["main-b"] = {"supports_vision": False}
+        original_config = deepcopy(r.config)
+
+        response = await r.invoke(async_mode)
+
+        assert response.choices[0].message.content == "described"
+        assert [p["model"] for _, p, _ in r.requests] == [r.primary["model"]] * 2 + ["main-b"]
+        request, payload, recorded = r.requests[-1]
+        assert request.url.host == "main.example"
+        assert request.headers["authorization"] == "Bearer candidate-key"
+        assert payload["messages"] == r.original[0]
+        assert payload["tools"] == r.original[1]
+        assert recorded == r.route_info == {"provider": "custom", "model": "main-b"}
+        assert (r.messages, r.tools, r.reasoning) == r.original
+        assert r.config == original_config
+        assert json.loads((r.aux.get_hermes_home() / "config.yaml").read_text()) == original_config
+        assert r.aux._main_model_supports_vision(r.primary["provider"], r.primary["model"])
+        r.refresh.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("status,message", [
+        (400, "image_url unsupported; text-only model"),
+        (415, "image input not supported"),
+        (422, "unknown variant `image_url`, expected `text`"),
+        (400, "This model is not supported when using this route"),
+    ])
+    async def test_main_capability_walk_preserves_request(self, routes, async_mode, status, message):
+        r = routes
+        r.faults["main-a"] = (status, message)
+        response = await r.invoke(async_mode)
+        assert response.choices[0].message.content == "described"
+        assert [p["model"] for _, p, _ in r.requests] == [r.primary["model"]] * 2 + ["main-a", "main-b"]
+        for request, payload, recorded in r.requests:
+            assert payload["messages"] == r.original[0]
+            assert payload["tools"] == r.original[1]
+            if payload["model"] == r.primary["model"]:
+                assert payload["reasoning"] == r.original[2]
+            else:
+                # The native custom provider profile uses the OpenAI top-level field.
+                assert payload["reasoning_effort"] == r.reasoning["effort"]
+            assert payload["temperature"] == 0.2
+            assert payload["test_marker"] == "preserved"
+            assert request.extensions["timeout"]["read"] == 19
+            primary = payload["model"] == r.primary["model"]
+            assert payload.get("max_tokens", payload.get("max_completion_tokens")) == (73 if primary else None)
+            assert request.headers["authorization"] == ("Bearer primary-key" if primary else "Bearer candidate-key")
+            assert recorded == {"provider": "openrouter" if primary else "custom", "model": payload["model"]}
+        assert (r.messages, r.tools, r.reasoning) == r.original
+        assert r.route_info == {"provider": "custom", "model": "main-b"}
+        r.refresh.assert_not_called()
+        assert not r.aux._is_provider_unhealthy("custom", "https://main.example/v1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("status,message", [
+        (401, "image input unsupported; invalid API key"),
+        (403, "image input unsupported; unauthenticated:bad-credentials"),
+        (402, "image input unsupported; payment required"),
+        (429, "image input unsupported; quota exceeded"),
+        (404, "image input unsupported; model not found"),
+        (400, "Unknown validation failure"),
+        (400, "image input unsupported; model not found"),
+        (400, "vision unsupported; billing quota exceeded"),
+        (400, "vision unsupported; invalid API key"),
+        (415, "vision unsupported; quota exhausted"),
+        (422, "vision unsupported; model not found"),
+        (500, "image input unsupported"),
+    ])
+    async def test_candidate_non_capability_error_propagates(self, routes, async_mode, status, message):
+        r = routes
+        # No skip screen here: even the unmodified base reaches this candidate.
+        r.config["fallback_providers"] = [r.entry("main-a"), r.entry("main-b")]
+        r.faults["main-a"] = (status, message)
+        with pytest.raises(Exception) as caught:
+            await r.invoke(async_mode)
+        assert caught.value is r.errors[-1]
+        assert caught.value.status_code == status
+        assert message in str(caught.value)
+        assert [p["model"] for _, p, _ in r.requests] == [r.primary["model"]] * 2 + ["main-a"]
+        r.refresh.assert_not_called()
+        assert not r.aux._is_provider_unhealthy("custom", "https://main.example/v1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("origin", ["task", "main"])
+    @pytest.mark.parametrize("message,capability", [
+        ("image input unsupported", True),
+        ("vision unsupported; billing quota exceeded", False),
+        ("vision unsupported; invalid API key", False),
+        ("vision unsupported; model not found", False),
+        ("Unknown validation failure", False),
+        ("Auxiliary vision: LLM returned invalid response (choices[0].message)", False),
+    ])
+    async def test_only_main_origin_can_advance_no_status_capability(self, routes, monkeypatch, async_mode, origin, message, capability):
+        from openai.resources.chat.completions import Completions, AsyncCompletions
+
+        r = routes
+        r.config["fallback_providers"] = [r.entry("main-a"), r.entry("main-b")]
+        if origin == "task":
+            r.config["auxiliary"]["vision"]["fallback_chain"] = [r.entry("main-a")]
+        error = RuntimeError(message)
+        calls = []
+        cls = AsyncCompletions if async_mode else Completions
+        original = cls.create
+
+        def create(client, **kwargs):
+            calls.append(kwargs["model"])
+            if kwargs["model"] == "main-a":
+                raise error
+            return original(client, **kwargs)
+
+        async def acreate(client, **kwargs):
+            result = create(client, **kwargs)
+            return await result
+
+        monkeypatch.setattr(cls, "create", acreate if async_mode else create)
+        if origin == "task" or not capability:
+            with pytest.raises(RuntimeError) as caught:
+                await r.invoke(async_mode)
+            assert caught.value is error
+            assert calls == [r.primary["model"]] * 2 + ["main-a"]
+        else:
+            assert (await r.invoke(async_mode)).choices[0].message.content == "described"
+            assert calls == [r.primary["model"]] * 2 + ["main-a", "main-b"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("initial_status,policy,succeeds", [
+        (400, "auto", True), (401, "auto", True), (401, "openrouter", False),
+    ])
+    async def test_initial_auto_eligibility_stays_separate(self, routes, async_mode, initial_status, policy, succeeds):
+        r = routes
+        r.config["fallback_providers"] = [r.entry("main-b")]
+        r.faults[r.primary["model"]] = (initial_status, "image input unsupported" if initial_status == 400 else "Invalid API key")
+        if succeeds:
+            assert (await r.invoke(async_mode, provider=policy)).choices[0].message.content == "described"
+        else:
+            with pytest.raises(Exception) as caught:
+                await r.invoke(async_mode, provider=policy)
+            assert caught.value is r.errors[0]
+        assert [p["model"] for _, p, _ in r.requests] == [r.primary["model"]] + (["main-b"] if succeeds else [])
+        assert r.refresh.call_count == (1 if initial_status == 401 else 0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("discovery", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_exhausted_walk_preserves_discovery_and_original_error(self, routes, monkeypatch, caplog, async_mode, discovery, empty):
+        r = routes
+        r.config["fallback_providers"] = [] if empty else [r.entry("main-a"), r.entry("main-a")]
+        r.config["model"]["provider"] = "auto"
+        # Discovery is external availability I/O; retain its real ordering/eligibility owner.
+        probe = MagicMock(return_value=(None, None))
+        if discovery:
+            def discover():
+                return r.aux.resolve_provider_client("custom", "discovered", explicit_base_url="https://discovery.example/v1", explicit_api_key="discovery-key", api_mode="chat_completions")
+            probe.side_effect = discover
+        monkeypatch.setattr(r.aux, "_get_provider_chain", lambda: [("custom", probe)])
+        if discovery:
+            assert (await r.invoke(async_mode)).choices[0].message.content == "described"
+            assert r.route_info == {"provider": "custom", "model": "discovered"}
+        else:
+            with pytest.raises(Exception) as caught:
+                await r.invoke(async_mode)
+            assert caught.value is r.errors[0]
+            assert sum("all fallbacks exhausted" in record.message for record in caplog.records) == 1
+        probe.assert_called_once()
+        assert [p["model"] for _, p, _ in r.requests] == [r.primary["model"]] * 2 + ([] if empty else ["main-a"]) + (["discovered"] if discovery else [])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    async def test_configured_resolved_aliases_bounded_and_endpoints_distinct(self, routes, async_mode):
+        r = routes
+        # An unresolvable route must not poison another label at the same endpoint.
+        # OpenCode strips vendor/ natively; exclude both configured and resolved labels.
+        r.config["fallback_providers"] = [
+            r.entry("main-a", provider="unconfigured-provider"),
+            r.entry("vendor/main-a", provider="opencode-go"),
+            r.entry("main-a", provider="opencode-go"),
+            r.entry("main-a", provider="custom"),
+            r.entry("main-b"),
+            r.entry("main-b", host="other.example"),
+        ]
+        r.faults["main-b"] = (400, "image input unsupported")
+        # The second endpoint must be attempted even though the first endpoint rejected that model.
+        with pytest.raises(Exception):
+            await r.invoke(async_mode)
+        calls = [(request.url.host, payload["model"]) for request, payload, _ in r.requests]
+        assert calls == [("openrouter.ai", r.primary["model"])] * 2 + [
+            ("main.example", "main-a"), ("main.example", "main-b"), ("other.example", "main-b"),
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    async def test_explicit_transport_survives_fallback_async_conversion(self, routes, async_mode):
+        r = routes
+        destination = r.entry("claude-vision")
+        destination["base_url"] = "https://api.anthropic.com/v1"
+        r.config["fallback_providers"] = [destination]
+        assert (await r.invoke(async_mode, reasoning_config=None)).choices[0].message.content == "described"
+        _, payload, _ = r.requests[-1]
+        # Explicit chat_completions wins over the URL heuristic: no Anthropic cache decoration.
+        assert payload["messages"] == r.messages
+        assert payload["tools"] == r.tools
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    async def test_native_token_retry_retains_tools(self, routes, async_mode):
+        r = routes
+        # HTTP boundary returns success only once the native parameter rung removes the cap.
+        import httpx
+        original_send = httpx.AsyncClient.send if async_mode else httpx.Client.send
+        calls = []
+
+        def respond(client, request, **kwargs):
+            payload = json.loads(request.content)
+            calls.append(payload)
+            if len(calls) == 1:
+                return httpx.Response(400, request=request, json={"error": {"message": "Unsupported parameter: max_tokens"}})
+            r.faults.clear()
+            return original_send(client, request, **kwargs)
+
+        async def async_send(client, request, **kwargs):
+            result = respond(client, request, **kwargs)
+            return await result if hasattr(result, "__await__") else result
+
+        with patch.object(httpx.AsyncClient if async_mode else httpx.Client, "send", async_send if async_mode else respond):
+            assert (await r.invoke(async_mode)).choices[0].message.content == "described"
+        assert len(calls) == 2
+        assert calls[0].get("max_tokens", calls[0].get("max_completion_tokens")) == 73
+        assert "max_tokens" not in calls[1] and "max_completion_tokens" not in calls[1]
+        assert calls[0]["messages"] == calls[1]["messages"] == r.messages
+        assert calls[0]["tools"] == calls[1]["tools"] == r.tools
+
+
+    @pytest.mark.parametrize("failed,candidate", [("xai", "custom:xai"), ("custom:xai", "xai")])
+    def test_raw_credential_namespace_isolation_in_main_selector(self, routes, failed, candidate):
+        r = routes
+        r.config["fallback_providers"] = [r.entry("vision-model", provider=candidate)]
+        (r.aux.get_hermes_home() / "config.yaml").write_text(json.dumps(r.config))
+        client, model, label = r.aux._try_main_fallback_chain(
+            "vision", failed, reason="auth error", failed_base_url="https://main.example/v1",
+        )
+        assert client is not None
+        assert model == "vision-model"
+        assert label == candidate
+
+
 class TestAuxiliaryFallbackLayering:
     """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_mode", [False, True], ids=["sync", "async"])
+    @pytest.mark.parametrize("policy", ["auto", "AUTO", " auto ", "explicit-argument", "explicit-config"])
+    @pytest.mark.parametrize("task_fallback", ["absent", "healthy", "stale"])
+    async def test_vision_429_preserves_fallback_policy(
+        self, monkeypatch, async_mode, policy, task_fallback,
+    ):
+        """Auto keeps the configured main chain after a concrete backend exhausts its retry."""
+        from copy import deepcopy
+
+        import httpx
+        import openai
+
+        from agent import auxiliary_client as aux
+
+        primary = {"provider": "openrouter", "model": "openai/gpt-4o"}
+        task_entry = {
+            "provider": "custom", "model": "task-vision",
+            "base_url": "https://task.example/v1", "api_key": "task-key",
+            "api_mode": "chat_completions",
+        }
+        main_entry = {
+            "provider": "custom", "model": "main-vision",
+            "base_url": "https://main.example/v1", "api_key": "main-key",
+            "api_mode": "chat_completions",
+        }
+        config = {
+            "model": {
+                "provider": primary["provider"], "default": primary["model"],
+                "supports_vision": True,
+            },
+            "auxiliary": {"vision": {
+                "provider": primary["provider"] if policy == "explicit-config" else "auto",
+                "model": primary["model"],
+                # A duplicate of the failed route must be skipped using its concrete identity.
+                "fallback_chain": [primary] + ([] if task_fallback == "absent" else [task_entry]),
+            }},
+            "fallback_providers": [primary, main_entry],
+        }
+        (aux.get_hermes_home() / "config.yaml").write_text(json.dumps(config))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "primary-key")
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "https://image.example/photo.png"}},
+        ]}]
+        original_messages = deepcopy(messages)
+        route_info = {}
+        requests = []
+
+        def respond(request):
+            payload = json.loads(request.content)
+            requests.append((request, payload, dict(route_info)))
+            if request.url.host == "openrouter.ai":
+                return httpx.Response(429, request=request, json={"error": {
+                    "message": "Rate limit exceeded", "type": "rate_limit_error",
+                }})
+            if request.url.host == "task.example" and task_fallback == "stale":
+                return httpx.Response(401, request=request, json={"error": {
+                    "message": "Invalid API key", "type": "authentication_error",
+                }})
+            assert request.url.host in {"task.example", "main.example"}
+            return httpx.Response(200, request=request, json={
+                "id": "vision-result", "object": "chat.completion", "created": 0,
+                "model": payload["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "image described"},
+                             "finish_reason": "stop"}],
+            })
+
+        async def async_send(client, request, **kwargs):
+            return respond(request)
+
+        # Mock only HTTP I/O: config, provider routing, SDKs, retry, quarantine and both chains run.
+        monkeypatch.setattr(httpx.Client, "send", lambda client, request, **kwargs: respond(request))
+        monkeypatch.setattr(httpx.AsyncClient, "send", async_send)
+        kwargs: dict = dict(
+            task="vision", messages=messages, route_info=route_info,
+            provider=(primary["provider"] if policy == "explicit-argument" else
+                      None if policy == "explicit-config" else policy),
+            max_tokens=73, temperature=0.2, timeout=19,
+        )
+        auto_policy = policy in {"auto", "AUTO", " auto "}
+        succeeds = task_fallback == "healthy" or (auto_policy and task_fallback == "absent")
+        if succeeds:
+            result = await async_call_llm(**kwargs) if async_mode else call_llm(**kwargs)
+            assert result.choices[0].message.content == "image described"
+        else:
+            with pytest.raises(openai.AuthenticationError if task_fallback == "stale" else openai.RateLimitError):
+                if async_mode:
+                    await async_call_llm(**kwargs)
+                else:
+                    call_llm(**kwargs)
+
+        expected = [("openrouter.ai", primary["model"], "openrouter", "primary-key")] * 2
+        if task_fallback != "absent":
+            expected.append(("task.example", task_entry["model"], "custom", "task-key"))
+        if auto_policy and task_fallback == "absent":
+            expected.append(("main.example", main_entry["model"], "custom", "main-key"))
+        assert len(requests) == len(expected)
+        for (request, payload, observed_route), (host, model, provider, key) in zip(requests, expected):
+            assert request.url.host == host
+            assert request.url.path.endswith("/chat/completions")
+            assert request.headers["authorization"] == f"Bearer {key}"
+            assert payload["model"] == model
+            assert payload["messages"] == original_messages
+            # Native shaping budgets OpenRouter; custom vision routes omit the cap.
+            assert payload.get("max_completion_tokens", payload.get("max_tokens")) == (
+                73 if provider == "openrouter" else None
+            )
+            assert payload["temperature"] == 0.2
+            assert observed_route == {"provider": provider, "model": model}
+        assert messages == original_messages
+        assert route_info == {"provider": expected[-1][2], "model": expected[-1][1]}
+        if task_fallback == "stale":
+            assert not aux._is_provider_unhealthy("custom", task_entry["base_url"])
+            assert not aux._is_provider_unhealthy("custom", main_entry["base_url"])
 
     def _make_payment_err(self):
         exc = Exception("Payment Required: insufficient credits")
@@ -3598,30 +4100,77 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert fake_client.responses.kwargs["stream"] is True
         assert response.choices[0].message.content == "summary"
 
-    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
+    def test_enforces_total_timeout_while_stream_keeps_emitting_events(self, monkeypatch):
+        import threading
+
+        clock = SimpleNamespace(now=0.0)
+        emitted_events = []
+        started_timers = []
+        cancelled_timers = []
+        stream_close_threads = []
+        client_close_threads = []
+        owner_tid = threading.get_ident()
+
+        class _RecordingTimer:
+            def __init__(self, interval, function):
+                self.interval = interval
+                self.function = function
+
+            def start(self):
+                # Let the real per-event deadline check win without a watchdog thread.
+                started_timers.append(self)
+
+            def cancel(self):
+                cancelled_timers.append(self)
+
+        monkeypatch.setattr("agent.auxiliary_client.time.monotonic", lambda: clock.now)
+        monkeypatch.setattr("agent.auxiliary_client.threading.Timer", _RecordingTimer)
+
         class _SlowAliveCreateStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+                return False
+
             def __iter__(self):
                 for _ in range(5):
-                    time.sleep(0.03)
-                    yield SimpleNamespace(type="response.in_progress")
+                    clock.now += 0.03
+                    event = SimpleNamespace(type="response.in_progress")
+                    emitted_events.append(event.type)
+                    yield event
 
-            def close(self): pass
+            def close(self):
+                stream_close_threads.append(threading.get_ident())
+
+            def get_final_response(self):
+                raise AssertionError("The stream deadline must interrupt iteration")
 
         class FakeResponses:
             def create(self, **kwargs):
                 return _SlowAliveCreateStream()
 
-        fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
+            def stream(self, **kwargs):
+                return self.create(**kwargs)
+
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            close=lambda: client_close_threads.append(threading.get_ident()),
+        )
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
 
-        started = time.monotonic()
         with pytest.raises(TimeoutError):
             adapter.create(
                 messages=[{"role": "user", "content": "summarize this"}],
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert emitted_events == ["response.in_progress", "response.in_progress"]
+        assert stream_close_threads and all(tid == owner_tid for tid in stream_close_threads)
+        assert client_close_threads and all(tid == owner_tid for tid in client_close_threads)
+        assert started_timers
+        assert all(timer in cancelled_timers for timer in started_timers)
 
 
 class TestCodexAuxiliaryAdapterCacheScope:

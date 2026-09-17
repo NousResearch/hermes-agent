@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
@@ -33,9 +33,14 @@ function installBridge(partial: Partial<Window['hermesDesktop']> = {}) {
 function mountMenu() {
   return render(
     <MemoryRouter>
+      <LocationProbe />
       <AppContextMenu />
     </MemoryRouter>
   )
+}
+
+function LocationProbe() {
+  return <span data-testid="location">{useLocation().pathname}</span>
 }
 
 function attach(html: string): HTMLElement {
@@ -406,14 +411,24 @@ describe('AppContextMenu', () => {
     expect(pasteItem.getAttribute('data-disabled')).toBeNull()
   })
 
-  it('offers the window verbs on bare chrome', async () => {
+  it('offers session import on bare chrome', async () => {
     installBridge()
     mountMenu()
     const host = attach('<div><p>plain chrome</p></div>')
 
     fireEvent.contextMenu(host.querySelector('p')!)
 
+    const importSession = await screen.findByText('Import session')
+    const newSession = screen.getByText('New session')
+
+    expect(newSession).toBeTruthy()
     expect(await screen.findByText('Settings')).toBeTruthy()
+    expect(newSession.closest('[data-slot="dropdown-menu-item"]')?.nextElementSibling).toBe(
+      importSession.closest('[data-slot="dropdown-menu-item"]')
+    )
+
+    fireEvent.click(importSession)
+    expect(screen.getByTestId('location').textContent).toBe('/session-import')
   })
 
   it('skips plain right-clicks inside a skip-marked surface, but not links in it', async () => {

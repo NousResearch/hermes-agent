@@ -16,6 +16,33 @@ from typing import Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _session_key_variants(session_key):
+    """Return all canonical-identifier variants of a WhatsApp DM session key.
+
+    The clarify reply path and the pending-prompt registration can materialize
+    the SAME account under two identifiers (e.g. the classic phone number vs
+    the linked-device LID). ``expand_whatsapp_aliases`` deterministically returns
+    both, so indexing and looking up under every variant guarantees the owner's
+    vote matches the pending clarify regardless of which shape each side used.
+    WhatsApp group keys end with the PARTICIPANT id
+    (``...group:<jid>@g.us:<participant>`` when per-user group sessions are
+    enabled) — the participant suffers the same phone/LID flip as a DM
+    chat_id, so group keys are expanded too. This is safe: ``rpartition``
+    touches only the trailing segment, and ``expand_whatsapp_aliases`` on a
+    group JID tail (``...@g.us``) returns just that id unchanged. For any
+    other key the variant list degrades to just the original."""
+    raw = str(session_key)
+    if ":whatsapp:" in raw:
+        try:
+            from gateway.whatsapp_identity import expand_whatsapp_aliases
+            prefix, _, tail = raw.rpartition(":")
+            variants = sorted(expand_whatsapp_aliases(tail))
+            return [f"{prefix}:{v}" for v in variants] or [raw]
+        except Exception:
+            pass
+    return [raw]
+
+
 @dataclass
 class _ClarifyEntry:
     """One pending clarify request inside a gateway session."""
@@ -49,9 +76,12 @@ def register(clarify_id: str, session_key: str, question: str, choices: Optional
     Open-ended (no choices) entries start in text mode: the next message IS the response."""
     entry = _ClarifyEntry(clarify_id, session_key, question, list(choices) if choices else None,
                           bool(multi_select) and bool(choices), awaiting_text=not bool(choices))
+    entry.session_key = session_key
+    variants = _session_key_variants(session_key)
     with _lock:
         _entries[clarify_id] = entry
-        _session_index.setdefault(session_key, []).append(clarify_id)
+        for v in variants:
+            _session_index.setdefault(v, []).append(clarify_id)
     return entry
 
 
@@ -79,11 +109,12 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
     with _lock:
         _entries.pop(clarify_id, None)  # regardless of outcome
-        ids = _session_index.get(entry.session_key) or []
-        if clarify_id in ids:
-            ids.remove(clarify_id)
-            if not ids:
-                _session_index.pop(entry.session_key, None)
+        for v in _session_key_variants(entry.session_key):
+            ids = _session_index.get(v)
+            if ids and clarify_id in ids:
+                ids.remove(clarify_id)
+                if not ids:
+                    _session_index.pop(v, None)
     return entry.response
 
 
@@ -103,10 +134,15 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
     ``include_choice_prompts=True`` returns the oldest unresolved entry of any kind (user
     typed at an active choice prompt: resolve it rather than queue a follow-up turn)."""
     with _lock:
-        for cid in _session_index.get(session_key) or []:
-            entry = _entries.get(cid)
-            if entry is not None and (include_choice_prompts or entry.awaiting_text):
-                return entry
+        seen = set()
+        for v in _session_key_variants(session_key):
+            for cid in _session_index.get(v) or []:
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                entry = _entries.get(cid)
+                if entry is not None and (include_choice_prompts or entry.awaiting_text):
+                    return entry
         return None
 
 
@@ -234,7 +270,12 @@ def mark_awaiting_text(clarify_id: str) -> bool:
 def has_pending(session_key: str) -> bool:
     """True when this session has at least one pending clarify entry."""
     with _lock:
-        return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
+        seen = set()
+        for v in _session_key_variants(session_key):
+            for cid in _session_index.get(v) or []:
+                if _entries.get(cid) is not None:
+                    return True
+        return False
 
 
 def clear_session(session_key: str) -> int:
@@ -247,7 +288,11 @@ def clear_session(session_key: str) -> int:
     session is never resurrected by late callbacks."""
     with _lock:
         cancelled = 0
-        for entry in (_entries.pop(cid, None) for cid in list(_session_index.pop(session_key, []) or [])):
+        ids = []
+        for v in _session_key_variants(session_key):
+            ids.extend(_session_index.pop(v, []) or [])
+        ids = list(dict.fromkeys(ids))
+        for entry in (_entries.pop(cid, None) for cid in ids):
             if entry is None or entry.event.is_set():
                 continue
             entry.response = ""

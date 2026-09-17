@@ -51,7 +51,7 @@ def _cfg() -> dict:
 def _secret() -> str:
     p = os.path.expanduser(_cfg().get("secret_file", "~/.secrets/kanban-wake-secret"))
     try:
-        return open(p).read().strip()
+        return open(p, encoding="utf-8").read().strip()
     except Exception:
         return ""
 

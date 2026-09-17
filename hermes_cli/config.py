@@ -2426,43 +2426,20 @@ def save_config(
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
-# load_env() memo keyed on (path, *file_signature). Editing .env bumps mtime/inode -> rebuild;
-# invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
-_env_cache: Optional[Tuple[Tuple[str, Optional[Tuple[int, int, int, int]]], Dict[str, str]]] = None
-
-
 def load_env() -> Dict[str, str]:
-    """Load ~/.hermes/.env as a dict (memoised; ``get_env_value()`` runs hundreds of times per
-    interactive menu render). Each assignment's value is opaque data for boundary discovery."""
-    global _env_cache
-    env_path = get_env_path()
-
-    try:
-        st = env_path.stat()
-        cache_key = (str(env_path), file_signature(st))
-    except FileNotFoundError:
-        cache_key = (str(env_path), None)
-    except Exception:
-        cache_key = None
-    if cache_key is not None and _env_cache is not None and _env_cache[0] == cache_key:
-        return dict(_env_cache[1])
-
+    """Load ~/.hermes/.env as a dict. Memoised inside ``load_env_file`` (``get_env_value()`` runs
+    hundreds of times per interactive menu render). Each assignment's value is opaque data for
+    boundary discovery."""
     from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
 
-    env_vars = load_env_file(env_path)
-    if cache_key is not None:
-        _env_cache = (cache_key, dict(env_vars))
-    return env_vars
+    return load_env_file(get_env_path())
 
 
 def invalidate_env_cache() -> None:
-    """Clear the load_env() memo AND ``agent.secret_scope``'s per-path ``.env`` memo so the next call
-    sees a write even on coarse-mtime filesystems; the writers that already call this
-    (save_env_value / remove_env_value / sanitize_env_file) need not know about both caches."""
+    """Drop the ``.env`` memo so the next ``load_env()`` sees a write even on coarse-mtime filesystems
+    (save_env_value / remove_env_value / sanitize_env_file call this)."""
     from agent.secret_scope import invalidate_env_file_cache
 
-    global _env_cache
-    _env_cache = None
     invalidate_env_file_cache()
 
 

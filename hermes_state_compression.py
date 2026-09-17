@@ -59,6 +59,15 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
 BACKGROUND_REVIEW_LEASE_HOLDER_MARK = ":turn=background-review:"
 
 
+def _log_review_lease_reclaimed(session_id: str) -> None:
+    """A review row outlived its renewals (dead process, starved refresher) and a foreground acquire
+    reclaimed it. The fork's own tick logs the loss as ``review_lease_lost``; this is the reclaiming
+    side, owner-tagged and body-free (``agent/review_admission.py``)."""
+    from agent.review_admission import REASON_LEASE_EXPIRED_RECLAIMED, current_profile_key, owner_tag
+    logger.info("Background review lease reclaimed from an unrenewed holder (owner=%s, reason=%s)",
+                owner_tag(current_profile_key(), session_id), REASON_LEASE_EXPIRED_RECLAIMED)
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> Tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -534,8 +543,9 @@ class SessionCompressionMixin:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
         share one write transaction. ``preempt_background_review`` (the waiting foreground
-        path) stamps a background-review holder to yield in that same transaction; the held
-        row itself is never reclaimed — the review releases it through its own exit."""
+        path) stamps a background-review holder to yield in that same transaction; a live
+        review renews until its own exit releases the row, so its row is reclaimed only by the
+        same expired-or-dead rule as any other holder — and that reclaim is logged."""
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
@@ -543,17 +553,20 @@ class SessionCompressionMixin:
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            acquired = _claim_lease_row(
+            acquired, reclaimed_holder = _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
-            )[0]
+            )
             if not acquired and preempt_background_review:
                 conn.execute(
                     "UPDATE session_turn_leases SET yield_requested_at = COALESCE(yield_requested_at, ?) "
                     "WHERE conversation_id = ? AND instr(holder, ?) > 0",
                     (now, conversation_id, BACKGROUND_REVIEW_LEASE_HOLDER_MARK))
-            return acquired
-        return bool(self._execute_write(_do, patience_s=patience_s))
+            return acquired, reclaimed_holder
+        acquired, reclaimed_holder = self._execute_write(_do, patience_s=patience_s)
+        if reclaimed_holder and BACKGROUND_REVIEW_LEASE_HOLDER_MARK in reclaimed_holder:
+            _log_review_lease_reclaimed(session_id)
+        return bool(acquired)
 
     def session_turn_lease_yield_requested(self, session_id: str, holder: str) -> bool:
         """Whether a waiting foreground turn asked ``holder`` (a background-review lease) to yield."""

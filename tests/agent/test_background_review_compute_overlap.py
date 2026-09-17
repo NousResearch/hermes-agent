@@ -1972,3 +1972,106 @@ def test_foreground_waiter_preempts_a_background_review_lease(tmp_path, caplog):
     ]
     assert len(lines) == 1
     assert "shared-session" not in lines[0]
+
+
+def _expire_lease_row(path, holder: str) -> None:
+    """Rewind a row's ``expires_at`` on a raw connection: the TTL elapses without a clock or a sleep."""
+    import sqlite3
+    import time
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE session_turn_leases SET expires_at = ? WHERE holder = ?",
+            (time.time() - 1.0, holder),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _shared_review_lease(tmp_path):
+    """An admitted review lease on a store shared with a second (foreground) handle."""
+    import os
+
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    interrupted = threading.Event()
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: interrupted.set(),
+        release_clients=lambda: None,
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        types.SimpleNamespace(_session_db=review_db), fork, "shared-session", run
+    )
+    assert reason is None and lease is not None
+    foreground_holder = f"pid={os.getpid()}:turn=foreground:platform=cli"
+    return path, foreground_db, lease, run, interrupted, foreground_holder
+
+
+def test_yielded_review_lease_keeps_renewing_until_the_fork_exits(tmp_path):
+    """After a cross-process yield the review keeps renewing its row: the row is released only
+    by the fork's own exit, so a waiter's reclaim-on-expiry never lands beside a live fork —
+    the TTL is a bound on a DEAD fork, not a fail-open window on a yielded one."""
+    path, foreground_db, lease, run, interrupted, fg = _shared_review_lease(tmp_path)
+    # The waiting foreground's failed attempt stamps the yield; the next tick honours it.
+    assert not foreground_db.try_acquire_session_turn_lease(
+        "shared-session", fg, ttl_seconds=5, preempt_background_review=True
+    )
+    assert lease.refresh_tick() is None
+    assert interrupted.is_set()
+    assert run.cancel_requested.is_set()
+
+    # The TTL elapses with the fork still alive: the yielded tick must renew.
+    _expire_lease_row(path, lease.holder)
+    assert lease.refresh_tick() is None
+    assert not foreground_db.try_acquire_session_turn_lease(
+        "shared-session", fg, ttl_seconds=5, preempt_background_review=True
+    )
+
+    lease.stop_refresher()
+    lease.release()  # the fork's finally
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", fg, ttl_seconds=5
+    )
+    foreground_db.release_session_turn_lease("shared-session", fg)
+
+
+@pytest.mark.parametrize("yielded", [False, True], ids=["before_yield", "after_yield"])
+def test_review_lease_loss_is_logged_once_and_stops_the_fork(tmp_path, caplog, yielded):
+    """A holder-fenced renewal miss means the row was reclaimed under the fork (a dead-PID
+    sweep, or a TTL that elapsed with no renewal) and another process may now own the session:
+    the fork is fenced and hard-interrupted exactly like a yield, the loss is logged ONCE with
+    the hashed owner, and the tick keeps running as the escalation clock."""
+    path, foreground_db, lease, run, interrupted, fg = _shared_review_lease(tmp_path)
+    if yielded:
+        assert not foreground_db.try_acquire_session_turn_lease(
+            "shared-session", fg, ttl_seconds=5, preempt_background_review=True
+        )
+        assert lease.refresh_tick() is None
+        assert interrupted.is_set()
+
+    # The row vanishes under the fork.
+    foreground_db.release_session_turn_lease("shared-session", lease.holder)
+    with caplog.at_level("INFO"):
+        assert lease.refresh_tick() is None
+        assert lease.refresh_tick() is None
+
+    assert interrupted.is_set()
+    assert run.cancel_requested.is_set()
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_LEASE_LOST in r.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert lease._owner in lines[0]
+    assert "shared-session" not in lines[0]
+    lease.stop_refresher()
+    assert lease.refresh_tick() is False

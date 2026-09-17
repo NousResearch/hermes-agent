@@ -120,6 +120,9 @@ def test_raising_adapter_probe_reads_as_admission_failure(monkeypatch, broken_pr
 
 
 def test_recursive_gateway_turn_drops_nonterminal_review_candidate():
+    """``bind_agent`` runs once per turn of an in-band chain — the recursive ``_run_agent``
+    carries the outer admission (``test_queued_followup_turn_carries_the_outer_review_admission``)
+    — so a first turn's non-terminal candidate never outlives the follow-up that superseded it."""
     from gateway.run_turn import _GatewayReviewAdmission
 
     session_id = "gateway-recursive-candidate"
@@ -949,3 +952,153 @@ async def test_gateway_spawns_the_review_once_after_confirmed_delivery():
     assert call["thread"] != loop_thread
     assert call["has_loop"] is False
     assert agent._gateway_review_admission is None
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_turn_carries_the_outer_review_admission(monkeypatch):
+    """The in-band follow-up is bound to the OUTER admission like the first turn: the recursive
+    ``_run_agent`` carries it, so ``bind_agent`` runs per turn (candidate reset, Context and
+    rotated-session alias refreshed) instead of the follow-up inheriting the first turn's
+    non-terminal candidate through the cached agent."""
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    session_key = "followup-carries-admission"
+    runner = _busy_runner(adapter, types.SimpleNamespace(), session_key)
+    admission = object()
+    captured = {}
+
+    async def _fake_run_agent(
+        message, context_prompt, history, source, session_id, **kwargs
+    ):
+        captured.update(kwargs)
+        return {"final_response": "follow-up reply", "messages": list(history)}
+
+    async def _noop_refresh(*_args, **_kwargs):
+        return None
+
+    runner._run_agent = _fake_run_agent
+    runner._refresh_agent_cache_message_count = _noop_refresh
+    event = _event()
+    turn_ctx = types.SimpleNamespace(
+        source=event.source,
+        session_id="session-id",
+        session_key=session_key,
+        run_generation=1,
+        _interrupt_depth=0,
+        history=[],
+        _status_thread_metadata={},
+        result_holder=[None],
+        context_prompt="",
+        gateway_review_admission=admission,
+    )
+
+    result = await runner._run_agent_queued_followup(
+        turn_ctx, adapter, "queued text", None, "response", {"interrupted": True}, None
+    )
+
+    assert result["final_response"] == "follow-up reply"
+    assert captured["gateway_review_admission"] is admission
+
+
+@pytest.mark.asyncio
+async def test_review_completion_failure_is_logged_with_owner_and_reason(
+    monkeypatch, caplog
+):
+    """``finish`` releases ownership and drops the candidate before the spawn hop, so an
+    exception inside it silently disables the review: the adapter's delivery finally must log
+    one owner-tagged, body-free line and still complete the turn's cleanup."""
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
+    adapter = BasePlatformAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+    session_id = "gateway-completion-error-session"
+    profile_key = review_admission.current_profile_key()
+    token = review_admission.note_turn_started(session_id, profile_key)
+    admission = _GatewayReviewAdmission(session_id, profile_key, token)
+
+    def _boom(self, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_GatewayReviewAdmission, "finish", _boom)
+
+    async def _handler(_event):
+        _event._gateway_review_delivery_complete = admission.finish
+        return "visible response"
+
+    async def _send(*_args, **_kwargs):
+        return SendResult(success=True, message_id="sent")
+
+    adapter.set_message_handler(_handler)
+    adapter.send = _send
+    session_key = "gateway-completion-error"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    try:
+        with caplog.at_level("WARNING"):
+            await adapter._process_message_background(_event(), session_key)
+    finally:
+        review_admission.note_turn_finished(session_id, token, profile_key)
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_COMPLETION_ERROR in record.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert review_admission.owner_tag(profile_key, session_id) in lines[0]
+    assert session_id not in lines[0]
+
+
+def test_finish_logs_a_spawn_failure_with_owner_and_reason(monkeypatch, caplog):
+    """A spawn thread that cannot start must not raise out of the delivery finally nor vanish
+    silently: ownership is released, the candidate is dropped, and one owner-tagged line
+    names the reason."""
+    from gateway import run_turn as run_turn_module
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    session_id = "gateway-spawn-failure"
+    profile_key = review_admission.current_profile_key()
+    token = review_admission.note_turn_started(session_id, profile_key)
+    admission = _GatewayReviewAdmission(session_id, profile_key, token)
+    agent = types.SimpleNamespace(
+        session_id=session_id, _spawn_background_review=MagicMock()
+    )
+    admission.bind_agent(agent)
+    admission.capture_candidate(
+        agent,
+        [{"role": "assistant", "content": "private reply body"}],
+        review_memory=True,
+        review_skills=False,
+    )
+
+    class _UnstartableThread:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(
+        run_turn_module,
+        "threading",
+        types.SimpleNamespace(
+            Thread=_UnstartableThread, Lock=threading.Lock, Event=threading.Event
+        ),
+    )
+    with caplog.at_level("WARNING"):
+        assert admission.finish(delivery_succeeded=True) is None
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_COMPLETION_ERROR in record.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert review_admission.owner_tag(profile_key, session_id) in lines[0]
+    assert session_id not in lines[0]
+    assert "private reply body" not in lines[0]
+    agent._spawn_background_review.assert_not_called()
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False

@@ -4679,9 +4679,9 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             if callable(review_delivery_complete):
-                from agent.review_admission import REASON_PENDING_HANDOFF
+                from agent.review_admission import REASON_COMPLETION_ERROR, REASON_PENDING_HANDOFF
 
-                with contextlib.suppress(asyncio.TimeoutError, Exception):
+                try:
                     _review_result = review_delivery_complete(
                         delivery_succeeded=bool(processing_ok and not pending_handoff),
                         cause=REASON_PENDING_HANDOFF if pending_handoff else None,
@@ -4691,6 +4691,15 @@ class BasePlatformAdapter(ABC):
                             _review_result,
                             timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
                         )
+                except Exception:
+                    # finish() released ownership and dropped the candidate before the spawn hop, so
+                    # a failure here silently disables the review: one owner-tagged line, never fatal.
+                    logger.warning(
+                        "[%s] Background review delivery completion failed (owner=%s, reason=%s)",
+                        self.name,
+                        getattr(getattr(review_delivery_complete, "__self__", None), "owner_tag", "unbound"),
+                        REASON_COMPLETION_ERROR, exc_info=True,
+                    )
             # Callback work or a late refresh may have recreated typing — one final bounded stop.
             await self._stop_typing_refresh(
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)

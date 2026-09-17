@@ -1468,9 +1468,11 @@ class _ReviewForkState:
     refusal_reason: Optional[str] = None
 
 
-# A review fork renews its durable row often and keeps it briefly: the row is what a foreground
-# waiter in another process stamps to make the review yield, and the TTL bounds a fork that died
-# mid-turn. (Foreground turns keep the longer LEASE_TTL_SECONDS / 60s cadence.)
+# A review fork renews its durable row often, and keeps renewing after it is asked to yield: the
+# row is what a foreground waiter in another process (or a user transcript edit) stamps to make
+# the review yield, and only the fork's own exit releases it. The TTL bounds a row whose process
+# died without releasing it (a dead local PID is reclaimed at once). Foreground turns keep the
+# longer LEASE_TTL_SECONDS / 60s cadence.
 _REVIEW_LEASE_TTL_SECONDS = 60.0
 _REVIEW_LEASE_REFRESH_SECONDS = 3.0
 
@@ -1479,11 +1481,15 @@ class _ReviewTurnLease(DurableTurnLease):
     """The review fork's durable session-row lease: it YIELDS to a foreground waiter.
 
     A foreground turn in another process (CLI resume, Desktop, a second gateway) stamps the row
-    (``SessionDB.acquire_session_turn_lease``). The next renewal tick observes the stamp, fences
-    the run, hard-interrupts the fork and stops renewing. The row is released by the fork's own
-    exit, so the waiter never decodes beside a still-running fork; the tick keeps running as the
-    escalation clock (``escalate_unacknowledged_cancel``) so a wedged fork is unwedged rather
-    than left to the TTL.
+    (``SessionDB.acquire_session_turn_lease``); so does a user transcript edit
+    (``hermes_state_messages._check_transcript_write_guards``). The next renewal tick observes
+    the stamp, fences the run and hard-interrupts the fork — and keeps renewing: the row is
+    released only by the fork's own exit, so the waiter never decodes beside a still-running
+    fork. The tick doubles as the escalation clock (``escalate_unacknowledged_cancel``), so a
+    wedged fork is unwedged rather than left to the TTL. A holder-fenced renewal miss means the
+    row was reclaimed under the fork (a dead-PID sweep, or a TTL that elapsed with no renewal)
+    and another process may own the session: logged once as ``review_lease_lost``, and the fork
+    is stopped the same way.
     """
 
     def __init__(
@@ -1496,44 +1502,70 @@ class _ReviewTurnLease(DurableTurnLease):
         self._review_run = review_run
         self._owner = owner
         self._yielded_at: Optional[float] = None
+        self._lease_lost = False
         self._now = time.monotonic  # test seam
 
     def refresh_tick(self):
         if self.stop.is_set():
             return False
+        if self._yielded_at is None and self._yield_requested():
+            from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
+
+            logger.info(
+                "Background review preempted (owner=%s, reason=%s)",
+                self._owner, REASON_PREEMPTED_CROSS_PROCESS,
+            )
+            self._stop_fork("superseded by a live turn in another process")
         if self._yielded_at is not None:
             elapsed = self._now() - self._yielded_at
             if self._review_run is not None and elapsed >= _CANCEL_ACK_ESCALATION_SECONDS:
                 self._review_run.escalate_unacknowledged_cancel(
                     2 if elapsed >= 2 * _CANCEL_ACK_ESCALATION_SECONDS else 1
                 )
+        if self._lease_lost or self._renewed():
             return None
-        try:
-            yield_requested = self.db.session_turn_lease_yield_requested(
-                self._current_session_id(), self.holder
-            )
-        except Exception:  # noqa: BLE001 — the renewal below fails safe on a broken store
-            yield_requested = False
-        if not yield_requested:
-            return super().refresh_tick()
-        self._yielded_at = self._now()
-        from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
+        if self.stop.is_set():
+            return False  # the fork's finally released the row between the checks: not a loss
+        self._lease_lost = True
+        from agent.review_admission import REASON_LEASE_LOST
 
-        logger.info(
-            "Background review preempted (owner=%s, reason=%s)",
-            self._owner, REASON_PREEMPTED_CROSS_PROCESS,
+        logger.warning(
+            "Background review lease lost (owner=%s, reason=%s)", self._owner, REASON_LEASE_LOST
         )
+        self._stop_fork("session turn lease lost; another process may own the session")
+        return None
+
+    def _yield_requested(self) -> bool:
+        try:
+            return bool(
+                self.db.session_turn_lease_yield_requested(self._current_session_id(), self.holder)
+            )
+        except Exception:  # noqa: BLE001 — a broken store reads as no yield; the renewal decides
+            return False
+
+    def _renewed(self) -> bool:
+        try:
+            return bool(
+                self.db.refresh_session_turn_lease(
+                    self._current_session_id(), self.holder, ttl_seconds=self.ttl_seconds
+                )
+            )
+        except Exception:  # noqa: BLE001 — an unrenewable row is a lost row
+            logger.debug("Background review lease renewal failed", exc_info=True)
+            return False
+
+    def _stop_fork(self, reason: str) -> None:
+        """Fence the run and hard-interrupt the fork, once; starts the escalation clock."""
+        if self._yielded_at is not None:
+            return
+        self._yielded_at = self._now()
         fork = self.agent
         if self._review_run is not None:
             fork = self._review_run.cancel() or fork
         with suppress(Exception):
             from agent.interrupt_compat import request_hard_interrupt
 
-            request_hard_interrupt(
-                fork, "superseded by a live turn in another process",
-                tool_reason="background review superseded",
-            )
-        return None
+            request_hard_interrupt(fork, reason, tool_reason="background review superseded")
 
 
 def _try_acquire_durable_review_lease(

@@ -57,6 +57,15 @@ REASON_CANCEL_UNACKNOWLEDGED = "review_cancel_unacknowledged"
 REASON_REVIEW_REVOKED = "review_revoked"
 # A foreground turn in another process asked the review's durable lease to yield.
 REASON_PREEMPTED_CROSS_PROCESS = "review_preempted_cross_process"
+# A user transcript edit (/undo, /retry, an edited prompt, a detached delivery) asked the
+# review's durable lease to yield: the edit invalidated its replay basis.
+REASON_PREEMPTED_BY_TRANSCRIPT_EDIT = "review_preempted_by_transcript_edit"
+# The review's durable row outlived its renewals (dead process, starved refresher): seen by the
+# reclaiming foreground, and by the fork's next renewal tick.
+REASON_LEASE_EXPIRED_RECLAIMED = "review_lease_expired_reclaimed"
+REASON_LEASE_LOST = "review_lease_lost"
+# The gateway's post-delivery completion raised before the captured candidate could spawn.
+REASON_COMPLETION_ERROR = "review_completion_error"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.

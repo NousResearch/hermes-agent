@@ -698,3 +698,98 @@ def test_waiting_acquire_asks_only_a_background_review_holder_to_yield(tmp_path)
     )
     assert db.session_turn_lease_yield_requested("shared", foreground_holder) is False
     db.release_session_turn_lease("shared", foreground_holder)
+
+
+def _expire_lease_row(path, holder: str) -> None:
+    """Rewind a row's ``expires_at`` on a raw connection: the TTL elapses without a clock or a sleep."""
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE session_turn_leases SET expires_at = ? WHERE holder = ?",
+            (time.time() - 1.0, holder),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_transcript_edits_ask_a_background_review_holder_to_yield_instead_of_refusing(
+    tmp_path, caplog
+):
+    """A review fork runs on an immutable snapshot with persistence disabled, so its lease can
+    never justify refusing a user mutation: a detached delegation delivery, /undo and /retry
+    (``rewind_to_message``) and an edited prompt (``replace_messages``) all land while the row
+    is held. The edit invalidates the review's replay basis, so the holder is asked to yield —
+    stamped once, logged once with the hashed owner — and keeps the row until its own exit. A
+    foreground holder still refuses and is never asked to yield."""
+    from agent import review_admission
+    from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+    user_row_id = db.append_message("shared", "user", "first ask")
+    db.append_message("shared", "assistant", "first reply")
+    review_holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}abc"
+    assert db.try_acquire_session_turn_lease("shared", review_holder, ttl_seconds=60)
+
+    with caplog.at_level("INFO"):
+        db.append_delegation_delivery("shared", "done", {"delegation_id": "d1"})
+        rewound = db.rewind_to_message("shared", user_row_id)
+        db.replace_messages(
+            "shared", [{"role": "user", "content": "edited ask"}],
+            active_only=True, archive_dropped=True, reject_active_turn_lease=True,
+        )
+
+    assert rewound["rewound_count"] == 3
+    assert db.session_turn_lease_yield_requested("shared", review_holder) is True
+    # Asked to yield, never reclaimed: the fork's own exit releases the row.
+    assert db.refresh_session_turn_lease("shared", review_holder, ttl_seconds=60) is True
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT in r.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert "owner=" in lines[0]
+    assert "shared" not in lines[0]
+    db.release_session_turn_lease("shared", review_holder)
+
+    foreground_holder = f"pid={os.getpid()}:turn=fg:platform=cli"
+    assert db.try_acquire_session_turn_lease("shared", foreground_holder, ttl_seconds=60)
+    with pytest.raises(SessionTurnLeaseLostError):
+        db.replace_messages(
+            "shared", [{"role": "user", "content": "again"}],
+            active_only=True, archive_dropped=True, reject_active_turn_lease=True,
+        )
+    assert db.session_turn_lease_yield_requested("shared", foreground_holder) is False
+    db.release_session_turn_lease("shared", foreground_holder)
+
+
+def test_reclaiming_an_unrenewed_review_lease_logs_the_owner(tmp_path, caplog):
+    """A review row that outlived its renewals (a starved refresher or a dead process) is
+    reclaimed by the next foreground acquire like any expired lease — and, unlike a plain
+    reclaim, it is one owner-tagged, body-free line, so "review yielded cleanly" and "review
+    expired under a live turn" are distinguishable in agent.log."""
+    from agent import review_admission
+    from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+
+    path = tmp_path / "state.db"
+    db = SessionDB(path)
+    db.create_session("shared", source="test")
+    review_holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}abc"
+    assert db.try_acquire_session_turn_lease("shared", review_holder, ttl_seconds=60)
+    _expire_lease_row(path, review_holder)
+
+    foreground_holder = f"pid={os.getpid()}:turn=fg:platform=cli"
+    with caplog.at_level("INFO"):
+        assert db.try_acquire_session_turn_lease("shared", foreground_holder, ttl_seconds=5)
+
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_LEASE_EXPIRED_RECLAIMED in r.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert "owner=" in lines[0]
+    assert "shared" not in lines[0]
+    db.release_session_turn_lease("shared", foreground_holder)

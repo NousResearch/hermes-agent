@@ -19,6 +19,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -43,6 +44,8 @@ _BUMP_GENERATION_SQL = """
             """
 
 _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE conversation_id = ?"
+_STAMP_REVIEW_YIELD_SQL = ("UPDATE session_turn_leases SET yield_requested_at = ? "
+                           "WHERE conversation_id = ? AND holder = ? AND yield_requested_at IS NULL")
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 # Model-only rows (see MODEL_ONLY_DISPLAY_METADATA_KEY) never enter a display projection. Unqualified on
@@ -117,6 +120,14 @@ def _stale_holder(row, now: float) -> bool:
     """A lock/lease row whose holder is expired or a provably dead local process."""
     from hermes_state import _compression_lock_holder_process_is_dead
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
+
+
+def _log_review_yield_for_edit(session_id: str) -> None:
+    """One body-free, owner-tagged line per stamp: a review preempted by a user edit is as greppable
+    as one preempted by a foreground turn (``agent/review_admission.py``)."""
+    from agent.review_admission import REASON_PREEMPTED_BY_TRANSCRIPT_EDIT, current_profile_key, owner_tag
+    logger.info("Background review asked to yield for a transcript edit (owner=%s, reason=%s)",
+                owner_tag(current_profile_key(), session_id), REASON_PREEMPTED_BY_TRANSCRIPT_EDIT)
 
 
 class SessionMessagesMixin:
@@ -213,7 +224,8 @@ class SessionMessagesMixin:
         Shared by :meth:`append_message` and :meth:`append_messages_batch` so the two writers can never
         diverge on these correctness invariants (this guard has already needed targeted fixes — see the
         #74478 patience note below). User-initiated transcript mutations may opt in to rejecting an active
-        unowned turn lease in that same transaction.
+        unowned turn lease in that same transaction — except a background-review holder, which never writes
+        the transcript and is asked to yield instead of refusing the mutation.
         """
         from hermes_state import SessionCompressionInProgressError
         from hermes_state_errors import CompressionSessionClosedError, SessionTurnLeaseLostError
@@ -248,12 +260,20 @@ class SessionMessagesMixin:
                         "WHERE conversation_id = ? AND holder = ?",
                         (now + max(0.1, float(turn_lease_ttl_seconds)), conversation_id, turn_lease_holder))
             elif lease is not None:
-                if not _stale_holder(lease, now):
+                if _stale_holder(lease, now):
+                    # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
+                    conn.execute("DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                        (conversation_id, lease["holder"]))
+                elif BACKGROUND_REVIEW_LEASE_HOLDER_MARK in str(lease["holder"]):
+                    # A review fork never writes the transcript (immutable snapshot, persistence disabled), so
+                    # its lease cannot refuse a user mutation. The edit invalidated its replay basis, so it is
+                    # asked to yield: the fork stops on its next renewal tick and releases the row itself
+                    # (agent/background_review.py::_ReviewTurnLease). Stamped, and logged, once per hold.
+                    if conn.execute(_STAMP_REVIEW_YIELD_SQL, (now, conversation_id, lease["holder"])).rowcount > 0:
+                        _log_review_yield_for_edit(session_id)
+                else:
                     raise SessionTurnLeaseLostError(
                         f"Session has an active turn lease; refusing transcript mutation for {session_id!r}")
-                # Same reclaim rule as acquisition; deleting also fences a stale late flush after the mutation.
-                conn.execute("DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                    (conversation_id, lease["holder"]))
         if _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()) and not allow_closed_compression_parent:
             raise CompressionSessionClosedError(session_id)
 

@@ -134,6 +134,13 @@ class _GatewayReviewAdmission:
             raise
         return cls(session_id, profile_key, token)
 
+    @property
+    def owner_tag(self) -> str:
+        """Hashed (profile, session) owner for log lines; never the raw identifiers."""
+        from agent import review_admission
+
+        return review_admission.owner_tag(self.profile_key, self.session_id)
+
     def bind_agent(self, agent: Any) -> None:
         """Route this gateway turn's automatic candidate to the delivery owner."""
         with self._lock:
@@ -231,7 +238,18 @@ class _GatewayReviewAdmission:
             daemon=True,
             name="bg-review-spawn",
         )
-        spawner.start()
+        try:
+            spawner.start()
+        except Exception:  # noqa: BLE001 — ownership is already released: greppable, never fatal
+            logger.warning(
+                "Background review delivery completion failed (owner=%s, reason=%s)",
+                review_admission.owner_tag(
+                    self.profile_key, candidate.get("_review_session_id") or self.session_id
+                ),
+                review_admission.REASON_COMPLETION_ERROR,
+                exc_info=True,
+            )
+            return None
         return spawner
 
 
@@ -4083,6 +4101,10 @@ class GatewayTurnMixin:
                 reply_expected=next_reply_expected,
                 persist_user_display_metadata={
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                # The follow-up is bound to the OUTER admission like the first turn: ``bind_agent``
+                # then runs per turn, so a first turn's non-terminal candidate never outlives the
+                # follow-up that superseded it, and the spawn Context is the terminal turn's.
+                gateway_review_admission=turn_ctx.gateway_review_admission,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(

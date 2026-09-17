@@ -229,8 +229,10 @@ def test_declined_clarify_aborts_instead_of_waiting_for_a_reply():
     assert cleared == ["sk1"]
 
 
-def test_ambiguous_clarify_still_waits():
-    """Control: a possibly-delivered card must STAY armed for a late reply."""
+def test_ambiguous_clarify_surfaces_uncertainty():
+    """Control: an unconfirmed send (#112684) surfaces delivery-uncertainty and
+    retires the registration instead of waiting out the full timeout and
+    misreporting a possibly-undelivered prompt as user inactivity."""
     from types import SimpleNamespace
 
     from gateway.run import _clarify_send_disposition
@@ -239,7 +241,9 @@ def test_ambiguous_clarify_still_waits():
     clarify_mod = SimpleNamespace(
         clear_session=lambda sk: cleared.append(sk),
         get_clarify_timeout=lambda: 600,
-        wait_for_response=lambda *a, **k: "answer",
+        wait_for_response=lambda *a, **k: pytest.fail(
+            "waited for a reply to a prompt whose delivery was never confirmed"
+        ),
     )
 
     class _Fut:
@@ -252,6 +256,6 @@ def test_ambiguous_clarify_still_waits():
 
     assert (
         _clarify_send_disposition(_Fut(), session_key="sk1", clarify_mod=clarify_mod)
-        is None
+        == "[clarify prompt delivery uncertain: send timed out before confirmation]"
     )
-    assert cleared == []
+    assert cleared == ["sk1"]

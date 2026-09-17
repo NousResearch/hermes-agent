@@ -1370,9 +1370,10 @@ class TurnRunner:
             ),
             "Clarify send failed to schedule",
         )
-        # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
-        # have posted with a late ack. Only a definitive failure tears down the registration;
-        # ambiguous falls through to the bounded wait so a late reply resolves.
+        # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — delivery
+        # was never confirmed. The disposition surfaces that as delivery-uncertainty and
+        # retires the registration instead of blocking on a reply to a card the user
+        # may never have received (#112684).
         response, answered = _clarify_send_then_wait(
             fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
         # Branch on the explicit flag, never on the text: a real answer can start with '[' (a

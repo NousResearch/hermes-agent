@@ -1343,3 +1343,22 @@ class TestIonetProvider:
         result = resolve_runtime_provider(requested="ionet")
         assert result["provider"] == "io-net"
         assert result["api_key"] == "io-key"
+
+    def test_ionet_static_aliases_registered(self):
+        from hermes_cli.models import _KNOWN_PROVIDER_NAMES
+        for name in ("io-net", "ionet", "io-intelligence", "io_net"):
+            assert name in _KNOWN_PROVIDER_NAMES
+
+    def test_ionet_env_vars_in_optional_env_vars(self):
+        from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+        assert "IONET_API_KEY" in OPTIONAL_ENV_VARS
+        assert "IOINTELLIGENCE_API_KEY" in OPTIONAL_ENV_VARS
+        assert "IONET_BASE_URL" in OPTIONAL_ENV_VARS
+
+    def test_ionet_url_maps_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("api.intelligence.io.solutions") == "io-net"
+
+    def test_ionet_aux_model_from_profile(self):
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("io-net") == "zai-org/GLM-5.3-Flash"

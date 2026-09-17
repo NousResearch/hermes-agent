@@ -62,7 +62,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "huggingface": HermesOverlay(is_aggregator=True, base_url_env_var="HF_BASE_URL"),
     "novita": HermesOverlay(is_aggregator=True, base_url_env_var="NOVITA_BASE_URL"),
     "io-net": HermesOverlay(is_aggregator=True, base_url_override="https://api.intelligence.io.solutions/api/v1",
-                            base_url_env_var="IONET_BASE_URL", extra_env_vars=("IONET_API_KEY",)),
+                            base_url_env_var="IONET_BASE_URL", extra_env_vars=("IONET_API_KEY", "IOINTELLIGENCE_API_KEY")),
     "xai": HermesOverlay(transport="codex_responses", base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
     "nvidia": HermesOverlay(base_url_override="https://integrate.api.nvidia.com/v1", base_url_env_var="NVIDIA_BASE_URL"),
     "xiaomi": HermesOverlay(base_url_env_var="XIAOMI_BASE_URL"),

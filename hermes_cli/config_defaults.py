@@ -2698,6 +2698,8 @@ OPTIONAL_ENV_VARS = {
     "XAI_BASE_URL": _base_url("xAI"),
     "IONET_API_KEY": _prov("IO Intelligence (io.net) API key", "IO Intelligence API Key",
                            "https://io.net/docs/guides/intelligence/api-keys-and-secrets"),
+    "IOINTELLIGENCE_API_KEY": _prov("IO Intelligence (io.net) API key — models.dev name, alias of IONET_API_KEY",
+                                    "IO Intelligence API Key", "https://io.net/docs/guides/intelligence/api-keys-and-secrets"),
     "IONET_BASE_URL": _base_url("IO Intelligence"),
     "NVIDIA_API_KEY": _prov("NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
         "NVIDIA NIM API key", "https://build.nvidia.com/"),

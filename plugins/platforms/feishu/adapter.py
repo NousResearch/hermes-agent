@@ -2869,6 +2869,9 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         existing.text = next_text
+        existing.media_urls.extend(event.media_urls)
+        existing.media_types.extend(event.media_types)
+        existing.media_text_inlined.extend(event.media_text_inlined)
         existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp
         if event.message_id:

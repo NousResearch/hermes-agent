@@ -1028,6 +1028,50 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(first.source.message_id, first.message_id)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_text_batch_preserves_later_message_attachments(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _run() -> None:
+            await adapter._enqueue_text_event(
+                MessageEvent(text="first", message_type=MessageType.TEXT, source=source)
+            )
+            await adapter._enqueue_text_event(
+                MessageEvent(
+                    text="second",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    media_urls=["/cache/second.md"],
+                    media_types=["text/markdown"],
+                    media_text_inlined=[True],
+                )
+            )
+            await adapter._flush_text_batch_now(adapter._text_batch_key(source_event))
+
+        source_event = MessageEvent(text="", message_type=MessageType.TEXT, source=source)
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(event.text, "first\nsecond")
+        self.assertEqual(event.media_urls, ["/cache/second.md"])
+        self.assertEqual(event.media_types, ["text/markdown"])
+        self.assertEqual(event.media_text_inlined, [True])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.event import MessageEvent, MessageType

@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -2410,12 +2411,20 @@ def test_t2i_render_height_limit_constant() -> None:
     assert t2i_render.MAX_RENDER_HEIGHT == 8000
 
 
+@pytest.mark.skipif(
+    not __import__("os").path.exists(_DEJAVU),
+    reason="DejaVu font not available in this environment",
+)
 def test_t2i_render_under_limit_renders_png() -> None:
     """边界：总高 ≤ 8000px（约 200 行正文）正常渲染为 PNG，不回退。"""
     png = render_text_image("接近上限的正常行\n" * 200)
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+@pytest.mark.skipif(
+    not __import__("os").path.exists(_DEJAVU),
+    reason="DejaVu font not available in this environment",
+)
 def test_t2i_render_over_limit_raises() -> None:
     """超限：总高 > 8000px 抛 ValueError（不截断画布、不产生半渲染图）。"""
     with pytest.raises(ValueError, match="MAX_RENDER_HEIGHT"):
@@ -2892,6 +2901,10 @@ def test_non_admin_approve_rejected(monkeypatch, tmp_path) -> None:
     assert actions == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX 0o600 st_mode semantics do not exist on Windows",
+)
 def test_requests_persist_across_restart(monkeypatch, tmp_path) -> None:
     """台账落盘：重启（新实例）后 /approve 仍可用，seq 续增。"""
     adapter1 = _make_request_adapter(monkeypatch, tmp_path)
@@ -2992,6 +3005,10 @@ def test_group_approve_prompts_dm_only_no_leak(monkeypatch, tmp_path) -> None:
     assert adapter._requests["friend_flag_1"]["status"] == "pending"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX 0o600 st_mode semantics do not exist on Windows",
+)
 def test_requests_file_created_0600_without_chmod(monkeypatch, tmp_path) -> None:
     """台账落盘从创建起即 0600：即使 os.chmod 被禁用（抛错），
     写出的文件权限仍是 0600（证明不依赖事后 chmod 补救）。"""

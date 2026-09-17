@@ -268,8 +268,8 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
     try:
-        from hermes_cli.anon_auth import route_is_welcome_host
-        if route_is_welcome_host(getattr(agent, "base_url", "")):
+        from hermes_cli.anon_auth import is_anonymous_request
+        if is_anonymous_request(getattr(agent, "provider", ""), getattr(agent, "api_key", None)):
             # The free tier has no credits, no agent key and no auth.json to inspect: its session
             # ended and could not be replaced. The two doors are a sign-in or another provider.
             _plines(agent, "   Your session ended and Hermes couldn't start a new one.",
@@ -747,13 +747,13 @@ def _stamp_free_tier(result: Dict[str, Any], kind: str, message: str) -> Dict[st
     return result
 
 
-def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
+def _welcome_outage_copy(base_url: Any, classified: Any, *, anonymous: bool = False) -> str:
     """On the Nous free tier, a transport / server failure that outlived every retry reads as one
     plain sentence (the free model is having trouble) rather than the technical summary. Empty
     for every other route and for rate limits / billing, which have their own copy."""
     try:
         from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
-        if not route_is_welcome_host(base_url):
+        if not anonymous or not route_is_welcome_host(base_url):
             return ""
         # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
         # are not the free model's trouble.
@@ -914,6 +914,7 @@ def max_retries_exhausted_result(
     guidance (the latter wins), persist, build the result with ``failure_reason`` /
     ``failure_retryable`` / ``billing_block``."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
+    from hermes_cli.anon_auth import is_anonymous_request
     from agent.conversation_loop import (
         _billing_block_dict, _billing_or_entitlement_message, _billing_terminal_label,
         _print_billing_or_entitlement_guidance,
@@ -998,7 +999,10 @@ def max_retries_exhausted_result(
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
             _free_tier_kind = _welcome_surface_kind(classified)
-        elif _outage := _welcome_outage_copy(base_url, classified):
+        elif _outage := _welcome_outage_copy(
+            base_url, classified,
+            anonymous=is_anonymous_request(provider, getattr(agent, "api_key", None)),
+        ):
             _final_response, _free_tier_kind = _outage, "outage"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
@@ -1420,16 +1424,17 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
             is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        from hermes_cli.anon_auth import route_is_welcome_host
+        from hermes_cli.anon_auth import is_anonymous_request
+        anonymous = is_anonymous_request(getattr(agent, "provider", ""), getattr(agent, "api_key", None))
         _classified_ctx = getattr(classified, "error_context", None) or {}
-        # Route-gated: only the welcome host's fairshare body is an allowance verdict; a paid-host
-        # 429 keeps main's rule (an exhausted x-ratelimit bucket), whatever its body says.
+        # Only an anonymous request's fairshare body is an allowance verdict; named
+        # requests keep the exhausted-bucket rule, whatever their host or body says.
         _genuine = (
-            (route_is_welcome_host(getattr(agent, "base_url", "")) and is_long_welcome_rate_limit(_classified_ctx))
+            (anonymous and is_long_welcome_rate_limit(_classified_ctx))
             or is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state))
         if _genuine:
             _merged = {**(error_context if isinstance(error_context, dict) else {}), **_classified_ctx}
-            record_nous_rate_limit(headers=_err_hdrs, error_context=_merged)
+            record_nous_rate_limit(headers=_err_hdrs, error_context=_merged, anonymous=anonymous)
         else:
             logger.info(
                 "Nous 429 looks like upstream capacity "

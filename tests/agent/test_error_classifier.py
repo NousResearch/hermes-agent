@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+
 from agent.error_classifier import (
     ClassifiedError,
     FailoverReason,
@@ -13,6 +14,7 @@ from agent.error_classifier import (
     _extract_error_code,
     _classify_402,
 )
+from tests.hermes_cli.anon_portal import make_jwt
 
 
 # ── Helper: mock API errors ────────────────────────────────────────────
@@ -1796,7 +1798,7 @@ class TestNousWelcomeTier:
 
     def test_model_not_free_is_a_non_retryable_gate_with_fallback(self):
         err = self._refusal("model_not_free", alternates=["nous/welcome"], upgrade_url="https://portal.example/upgrade")
-        result = classify_api_error(err, provider="nous", model="gpt-5")
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(), model="gpt-5")
         assert result.reason == FailoverReason.model_not_found
         assert result.retryable is False
         assert result.should_fallback is True
@@ -1807,13 +1809,13 @@ class TestNousWelcomeTier:
         assert refusal["upgrade_url"] == "https://portal.example/upgrade"
 
     def test_feature_not_free_is_the_same_gate(self):
-        result = classify_api_error(self._refusal("feature_not_free"), provider="nous")
+        result = classify_api_error(self._refusal("feature_not_free"), provider="nous", api_key=make_jwt())
         assert result.reason == FailoverReason.model_not_found
         assert result.retryable is False
 
     @pytest.mark.parametrize("reason", ["at_capacity", "admission_closed", "rate_limited"])
     def test_capacity_refusals_are_rate_limits_that_honour_retry_after(self, reason):
-        result = classify_api_error(self._refusal(reason, retry_after=30), provider="nous", model="nous/welcome")
+        result = classify_api_error(self._refusal(reason, retry_after=30), provider="nous", api_key=make_jwt(), model="nous/welcome")
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
         assert result.should_fallback is True
@@ -1822,40 +1824,40 @@ class TestNousWelcomeTier:
         assert ctx["reset_at"] > 0
 
     def test_retry_after_zero_carries_no_reset(self):
-        result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous")
+        result = classify_api_error(self._refusal("at_capacity", retry_after=0), provider="nous", api_key=make_jwt())
         assert "reset_at" not in result.error_context
 
     def test_unknown_reason_is_not_the_welcome_shape(self):
         err = MockAPIError("Error code: 429", status_code=429,
                            body={"status": 429, "message": "x", "reason": "something_else", "retry_after": 5})
-        result = classify_api_error(err, provider="nous")
+        result = classify_api_error(err, provider="nous", api_key=make_jwt())
         assert "welcome_refusal" not in result.error_context
 
     def test_anonymous_jwt_on_the_paid_host_is_deterministic(self):
         body = {"status": 400, "message": "Anonymous accounts must use https://welcome-api.nousresearch.com for inference."}
         err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
-        result = classify_api_error(err, provider="nous", model="nous/welcome")
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(), model="nous/welcome")
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False and result.should_fallback is True
         assert result.error_context["welcome_route"] == "anon_on_paid_host"
 
-    def test_named_caller_on_the_welcome_host_is_deterministic(self):
+    def test_named_caller_on_the_welcome_host_keeps_standard_errors(self):
         body = {"status": 400, "message": "This endpoint serves anonymous Hermes Agent accounts only. Use https://inference-api.nousresearch.com with your API key or signed-in account."}
         err = MockAPIError(f"Error code: 400 - {body}", status_code=400, body=body)
-        result = classify_api_error(err, provider="nous")
-        assert result.error_context["welcome_route"] == "named_on_welcome_host"
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(account_tier="free"))
+        assert "welcome_route" not in result.error_context
         assert result.retryable is False
 
     def test_dark_tier_403_never_triggers_a_credential_refresh(self):
         body = {"status": 403, "message": "Anonymous accounts are not accepted by this API right now."}
         err = MockAPIError(f"Error code: 403 - {body}", status_code=403, body=body)
-        result = classify_api_error(err, provider="nous", model="nous/welcome")
+        result = classify_api_error(err, provider="nous", api_key=make_jwt(), model="nous/welcome")
         assert result.reason == FailoverReason.auth_permanent
         assert result.retryable is False and result.should_fallback is True
         assert result.should_rotate_credential is False
         assert result.error_context["welcome_route"] == "tier_disabled"
 
     def test_ordinary_403_is_untouched(self):
-        result = classify_api_error(MockAPIError("forbidden", status_code=403, body={"message": "forbidden"}), provider="nous")
+        result = classify_api_error(MockAPIError("forbidden", status_code=403, body={"message": "forbidden"}), provider="nous", api_key=make_jwt())
         assert result.reason == FailoverReason.auth
         assert "welcome_route" not in result.error_context

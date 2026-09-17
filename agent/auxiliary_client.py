@@ -2243,14 +2243,6 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Cross-session rate guard: another session's 429 means skip Nous rather than pile onto the tapped RPH bucket.
-    with contextlib.suppress(Exception):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-        _remaining = nous_rate_limit_remaining()
-        if _remaining is not None and _remaining > 0:
-            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", _remaining)
-            _mark_provider_unhealthy("nous", ttl=_remaining)
-            return None, None
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
@@ -2273,6 +2265,18 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = str(
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
+    # Resolve the request identity before consulting its cross-session cooldown.
+    with contextlib.suppress(Exception):
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        from hermes_cli.anon_auth import is_anonymous_request
+        anonymous = is_anonymous_request("nous", api_key)
+        remaining = nous_rate_limit_remaining(anonymous=anonymous)
+        if remaining is not None and remaining > 0:
+            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", remaining)
+            # A provider-wide cache would outlive signing in with a named account.
+            if not anonymous:
+                _mark_provider_unhealthy("nous", ttl=remaining)
+            return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
     # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.

@@ -305,3 +305,41 @@ def install_ignored_terminal_sequences() -> int:
     ``setdefault`` lets user/downstream registrations win.
     """
     return _install(lambda _seqs, keys: {"\x1b[I": keys.Ignore, "\x1b[O": keys.Ignore}, overwrite=False)
+
+
+def _is_ghostty_environ(env=None) -> bool:
+    """Ghostty detection from the environment alone (mirrors ``cli._is_ghostty_terminal`` without
+    importing the CLI — this module is imported at CLI import time, so the dependency would cycle).
+    """
+    import os
+
+    env = os.environ if env is None else env
+    return (env.get("TERM_PROGRAM") or "").strip() == "ghostty" or (env.get("TERM") or "").strip().lower() == "xterm-ghostty"
+
+
+def _ghostty_shifted_symbol_aliases(_seqs, _keys) -> dict[str, object]:
+    # Ghostty's modifyOtherKeys=2 emissions carry the SHIFTED (final) codepoint — '{' arrives as
+    # ESC[27;2;123~ where 123 IS '{' — the event already went through the keyboard layout, so
+    # mapping the codepoint straight back to its character cannot invent a wrong key. That is what
+    # makes symbols safe here while the stock table deliberately leaves them unmapped: other
+    # emitters report the UNSHIFTED codepoint for Shift+symbol, where this mapping would type '['
+    # where the user pressed '{'. Letters stay out — the uppercase aliases already own them.
+    return {f"\x1b[27;2;{cp}~": chr(cp) for cp in range(33, 127) if not chr(cp).isalpha()}
+
+
+def install_ghostty_shifted_symbol_aliases(env=None) -> int:
+    """Map Ghostty's modifyOtherKeys=2 shifted-symbol sequences to their text (#114242).
+
+    Ghostty gets only the modifyOtherKeys push (its kitty mode strips Alt from Backspace), and
+    under level 2 it re-encodes Shift+symbol keys as ``ESC[27;2;<codepoint>~`` carrying the SHIFTED
+    codepoint — ``{`` as ``ESC[27;2;123~``. Stock prompt_toolkit maps none of these, and the general
+    table deliberately leaves Shift+symbol unmapped because most emitters report the unshifted
+    codepoint, where a direct mapping would insert the wrong character ("leaking beats wrong
+    input"). Ghostty's codepoint is already layout-resolved, so scoping the mapping to Ghostty
+    environments makes ``chr(codepoint)`` exact and the composer receives ``{`` instead of the raw
+    sequence. Non-Ghostty terminals keep the conservative behavior. No lock twins needed: the
+    modifyOtherKeys encoding never carries lock bits.
+    """
+    if not _is_ghostty_environ(env):
+        return 0
+    return _install(_ghostty_shifted_symbol_aliases, overwrite=False)

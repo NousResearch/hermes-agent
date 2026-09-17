@@ -133,9 +133,9 @@ class TestNormalizationParity:
         calls = {}
 
         def _spy(name, real):
-            def wrapper(c):
+            def wrapper(c, **kwargs):
                 calls[name] = c
-                return real(c)
+                return real(c, **kwargs)
             return wrapper
 
         monkeypatch.setattr(approval_detection, "detect_hardline_command",

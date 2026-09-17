@@ -364,7 +364,10 @@ DANGEROUS_PATTERNS = [
     # sequential match: a for-loop building the label from a list defined EARLIER (`for item in 'ai.hermes...'; do
     # launchctl bootout "$label"`) never has "hermes" after the verb, and that slipped past and restarted 4 gateways
     # with zero approval. Erring broad is correct for an approval gate: an extra prompt is cheap.
-    (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
+    # `\A`-anchored: a lookahead evaluated at position 0 already sees the whole string, so the matching set is
+    # identical — but an unanchored `search()` retries both lookaheads at every start position and rescans to the
+    # end each time, making one search O(n^2) and detection on long heredoc-style commands minutes-long (#113535).
+    (r'\A(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
@@ -628,6 +631,12 @@ _GREP_SHORT_OPTIONS_WITH_ARG = {"A", "B", "C", "D", "d", "e", "f", "m"}
 _BASH_OPTIONS_WITH_ARG = {"-O", "+O", "-o", "+o", "--init-file", "--rcfile"}
 _BASH_SHORT_OPTION_LETTERS = frozenset("ilrsDcabefhkmnptuvxBCEHPTOo")
 _MAX_DETECTION_COMMAND_CHARS, _MAX_SEPARATOR_FREE_COMMAND_CHARS, _MAX_DETECTION_SEGMENTS = 128_000, 4_096, 25_000
+# Cumulative work budget for the variant loop: Σ len(variant) across every detection variant. A long heredoc-style
+# command yields one full-length variant per quoted body word, so without a bound the loop cost grows O(n^3) even
+# with the launchctl lookahead anchored (#113535). Exceeding the budget fails CLOSED ("command parser limit
+# exceeded") — a long command needs approval instead of stalling the gateway loop. 500k chars keeps the worst-case
+# regex work near one second while ordinary multi-variant commands stay far under the ceiling.
+_MAX_DETECTION_TOTAL_CHARS = 500_000
 _PARSER_LIMIT_DESCRIPTION = "command parser limit exceeded"
 _MALFORMED_EXEC_DESCRIPTION = "command parser limit or malformed executable payload"
 _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION = "stop/restart hermes gateway via shell-spliced verb (kills running agents)"
@@ -1356,21 +1365,39 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
-def _command_detection_variants(command: str):
-    # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
-    # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
+class _DetectionBudgetExceeded(Exception):
+    """The variant loop's cumulative work budget (_MAX_DETECTION_TOTAL_CHARS) was crossed.
+
+    Callers fail closed: ``detect_dangerous_command`` reports the parser-limit verdict so the
+    command requires approval instead of stalling the gateway loop on minutes of regex work.
+    """
+
+
+def _command_detection_variants(command: str, max_total_chars: int | None = None):
+    # Mask quoted newlines BEFORE normalization: normalization strips escapes (\\\" -> \") and \"\"
+    # pairs, corrupting quote tracking (`echo \"a\\\"\"` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state.
     normalized = _normalize_command_for_detection(_mask_quoted_newlines(command))
     # Quote-aware grep parsing hides only structurally identified pattern operands; malformed or
     # ambiguous input stays byte-for-byte intact.
     grep_safe, _ = _grep_safe_detection_variant(normalized)
     seen = {grep_safe}
+    total_chars = 0
+
+    def charge(length: int) -> None:
+        nonlocal total_chars
+        total_chars += length
+        if max_total_chars is not None and total_chars > max_total_chars:
+            raise _DetectionBudgetExceeded()
+
+    charge(len(grep_safe))
     yield grep_safe
 
     def fresh(variant: str) -> bool:
         if not variant or variant in seen:
             return False
         seen.add(variant)
+        charge(len(variant))
         return True
 
     # Windows-path variant: normalization strips backslashes as shell escapes, so `del C:\Users\me\.ssh\id_rsa`
@@ -1463,17 +1490,22 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-    for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
-        masked_lower: str | None = None
-        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
-                if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
-                if pattern_re.search(masked_lower):
+    try:
+        for command_variant in _command_detection_variants(command, max_total_chars=_MAX_DETECTION_TOTAL_CHARS):
+            command_lower = command_variant.lower()
+            masked_lower: str | None = None
+            for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+                if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+                    if masked_lower is None:
+                        masked_lower = _mask_quoted_prose(command_variant).lower()
+                    if pattern_re.search(masked_lower):
+                        return (True, description, description)
+                elif pattern_re.search(command_lower):
                     return (True, description, description)
-            elif pattern_re.search(command_lower):
-                return (True, description, description)
+    except _DetectionBudgetExceeded:
+        # Fail closed: a command whose variants exceed the cumulative work budget is too large to
+        # analyze within the gateway loop's deadline — treat it as requiring approval (#113535).
+        return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)

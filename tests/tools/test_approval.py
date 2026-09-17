@@ -1162,6 +1162,56 @@ class TestLaunchctlGatewayLifecycle:
         assert "launchd" in desc.lower()
 
 
+class TestDetectionWorkBudget:
+    """#113535: detection on long multiline commands was O(n^3) — the unanchored launchctl
+    lookahead rescanning every variant — and stalled the gateway loop (exit 75). The launchctl
+    lookahead is now ``\\A``-anchored (same match set, linear cost) and the variant loop carries
+    a cumulative work budget that fails closed into the approval verdict, so a long command
+    needs approval instead of minutes of regex work."""
+
+    @staticmethod
+    def _quoted_line_commands(n_lines: int) -> str:
+        return "\n".join(f'"key{i}": "line {i} with some text"' for i in range(n_lines))
+
+    def test_launchctl_lookahead_sees_across_multiline_commands(self):
+        """The anchored lookaheads must keep matching launchctl + hermes label split across
+        lines — the same match set as the pre-anchor pattern."""
+        for cmd in (
+            "python3 <<'PY'\n"
+            "import subprocess\n"
+            "launchctl bootout gui/501/ai.hermes.gateway\n"
+            "PY",
+            'echo warm-up; launchctl kickstart -k gui/501/ai.hermes.gateway',
+            'launchctl stop ai.hermes.gateway; echo done',
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "launchd" in desc.lower(), cmd
+
+    def test_medium_multiline_command_completes_quickly(self):
+        """~3.7k chars across 110 quoted lines used to take many seconds (one O(n^2) lookahead
+        scan per deobfuscation variant); it must now complete well under a second with the same
+        benign verdict."""
+        cmd = self._quoted_line_commands(110)
+        start = time.monotonic()
+        result = detect_dangerous_command(cmd)
+        elapsed = time.monotonic() - start
+        assert result == (False, None, None)
+        assert elapsed < 2.0, f"detection took {elapsed:.2f}s for a {len(cmd)}-char command"
+
+    def test_oversized_detection_work_fails_closed_fast(self):
+        """When the cumulative variant work budget is crossed, the verdict must fail closed
+        (approval required) instead of stalling — bounded to a few seconds even for input that
+        previously ran for minutes."""
+        cmd = self._quoted_line_commands(230)
+        start = time.monotonic()
+        dangerous, pattern_key, description = detect_dangerous_command(cmd)
+        elapsed = time.monotonic() - start
+        assert dangerous is True
+        assert "parser limit" in description.lower()
+        assert elapsed < 5.0, f"fail-closed verdict took {elapsed:.2f}s"
+
+
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy
     work and rewrite shared history. Not covered by rm/chmod patterns.

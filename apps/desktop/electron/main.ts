@@ -445,6 +445,7 @@ import {
   connectWindowsRemote,
   detectRemotePlatform,
   helper,
+  listWindowsRemoteHermesProfiles,
   probeWindowsRemote,
   terminateOwnedWindowsDashboardForUpdate
 } from './windows-remote-lifecycle'
@@ -15606,7 +15607,11 @@ async function probeSshProfileInventory(connection) {
 
   try {
     await ssh.open()
-    const profiles = await remoteLifecycle.listRemoteHermesProfiles(ssh)
+    const platform: any = await detectRemotePlatform(ssh, sshConfig.remoteHermesPath || '')
+    const profiles =
+      platform?.os === 'Windows'
+        ? await listWindowsRemoteHermesProfiles(ssh)
+        : await remoteLifecycle.listRemoteHermesProfiles(ssh)
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)

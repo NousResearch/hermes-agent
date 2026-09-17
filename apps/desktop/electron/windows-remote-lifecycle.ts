@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { parseRemoteProfileListing } from './connection-registry'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -19,10 +20,29 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
-async function probeWindowsRemote(ssh, explicitHermesPath = '') {
+// Staged-execution command: a short bootstrap (~200 chars → ~600 chars base64
+// → ~700 chars total) that reads the actual PowerShell script from stdin, saves
+// it to a temp .ps1, runs it with `powershell.exe -File`, and cleans up.
+// This keeps every Windows SSH exec safely under Windows' ~8191-char
+// CreateProcess command-line ceiling — the probe and update-marker scripts
+// previously generated ~8.4 KB and ~8.3 KB command lines and failed with
+// "The command line is too long."
+const STAGED_PS_COMMAND = powerShellCommand(
+  '$ErrorActionPreference="Stop"' +
+    ';$tmp=[IO.Path]::Combine($env:TEMP,"hermes-ps-"+[IO.Path]::GetRandomFileName().Replace(".","")+ ".ps1")' +
+    ';$content=[Console]::In.ReadToEnd()' +
+    ';[IO.File]::WriteAllText($tmp,$content,[Text.Encoding]::UTF8)' +
+    ';try{& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $tmp' +
+    ';if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}}finally{try{Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue}catch{}}'
+)
+
+// Build the Windows platform-probe script.  Extracted so tests can inspect the
+// script content directly (it travels as stdinData in staged execution, not as
+// the EncodedCommand argument).
+function buildWindowsProbeScript(explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
-  const script = [
+  return [
     '$ErrorActionPreference="Stop"',
     'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
@@ -56,7 +76,12 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '$candidates+=$fallbackHomeCandidate',
     '$candidates+=$fallbackProfileCandidate',
     '$hermes=$null',
-    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){$hermes=$item.FullName;break}}catch [Management.Automation.ItemNotFoundException]{continue}}',
+    // Require both hermes.exe AND a sibling python.exe to exist before accepting
+    // a candidate. Without the python.exe guard an installer-shim hermes.exe on
+    // PATH (which has no sibling python.exe) is selected, then the post-loop
+    // Assert-NoReparse on python.exe throws a confusing "Path was not found"
+    // error rather than falling through to the real venv candidate.
+    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){try{$pyItem=Get-Item -LiteralPath $candidatePython -Force -ErrorAction Stop;if(($pyItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $pyItem.PSIsContainer){$hermes=$item.FullName;break}}catch [Management.Automation.ItemNotFoundException]{continue}}}catch [Management.Automation.ItemNotFoundException]{continue}}',
     'if(-not $hermes){throw "Hermes is not installed on the remote Windows host."}',
     'Assert-NoReparse $hermes $false',
     'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
@@ -64,12 +89,17 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
-
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
-  const script = [
+async function probeWindowsRemote(ssh, explicitHermesPath = '') {
+  return JSON.parse((await ssh.exec(STAGED_PS_COMMAND, { stdinData: buildWindowsProbeScript(explicitHermesPath) })).trim())
+}
+
+// Build the Windows update-marker probe script.  Extracted so tests can
+// inspect the script content directly (it travels as stdinData in staged
+// execution, not as the EncodedCommand argument).
+function buildUpdateMarkerScript(hermesHome) {
+  return [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
 using System;
@@ -128,8 +158,6 @@ public static class HermesMarkerNoFollow {
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
   ].join(';')
-
-  return powerShellCommand(script)
 }
 
 /**
@@ -142,7 +170,7 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
 
   try {
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(await ssh.exec(STAGED_PS_COMMAND, { stdinData: buildUpdateMarkerScript(hermesHome) }))
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)
@@ -176,6 +204,39 @@ const TRANSPORT_KINDS = new Set([
   SSH_ERROR.TIMEOUT,
   SSH_ERROR.UNREACHABLE
 ])
+
+// Build the Windows profile-listing script.  Returns a newline-separated list
+// of directory names under %HERMES_HOME%\profiles, suitable for
+// parseRemoteProfileListing().  Delivered via staged execution.
+function buildWindowsListProfilesScript() {
+  return [
+    '$ErrorActionPreference="Stop"',
+    '$hermesHome=$env:HERMES_HOME',
+    'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
+    '$profilesDir=Join-Path $hermesHome "profiles"',
+    'if(-not (Test-Path -LiteralPath $profilesDir -PathType Container)){exit 0}',
+    'Get-ChildItem -LiteralPath $profilesDir -Directory | Select-Object -ExpandProperty Name'
+  ].join(';')
+}
+
+async function listWindowsRemoteHermesProfiles(ssh): Promise<string[]> {
+  let listing = ''
+
+  try {
+    listing = String(
+      await ssh.exec(STAGED_PS_COMMAND, { stdinData: buildWindowsListProfilesScript() })
+    )
+      .replace(/^﻿/, '')
+      .trim()
+  } catch (cause) {
+    const error: any = new Error('Could not list remote Hermes profiles.')
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+
+  return parseRemoteProfileListing(listing)
+}
 
 async function detectRemotePlatform(ssh, explicitHermesPath = '') {
   try {
@@ -246,11 +307,20 @@ async function helper(ssh, runtime, operation, args = [], stdinData?) {
   return parsed
 }
 
-function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
+// Build the atomic spawn script.  The backendJson argument is the JSON that
+// hermes_cli.windows_ssh_runtime reads from stdin — embedding it in the script
+// via psLiteral frees stdin for staged execution (STAGED_PS_COMMAND bootstrap).
+// With deep profile paths the -EncodedCommand form can reach 8 600+ chars;
+// staged execution keeps the command line at ~700 chars regardless of path length.
+function buildAtomicWindowsSpawnScript(runtime, reservation: any = {}, backendJson = '') {
   const argv = [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', 'spawn']
   const helper = operation => [runtime.python, '-m', 'hermes_cli.windows_ssh_runtime', operation]
 
-  const script = [
+  const spawnLine = reservation.ownershipId
+    ? `  $spawnLines=@(Write-Output ${psLiteral(backendJson)} | & ${argv.map(psLiteral).join(' ')}); $spawnExit=$LASTEXITCODE`
+    : `  Write-Output ${psLiteral(backendJson)} | & ${argv.map(psLiteral).join(' ')}`
+
+  return [
     '$ErrorActionPreference="Stop"',
     `$home=${psLiteral(runtime.hermesHome)}`,
     '$installRoot=$home',
@@ -269,9 +339,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
         'if(-not $p.HasExited){[ordered]@{existing=$true}|ConvertTo-Json -Compress;exit 0}}catch{}finally{if($p){$p.Dispose()}}}; ' +
         `& ${helper('remove-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}|Out-Null}`
       : '',
-    reservation.ownershipId
-      ? `  $spawnLines=@(& ${argv.map(psLiteral).join(' ')}); $spawnExit=$LASTEXITCODE`
-      : `  & ${argv.map(psLiteral).join(' ')}`,
+    spawnLine,
     reservation.ownershipId
       ? '  if($spawnExit -ne 0){exit $spawnExit}'
       : '  if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}',
@@ -284,12 +352,12 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   ]
     .filter(line => line !== '')
     .join(';')
-
-  return powerShellCommand(script)
 }
 
-async function atomicWindowsSpawn(ssh, runtime, stdinData, reservation: any = {}) {
-  const output = await ssh.exec(atomicWindowsSpawnCommand(runtime, reservation), { stdinData })
+async function atomicWindowsSpawn(ssh, runtime, reservation: any = {}, backendJson = '') {
+  const output = await ssh.exec(STAGED_PS_COMMAND, {
+    stdinData: buildAtomicWindowsSpawnScript(runtime, reservation, backendJson)
+  })
 
   const lines = String(output || '')
     .replace(/^\uFEFF/, '')
@@ -654,7 +722,6 @@ async function connectWindowsRemote(deps) {
     spawned = await atomicWindowsSpawn(
       ssh,
       runtime,
-      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath }),
       {
         ownershipId,
         spawnNonce,
@@ -663,7 +730,8 @@ async function connectWindowsRemote(deps) {
         hermesHome: runtime.hermesHome,
         tokenFingerprint,
         startedAt
-      }
+      },
+      JSON.stringify({ ownershipId, spawnNonce, profile, hermesPath: runtime.hermesPath })
     )
   } catch (error) {
     await helper(ssh, runtime, 'remove-token', [ownershipId, spawnNonce])
@@ -767,8 +835,12 @@ function buildWindowsInteractiveCommand(remoteCwd = '') {
 
 export {
   assertWindowsRemoteInstallUpdateClear,
-  atomicWindowsSpawnCommand,
+  buildAtomicWindowsSpawnScript,
+  buildUpdateMarkerScript,
+  buildWindowsListProfilesScript,
+  listWindowsRemoteHermesProfiles,
   buildWindowsInteractiveCommand,
+  buildWindowsProbeScript,
   connectWindowsRemote,
   detectRemotePlatform,
   encodedPowerShell,
@@ -778,6 +850,7 @@ export {
   probeWindowsRemote,
   psLiteral,
   reusableWindowsLock,
+  STAGED_PS_COMMAND,
   terminateOwnedWindowsDashboardForUpdate,
   validLock
 }

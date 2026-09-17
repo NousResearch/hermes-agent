@@ -68,6 +68,15 @@ def _err(exc: BaseException) -> Dict[str, Any]:
     return _fail(f"{type(exc).__name__}: {exc}")
 
 
+# Once a supervisor has attached successfully, keep retrying a dead CDP endpoint for at
+# most this long since the last successful attach (backoff caps at 10s → ~6 attempts/min).
+# Past it the endpoint is gone for good — e.g. a finished cron session's short-lived
+# Chrome — so give up instead of dialing a dead port for the life of the host process
+# (#114172: 1,600+ warnings and a leaked loop per dead endpoint). ``start()`` can still
+# reattach later if the endpoint comes back; the registry healthcheck rebuilds on demand.
+RECONNECT_GIVE_UP_AFTER_S = 300.0
+
+
 @dataclass(frozen=True)
 class SupervisorSnapshot:
     """Read-only snapshot of supervisor state for tool handlers."""
@@ -114,6 +123,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._ready_event = threading.Event()
         self._start_error: Optional[BaseException] = None
         self._stop_requested = False
+        # Timestamp of the last successful attach; anchors the reconnect give-up window.
+        self._last_attach_ok_at: Optional[float] = None
         # CDP call tracking (runs on supervisor loop only).
         self._next_call_id = 1
         self._pending_calls: Dict[int, asyncio.Future] = {}
@@ -362,6 +373,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 attempt += 1
                 if self._fail_start(e):
                     return
+                if (last := self._last_attach_ok_at) is not None and time.time() - last > RECONNECT_GIVE_UP_AFTER_S:
+                    logger.warning("CDP supervisor %s: giving up reconnecting after %.0fs with no successful attach (last error: %s)",
+                                   self.task_id, time.time() - last, _redact_cdp_error_text(e))
+                    return
                 logger.warning("CDP supervisor %s: connect failed (attempt %s): %s",
                                self.task_id, attempt, _redact_cdp_error_text(e))
                 await asyncio.sleep(min(backoff, 10.0))
@@ -376,7 +391,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 self._page_session_id = None
                 await self._attach_initial_page()
                 self._set_active(True)
-                last_success_at = time.time()
+                last_success_at = self._last_attach_ok_at = time.time()
                 backoff = 0.5  # reset after a successful attach
                 self._ready_event.set()
                 await reader_task

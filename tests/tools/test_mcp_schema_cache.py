@@ -4,6 +4,8 @@ The module landed in #56832's extraction without its tests; these cover the
 fingerprint keying, read/write round-trip, and invalidation behavior.
 """
 
+import json
+
 import tools.mcp_schema_cache as msc
 from tools import mcp_tool_registration as _mcp_registration
 
@@ -189,3 +191,55 @@ class TestWriteThroughPreservesSchema:
         assert schema is not None, "lazy path did not register the tool"
         assert set(schema["parameters"].get("properties", {})) == {"query", "model"}
         assert schema["parameters"].get("required") == ["query", "model"]
+
+
+class TestEntryVersionStamp:
+    """A persisted field whose SEMANTICS changed must not be served from an entry an older build wrote.
+
+    Measured 2026-09-17 (mcp 2.0.0): the write-through logged ``annotations.readOnlyHint: false`` for
+    every read-only tool, because the hint reader used a bare camelCase getattr that cannot see the
+    2.x ``read_only_hint`` attribute. A ``lazy: true`` server keeps serving its cache entry until it
+    connects — and it only connects on the first call, AFTER passing the trust gate that entry
+    mis-classifies, which headless denies forever. So a pre-fix entry is a MISS (forcing an eager
+    connect and a write-through refresh), never a tolerated value.
+    """
+
+    def _isolate(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
+        return tmp_path / "cache.json"
+
+    def test_write_stamps_the_current_version(self, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        msc.write_cache_entry("srv", "fp", tools=[{"name": "t"}])
+        entry = msc.get_cached_entry("srv", "fp")
+        assert entry is not None
+        assert entry["entry_version"] == msc._ENTRY_VERSION
+
+    def test_unversioned_entry_is_a_miss(self, monkeypatch, tmp_path):
+        path = self._isolate(monkeypatch, tmp_path)
+        path.write_text(json.dumps({"srv": {
+            "fingerprint": "fp",
+            "tools": [{"name": "list_labels", "inputSchema": {},
+                       "annotations": {"readOnlyHint": False}}],
+            "utility_tools": [],
+        }}), encoding="utf-8")
+        assert msc.get_cached_entry("srv", "fp") is None
+        assert msc.has_cached_entry("srv", "fp") is False
+
+    def test_other_version_is_a_miss(self, monkeypatch, tmp_path):
+        path = self._isolate(monkeypatch, tmp_path)
+        path.write_text(json.dumps({"srv": {
+            "entry_version": msc._ENTRY_VERSION + 1, "fingerprint": "fp",
+            "tools": [], "utility_tools": [],
+        }}), encoding="utf-8")
+        assert msc.get_cached_entry("srv", "fp") is None
+
+    def test_current_version_is_served(self, monkeypatch, tmp_path):
+        path = self._isolate(monkeypatch, tmp_path)
+        path.write_text(json.dumps({"srv": {
+            "entry_version": msc._ENTRY_VERSION, "fingerprint": "fp",
+            "tools": [{"name": "t"}], "utility_tools": [],
+        }}), encoding="utf-8")
+        entry = msc.get_cached_entry("srv", "fp")
+        assert entry is not None
+        assert msc.tools_from_cache_entry(entry) == [{"name": "t"}]

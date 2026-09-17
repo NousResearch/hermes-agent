@@ -18,6 +18,14 @@ logger = logging.getLogger(__name__)
 _CACHE_FILENAME = "mcp_schema_cache.json"
 _cache_lock = threading.Lock()
 
+# Bumped when the SEMANTICS of a persisted field change, so an entry written by an older build is a
+# miss (the next startup re-probes eagerly and the write-through then refreshes the file) instead of
+# being trusted indefinitely by a lazily-registered server.
+# v2: the per-tool ``annotations.readOnlyHint`` was persisted from a reader that could not see mcp
+# 2.x's ``read_only_hint``, so every read-only tool on an ``untrusted`` server was cached as
+# write-capable — and a lazy server would have kept demanding an approval it can never get headless.
+_ENTRY_VERSION = 2
+
 
 def _cache_path() -> Path:
     from hermes_constants import get_hermes_home
@@ -60,10 +68,18 @@ def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
     """Return cached entry when fingerprint matches (and TTL holds), else None. ``tools/list``
     results may carry ``ttlMs`` (SEP-2549); an entry older than a recorded TTL is a miss so the
     next startup re-probes instead of serving a stale manifest forever. Entries without a TTL
-    never expire. ``cacheScope`` is irrelevant: this cache is per-user local disk."""
+    never expire. ``cacheScope`` is irrelevant: this cache is per-user local disk.
+
+    An entry stamped with a different ``_ENTRY_VERSION`` is a MISS too: a build that wrote a field
+    under changed semantics must not have its values trusted by a later one (the miss makes the
+    server connect eagerly, and the write-through on that connect rewrites the entry)."""
     with _cache_lock:
         entry = _load_all().get(server_name)
     if not isinstance(entry, dict) or entry.get("fingerprint") != fingerprint:
+        return None
+    if entry.get("entry_version") != _ENTRY_VERSION:
+        logger.debug("MCP schema cache entry for '%s' predates entry_version %d; treating as a miss",
+                     server_name, _ENTRY_VERSION)
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
@@ -76,8 +92,10 @@ def write_cache_entry(server_name: str, fingerprint: str, *, tools: List[dict],
                       utility_tools: Optional[List[dict]] = None, ttl_ms: Optional[float] = None,
                       cache_scope: Optional[str] = None) -> None:
     """Persist tool schemas after a successful live connect. ``ttl_ms`` / ``cache_scope`` are
-    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry."""
-    entry = {"fingerprint": fingerprint, "tools": tools, "utility_tools": utility_tools or []}
+    the server's ``tools/list`` SEP-2549 hints; ``written_at`` anchors TTL expiry. ``entry_version``
+    stamps the shape/semantics of the persisted fields — see ``_ENTRY_VERSION``."""
+    entry = {"entry_version": _ENTRY_VERSION, "fingerprint": fingerprint, "tools": tools,
+             "utility_tools": utility_tools or []}
     if isinstance(ttl_ms, (int, float)):
         entry["ttl_ms"] = ttl_ms
         entry["written_at"] = time.time()

@@ -511,6 +511,106 @@ def _worker_survived_termination(termination: dict) -> bool:
     )
 
 
+def _spawned_event_pids(conn: sqlite3.Connection, task_id: str) -> list[tuple[int, int]]:
+    """``(run_id, pid)`` pairs from this task's ``spawned`` events, newest first.
+
+    ``task_runs.worker_pid`` is cleared when a run closes, but the spawned event
+    payload is append-only — the only reliable place to find a run's worker PID
+    after the fact. Used by the respawn guard to reap a previous run's still-live
+    process before spawning its replacement (goal-mode review/fix cycles used to
+    stack 4-6 workers on one task, t_e46a5fea).
+    """
+    rows = conn.execute(
+        "SELECT run_id, payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'spawned' "
+        "ORDER BY id DESC LIMIT 20",
+        (task_id,),
+    ).fetchall()
+    out: list[tuple[int, int]] = []
+    for row in rows:
+        payload = _kb._json_dict(_kb._row_get(row, "payload"))
+        pid = _kb._row_get(payload, "pid")
+        run_id = row["run_id"]
+        if pid and run_id:
+            try:
+                out.append((int(run_id), int(pid)))
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _worker_query(task_id: str) -> str:
+    """The single-source query that ``_worker_argv`` passes to ``chat -q``.
+
+    One definition, so the respawn reap recognises a worker by the very string
+    the dispatcher spawns: a hand-written copy could drift and either miss the
+    orphan (no reap) or, worse, match an unrelated process.
+    """
+    return f"work kanban task {task_id}"
+
+
+def _cmdline_belongs_to_kanban_worker(pid: int, task_id: str) -> bool:
+    """True when ``pid``'s command line is a kanban worker scoped to ``task_id``.
+
+    Guards the respawn reap against PID recycling: we only SIGTERM a PID whose
+    live cmdline still carries the task-scoped query ``_worker_query`` produces,
+    never an innocent process that inherited the number. This is a last-line
+    ownership check on a PID this task itself recorded as ``spawned``, not a
+    process classifier.
+    """
+    try:
+        from gateway.status import _read_process_cmdline as read_cmdline
+        cmdline = read_cmdline(pid) or ""
+    except Exception:
+        return False
+    return _worker_query(task_id) in cmdline
+
+
+def _reap_superseded_run_workers(
+    conn: sqlite3.Connection,
+    task_id: str,
+    keep_run_id: Optional[int] = None,
+    *,
+    signal_fn=None,
+) -> int:
+    """Kill host-local workers of this task's ALREADY-CLOSED runs before a respawn.
+
+    A run that reached a terminal outcome (review_requested / changes_requested /
+    completed / blocked / reclaimed) must not leave its worker process behind:
+    if the old process is still alive when the dispatcher spawns the next run of
+    the same task, two workers mutate one card concurrently (the t_e46a5fea bug:
+    runs 30, 32-36 overlapped for ~30 min). Best-effort — returns the number of
+    PIDs signalled. ``keep_run_id`` is the freshly-claimed run about to spawn,
+    whose spawned event does not exist yet.
+    """
+    if not task_id:
+        return 0
+    reaped = 0
+    for run_id, pid in _spawned_event_pids(conn, task_id):
+        if keep_run_id is not None and run_id == int(keep_run_id):
+            continue
+        # Only reap runs that are actually closed; a live run's pid belongs to
+        # the worker currently owning the claim and must not be touched here.
+        row = conn.execute(
+            "SELECT outcome FROM task_runs WHERE id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if row is None or not row["outcome"]:
+            continue
+        if not _kb._pid_alive(pid):
+            continue
+        if not _cmdline_belongs_to_kanban_worker(pid, task_id):
+            continue
+        info = _terminate_reclaimed_worker(pid, _kb._host_prefix() + ":reap", signal_fn=signal_fn)
+        if info.get("termination_attempted") and info.get("terminated"):
+            reaped += 1
+            _kb._append_event(
+                conn, task_id, "reaped_superseded_worker",
+                {"run_id": run_id, "pid": pid, **{k: v for k, v in info.items() if k != "prev_pid"}},
+            )
+    return reaped
+
+
 def _defer_reclaim_for_live_worker(
     conn: sqlite3.Connection,
     task_id: str,
@@ -1862,6 +1962,16 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+    # Reap this task's superseded (already-closed) runs before spawning the
+    # replacement. A previous run whose worker is still alive must not overlap
+    # the new one — the goal-mode review/fix cycle stacked 4-6 workers on one
+    # card (t_e46a5fea) because request_review/request_changes closed the run
+    # in the DB but the old process kept running. Best-effort; never blocks a
+    # spawn on the reap outcome.
+    try:
+        _reap_superseded_run_workers(conn, claimed.id, keep_run_id=claimed.current_run_id)
+    except Exception:
+        _kb._log.debug("kanban dispatch: superseded-worker reap failed", exc_info=True)
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2426,7 +2536,7 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+    cmd.extend(["chat", "-q", _worker_query(task.id)])
     if task.goal_mode:
         # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.
         # Without -Q the worker gets one turn, prints text, exits rc=0, and the

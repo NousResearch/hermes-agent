@@ -204,6 +204,12 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def pending_gateway_approval_count() -> int:
+    """Unresolved gateway approvals across every session — a backend blocked on one is not idle."""
+    with _lock:
+        return sum(len(queue) for queue in _gateway_queues.values())
+
+
 def get_pending_gateway_approval(session_key: str) -> dict | None:
     """Copy of the oldest unresolved gateway approval, for reconnecting clients
     to restore a prompt. Read-only snapshot — the queue stays authoritative."""
@@ -268,8 +274,9 @@ def clear_session(session_key: str) -> None:
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
-        # Cancel blocked waits now so the old run unwinds instead of idling until timeout.
-        entry.result = "deny"
+        # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
+        # the prompt was withdrawn, nobody denied it.
+        entry.cancelled = "the session ended before the prompt was answered"
         entry.event.set()
     _release_permission_mode_dependents(session_key)
     # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
@@ -330,6 +337,13 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
     with _lock:
         approved = _permanent_set() | _session_approved.get(session_key, set())
     return any(alias in approved for alias in aliases)
+
+
+def _is_permanently_approved(pattern_key: str) -> bool:
+    """Permanent approval only, with compatibility for migrated pattern keys."""
+    aliases = _approval_key_aliases(pattern_key)
+    with _lock:
+        return any(alias in _permanent_set() for alias in aliases)
 
 
 def approve_permanent(pattern_key: str):
@@ -468,10 +482,31 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
-def _denied(message: str, *, pattern_key: str, description: str, outcome: str, **extra) -> dict:
-    """Standard non-consent result: the agent must not retry or rephrase."""
+# ``outcome`` -> one plain sentence for the person who just answered (or did not). ``message`` is
+# addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
+# model text away, so a Reject click does not read like an error the user caused.
+_USER_SUMMARIES = {
+    "denied": "You denied this {noun} — it did not run.",
+    "timeout": "No answer within {minutes} — the {noun} did not run.",
+    "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
+    "cancelled": "The approval prompt was withdrawn or never reached you — the {noun} did not run.",
+    "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
+}
+
+
+def _user_summary(outcome: str, noun: str = "command") -> str:
+    from tools.approval_context import _get_approval_timeout, format_approval_window
+    window = format_approval_window(_get_approval_timeout())
+    return _USER_SUMMARIES.get(outcome, "This {noun} did not run.").format(noun=noun, minutes=window)
+
+
+def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
+            **extra) -> dict:
+    """Standard non-consent result: the agent must not retry or rephrase. ``user_summary`` is the
+    one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
-            "description": description, "outcome": outcome, "user_consent": False, **extra}
+            "description": description, "outcome": outcome, "user_consent": False,
+            "user_summary": _user_summary(outcome, noun), **extra}
 
 
 def _blocked(message: str, *, pattern_key: str, description: str) -> dict:
@@ -598,11 +633,11 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             subject, noun="dangerous commands",
             advice="Find an alternative approach that avoids this command.")}
 
-    is_dangerous, _pk, description = detect_dangerous_command(command)
-    if is_dangerous:
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if is_dangerous and not _is_permanently_approved(pattern_key):
         result = block(f"Command flagged as dangerous ({description})")
         if ctx.name == "single_query":
-            result.update(pattern_key=_pk, description=description)
+            result.update(pattern_key=pattern_key, description=description)
         return result
     try:
         from tools.tirith_security import check_command_security
@@ -770,7 +805,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         extra = {"deny_reason": deny_reason} if "reason" in fmt else {}
         return _denied(template.format(description=description, breaker=breaker, **fmt),
                        pattern_key=pattern_key, description=description,
-                       outcome=outcome, **extra)
+                       outcome=outcome, noun=spec.noun, **extra)
 
     def grant(choice: str) -> dict:
         # A smart-DENY owner override is always one operation, even if an older client returns "session" or "always".
@@ -818,11 +853,17 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             decision = _await_gateway_decision(session_key, notify_cb, data, surface="gateway")
             if decision.get("notify_failed"):
                 return _denied(spec.notify_failed, pattern_key=pattern_key,
-                               description=description, outcome="notify_failed")
+                               description=description, outcome="notify_failed", noun=spec.noun)
             # Consent contract: silence is NOT consent, and an explicit deny is a hard
             # halt — both produce a BLOCKED outcome. ``/deny <reason>`` free text is
             # relayed verbatim so the agent can adapt rather than only hearing "denied".
             choice, deny_reason = decision["choice"], decision.get("reason")
+            if decision.get("cancelled"):
+                # The prompt was withdrawn (turn interrupted or ended) before anyone answered:
+                # still fail closed, but do not attribute a refusal to the user.
+                return deny(spec.gateway_refused, "cancelled",
+                            reason=f"approval was withdrawn before the user answered ({decision['cancelled']})",
+                            reason_addendum="", timeout_addendum="", deny_reason=None)
             if not decision["resolved"]:
                 return deny(spec.gateway_refused, "timeout", reason="timed out without user response",
                             reason_addendum="", timeout_addendum=" Silence is not consent.",
@@ -859,6 +900,13 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")
+    if choice == "cancelled":
+        # The prompt never reached a human (callback raised, no callback under prompt_toolkit, interrupted
+        # read): fail closed, but do not attribute a refusal to the user (#22992).
+        return deny(spec.gateway_refused, "cancelled",
+                    reason="was not approved: the approval prompt could not be delivered or was not answered "
+                           f"({getattr(choice, 'cause', 'no answer')})",
+                    reason_addendum="", timeout_addendum=" Silence is not consent.", deny_reason=None)
     if choice == "deny":
         # No _record_denial(): the breaker counts consecutive guardian LLM
         # DENY verdicts, not deliberate human denials.
@@ -867,13 +915,18 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
 
 def _presence(approval_callback=None) -> tuple:
-    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context. Single-query
-    (-q) exports HERMES_INTERACTIVE=1 but nobody answers prompts, and HERMES_EXEC_ASK has no
-    human either — both are cleared so single_query_mode actually takes effect."""
+    """``(approval_callback, is_cli, is_gateway, is_ask)`` for the current context.
+
+    Single-query ``-q`` and cron clear the presence trio: ``hermes chat -q`` exports
+    HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
+    passes its environ to every external cron worker (#110932) — in neither can a human answer
+    the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
+    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
+    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
-    if _is_single_query_approval_context():
+    if _is_single_query_approval_context() or _is_cron_approval_context():
         is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
@@ -955,7 +1008,16 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    # Plugin backends declare the same classification through the provider ABI (#94400);
+    # fail-soft to False so an unknown or raising backend — or a raising registry
+    # lookup — keeps the guards on rather than propagating out of the approval predicate.
+    try:
+        from agent.terminal_env_registry import provider_flag
+        return bool(provider_flag(env_type, "skip_container_guards", False))
+    except Exception:
+        return False
 
 
 def _user_deny_block(command: str) -> dict | None:
@@ -1090,6 +1152,11 @@ def check_all_command_guards(command: str, env_type: str,
     if blocked is not None:
         return blocked
 
+    from agent.terminal_approval_batch import consume_prepared_guard
+    prepared = consume_prepared_guard(command, env_type, has_host_access)
+    if prepared is not None:
+        return prepared
+
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
         return _approved()
@@ -1181,7 +1248,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
             return _denied(
                 "BLOCKED: execute_code runs arbitrary local Python (including "
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
-                pattern_key=pattern_key, description=description, outcome="blocked",
+                pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
             )
         return _approved()
 

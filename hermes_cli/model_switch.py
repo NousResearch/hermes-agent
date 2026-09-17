@@ -18,7 +18,7 @@ from hermes_cli.providers import (
 from hermes_cli.model_normalize import normalize_model_for_provider
 from agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
-from utils import base_url_host_matches, base_url_hostname, base_url_origin
+from utils import base_url_host_matches, base_url_hostname, base_url_origin, file_signature
 # Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
 from hermes_cli.model_switch_providers import list_authenticated_providers
 
@@ -270,10 +270,10 @@ def _direct_alias_source_identity() -> Optional[tuple]:
         stat = path.stat()
     except OSError:
         # A missing config is still a definite identity for this profile.
-        return (str(path), None, None)
+        return (str(path), None)
     except Exception:
         return None
-    return (str(path), stat.st_mtime_ns, stat.st_size)
+    return (str(path), file_signature(stat))
 
 
 def _ensure_direct_aliases() -> None:
@@ -857,8 +857,14 @@ def _configured_provider_matches(
     if isinstance(user_providers, dict):
         candidates += [(slug, cfg) for slug, cfg in user_providers.items()
                        if isinstance(slug, str) and isinstance(cfg, dict)]
+    # get_compatible_custom_providers() re-lists every ``providers.<slug>`` row as a ``custom:<name>``
+    # entry stamped with ``provider_key: <slug>``; callers (gateway, TUI, CLI) pass both views, so
+    # that projection is the same endpoint as the row above, not a second declaration (#112788).
+    # Hand-written ``custom_providers:`` rows carry no provider_key and stay separate candidates.
+    projected = {slug for slug, _ in candidates}
     candidates += [(f"custom:{e['name']}", e) for e in _custom_entries(custom_providers)
-                   if isinstance(e.get("name"), str) and e["name"].strip()]
+                   if isinstance(e.get("name"), str) and e["name"].strip()
+                   and str(e.get("provider_key") or "").strip() not in projected]
 
     matches: dict[str, str] = {}
     for slug, cfg in candidates:
@@ -1312,7 +1318,10 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         try:
             st.resolve_runtime(requested=st.target_provider)
         except Exception as e:
-            return st.fail_on_target(f"Could not resolve credentials for provider '{st.provider_label}': {e}")
+            return st.fail_on_target(
+                f"{st.provider_label} is not connected: no API key or login was found for it. Add one with "
+                f"`hermes auth add {st.target_provider}`, or pick a connected provider in /model.\n"
+                f"  Details: {e}")
     return None
 
 
@@ -1543,7 +1552,13 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
     targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
     provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
-    The dashboard re-adds an explicitly submitted key after this (``_apply_main_model_assignment``)."""
+    The ``key_env`` / ``api_key_env`` credential POINTER (written by custom-endpoint activation
+    and, for REGISTRY providers too, by the Desktop settings UI (#106336); resolved by
+    runtime_provider / auxiliary_client / ``auth._model_level_key_env``) clears only when the
+    route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
+    var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
+    dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
+    (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
@@ -1556,10 +1571,13 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
-    if not target.startswith("custom") or _route_changed(model_cfg, result):
-        for key in ("api_key", "api"):
-            if key in model_cfg:
-                updates[key] = None
+    route_changed = _route_changed(model_cfg, result)
+    stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
+    if route_changed:
+        stale += ["key_env", "api_key_env"]
+    for key in stale:
+        if key in model_cfg:
+            updates[key] = None
     return updates
 
 

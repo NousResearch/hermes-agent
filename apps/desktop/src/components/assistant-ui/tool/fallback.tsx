@@ -2,6 +2,7 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
+import { motion, useReducedMotion } from 'motion/react'
 import {
   Children,
   createContext,
@@ -39,9 +40,8 @@ import { FadeText } from '@/components/ui/fade-text'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
-import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { connectorCalls } from '@/lib/connector-tools'
+import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
@@ -54,11 +54,12 @@ import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
-import { APPROVAL_TOOLS, PendingToolApproval } from './approval'
+import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
   buildToolView,
   clampForDisplay,
   cleanVisibleText,
+  CONNECTION_CARD_KEY,
   countDiffLineStats,
   inlineDiffFromResult,
   isCardTool,
@@ -69,8 +70,8 @@ import {
   selectMessageRunning,
   stripInlineDiffChrome,
   toolCopyPayload,
+  toolEntryDisclosureId,
   type ToolPart,
-  toolPartDisclosureId,
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
@@ -338,17 +339,6 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
   return persistedOpen ?? fallbackOpen
 }
 
-/**
- * A row's disclosure id, scoped to the message it was rendered in.
- *
- * Shared with the run that wraps the row: a live run has to know when one of
- * its own rows has been opened, and both sides have to name it identically or
- * the run never hears about it.
- */
-function toolEntryDisclosureId(messageId: string, part: ToolPart): string {
-  return `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
-}
-
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
@@ -516,26 +506,24 @@ function ToolEntry({ part }: ToolEntryProps) {
   // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
   // the disclosure caret's hit-target — see the comment above `trailing`.
   const dismissAction = canDismiss ? (
-    <Tip label={statusCopy.dismiss}>
-      <Button
-        aria-label={statusCopy.dismiss}
-        className={cn(
-          'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
-          open
-            ? 'opacity-80'
-            : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
-        )}
-        onClick={event => {
-          event.stopPropagation()
-          dismissToolRow(disclosureId)
-        }}
-        size="icon-xs"
-        type="button"
-        variant="ghost"
-      >
-        <Codicon name="close" size="0.75rem" />
-      </Button>
-    </Tip>
+    <Button
+      aria-label={statusCopy.dismiss}
+      className={cn(
+        'size-5 rounded-md text-(--ui-text-tertiary) transition-opacity hover:text-(--ui-text-primary) hover:opacity-100',
+        open
+          ? 'opacity-80'
+          : 'opacity-0 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80'
+      )}
+      onClick={event => {
+        event.stopPropagation()
+        dismissToolRow(disclosureId)
+      }}
+      size="icon-xs"
+      type="button"
+      variant="ghost"
+    >
+      <Codicon name="close" size="0.75rem" />
+    </Button>
   ) : undefined
 
   if (dismissed) {
@@ -619,7 +607,6 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
-      {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {copyAction.text && (
@@ -851,6 +838,7 @@ function ToolRunHeader({
 }
 
 interface ToolRunState {
+  approvalActivity: boolean
   completedAt?: number
   count: number
   /** Disclosure id of each row in the run, so the run can tell when one is open. */
@@ -858,8 +846,6 @@ interface ToolRunState {
   key: string
   live: boolean
   startedAt?: number
-  /** A call still awaiting a result that could be the one blocking on approval. */
-  pendingApprovalTool: boolean
   summary: string
 }
 
@@ -924,6 +910,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
             undefined
           ),
           count: tools.length,
+          approvalActivity: tools.length > 0 && tools.every(isApprovalActivity),
           entryIds: tools.map(tool => toolEntryDisclosureId(state.message.id, tool)),
           key: `${state.message.id}:${tools[0]?.toolCallId ?? ''}`,
           live,
@@ -935,9 +922,6 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
                   ? tool.timestamp
                   : Math.min(earliest, tool.timestamp),
             undefined
-          ),
-          pendingApprovalTool: timelineTools.some(
-            tool => tool.result === undefined && tool.completedAt === undefined && APPROVAL_TOOLS.has(tool.toolName)
           ),
           summary: summarizeToolRun(tools, live)
         }
@@ -960,7 +944,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
  *
  * Live, the run is a summary plus the one-line ticker. Settled, the summary is
  * the whole of it until the user opens it. `ToolEmbedContext` is false so each
- * row still owns its own chrome (timer / copy / approval) when shown.
+ * row still owns its own chrome (timer / copy) when shown.
  */
 const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
@@ -968,52 +952,51 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
-
-  const { completedAt, count, entryIds, key, live, pendingApprovalTool, startedAt, summary } = useToolRun(
+  const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
     startIndex,
     endIndex
   )
-
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
+  const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
   const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
+  const representedByApproval = !!approval && currentTurn && approvalActivity
+  const expanded = count < 2 || (persistedOpen ?? rowOpen)
+  const collapsed = representedByApproval && !rowOpen && !persistedOpen
+  const reduced = useReducedMotion()
 
-  // A lone call is already its own one-line summary; heading it with a second
-  // line would say the same thing twice.
-  if (count < 2) {
-    return <ToolRunDisclosureContext.Provider value={disclosureId}>{children}</ToolRunDisclosureContext.Provider>
-  }
-
-  // Two things a one-line window can't hold. An approval is a question the
-  // user has to answer, and expanded output is one they went looking for —
-  // both would tick straight past, or be sliced to a single line, as the run
-  // keeps going. Either one hands the run back its full height until the run
-  // settles and the row can be reached through the summary instead.
-  const blocked = Boolean(approval) && pendingApprovalTool
-  const expanded = blocked || (persistedOpen ?? rowOpen)
-
+  // The original runtime stays mounted while its summary owns the activity.
+  // Reveal its footprint gradually when the last approval clears, instead of
+  // inserting all represented rows in the outgoing card's first exit frame.
   return (
     <ToolRunDisclosureContext.Provider value={disclosureId}>
-      <div
+      <motion.div
+        animate={{ height: collapsed ? 0 : 'auto' }}
+        aria-hidden={collapsed || undefined}
         className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
         data-slot="tool-block"
         data-tool-group=""
+        inert={collapsed}
+        initial={currentTurn && approvalActivity && messageRunning && !reduced ? { height: 0 } : false}
         ref={enterRef}
+        transition={{ duration: reduced ? 0 : 0.22, ease: 'easeInOut' }}
       >
-        <ToolRunHeader
-          completedAt={completedAt}
-          live={live}
-          onToggle={blocked ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
-          open={expanded}
-          startedAt={startedAt}
-          summary={summary}
-        />
-        {live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
+        {count > 1 && !representedByApproval && (
+          <ToolRunHeader
+            completedAt={completedAt}
+            live={live}
+            onToggle={() => setToolDisclosureOpen(disclosureId, !expanded)}
+            open={expanded}
+            startedAt={startedAt}
+            summary={summary}
+          />
+        )}
+        {count > 1 && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
         {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
-      </div>
+      </motion.div>
     </ToolRunDisclosureContext.Provider>
   )
 }
@@ -1042,8 +1025,9 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       .slice(Math.max(0, startIndex), endIndex + 1)
       .map(part =>
         part.type === 'tool-call'
-          ? isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length
-            ? 'manage_connections'
+          ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
+            mcpTargets(part.toolName, part.args).length
+            ? CONNECTION_CARD_KEY
             : part.toolName
           : ''
       )

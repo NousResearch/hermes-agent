@@ -210,6 +210,21 @@ def normalize_updated_at(value: Any) -> Optional[str]:
     return None
 
 
+def retained_gateway_state(runtime: Any) -> str:
+    """What a NOT-running gateway's retained ``gateway_state.json`` says about it now:
+    ``"startup_failed"`` only while the operator still wants it running, else ``"stopped"``.
+
+    ``hermes gateway stop`` keeps the last ``startup_failed`` + ``exit_reason`` on disk for
+    diagnostics and records the durable stop intent as ``desired_state``; a profile the operator
+    stopped is "stopped", not a current failure. Any other retained state of a dead process
+    (``running``, ``starting``, missing) is also just "stopped". Shared by ``/api/status`` and
+    ``/api/messaging/platforms`` so the sidebar strip and the Channels page cannot disagree."""
+    rt = runtime if isinstance(runtime, dict) else {}
+    if rt.get("desired_state") != "stopped" and rt.get("gateway_state") == "startup_failed":
+        return "startup_failed"
+    return "stopped"
+
+
 def terminate_pid(
     pid: int, *, force: bool = False, expected_start_time: Optional[float] = None
 ) -> None:
@@ -806,6 +821,7 @@ def write_runtime_status(
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
 ) -> None:
@@ -838,10 +854,19 @@ def write_runtime_status(
         ("active_work", active_work, lambda v: list(v) if v else None),
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
+        # Why an unset-default (multiplex on) gateway is serving one profile; None clears it.
+        ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
         ("session_store", session_store, _coerce_session_store),
     ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
+        if platform_state == "connected":
+            # Every writer that publishes ``connected`` (startup stamp, adapter ``_mark_connected``,
+            # Telegram's in-place polling recovery) ends the retry episode; only the watcher's
+            # reconnect path used to say so, and a restart after a NEEDS_ATTENTION escalation
+            # carried the flag into a healthy record for weeks.
+            needs_attention = False if needs_attention is _UNSET else needs_attention
+            retrying_since = None if retrying_since is _UNSET else retrying_since
         _apply_set_fields(platform_payload, (
             ("state", platform_state, None), ("error_code", error_code, None),
             ("error_message", error_message, None),

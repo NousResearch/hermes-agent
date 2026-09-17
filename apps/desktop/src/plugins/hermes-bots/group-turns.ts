@@ -8,10 +8,17 @@
 
 import { host } from '@hermes/plugin-sdk'
 
+import { noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { followGroupChat, groupMemberKey, groupSessionOwner } from './group-membership'
+import {
+  followGroupChat,
+  groupMemberKey,
+  groupSessionKey,
+  groupSessionOwner,
+  hasThreadScopedGroupSession
+} from './group-membership'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -98,7 +105,10 @@ interface GroupPendingApproval {
 /** The `session.resume` fields the room engine reads off a member's hidden
  *  per-group session. */
 interface GroupSessionSnapshot {
-  inflight?: boolean
+  /** `true`/`false` on older gateways; current ones replay the in-flight turn
+   *  object, which after a failure is RETAINED as `{ status: 'error', … }`
+   *  (`_fail_inflight_turn`) so a reconnecting client can rebuild the error. */
+  inflight?: boolean | { error?: string; status?: string }
   message_count?: number
   messages?: GroupTurnTranscriptMessage[]
   /** Still-open server→client requests (`server_requests.open_requests`); the
@@ -110,6 +120,33 @@ interface GroupSessionSnapshot {
   session_key?: string
 }
 
+/** The error message of a RETAINED failed turn, else null. The gateway keeps
+ *  `{ status: 'error', error }` under `inflight` after a turn dies so a
+ *  reconnecting client can rebuild the error bubble; it is a tombstone of
+ *  finished work, not live work (`prompt_turn.py` itself treats it as a
+ *  stale leftover when the next turn starts). */
+export function retainedGroupTurnError(state: GroupSessionSnapshot | null | undefined): null | string {
+  const inflight = state?.inflight
+
+  if (inflight && typeof inflight === 'object' && inflight.status === 'error') {
+    return String(inflight.error || 'turn failed')
+  }
+
+  return null
+}
+
+/** Is the member's session still doing work this turn should wait for?
+ *  Reading a retained failure as busy kept a dead turn's deadline sliding to
+ *  the 20-minute hard cap and left its stranded marker harvestable forever
+ *  (#92760 silent stall, diagnosed in #95103). */
+export function groupSessionBusy(state: GroupSessionSnapshot | null | undefined): boolean {
+  if (state?.running) {
+    return true
+  }
+
+  return Boolean(state?.inflight) && retainedGroupTurnError(state) === null
+}
+
 /** A member's per-group session, resolved for one turn. */
 interface GroupMemberSessionHandle {
   /** Live runtime id every RPC in this turn targets. */
@@ -118,13 +155,25 @@ interface GroupMemberSessionHandle {
   stored?: null | string | true
 }
 
-/** Ensure the member's per-group session exists and return a LIVE runtime
- *  session id for it. Gateway-native: session.create mints the session
- *  (lazy until its first message), session.resume by stored id — or by
- *  title, which also covers rehydrated rooms whose sid was lost — reopens
+/** Ensure the member's session FOR THIS THREAD exists and return a LIVE
+ *  runtime session id for it. Gateway-native: session.create mints the
+ *  session (lazy until its first message), session.resume by stored id — or
+ *  by title, which also covers rehydrated rooms whose sid was lost — reopens
  *  it after restarts. Cross-connection members route to their OWN source
- *  via requestForBot; the window's gateway never switches. */
-export async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
+ *  via requestForBot; the window's gateway never switches.
+ *
+ *  The session is keyed and titled per THREAD (#90420, #106460). Threads are
+ *  separate conversations everywhere else in the room engine — own delta
+ *  slice, own `${thread}::${memberKey}` watermark — so a member-only session
+ *  pointer made thread B resume thread A's transcript and answer carrying
+ *  A's context. Rooms persisted before this keep ONE bare member pointer;
+ *  the first thread to ask adopts it (below) so that history continues in a
+ *  real thread instead of being orphaned by the upgrade. */
+export async function ensureGroupChatSession(
+  group: string,
+  member: GroupMember,
+  thread: string
+): Promise<GroupMemberSessionHandle> {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -134,9 +183,15 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     // New rooms title member sessions by their immutable roomId so a
     // same-name recreate never resumes the old room's sessions by title;
     // legacy rooms without a roomId fall back to the display name.
-    const title = `Group: ${room.roomId || group}`
-    const key = groupMemberKey(member)
-    const known = room.sessions && room.sessions[key]
+    const roomTitle = `Group: ${room.roomId || group}`
+    const title = `${roomTitle} · ${thread || 'legacy'}`
+    const memberKey = groupMemberKey(member)
+    const key = groupSessionKey(thread, member)
+    const sessions = room.sessions || {}
+    const known = sessions[key]
+    // Pre-thread pointer, adoptable only until some thread has taken it —
+    // after that the room is migrated and every other thread mints its own.
+    const legacy = hasThreadScopedGroupSession(sessions, memberKey) ? null : sessions[memberKey] || null
 
     // Try resuming what we know (stored sid first, then title lookup).
     //
@@ -148,9 +203,16 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     // there and must not be read as "no session, mint a new one" — that
     // forks the member's real history, and the fork silently overwrites
     // room.sessions[key] so the old session becomes unreachable from the
-    // room. Only a genuine 4007 on BOTH targets means there truly is nothing
-    // to resume yet, so the loop falls through to session.create below.
-    for (const target of [known, title]) {
+    // room. Only a genuine 4007 on EVERY target means there truly is
+    // nothing to resume yet, so the loop falls through to session.create.
+    //
+    // Target order: this thread's own pointer, then — only while the room is
+    // still unmigrated — the pre-thread pointer and the pre-thread title, so
+    // an upgraded room's existing conversation continues in the first thread
+    // that speaks instead of being stranded behind an unreferenced sid.
+    const targets = [known, title, ...(legacy === null ? [] : [legacy, roomTitle])]
+
+    for (const target of targets) {
       if (!target || target === true) {
         continue
       }
@@ -174,7 +236,11 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
           // stores `true` back into room.sessions and hands `true` on as the
           // durable id, which later rides into `session_id` on the recovery
           // resume and on session.interrupt. Typed as-written.
-          const stored = res.session_key || known
+          //
+          // The fallback is the id we resumed BY, which on the adoption pass
+          // is the pre-thread pointer — the two title targets are titles, not
+          // ids, and were never eligible.
+          const stored = res.session_key || (target === title || target === roomTitle ? known : target)
 
           if (stored) {
             updateGroupChat(group, (current: GroupChatRoom) => {
@@ -432,7 +498,7 @@ async function submitGroupTurnPrompt(
 // timeout alone silently dropped long real turns: a 7-minute research run
 // timed out at 3 minutes, read as a pass, and its finished result never
 // reached the room (db's Aug 2026 report).
-const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+export const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
 /** Mirror a member's pending prompt — clarify question OR command approval —
  *  from its resume snapshot into the room store, keyed
@@ -443,8 +509,17 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
  *  payload always sync to "no prompt". Clarify wins when both are somehow
  *  present (approvals resolve inside tool batches; clarify is the outer
  *  blocker). */
-export function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
-  const key = `${group}::${groupMemberKey(member)}`
+export function syncGroupClarify(
+  group: string,
+  member: GroupMember,
+  thread: string,
+  state: GroupSessionSnapshot | null
+): boolean {
+  const memberKey = groupMemberKey(member)
+  // Per-thread sessions mean one member can now be blocked in two threads at
+  // once, so the mirror is keyed by thread as well — a room-and-member key
+  // would let thread B's question silently replace thread A's card (#90694).
+  const key = `${group}::${thread || 'legacy'}::${memberKey}`
 
   const openClarify = Array.isArray(state?.open_requests)
     ? state.open_requests.find(entry => entry?.method === 'clarify' && typeof entry.id === 'string' && entry.id)
@@ -489,7 +564,10 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
     requestId,
     group,
     member: member.name,
-    memberKey: groupMemberKey(member),
+    memberKey,
+    // The card carries its own thread so the answer/rename paths rebuild
+    // exactly this key instead of guessing one.
+    thread: thread || 'legacy',
     // approval.respond keys on the session, not just the request — carry the
     // runtime id the snapshot came from.
     sessionId: state?.session_id || null,
@@ -586,7 +664,7 @@ export function renameGroupClarify(oldName: string, newName: string) {
       // Rebuild the key from the mirror's own memberKey rather than
       // string-replacing oldName in place — a group name that happens to
       // be a substring of the member key must not corrupt the rekey.
-      next[`${newName}::${value.memberKey}`] = { ...value, group: newName }
+      next[`${newName}::${value.thread || 'legacy'}::${value.memberKey}`] = { ...value, group: newName }
     }
   }
 
@@ -646,7 +724,7 @@ export async function answerGroupClarify(
     }
 
     const all = $groupClarify.get()
-    const key = `${group}::${entry.memberKey}`
+    const key = `${group}::${entry.thread || 'legacy'}::${entry.memberKey}`
 
     if (all[key]?.requestId === entry.requestId) {
       const next = {
@@ -768,6 +846,10 @@ interface GroupTurnPollContext {
   liveRuntime: string
   runtimeIds: Set<string>
   before: number
+  /** The retained failed turn (`session.resume.inflight`) already on the
+   *  session BEFORE this turn's submit, serialized; a retained error that
+   *  still matches it is an older turn's tombstone, not this turn's death. */
+  leftover: null | string
   binding: { isLive(): boolean }
 }
 
@@ -824,29 +906,42 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     }
 
     const messages = Array.isArray(state?.messages) ? state.messages : []
-    const busy = Boolean(state?.inflight || state?.running)
+    const busy = groupSessionBusy(state)
     // A clarify blocking inside the member's session is a question for the
     // HUMAN (#90694) — mirror it into the room store so a card renders, and
     // hold the turn open: the member isn't stalling, it's waiting on us.
-    const awaitingUser = syncGroupClarify(context.group, member, state)
+    const awaitingUser = syncGroupClarify(context.group, member, thread, state)
     const done = !busy && !awaitingUser
+    // The gateway's retained error for THIS turn. A turn that dies before its
+    // prompt is committed (agent-init failure, no-agent refusal) never grows
+    // the transcript, so the tombstone — not the message count — is the only
+    // evidence; a tombstone identical to the pre-submit one is an older turn's.
+    const failure = retainedGroupTurnError(state)
+    const died = failure !== null && (messages.length > before || JSON.stringify(state?.inflight) !== context.leftover)
 
-    if (messages.length > before && done) {
-      const replyText = pickGroupTurnReply(messages, before)
+    if ((messages.length > before || died) && done) {
+      const replyText = messages.length > before ? pickGroupTurnReply(messages, before) : null
 
       if (replyText !== null) {
         recordGroupActivity(context.group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-          member: member.name,
+          member: groupMemberKey(member),
           thread
         })
 
         return replyText
       }
 
+      // The turn died on our prompt: surface the gateway's retained error
+      // through the failed-turn path (activity row + roster badge) instead of
+      // reading the silence as a pass or sitting out the deadline.
+      if (failure !== null) {
+        throw new Error(failure)
+      }
+
       recordGroupActivity(context.group, {
         kind: 'passed',
-        member: member.name,
+        member: groupMemberKey(member),
         thread
       })
 
@@ -871,10 +966,10 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   // thread instead of vanishing.
   recordGroupActivity(context.group, {
     kind: 'timed-out',
-    member: member.name,
+    member: groupMemberKey(member),
     thread
   })
-  syncGroupClarify(context.group, member, null)
+  syncGroupClarify(context.group, member, thread, null)
   updateGroupChat(context.group, (r: GroupChatRoom) => {
     r.stranded = {
       ...(r.stranded || {}),
@@ -895,8 +990,10 @@ async function prepareGroupTurnBaseline(
   runtime: string,
   stored: GroupMemberSessionHandle['stored']
 ) {
-  // Baseline: how many messages exist before our submit.
+  // Baseline: how many messages exist before our submit, and any failed
+  // turn the gateway still retains from before it.
   let before = 0
+  let leftover: null | string = null
   // Every runtime id this turn has seen for the member's session. Terminal
   // frames are keyed by runtime id, and a resume can hand back a fresh one.
   const runtimeIds = new Set<string>([runtime])
@@ -908,6 +1005,7 @@ async function prepareGroupTurnBaseline(
     })) as GroupSessionSnapshot
 
     before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
+    leftover = retainedGroupTurnError(pre) === null ? null : JSON.stringify(pre.inflight)
 
     if (pre?.session_id) {
       runtimeIds.add(pre.session_id)
@@ -916,7 +1014,7 @@ async function prepareGroupTurnBaseline(
     /* lazy session — zero messages */
   }
 
-  return { before, runtimeIds }
+  return { before, leftover, runtimeIds }
 }
 
 async function runGroupChatMemberTurnLeased(
@@ -931,7 +1029,7 @@ async function runGroupChatMemberTurnLeased(
   })
 
   try {
-    const { runtime, stored } = await ensureGroupChatSession(group, member)
+    const { runtime, stored } = await ensureGroupChatSession(group, member, thread)
 
     if (!runtime || !binding.isLive()) {
       return null
@@ -942,11 +1040,11 @@ async function runGroupChatMemberTurnLeased(
     const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
     recordGroupActivity(group, {
       kind: 'working',
-      member: member.name,
+      member: groupMemberKey(member),
       thread
     })
 
-    const { before, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
+    const { before, leftover, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
 
     const { failed, fileRefs } = await stageGroupTurnAttachments(member, runtime, images)
 
@@ -979,6 +1077,7 @@ async function runGroupChatMemberTurnLeased(
       liveRuntime,
       runtimeIds,
       before,
+      leftover,
       binding
     })
   } finally {
@@ -1009,9 +1108,14 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     let state: GroupSessionSnapshot | null = null
 
     try {
-      const stored = room.sessions?.[memberKey]
+      // The marker's own thread owns the session the reply is stranded in —
+      // the harvest must not resume a sibling thread's transcript and post
+      // its answer here.
+      const sessions = room.sessions || {}
+      const scoped = sessions[groupSessionKey(strandedThread, member)]
+      const stored = scoped || (hasThreadScopedGroupSession(sessions, memberKey) ? null : sessions[memberKey])
       state = (await requestForBot(member, 'session.resume', {
-        session_id: stored || `Group: ${room.roomId || group}`,
+        session_id: stored || `Group: ${room.roomId || group} · ${strandedThread}`,
         profile: member.name
       })) as GroupSessionSnapshot
     } catch {
@@ -1023,9 +1127,9 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     }
 
     // Pending prompts are authoritative even while the session is running.
-    const awaitingUser = syncGroupClarify(group, member, state)
+    const awaitingUser = syncGroupClarify(group, member, strandedThread, state)
 
-    if (state?.inflight || state?.running || awaitingUser) {
+    if (groupSessionBusy(state) || awaitingUser) {
       return
     }
 
@@ -1041,17 +1145,29 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return r
     })
     const messages = Array.isArray(state?.messages) ? state.messages : []
+    // A transcript that never grew is not proof of nothing: a turn that dies
+    // before its prompt is committed leaves only the retained error behind.
+    const reply = messages.length > strandedBefore ? pickGroupTurnReply(messages, strandedBefore) : null
 
-    if (messages.length <= strandedBefore) {
-      return
+    if (reply === null) {
+      // The late turn died instead of answering: say so where the user looks
+      // (activity row + roster badge) rather than consuming the marker silently.
+      const failure = retainedGroupTurnError(state)
+
+      if (failure !== null) {
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: memberKey,
+          thread: strandedThread
+        })
+        noteBotAttention(memberKey, failure)
+      }
     }
-
-    const reply = pickGroupTurnReply(messages, strandedBefore)
 
     if (reply && !isGroupPassText(reply)) {
       recordGroupActivity(group, {
         kind: 'delivered',
-        member: member.name,
+        member: groupMemberKey(member),
         thread: strandedThread
       })
       appendGroupChatEntry(
@@ -1069,7 +1185,11 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         strandedThread
       )
       updateGroupChat(group, (r: GroupChatRoom) => {
-        r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+        const markKey = `${strandedThread}::${memberKey}`
+
+        if (r.watermarks[markKey] === r.log.length - 1) {
+          r.watermarks[markKey] = r.log.length
+        }
 
         return r
       })

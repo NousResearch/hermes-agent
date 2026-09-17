@@ -25,6 +25,7 @@ from tools import bot_relay
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -96,16 +97,33 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
     assert calls["argv"][1:3] == ["-p", "default"]
 
-    # unknown profile refuses without spawning
+    # unknown profile refuses without spawning; so does a bare infra dir under profiles/ (#99392)
     calls.clear()
-    err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
-    assert "error" in err and "ghost" in err["error"]["message"]
+    (home / "profiles" / "sessions" / "cron").mkdir(parents=True)
+    for target in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](3, {"profile": target, "message": "x"})
+        assert "error" in err and target in err["error"]["message"]
     assert not calls
 
 
 def test_deliver_requires_params(home):
     err = srv._methods["bot_relay.deliver"](1, {"profile": "", "message": ""})
     assert "error" in err
+
+
+def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
+    """#110782: the subprocess transport applies the gateway's silence rule — a bare marker
+    relays as "", prose that merely mentions one is relayed verbatim."""
+    class _Proc:
+        returncode, stderr = 0, ""
+        stdout = " *NO_REPLY* "
+
+    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: _Proc())
+    assert _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))["reply"] == ""
+
+    _Proc.stdout = "The NO_REPLY marker means do not answer."
+    out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
+    assert out["reply"] == _Proc.stdout.strip()
 
 
 def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):

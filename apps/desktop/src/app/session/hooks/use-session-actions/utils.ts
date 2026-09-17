@@ -1,7 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -39,7 +39,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
-import { sessionTileOwnerRoute } from '@/store/session-states'
+import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
@@ -157,6 +157,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'asyncResult',
+  'asyncResultKind',
   'id',
   'role',
   'pending',
@@ -751,7 +752,7 @@ type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | '
   [safelyPersistedInflightUser]?: true
 }
 
-type ReconciledSessionResumeResponse = SessionResumeResult & {
+type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -836,11 +837,33 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    projected.push({
-      id: `user-inflight-${sessionId}`,
-      role: 'user',
-      parts: [textPart(inflightUser)]
-    })
+    // A synthetic starting prompt (process_complete, hidden, …) carries the
+    // display typing its persisted row will get: render it through the same
+    // timeline projection history uses instead of as a user bubble (#112144).
+    // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
+    const displayKind = projection.inflight?.display_kind
+    const typed = displayKind
+      ? toChatMessages([
+          {
+            role: 'user',
+            content: inflightUser,
+            display_kind: displayKind,
+            ...(projection.inflight?.display_metadata !== undefined
+              ? { display_metadata: projection.inflight.display_metadata }
+              : {})
+          }
+        ])
+      : null
+
+    if (typed) {
+      projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
+    } else {
+      projected.push({
+        id: `user-inflight-${sessionId}`,
+        role: 'user',
+        parts: [textPart(inflightUser)]
+      })
+    }
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1006,7 +1029,7 @@ export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
   projection: SessionResumeResult
-): ReconciledSessionResumeResponse {
+): ReconciledSessionResumeResult {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   if (!inflightUser) {
@@ -1624,7 +1647,8 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
     routingSessionId: storedSessionId,
     tileOwnerRoute: sessionTileOwnerRoute,
     sessionOwnerHint: getSessionOwnerHint,
-    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id)
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id),
+    eventOwner: runtimeSessionOwner
   })
 
   if (owner) {

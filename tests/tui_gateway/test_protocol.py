@@ -313,6 +313,70 @@ def test_server_request_round_trip_uses_response_frame(capture):
         assert not server_requests._open
 
 
+@pytest.mark.parametrize("method, qids, settle, expected", [
+    ("sudo", None,
+     lambda sr, req: sr.resolve_response({"id": req.id, "result": {"value": "yes"}}) is True,
+     {"value": "yes"}),
+    # Batch clarify's lock-based resolution follows the same first-settlement rule.
+    ("clarify", ["q1"], lambda sr, req: sr.lock_answer(req.id, "q1", "yes") == [], {"answers": {"q1": "yes"}}),
+])
+def test_settlement_wins_over_a_later_cancel(capture, method, qids, settle, expected):
+    """A response and cancellation may race; the first settlement owns the result."""
+    from tui_gateway import server_requests
+
+    req = server_requests.ServerRequest("s1", method, {}, qids=qids)
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+
+    assert settle(server_requests, req)
+    assert server_requests.cancel("s1") == 0
+    assert req.answered is True
+    assert req.result == expected
+    assert req.event.is_set()
+
+
+def test_send_returns_an_answer_committed_after_the_deadline_expired(capture, monkeypatch):
+    """An answer accepted by resolve_response is never reported as a timeout (#112548): the
+    response frame can land after event.wait() gave up and before send() withdraws the request,
+    and the renderer must not get a bogus request.cancel for a card the user just answered."""
+    from tui_gateway import server_requests
+
+    cancels: list[dict] = []
+    monkeypatch.setattr(server_requests, "_emit", lambda event, sid, payload: cancels.append(payload))
+
+    real_wait = server_requests.threading.Event.wait
+
+    def answered_during_the_gap(event, timeout=None):
+        # Deadline expires, then the response frame lands before send() re-enters the lock.
+        expired = real_wait(event, timeout)
+        rid = next(iter(server_requests._open))
+        assert server_requests.resolve_response({"id": rid, "result": {"value": "yes"}})
+        return expired
+
+    monkeypatch.setattr(server_requests.threading.Event, "wait", answered_during_the_gap)
+
+    assert server_requests.send("sudo", "s1", {}, timeout=0.001) == {"value": "yes"}
+    assert cancels == []
+    assert not server_requests._open
+
+
+def test_server_request_error_response_fails_fast(capture):
+    """A shared-channel client without a handler answers -32601 instead of waiting for the deadline."""
+    from tui_gateway import server_requests
+
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.setdefault("result", server_requests.send("sudo", "s1", {}, timeout=5)),
+        daemon=True,
+    )
+    thread.start()
+    req = _wait_open(server_requests)
+    assert server_requests.resolve_response({"id": req.id, "error": {"code": -32601}})
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert box["result"] is None
+
+
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
@@ -650,7 +714,8 @@ def test_session_resume_rejects_runaway_transcript_before_history_load(
     )
 
     assert response["error"]["code"] == 4130
-    assert "safe resume limit is 20000" in response["error"]["message"]
+    assert "limit 20000" in response["error"]["message"]
+    assert "hermes sessions export" in response["error"]["message"]
 
 
 def test_session_resume_deferred_and_omitted_paths_guard_the_tip_only(server, monkeypatch):
@@ -1179,6 +1244,82 @@ def test_slash_exec_scopes_skill_lookup_to_session_profile(server, tmp_path):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_command_dispatch_scopes_skill_lookup_to_session_profile(server, tmp_path):
+    """command.dispatch must load a skill that exists only in the session profile."""
+    import agent.skill_commands as sc_mod
+
+    empty_local_dir = tmp_path / "no-local-skills"
+    empty_local_dir.mkdir()
+
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    profile_b.mkdir()
+    skill_dir = external_b / "b-only"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: b-only\ndescription: Only in profile b.\n---\n\n# b-only\n\nDo the thing.\n"
+    )
+    (profile_b / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_b}\n"
+    )
+
+    sid = "test-session-profile-b-dispatch"
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "profile_home": str(profile_b),
+    }
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_platform", None),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1",
+            "method": "command.dispatch",
+            "params": {"name": "b-only", "arg": "with an argument", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"]["type"] == "skill"
+    assert resp["result"]["name"] == "b-only"
+
+
+def test_slash_exec_routes_a_secondary_only_bundle_to_dispatch(server, tmp_path, monkeypatch):
+    """A skill bundle that exists only under the session profile's ``skill-bundles/`` must be
+    resolved (and routed to command.dispatch) against that profile, not the launch home (#110695)."""
+    import agent.skill_bundles as sb_mod
+    import agent.skill_commands as sc_mod
+
+    monkeypatch.delenv("HERMES_BUNDLES_DIR", raising=False)
+    profile_b = tmp_path / "profile_b"
+    external_b = tmp_path / "external_b"
+    for name in ("one", "two"):
+        d = external_b / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name}.\n---\n\n# {name}\n")
+    (profile_b / "skill-bundles").mkdir(parents=True)
+    (profile_b / "skill-bundles" / "b-pack.yaml").write_text("name: b-pack\nskills: [one, two]\n")
+    (profile_b / "config.yaml").write_text(f"skills:\n  external_dirs:\n    - {external_b}\n")
+    sid = "test-session-profile-b-bundle"
+    server._sessions[sid] = {"session_key": sid, "agent": None, "profile_home": str(profile_b)}
+
+    with (
+        patch("tools.skills_tool.SKILLS_DIR", tmp_path / "no-local-skills"),
+        patch.object(sb_mod, "_bundles_cache", {}),
+        patch.object(sb_mod, "_bundles_cache_mtime", None),
+        patch.object(sc_mod, "_skill_commands", {}),
+        patch.object(sc_mod, "_skill_commands_home", None),
+    ):
+        resp = server.handle_request({
+            "id": "r1", "method": "slash.exec", "params": {"command": "/b-pack go", "session_id": sid}})
+
+    assert "error" not in resp, resp
+    assert resp["result"]["type"] == "send" and "b-pack" in resp["result"]["notice"]
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"
@@ -1280,7 +1421,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setattr(server, "_last_skin_sig", None, raising=False)
-    server._cfg_cache = server._cfg_mtime = server._cfg_path = None
+    server._cfg_cache = server._cfg_sig = server._cfg_path = None
 
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))

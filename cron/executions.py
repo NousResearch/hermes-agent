@@ -153,6 +153,11 @@ def _try_adopt_legacy_intent(conn: sqlite3.Connection) -> bool:
     """
     if _legacy_intent_adopted(conn):
         return True
+    if conn.in_transaction:
+        # A caller (e.g. incident upsert) owns an open transaction; adoption must not nest a
+        # BEGIN inside it nor piggyback on its commit. Defer to the next ordinary ledger open.
+        logging.getLogger(__name__).debug("Cron ledger: legacy intent adoption deferred (caller transaction open)")
+        return False
     try:
         inventory = _journal_inventory_strict()
         conn.execute("BEGIN IMMEDIATE")
@@ -180,13 +185,45 @@ def _try_adopt_legacy_intent(conn: sqlite3.Connection) -> bool:
     return True
 
 
+def _placeholder_only(record: Optional[dict]) -> bool:
+    manifest = record.get("delivery_manifest") if record else None
+    return bool(manifest) and "bot" not in json.loads(manifest)
+
+
+def _journal_entry_state(execution_id: str) -> Optional[bool]:
+    """True: this row has a journal entry. False: verified absent. None: could not tell."""
+    path = _journal_root() / f"{execution_id}.json"
+    try:
+        return path.is_file()
+    except OSError:
+        return None
+
+
 def _held_by_incomplete_adoption(record: Optional[dict], conn: Optional[sqlite3.Connection] = None) -> bool:
     """Conservative fence while adoption is incomplete: a row carrying only the external
     placeholder may still have an outstanding journaled child we cannot see."""
     if not record or _legacy_intent_adopted(conn):
         return False
-    manifest = record.get("delivery_manifest")
-    return bool(manifest) and "bot" not in json.loads(manifest)
+    return _placeholder_only(record)
+
+
+def _late_legacy_intent(record: Optional[dict], conn: Optional[sqlite3.Connection] = None) -> bool:
+    """Old-writer accounting at terminalization (K2c).
+
+    A pre-flag process that outlives adoption publishes its child manifest only to the
+    journal. A placeholder-only row with pending=0 is therefore complete ONLY if its own
+    journal entry is verifiably absent. When present, the intent is adopted here (in the
+    caller's transaction when given) so every later reader sees the flag; when unknowable,
+    the row is held. Rows that already carry "bot" are past this window and never probed.
+    """
+    if not record or record.get("delivery_manifest_pending") or not _placeholder_only(record):
+        return False
+    state = _journal_entry_state(record["id"])
+    if state is False:
+        return False
+    if state is True and conn is not None:
+        conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=?", (record["id"],))
+    return True
 
 
 @contextmanager
@@ -363,7 +400,8 @@ def finish_execution(
     # classification as restart reconciliation, in particular unknown != failed.
     with _transaction() as conn:
         pending = _fetch(conn, execution_id)
-        if pending and (pending.get("delivery_manifest_pending") or _held_by_incomplete_adoption(pending, conn)):
+        if pending and (pending.get("delivery_manifest_pending") or _held_by_incomplete_adoption(pending, conn)
+                        or _late_legacy_intent(pending, conn)):
             # Deferred children were sent but their manifest is not in the ledger yet: the
             # caller's classification (and any placeholder) is incomplete by construction.
             delivery_outcome = "queued"
@@ -522,6 +560,14 @@ def _recover_unrecorded_manifests() -> Dict[str, dict]:
                 conn.execute("UPDATE executions SET delivery_manifest_pending=1 WHERE id=? AND "
                              "(delivery_manifest IS NULL OR instr(delivery_manifest, '\"bot\"')=0)",
                              (execution_id,))
+                # A terminal classification derived from a placeholder-only manifest was, by
+                # construction, computed without the children this journal now supplies (a
+                # pre-flag writer publishing late). Reopen exactly that row, in the same
+                # transaction as the intent, so the real manifest is projected once it lands.
+                conn.execute("UPDATE executions SET delivery_outcome='queued', delivery_projection_settled=0 "
+                             "WHERE id=? AND delivery_manifest_pending=1 AND delivery_outcome IN ('delivered','failed') "
+                             "AND (delivery_manifest IS NULL OR instr(delivery_manifest, '\"bot\"')=0)",
+                             (execution_id,))
             with _transaction() as conn:
                 _store_manifest(conn, execution_id, manifest)
                 row = _fetch(conn, execution_id)
@@ -540,7 +586,7 @@ def _delivery_projection(record: dict) -> Optional[tuple[str, dict]]:
     from cron import delivery_queue, bot_chat_delivery
     from tools.bot_live_delivery import read_delivery_result
 
-    if manifest_pending(record) or _held_by_incomplete_adoption(record):
+    if manifest_pending(record) or _held_by_incomplete_adoption(record) or _late_legacy_intent(record):
         return None  # children were sent; their manifest is not in the ledger yet
     manifest = json.loads(record["delivery_manifest"])
     external_outcome = None

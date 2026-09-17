@@ -74,6 +74,21 @@ human action is needed. Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure
 conclusions and API failures are classified separately. No extra worker is spawned.
 
+One plan restriction is not an API failure. When
+`repos/{repo}/rules/branches/{branch}` answers `403 Upgrade to GitHub Pro or make
+this repository public` — GitHub's free-plan answer for a private repository —
+repository-required checks cannot be enumerated at all, so the gate proves the
+contract from alternative evidence instead of refusing forever: the PR is OPEN or
+MERGED at the collected head/base, that head commit exists on the remote, the head
+fast-forwards the base, every observed check run and legacy status on that head is
+finished and non-failing with at least one green run, and a merged PR shows its
+merge commit on the remote. Only that exact plan wording degrades; `401`,
+scope-related or generic `403`, `404`, `429`, timeout/network/5xx, and any failed
+or pending check stay unaccepted. A degraded pass is auditable rather than silent:
+the receipt carries `verification_mode: local-only`, `degraded_reason:
+provider_capability`, the gated endpoint, the original HTTP status and short
+message, and one entry per alternative-evidence probe.
+
 Receipt persistence and the terminal write recheck run/status/contract ownership
 under one SQLite lock: a reclaimed worker cannot complete or attach acceptance to
 the new run. The final GitHub read is a completion-time snapshot, not a distributed

@@ -1,0 +1,341 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { SessionInfo } from '@/types/hermes'
+
+const patch = vi.fn<(id: string, stamps: string[], profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+  Promise.resolve({ ok: true })
+)
+
+vi.mock('@/hermes', () => ({
+  // The session store reaches the profile store, which sets the request profile
+  // at import time; this suite only cares about the stamp call.
+  setApiRequestProfile: () => {},
+  setSessionStampsRemote: (id: string, stamps: string[], profile?: null | string) => patch(id, stamps, profile)
+}))
+
+import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
+import { $archivedSessions } from '@/store/sidebar-archive'
+
+import {
+  $deletedStampPresets,
+  $sessionStamps,
+  $stampColorOverrides,
+  $stampPresets,
+  $stampTitlePrefs,
+  addStampTitle,
+  applySessionStamp,
+  applySessionStamps,
+  deleteStampPreset,
+  hasStampLabel,
+  normalizeSessionStamp,
+  normalizeSessionStamps,
+  restoreStampPresets,
+  SESSION_STAMP_LIMIT,
+  SESSION_STAMP_PRESETS,
+  setStampColor,
+  stampColorFor,
+  stampLabels,
+  toggleSessionStamp
+} from './session-stamp'
+
+const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
+  ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
+
+beforeEach(() => {
+  $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
+  $archivedSessions.set([])
+  $stampTitlePrefs.set({ added: [], deleted: [] })
+  $stampColorOverrides.set({})
+  window.localStorage.clear()
+  patch.mockClear()
+})
+
+afterEach(() => {
+  $sessions.set([])
+  $cronSessions.set([])
+  $messagingSessions.set([])
+  $archivedSessions.set([])
+})
+
+describe('normalizeSessionStamp', () => {
+  it('trims, collapses interior whitespace and caps the length', () => {
+    expect(normalizeSessionStamp('  Merged  ')).toBe('Merged')
+    expect(normalizeSessionStamp('Waiting   on\n CI')).toBe('Waiting on CI')
+    expect(normalizeSessionStamp('x'.repeat(40))?.length).toBe(24)
+  })
+
+  it('treats empty, whitespace-only and null as no stamp', () => {
+    expect(normalizeSessionStamp('')).toBeNull()
+    expect(normalizeSessionStamp('   ')).toBeNull()
+    expect(normalizeSessionStamp(null)).toBeNull()
+    expect(normalizeSessionStamp(undefined)).toBeNull()
+  })
+})
+
+describe('normalizeSessionStamps', () => {
+  it('keeps the order it is given, drops blanks and dedupes case-insensitively', () => {
+    // The first spelling of a repeated label wins, so the chip is the one the
+    // user typed first rather than whichever came last in the array.
+    expect(normalizeSessionStamps(['WIP', ' Review ', 'wip', '', null, 'Hold'])).toEqual([
+      'WIP',
+      'Review',
+      'Hold'
+    ])
+    expect(normalizeSessionStamps([])).toEqual([])
+    expect(normalizeSessionStamps([null, undefined, '  '])).toEqual([])
+  })
+})
+
+describe('stampLabels', () => {
+  it('reads the list, and a row that only carries the older single label as a list of one', () => {
+    expect(stampLabels(row('a', { stamps: ['WIP', 'Hold'] }))).toEqual(['WIP', 'Hold'])
+    // Read-compat: an older backend (or an optimistic write) answers with `stamp`
+    // alone, and that is still a stamped session.
+    expect(stampLabels(row('a', { stamp: 'Merged' }))).toEqual(['Merged'])
+    expect(stampLabels(row('a'))).toEqual([])
+    expect(stampLabels(null)).toEqual([])
+    // The list wins when both are present, so a stale singular mirror cannot double it.
+    expect(stampLabels(row('a', { stamp: 'Merged', stamps: ['WIP'] }))).toEqual(['WIP'])
+  })
+})
+
+describe('hasStampLabel', () => {
+  it('matches a label case-insensitively, the way the menu marks a row', () => {
+    expect(hasStampLabel(['WIP', 'Hold'], 'wip')).toBe(true)
+    expect(hasStampLabel(['WIP'], 'Review')).toBe(false)
+    expect(hasStampLabel(['WIP'], '   ')).toBe(false)
+  })
+})
+
+describe('applySessionStamps', () => {
+  it('paints the labels before the backend answers, and persists the normalized list', async () => {
+    $sessions.set([row('a', { profile: 'work' })])
+
+    const pending = applySessionStamps('a', 'work', ['  wip  ', 'Hold', 'wip'])
+
+    // Optimistic: the row already shows them, so a slow round trip never reads as
+    // "the click did nothing".
+    expect($sessions.get()[0].stamps).toEqual(['wip', 'Hold'])
+
+    await pending
+
+    expect(patch).toHaveBeenCalledWith('a', ['wip', 'Hold'], 'work')
+    expect($sessions.get()[0].stamps).toEqual(['wip', 'Hold'])
+    // The singular mirror follows the list, so the two never disagree on the row.
+    expect($sessions.get()[0].stamp).toBe('wip')
+  })
+
+  it('clears every label when handed an empty list', async () => {
+    $sessions.set([row('a', { stamps: ['Merged', 'Hold'], stamp: 'Merged' })])
+
+    await applySessionStamps('a', undefined, [])
+
+    expect(patch).toHaveBeenCalledWith('a', [], undefined)
+    expect($sessions.get()[0].stamps).toEqual([])
+    expect($sessions.get()[0].stamp).toBeNull()
+  })
+
+  it('puts the row back when the backend refuses, rather than leaving stamps that are not there', async () => {
+    patch.mockRejectedValueOnce(new Error('offline'))
+    $sessions.set([row('a', { stamps: ['Hold'], stamp: 'Hold' })])
+
+    const ok = await applySessionStamps('a', undefined, ['Merged'])
+
+    expect(ok).toBe(false)
+    expect($sessions.get()[0].stamps).toEqual(['Hold'])
+  })
+
+  it('patches every list that can hold the row, and leaves other rows untouched', async () => {
+    $archivedSessions.set([row('a', { profile: 'default' })])
+    $sessions.set([row('b')])
+
+    await applySessionStamps('a', 'default', ['Review'])
+
+    expect($archivedSessions.get()[0].stamps).toEqual(['Review'])
+    expect($sessions.get()[0].stamps).toBeUndefined()
+  })
+
+  it('lands on a row addressed by an older lineage id, not only the live tip', async () => {
+    // A tile's tab keeps the id it was opened with; after an auto-compression
+    // that id is a lineage segment while the row's own id is the tip. Reading
+    // the stamps through the tab must not wait for the next list poll.
+    $sessions.set([row('tip', { _lineage_ids: ['root'], _lineage_root_id: 'root' })])
+
+    await applySessionStamps('root', undefined, ['Handoff'])
+
+    expect($sessions.get()[0].stamps).toEqual(['Handoff'])
+    expect($sessionStamps.get().get('tip')).toEqual(['Handoff'])
+    expect($sessionStamps.get().get('root')).toEqual(['Handoff'])
+  })
+
+  it('rolls a lineage-addressed row back to what it carried when the write fails', async () => {
+    $sessions.set([row('tip', { _lineage_ids: ['root'], _lineage_root_id: 'root', stamps: ['Review'] })])
+    patch.mockRejectedValueOnce(new Error('backend refused'))
+
+    const ok = await applySessionStamps('root', undefined, ['Hold'])
+
+    expect(ok).toBe(false)
+    expect($sessions.get()[0].stamps).toEqual(['Review'])
+  })
+
+  it('leaves a row that already shows the labels alone, reference and all', async () => {
+    const rows = [row('a', { stamps: ['WIP'] })]
+    $sessions.set(rows)
+
+    await applySessionStamps('a', undefined, ['WIP'])
+
+    // No write happened (the page is unchanged), and the list keeps its identity
+    // so React is not handed a fresh array of identical rows.
+    expect(patch).toHaveBeenCalledWith('a', ['WIP'], undefined)
+    expect($sessions.get()).toBe(rows)
+  })
+})
+
+describe('applySessionStamp', () => {
+  it('is the one-label door: it REPLACES the list', async () => {
+    $sessions.set([row('a', { stamps: ['WIP', 'Hold'], stamp: 'WIP' })])
+
+    await applySessionStamp('a', 'work', 'Merged')
+
+    expect(patch).toHaveBeenCalledWith('a', ['Merged'], 'work')
+    expect($sessions.get()[0].stamps).toEqual(['Merged'])
+  })
+
+  it('clears the list when handed an empty label', async () => {
+    $sessions.set([row('a', { stamps: ['Merged'], stamp: 'Merged' })])
+
+    await applySessionStamp('a', undefined, '')
+
+    expect(patch).toHaveBeenCalledWith('a', [], undefined)
+    expect($sessions.get()[0].stamps).toEqual([])
+  })
+})
+
+describe('toggleSessionStamp', () => {
+  it('adds a label the session does not carry, at the END of the list', async () => {
+    $sessions.set([row('a', { stamps: ['WIP'] })])
+
+    await toggleSessionStamp('a', undefined, '  Hold ')
+
+    expect(patch).toHaveBeenCalledWith('a', ['WIP', 'Hold'], undefined)
+    expect($sessions.get()[0].stamps).toEqual(['WIP', 'Hold'])
+  })
+
+  it('takes a label off when the session already carries it, case-insensitively', async () => {
+    $sessions.set([row('a', { stamps: ['WIP', 'Hold', 'Review'] })])
+
+    await toggleSessionStamp('a', undefined, 'hold')
+
+    expect(patch).toHaveBeenCalledWith('a', ['WIP', 'Review'], undefined)
+    expect($sessions.get()[0].stamps).toEqual(['WIP', 'Review'])
+  })
+
+  it('refuses a fourth label without writing, so the UI never sends what the API would refuse', async () => {
+    $sessions.set([row('a', { stamps: ['WIP', 'Hold', 'Review'] })])
+
+    const ok = await toggleSessionStamp('a', undefined, 'Merged')
+
+    expect(ok).toBe(false)
+    expect(patch).not.toHaveBeenCalled()
+    expect($sessions.get()[0].stamps).toHaveLength(SESSION_STAMP_LIMIT)
+  })
+
+  it('still takes one off at the cap — a full session is not a locked one', async () => {
+    $sessions.set([row('a', { stamps: ['WIP', 'Hold', 'Review'] })])
+
+    expect(await toggleSessionStamp('a', undefined, 'Hold')).toBe(true)
+    expect($sessions.get()[0].stamps).toEqual(['WIP', 'Review'])
+  })
+})
+
+describe('$sessionStamps', () => {
+  it('maps live and lineage ids to the label LIST, and skips unstamped rows', () => {
+    $sessions.set([
+      row('tip', { _lineage_ids: ['mid', 'root'], _lineage_root_id: 'root', stamps: ['WIP', 'Hold'] }),
+      row('plain')
+    ])
+
+    expect($sessionStamps.get().get('tip')).toEqual(['WIP', 'Hold'])
+    expect($sessionStamps.get().get('root')).toEqual(['WIP', 'Hold'])
+    expect($sessionStamps.get().get('mid')).toEqual(['WIP', 'Hold'])
+    expect($sessionStamps.get().has('plain')).toBe(false)
+  })
+
+  it('still resolves a row that only carries the older single label', () => {
+    $sessions.set([row('tip', { stamp: 'Handoff' })])
+
+    expect($sessionStamps.get().get('tip')).toEqual(['Handoff'])
+  })
+})
+
+describe('the titles the Stamp submenu offers', () => {
+  it('drops a deleted title, and puts it back without touching a stamp already written', () => {
+    expect($stampPresets.get()).toEqual([...SESSION_STAMP_PRESETS])
+
+    deleteStampPreset('Hold')
+
+    expect($stampPresets.get()).toEqual(['Merged', 'WIP', 'Review', 'Handoff'])
+    // Deleting the TITLE is not a data change: "Hold" stays a valid label (a
+    // session already carrying it keeps it), it is simply no longer offered.
+    expect(normalizeSessionStamp('Hold')).toBe('Hold')
+
+    restoreStampPresets()
+
+    expect($stampPresets.get()).toEqual([...SESSION_STAMP_PRESETS])
+  })
+
+  it('keeps a title the user adds, after the stock ones, and stores it', () => {
+    addStampTitle('Blocked')
+
+    expect($stampPresets.get()).toEqual([...SESSION_STAMP_PRESETS, 'Blocked'])
+    // Stays for the next run — and for the next SESSION, which is the point.
+    expect(window.localStorage.getItem('hermes.desktop.sessionStampTitles.v1')).toBe(
+      '{"added":["Blocked"],"deleted":[]}'
+    )
+  })
+
+  it('is idempotent and case-insensitive, and adding back a deleted title un-deletes it', () => {
+    deleteStampPreset('wip')
+    deleteStampPreset('WIP')
+    addStampTitle('   ')
+
+    expect($deletedStampPresets.get()).toEqual(['wip'])
+    expect($stampPresets.get()).not.toContain('WIP')
+
+    addStampTitle('WIP')
+
+    expect($deletedStampPresets.get()).toEqual([])
+    expect($stampPresets.get()).toContain('WIP')
+    // One "WIP", not two.
+    expect($stampPresets.get().filter(title => title.toLowerCase() === 'wip')).toHaveLength(1)
+  })
+
+  it('restores a deleted title the user added as well as a stock one', () => {
+    addStampTitle('Blocked')
+    deleteStampPreset('Blocked')
+
+    expect($stampPresets.get()).not.toContain('Blocked')
+
+    restoreStampPresets()
+
+    expect($stampPresets.get()).toEqual([...SESSION_STAMP_PRESETS, 'Blocked'])
+  })
+})
+
+describe('stamp colours', () => {
+  it('sets, resolves and clears one title’s colour', () => {
+    setStampColor('Merged', '#ff0000')
+
+    expect(stampColorFor('Merged', $stampColorOverrides.get())).toBe('#ff0000')
+    // Case-insensitive on read, so the chip and the menu always agree.
+    expect(stampColorFor('merged', $stampColorOverrides.get())).toBe('#ff0000')
+    expect(stampColorFor('WIP', $stampColorOverrides.get())).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.sessionStampColors')).toContain('#ff0000')
+
+    setStampColor('Merged', null)
+
+    expect(stampColorFor('Merged', $stampColorOverrides.get())).toBeNull()
+  })
+})

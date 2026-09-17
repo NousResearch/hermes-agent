@@ -439,3 +439,38 @@ describe('Inbox-style session card', () => {
     expect(screen.getByText('133 messages')).toBeTruthy()
   })
 })
+
+// The stamp is the one row affordance that has to survive BOTH layouts: the
+// one-line row and the card branch render the title through different JSX, so a
+// chip wired into only one of them would look fine in whichever density the
+// author happened to be using.
+describe('SidebarSessionRow stamp', () => {
+  it('paints the stamp beside the title in both row layouts', () => {
+    for (const card of [false, true]) {
+      const { container } = renderRow(makeSession({ stamp: 'Merged', title: 'Merged the lanes' }), { card })
+      const badge = container.querySelector('[data-session-stamp="Merged"]')
+
+      expect(badge).toBeTruthy()
+      expect(badge?.textContent).toBe('Merged')
+      cleanup()
+    }
+  })
+
+  it('paints EVERY stamp the session carries, in order, in both row layouts', () => {
+    // A session can carry up to three labels; the row is where the user reads
+    // them, so the list is what the row must render — in both branches.
+    for (const card of [false, true]) {
+      const { container } = renderRow(makeSession({ stamps: ['WIP', 'Hold'], title: 'Hold the lanes' }), { card })
+      const chips = [...container.querySelectorAll('[data-session-stamp]')].map(node => node.textContent)
+
+      expect(chips).toEqual(['WIP', 'Hold'])
+      cleanup()
+    }
+  })
+
+  it('paints no chip for an unstamped session', () => {
+    const { container } = renderRow(makeSession({ title: 'Nothing stamped here' }))
+
+    expect(container.querySelector('[data-session-stamp]')).toBeNull()
+  })
+})

@@ -145,6 +145,31 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
     f" WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL AND {_PREVIEW_ELIGIBLE_SQL}"
     f" ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
 
+
+def effective_session_stamps(stamps_raw: Any, stamp: Any = None) -> list:
+    """The stamp labels a session actually carries, in order: the decoded ``sessions.stamps``
+    list, else the singular ``stamp`` column as a one-element list.
+
+    Total by construction — an absent column, NULL, malformed JSON and a JSON value that is not
+    an array of strings all read as "no stamps" instead of raising into a list render.
+
+    Read-compat lives HERE so no caller has to know that a stamp used to be ONE column: a row
+    written before the list existed must read as stamped, not as unstamped. This is the ONE
+    decoder for the stored payload — the row projection (every list row the Desktop renders) and
+    the single-session getter the CLI/API answer from both call it.
+    """
+    value = stamps_raw
+    if isinstance(value, (bytes, str)):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            value = None
+    labels = ([entry for entry in value if isinstance(entry, str) and entry.strip()]
+              if isinstance(value, list) else [])
+    if labels:
+        return labels
+    return [stamp] if isinstance(stamp, str) and stamp.strip() else []
+
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
@@ -387,6 +412,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
+    stamp TEXT,
+    stamps TEXT,
     hidden INTEGER NOT NULL DEFAULT 0,
     last_read_at REAL,
     tool_names TEXT,

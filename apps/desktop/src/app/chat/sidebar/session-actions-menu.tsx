@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 
+import { stampHueClass } from '@/app/chat/session-stamp'
 import { openSession } from '@/app/open-session'
 import {
   closeAllTreeTabs,
@@ -23,6 +24,7 @@ import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { DropdownMenuSearch } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -30,6 +32,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
 import { exportSession } from '@/lib/session-export'
+import { cn } from '@/lib/utils'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
@@ -45,6 +48,24 @@ import {
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import {
+  $deletedStampPresets,
+  $stampColorOverrides,
+  $stampPresets,
+  addStampTitle,
+  applySessionStamps,
+  deleteStampPreset,
+  hasStampLabel,
+  normalizeSessionStamp,
+  normalizeSessionStamps,
+  restoreStampPresets,
+  SESSION_STAMP_LIMIT,
+  SESSION_STAMP_MAX_LENGTH,
+  setStampColor,
+  stampColorFor,
+  stampLabels,
+  toggleSessionStamp
+} from '@/store/session-stamp'
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
@@ -103,6 +124,11 @@ interface SessionActions {
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
   profile?: string
+  /** The row's current durable stamps (`sessions.stamps`), when the caller
+   *  already has them — the sidebar row does, because it draws the chips. A
+   *  caller that omits them still gets the right check marks and Clear row: the
+   *  submenu falls back to reading the loaded rows. */
+  stamps?: string[]
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -182,12 +208,334 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   )
 }
 
+// The stamp picker inside the session menu's "Stamp" submenu: the titles the
+// user keeps, the clear row (only while the session carries something) and the
+// two text doors. Its own component so only an OPEN submenu subscribes to the
+// stores (same reasoning as SessionColorSwatches). The row's own `stamps` prop
+// wins where the caller has it — it is what the chips beside the title are drawn
+// from, so a check mark can never disagree with what the list is showing; the
+// lookup is the fallback for the surfaces that pass nothing.
+//
+// Every title row TOGGLES: clicking one the session does not carry adds it (at
+// the end, so order = the order it was built), clicking one it does carry takes
+// it off and leaves the rest alone. At SESSION_STAMP_LIMIT the session is full,
+// so the rows that would add a label go disabled and a hint row says why —
+// better than a row that silently does nothing.
+//
+// Everything that CHANGES something happens INSIDE this menu: a title's colour
+// swatches and both text inputs expand in place instead of opening a dialog. A
+// Radix menu closes on select and on focus leaving its content, so a dialog took
+// the whole submenu down with it and made the user re-navigate after every
+// change; the panels keep the menu exactly where it is.
+//
+// Each title row carries two affordances, revealed while the row is highlighted
+// (Radix focuses the item under the pointer, so `focus-within` covers pointer
+// AND keyboard movement): a dot that opens that title's colour panel, and a ✕
+// that takes the title off the menu. Deleting a title is never a data change — a
+// session already carrying "Hold" keeps reading "Hold" everywhere — and the
+// restore row that appears while anything is off is the way back.
+const STAMP_ROW_ACTION =
+  'shrink-0 rounded p-0.5 text-(--ui-text-tertiary) opacity-0 transition-opacity group-focus-within/stamp:opacity-100 group-hover/stamp:opacity-100 hover:text-foreground focus-visible:opacity-100'
+
+/** Which in-menu panel is open: a title's colours, a new title, or a one-off
+ *  custom label for this session. */
+type StampPanel = { kind: 'add' } | { kind: 'color'; label: string } | { kind: 'custom' } | null
+
+/** A nested control inside a menu row: the ROW must not take the press. Radix
+ *  resolves a click from the pointer sequence, not from `click` alone, so the
+ *  pointer events are stopped too — without them the action ran AND the menu
+ *  closed (or the row's own select fired). */
+function stopRowSelect(event: React.SyntheticEvent): void {
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function SessionStampItems({
+  kit,
+  profile,
+  sessionId,
+  stamps
+}: {
+  kit: MenuKit
+  profile?: string
+  sessionId: string
+  stamps?: string[]
+}) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  const session = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))
+  // The caller's own list first (it is the one the chips are drawn from), else
+  // the loaded row's. `stampLabels` is the ONE reader, so a row that carries only
+  // the older singular label still shows up here as a stamp.
+  const current = stamps?.length ? normalizeSessionStamps(stamps) : stampLabels(session)
+  const presets = useStore($stampPresets)
+  const deleted = useStore($deletedStampPresets)
+  const colors = useStore($stampColorOverrides)
+  const [panel, setPanel] = useState<StampPanel>(null)
+  const [typed, setTyped] = useState('')
+  const full = current.length >= SESSION_STAMP_LIMIT
+
+  const commitTyped = (kind: 'add' | 'custom') => {
+    const next = normalizeSessionStamp(typed)
+
+    // An empty submit writes NOTHING: with a list behind the menu, "no label"
+    // is what the Clear row is for, and guessing that an empty input means
+    // "take everything off" would be a destructive default.
+    if (!next) {
+      setPanel(null)
+
+      return
+    }
+
+    // "Add stamp title…" names a MENU entry that stays for the next session too;
+    // "Custom stamp…" is a one-off label for this session. Both then toggle it on
+    // through the same write path as the rows above.
+    if (kind === 'add') {
+      addStampTitle(next)
+    }
+
+    void toggleStamp(sessionId, profile, next, current, r)
+    setTyped('')
+    setPanel(null)
+  }
+
+  const textPanel = (kind: 'add' | 'custom', placeholder: string) => (
+    <DropdownMenuSearch
+      key={kind}
+      maxLength={SESSION_STAMP_MAX_LENGTH}
+      onKeyDown={event => {
+        // Enter belongs to this input, not to the highlighted menu row: a
+        // stopped key never reaches Radix's own Enter handling.
+        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+          event.preventDefault()
+          event.stopPropagation()
+          commitTyped(kind)
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          setPanel(null)
+        }
+      }}
+      onValueChange={value => setTyped(value.slice(0, SESSION_STAMP_MAX_LENGTH))}
+      placeholder={placeholder}
+      value={typed}
+    />
+  )
+
+  return (
+    <>
+      {full && (
+        // A plain div child of the menu content: no item, so it cannot be
+        // selected — it is the explanation for the rows that just went inert.
+        <div className="px-2 pt-1 pb-1.5 text-[0.6875rem] text-(--ui-text-tertiary)" data-stamp-limit>
+          {r.stampLimit(SESSION_STAMP_LIMIT)}
+        </div>
+      )}
+      {presets.map(preset => {
+        const isCurrent = hasStampLabel(current, preset)
+        const color = stampColorFor(preset, colors)
+        const panelOpen = panel?.kind === 'color' && panel.label === preset
+
+        return (
+          <Fragment key={preset}>
+            <kit.Item
+              // Explicit name: the row's own text is the title, and the buttons
+              // inside it must not become part of what the row is called.
+              aria-label={preset}
+              className="group/stamp"
+              // A full session still offers the labels it carries (click to take
+              // one off); only ADDING a fourth is impossible.
+              disabled={full && !isCurrent}
+              onSelect={event => {
+                event.preventDefault()
+                void toggleStamp(sessionId, profile, preset, current, r)
+              }}
+            >
+              {preset}
+              {/* Mirrors how the app marks a current choice in a menu row (a
+                  trailing check on the selected row only — base-branch-picker,
+                  kanban's board switcher). */}
+              {isCurrent && (
+                <Codicon className="ml-auto shrink-0 text-(--ui-accent)" name="check" size="0.8rem" />
+              )}
+              <button
+                aria-label={r.stampColor(preset)}
+                aria-pressed={panelOpen}
+                className={cn(STAMP_ROW_ACTION, !isCurrent && 'ml-auto', panelOpen && 'opacity-100')}
+                onClick={event => {
+                  stopRowSelect(event)
+                  triggerHaptic('selection')
+                  setPanel(panelOpen ? null : { kind: 'color', label: preset })
+                }}
+                onPointerDown={stopRowSelect}
+                onPointerUp={stopRowSelect}
+                title={r.stampColor(preset)}
+                type="button"
+              >
+                <span
+                  className={cn('block size-2 rounded-full bg-current', !color && stampHueClass(preset))}
+                  style={color ? { color } : undefined}
+                />
+              </button>
+              <button
+                aria-label={r.stampRemove(preset)}
+                className={STAMP_ROW_ACTION}
+                onClick={event => {
+                  stopRowSelect(event)
+                  triggerHaptic('selection')
+                  deleteStampPreset(preset)
+                }}
+                onPointerDown={stopRowSelect}
+                onPointerUp={stopRowSelect}
+                title={r.stampRemove(preset)}
+                type="button"
+              >
+                <Codicon name="close" size="0.75rem" />
+              </button>
+            </kit.Item>
+            {panelOpen && (
+              <div className="px-2 py-1.5" data-stamp-color-panel={preset}>
+                <ColorSwatches
+                  clearLabel={r.stampColorReset}
+                  onChange={next => setStampColor(preset, next)}
+                  swatches={PROFILE_SWATCHES}
+                  value={color}
+                />
+              </div>
+            )}
+          </Fragment>
+        )
+      })}
+      {panel?.kind === 'add' ? (
+        textPanel('add', r.stampAddPlaceholder)
+      ) : (
+        <kit.Item
+          disabled={full}
+          onSelect={event => {
+            event.preventDefault()
+            triggerHaptic('selection')
+            setTyped('')
+            setPanel({ kind: 'add' })
+          }}
+        >
+          <Codicon name="add" size="0.875rem" />
+          <span>{r.stampAdd}</span>
+        </kit.Item>
+      )}
+      {deleted.length > 0 && (
+        <kit.Item
+          onSelect={event => {
+            event.preventDefault()
+            triggerHaptic('selection')
+            restoreStampPresets()
+          }}
+        >
+          <Codicon name="history" size="0.875rem" />
+          <span>{r.stampRestore}</span>
+        </kit.Item>
+      )}
+      {current.length > 0 && (
+        <kit.Item
+          onSelect={event => {
+            event.preventDefault()
+            void clearStamps(sessionId, profile, r)
+          }}
+        >
+          <Codicon name="circle-slash" size="0.875rem" />
+          <span>{r.stampClear}</span>
+        </kit.Item>
+      )}
+      <kit.Separator />
+      {panel?.kind === 'custom' ? (
+        textPanel('custom', r.stampCustomPlaceholder)
+      ) : (
+        <kit.Item
+          disabled={full}
+          onSelect={event => {
+            event.preventDefault()
+            triggerHaptic('selection')
+            // Empty: the panel ADDS a label now. Seeding it with a label the
+            // session already carries would make a submit toggle that one off,
+            // which is not what "Custom stamp…" says it does.
+            setTyped('')
+            setPanel({ kind: 'custom' })
+          }}
+        >
+          <Codicon name="edit" size="0.875rem" />
+          <span>{r.stampCustom}</span>
+        </kit.Item>
+      )}
+    </>
+  )
+}
+
+/** The copy the stamp writes report back with — one shape for both helpers. */
+interface StampCopy {
+  stampCleared: string
+  stampRemoved: (label: string) => string
+  stampSaved: (label: string) => string
+}
+
+/**
+ * The ONE write path for the Stamp submenu: toggle *label* on the session, then
+ * a brief beat naming what actually landed — added, taken off, or "no stamps
+ * left" when that was the last one.
+ *
+ * A refusal (the backend rejected the write) is already reported by
+ * `applySessionStamps`, which also puts the row back — reporting it here as well
+ * would double-notify the user. An over-cap click never reaches here at all: the
+ * row is disabled while the session is full.
+ */
+async function toggleStamp(
+  sessionId: string,
+  profile: string | undefined,
+  label: string,
+  current: string[],
+  r: StampCopy
+): Promise<boolean> {
+  const removing = hasStampLabel(current, label)
+
+  triggerHaptic('selection')
+
+  const ok = await toggleSessionStamp(sessionId, profile, label)
+
+  if (ok) {
+    notify({
+      durationMs: 2_000,
+      kind: 'success',
+      message: removing
+        ? (current.length > 1 ? r.stampRemoved(label) : r.stampCleared)
+        : r.stampSaved(label)
+    })
+  }
+
+  return ok
+}
+
+/** The Clear row: every label off the session in one write. */
+async function clearStamps(
+  sessionId: string,
+  profile: string | undefined,
+  r: StampCopy
+): Promise<boolean> {
+  triggerHaptic('selection')
+
+  const ok = await applySessionStamps(sessionId, profile, [])
+
+  if (ok) {
+    notify({ durationMs: 2_000, kind: 'success', message: r.stampCleared })
+  }
+
+  return ok
+}
+
 function useSessionActions({
   sessionId,
   title,
   pinned = false,
   unread = false,
   profile,
+  stamps,
   onPin,
   onToggleUnread,
   onBranch,
@@ -467,6 +815,15 @@ function useSessionActions({
       {identityItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
+          <Codicon name="tag" size="0.875rem" />
+          <span>{r.stamp}</span>
+        </kit.SubTrigger>
+        <kit.SubContent>
+          <SessionStampItems kit={kit} profile={profile} sessionId={sessionId} stamps={stamps} />
+        </kit.SubContent>
+      </kit.Sub>
+      <kit.Sub>
+        <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="symbol-color" size="0.875rem" />
           <span>{t.sidebar.projects.menuAppearance}</span>
         </kit.SubTrigger>
@@ -591,6 +948,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
+
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
@@ -617,6 +975,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
+
   const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (

@@ -2518,6 +2518,20 @@ export interface Translations {
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
+      stamp: string
+      stampClear: string
+      stampCustom: string
+      stampCustomPlaceholder: string
+      stampLimit: (max: number) => string
+      stampSaved: (label: string) => string
+      stampRemoved: (label: string) => string
+      stampCleared: string
+      stampRemove: (label: string) => string
+      stampRestore: string
+      stampAdd: string
+      stampAddPlaceholder: string
+      stampColor: (label: string) => string
+      stampColorReset: string
       deleteTitle: string
       deleteDesc: (title: string) => string
       deleting: string

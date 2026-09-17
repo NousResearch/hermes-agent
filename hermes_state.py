@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from hermes_state_common import (
     TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
     TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
+    effective_session_stamps as _effective_session_stamps,
     escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
@@ -508,6 +509,12 @@ class SessionDB(
     @staticmethod
     def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)
+        # `stamps` is stored as a JSON array but every consumer wants labels: decode it HERE,
+        # in the one row projection, so no client has to know the storage shape — and fall back
+        # to the singular `stamp` column, which is what a row written before this column existed
+        # carries. Absent column and malformed payload both read as [].
+        if "stamps" in data:
+            data["stamps"] = _effective_session_stamps(data["stamps"], data.get("stamp"))
         if "_system_prompt_resolved" in data:
             resolved = data.pop("_system_prompt_resolved")
             if "system_prompt" in data:

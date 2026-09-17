@@ -53,6 +53,7 @@ import {
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
 import { requestForSessionProfile } from '@/store/session-request-router'
+import { stampLabels } from '@/store/session-stamp'
 import {
   $sessionStates,
   $sessionTileDelegateRevision,
@@ -660,8 +661,13 @@ export function stackSessionTilesIntoMain(): void {
  *  updates in other sessions) — for a context menu that's almost never open.
  *  Same class as the TreeGroup fix (#72245): derive narrowly, bail out unless
  *  the derived values change. */
-function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: string; title: string } {
-  const cache = useRef<{ key: string; value: { pinId: string; profile?: string; title: string } } | null>(null)
+function useTileMenuRow(
+  storedSessionId: string
+): { pinId: string; profile?: string; stamps: string[]; title: string } {
+  const cache = useRef<{
+    key: string
+    value: { pinId: string; profile?: string; stamps: string[]; title: string }
+  } | null>(null)
 
   const subscribe = useCallback((onChange: () => void) => {
     const offSessions = $sessions.listen(onChange)
@@ -678,10 +684,16 @@ function useTileMenuRow(storedSessionId: string): { pinId: string; profile?: str
     const pinId = stored ? sessionPinId(stored) : storedSessionId
     const title = tileTitle(storedSessionId)
     const profile = stored?.profile
-    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}`
+    // The stamps are part of this cached payload, so they belong in the KEY as
+    // well: a stamp set from this very menu must repaint the menu's own check
+    // marks, and nothing else about the row changes when it does. Joined (and not
+    // the array itself) because the key is a value comparison — the array is
+    // rebuilt by every list poll.
+    const stamps = stampLabels(stored)
+    const key = `${pinId}\u0000${title}\u0000${profile ?? ''}\u0000${stamps.join('\u0000')}`
 
     if (cache.current?.key !== key) {
-      cache.current = { key, value: { pinId, profile, title } }
+      cache.current = { key, value: { pinId, profile, stamps, title } }
     }
 
     return cache.current.value
@@ -709,7 +721,7 @@ export function SessionTabMenu({
   /** Layout-tree pane id — powers the Close-others/right/all verbs. */
   tabPaneId: string
 }) {
-  const { pinId, profile, title } = useTileMenuRow(storedSessionId)
+  const { pinId, profile, stamps, title } = useTileMenuRow(storedSessionId)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinned = pinnedSessionIds.includes(pinId)
 
@@ -725,6 +737,7 @@ export function SessionTabMenu({
         pinned={pinned}
         profile={profile}
         sessionId={storedSessionId}
+        stamps={stamps}
         surface="tab"
         tabPaneId={tabPaneId}
         title={title}

@@ -213,6 +213,20 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
 
+    sessions_stamp = sessions_subparsers.add_parser(
+        "stamp", help="Set or clear a session's stamp label",
+        description="Set ONE short free-text label on a session (e.g. WIP, "
+            "Merged, Review, Handoff, Hold). The stamp is stored server-side "
+            "with the session, so every client — Desktop, Dashboard, CLI, "
+            "bots — sees the same label. A session can carry up to three "
+            "labels (the Desktop's stamp menu adds the extra ones); the "
+            "label given here replaces the list. Use --clear to empty it.")
+    sessions_stamp.add_argument(
+        "session_id", help="Session ID (or unique prefix) to stamp")
+    sessions_stamp.add_argument(
+        "text", nargs="*", help="Stamp label (max 24 chars); omit with --clear")
+    _flag(sessions_stamp, "--clear", help="Remove every stamp from the session")
+
     sessions_pin = sessions_subparsers.add_parser(
         "pin", help="Pin session(s) — durable keep flag, exempt from auto-archive",
         description="Set the durable 'keep' flag on one or more sessions. Pinned "

@@ -682,24 +682,43 @@ _RENAME_FLAG_SETTERS = (
 
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
-    """Update ``title`` (empty clears) and/or the flags; ``pinned`` exempts from
-    the auto-archive sweep, ``unread=False`` marks read up to now."""
+    """Update ``title``/``stamp``/``stamps`` (empty clears) and/or the flags; ``pinned`` exempts
+    from the auto-archive sweep, ``unread=False`` marks read up to now.
+
+    ``stamp`` is the one-label door and ``stamps`` the ordered list (max 3); the list wins when a
+    request carries both, and either clears the other's column with it, so the two never disagree.
+    """
     flags = [flag for flag, _ in _RENAME_FLAG_SETTERS]
 
     def _update(db):
         sid = _resolve_session_id(db, session_id)
         if not sid:
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
-        if body.title is None and all(getattr(body, f) is None for f in flags):
+        if (body.title is None and body.stamp is None and body.stamps is None
+                and all(getattr(body, f) is None for f in flags)):
             raise HTTPException(
                 status_code=400,
-                detail="Nothing to update; provide 'title', 'archived', 'hidden', 'pinned', and/or 'unread'.",
+                detail=("Nothing to update; provide 'title', 'stamp', 'stamps', 'archived', "
+                        "'hidden', 'pinned', and/or 'unread'."),
             )
         if body.title is not None:
             try:
                 db.set_session_title(sid, body.title or "")
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
+                raise HTTPException(status_code=400, detail=str(e))
+        if body.stamps is not None:
+            try:
+                db.set_session_stamps(sid, body.stamps)
+            except ValueError as e:
+                # Too many labels, an over-long one, or a control character: reject, never
+                # silently truncate.
+                raise HTTPException(status_code=400, detail=str(e))
+        elif body.stamp is not None:
+            try:
+                db.set_session_stamp(sid, body.stamp)
+            except ValueError as e:
+                # Control characters or past the length cap: reject, never silently truncate.
                 raise HTTPException(status_code=400, detail=str(e))
         result = {"ok": True, "title": None}
         for flag, setter in _RENAME_FLAG_SETTERS:
@@ -708,6 +727,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 setter(db, sid, value)
                 result[flag] = bool(value)
         result["title"] = db.get_session_title(sid) or ""
+        result["stamps"] = db.get_session_stamps(sid)
+        result["stamp"] = db.get_session_stamp(sid) or ""
         return result
 
     return _with_db(body.profile, _update, read_only=False)

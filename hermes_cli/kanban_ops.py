@@ -95,7 +95,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _print_json({
             **{k: getattr(res, k)
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
-                         "reaped_terminal_workers")},
+                         "reaped_terminal_workers", "reaped_superseded_siblings")},
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
@@ -118,6 +118,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Reclaimed:    {res.reclaimed}")
     if res.reaped_terminal_workers:
         print(f"Reaped workers of finished tasks: {', '.join(res.reaped_terminal_workers)}")
+    if res.reaped_superseded_siblings:
+        print(f"Reaped stale duplicate clones: {', '.join(res.reaped_superseded_siblings)}")
     for label, items in (
         ("Crashed:     ", res.crashed),
         ("Timed out:   ", res.timed_out),

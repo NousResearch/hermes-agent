@@ -102,6 +102,12 @@ class DispatchResult:
     reaped_terminal_workers: list[str] = field(default_factory=list)
     """Task ids whose worker outlived its closed run and was terminated by
     :func:`reap_terminal_workers`."""
+    reaped_superseded_siblings: list[str] = field(default_factory=list)
+    """``blocked`` task ids auto-archived by :func:`_reap_superseded_blocked_siblings`
+    because a same-lineage sibling (same title/created_by/assignee) already
+    reached ready/running/review/todo/scheduled/done — recovery for a
+    protocol-violation respawn loop that leaves stale duplicate clones behind
+    instead of resuming its own prior card (kanban task t_a95da99a)."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -843,6 +849,69 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
             "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
         )
     return reconciled
+
+
+def _reap_superseded_blocked_siblings(conn: sqlite3.Connection) -> list[str]:
+    """Auto-archive ``blocked`` cards superseded by a same-lineage sibling that
+    is already ready/running/review/todo/scheduled/done.
+
+    Targets the specific failure mode in kanban task t_a95da99a: a supervisor
+    script (or any respawn loop) that violates the one-clone-per-lineage
+    protocol and creates a fresh card every time it wakes, instead of finding
+    and resuming its own prior card. Each generation blocks (e.g. on the exact
+    same missing dependency the previous generation was already blocked on),
+    and nothing ever retired the old ones — 12 blocked clones of one card
+    accumulated with no automatic recovery.
+
+    Lineage is same ``(title, created_by, assignee)``, which is what
+    :func:`_kb.reap_stale_sibling` re-verifies independently of this caller —
+    this function only proposes candidate pairs, it re-derives nothing, so a
+    bug here can at most under- or over-*propose*, never bypass the real
+    safety check. Runs every reclaim phase (cheap: one indexed query over
+    ``blocked`` rows, bounded by how many blocked cards exist); returns the
+    ids it archived so :class:`DispatchResult` and dashboards can surface it
+    exactly like every other reclaim-phase action.
+    """
+    reaped: list[str] = []
+    blocked_rows = conn.execute(
+        "SELECT id, title, created_by, assignee FROM tasks WHERE status = 'blocked'"
+    ).fetchall()
+    if not blocked_rows:
+        return reaped
+    # One indexed query per distinct lineage, not one per blocked row: a
+    # supervisor that already left 12 clones must not cost 12 full-table scans.
+    seen_lineages: set[tuple[str, Optional[str], Optional[str]]] = set()
+    for row in blocked_rows:
+        lineage = (row["title"], row["created_by"], row["assignee"])
+        if lineage in seen_lineages:
+            continue
+        seen_lineages.add(lineage)
+        keeper = conn.execute(
+            "SELECT id FROM tasks WHERE title = ? AND created_by IS ? AND assignee IS ? "
+            f"  AND status IN ({','.join('?' * len(_kb._REAP_ALIVE_STATUSES))}) "
+            "ORDER BY created_at DESC LIMIT 1",
+            (*lineage, *_kb._REAP_ALIVE_STATUSES),
+        ).fetchone()
+        if not keeper:
+            continue  # every same-lineage card is blocked — nothing supersedes them yet
+        keep_id = keeper["id"]
+        for stale_row in blocked_rows:
+            if (stale_row["title"], stale_row["created_by"], stale_row["assignee"]) != lineage:
+                continue
+            if stale_row["id"] == keep_id:
+                continue
+            try:
+                if _kb.reap_stale_sibling(conn, stale_row["id"], keep_id):
+                    reaped.append(stale_row["id"])
+                    _kb._log.info(
+                        "kanban reap: archived stale blocked clone %s, superseded by %s",
+                        stale_row["id"], keep_id,
+                    )
+            except ValueError as exc:
+                # Lineage/status shifted between the SELECT above and this call
+                # (concurrent writer) — safe to skip, next tick re-evaluates.
+                _kb._log.debug("kanban reap: skipped %s -> %s: %s", stale_row["id"], keep_id, exc)
+    return reaped
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -1963,6 +2032,7 @@ def _run_reclaim_phase(
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
+    result.reaped_superseded_siblings = _reap_superseded_blocked_siblings(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
     result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks

@@ -23,7 +23,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_LIST_SCHEMA, KANBAN_REAP_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
     KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
@@ -999,6 +999,52 @@ def _handle_unblock(args: dict, **kw) -> str:
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
+@_kanban_handler("kanban_reap")
+def _handle_reap(args: dict, **kw) -> str:
+    """Archive or unblock a card the caller does NOT own — the narrow capability
+    that lets a coordinator retire a stale sibling (Problem B, kanban task
+    t_a95da99a). Deliberately visible to dispatcher-spawned workers, unlike
+    kanban_unblock: this is what makes it safe to widen despite that.
+
+    The 'board' arg is read from THIS worker's own scope, never the caller's
+    args['board'] — a same-board restriction only means something if it
+    can't be argued around, so the schema exposes a 'board' property (every
+    kanban tool does, via _schema) but this handler never reads it. Contrast
+    kanban_unblock/kanban_complete/etc, which honour an explicit board
+    override for orchestrators managing multiple boards; kanban_reap is
+    narrower on purpose.
+
+    Ownership is NOT re-checked here the way _enforce_worker_task_ownership
+    does for kanban_complete/kanban_block — the entire point of this tool is
+    to act on a task_id that is deliberately NOT the caller's own. Safety
+    instead comes from kb.reap_task's mechanical limits (status must be
+    blocked/scheduled, action is archive/unblock only, reason is mandatory
+    and recorded) — see its docstring for why that is sufficient without a
+    lineage or ownership check.
+    """
+    _reject_delegated_child_mutation("kanban_reap")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    action = args.get("action")
+    _check(action in ("archive", "unblock"), "action must be 'archive' or 'unblock'")
+    reason = args.get("reason")
+    _check(reason and str(reason).strip(), "reason is required")
+    self_tid = os.environ.get("HERMES_KANBAN_TASK") if _is_dispatcher_owned_worker() else None
+    _check(tid != self_tid,
+           "kanban_reap targets a card you do NOT own — use kanban_complete/kanban_block "
+           "for your own task")
+    author = os.environ.get("HERMES_PROFILE") or "worker"
+    with _board(None) as (kb, conn):  # own board ONLY — see docstring, never args['board']
+        try:
+            ok = kb.reap_task(conn, tid, action=action, reason=str(reason),
+                               actor_task_id=self_tid, author=author)
+        except ValueError as exc:
+            raise _Reject(f"kanban_reap: {exc}")
+        _check(ok, f"could not {action} {tid} (state changed concurrently, retry)")
+        return _ok(task_id=tid, action=action, **_fields(kb.get_task(conn, tid), ("status",)))
+
+
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links → ValueError)."""
@@ -1030,6 +1076,7 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
+    ("kanban_reap", KANBAN_REAP_SCHEMA, _handle_reap, "⚰"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:

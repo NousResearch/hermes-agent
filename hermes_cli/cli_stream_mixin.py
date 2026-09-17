@@ -583,6 +583,7 @@ class CLIStreamMixin:
         local path is included so the agent can re-examine via ``vision_analyze``."""
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
+        from gateway.warning_notifications import render_notification
         from tools.vision_tools import vision_analyze_tool
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
@@ -614,7 +615,7 @@ class CLIStreamMixin:
                         f"image_url: {img_path}]")
                     if announce:
                         render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis failed — path included for retry{_RST}"),
-                                            platform="cli", user_config=getattr(self.agent, "_notification_config", None))
+                                            platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
             except Exception as e:
                 enriched_parts.append(
                     f"[The user attached an image but analysis failed ({e}). "
@@ -622,7 +623,7 @@ class CLIStreamMixin:
                     f"image_url: {img_path}]")
                 if announce:
                     render_notification(lambda: _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}"),
-                                        platform="cli", user_config=getattr(self.agent, "_notification_config", None))
+                                        platform="cli", user_config=getattr(getattr(self, "agent", None), "_notification_config", None))
 
         # Vision descriptions first, then the user's original text
         user_text = text if isinstance(text, str) and text else ""

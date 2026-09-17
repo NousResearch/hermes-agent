@@ -253,3 +253,26 @@ def test_tui_preview_restart_status_warning_honors_policy(tmp_path, monkeypatch,
     assert "Starting preview" in emitted and "Preparing terminal" in emitted
     assert ("⚠ provider fallback engaged" in emitted) is _visible(setting)
     assert ("⚠ compression model unavailable" in emitted) is _visible(setting)
+
+
+@pytest.mark.parametrize("setting", MODES)
+@pytest.mark.parametrize("failure", ("returns_error", "raises"))
+def test_cli_vision_fallback_notice_honors_policy(tmp_path, monkeypatch, setting, failure):
+    """Real call through _preprocess_images_with_vision: the model-facing retry text (with the path)
+    is always produced; only the console ⚠ notice follows policy."""
+    _policy(tmp_path, monkeypatch, setting)
+    import cli as climod
+    from unittest.mock import patch as _patch
+    out = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: out.append(s))
+    img = tmp_path / "shot.png"; img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    if failure == "raises":
+        async def _vision(**kwargs): raise RuntimeError("API down")
+    else:
+        async def _vision(**kwargs): return json.dumps({"error": "vision unavailable"})
+    cli_obj = climod.HermesCLI.__new__(climod.HermesCLI)
+    cli_obj.agent = types.SimpleNamespace(_notification_config=None)
+    with _patch("tools.vision_tools.vision_analyze_tool", side_effect=_vision):
+        result = cli_obj._preprocess_images_with_vision("check this", [img])
+    assert str(img) in result and "check this" in result
+    assert (any("vision analysis" in s for s in out)) is _visible(setting)

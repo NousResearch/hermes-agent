@@ -203,6 +203,13 @@ export interface VaultUnlockReq {
   requestId: string
 }
 
+/** First-time login capture; the password stays inside the prompt and is sent only to the vault request. */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
 export interface PanelData {
   sections: PanelSection[]
   title: string

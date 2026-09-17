@@ -198,11 +198,14 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
             <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
-                <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
-                </Box>
-              )}
+              {ui.theme.brand.messageStyle !== 'cards' &&
+                row.msg.role === 'user' &&
+                firstUserIdx >= 0 &&
+                row.index > firstUserIdx && (
+                  <Box marginTop={1}>
+                    <Text color={ui.theme.color.border}>───</Text>
+                  </Box>
+                )}
 
               {row.msg.kind === 'intro' ? (
                 <Box flexDirection="column" paddingTop={1}>
@@ -578,6 +581,7 @@ export const AppLayout = memo(function AppLayout({
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
+                onVaultSaveLoginSubmit={actions.answerVaultSaveLogin}
                 onVaultUnlockSubmit={actions.answerVaultUnlock}
               />
             </PerfPane>

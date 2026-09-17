@@ -145,7 +145,7 @@ export function applyVoiceRecordResponse(
 }
 
 export function dismissSensitivePrompt(
-  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultUnlock'>,
+  overlay: Pick<OverlayState, 'secret' | 'sudo' | 'vaultSaveLogin' | 'vaultUnlock'>,
   rpc: GatewayRpc,
   sys: (text: string) => void
 ) {
@@ -176,6 +176,17 @@ export function dismissSensitivePrompt(
 
     patchOverlayState({ vaultUnlock: null })
     sys(`${overlay.vaultUnlock.displayName} stays locked`)
+
+    respondToServerRequest(requestId, { value: '' })
+
+    return
+  }
+
+  if (overlay.vaultSaveLogin) {
+    const requestId = overlay.vaultSaveLogin.requestId
+
+    patchOverlayState({ vaultSaveLogin: null })
+    sys(`login for ${overlay.vaultSaveLogin.site} not saved`)
 
     respondToServerRequest(requestId, { value: '' })
   }
@@ -241,7 +252,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {
+    if (overlay.sudo || overlay.secret || overlay.vaultSaveLogin || overlay.vaultUnlock) {
       return dismissSensitivePrompt(overlay, gateway.rpc, actions.sys)
     }
 
@@ -498,7 +509,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
-      if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo || overlay.vaultUnlock))) {
+      if (
+        isCtrl(key, ch, 'c') ||
+        (key.escape && (overlay.secret || overlay.sudo || overlay.vaultSaveLogin || overlay.vaultUnlock))
+      ) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
         patchOverlayState({ sessions: false })

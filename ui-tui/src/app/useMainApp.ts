@@ -385,7 +385,8 @@ export function useMainApp(gw: GatewayClient) {
 
   const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
-  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const conversationCards = ui.theme.brand.messageStyle === 'cards'
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${conversationCards ? 'cards' : 'plain'}:${detailsLayoutKey}`
 
   // Build a render-local snapshot. Registering/pruning the shared cache is a
   // post-commit transition below, so an abandoned concurrent render cannot
@@ -411,6 +412,7 @@ export function useMainApp(gw: GatewayClient) {
     (index: number) =>
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
+        conversationCards,
         details: detailsVisible,
         leadGap: hasLeadGap(
           prevRenderedMsg(i => virtualRows[i]?.msg, index, {
@@ -428,6 +430,7 @@ export function useMainApp(gw: GatewayClient) {
       }),
     [
       cols,
+      conversationCards,
       detailsVisible,
       firstUserIdx,
       historyThinkingExpanded,
@@ -674,7 +677,12 @@ export function useMainApp(gw: GatewayClient) {
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
   const marker =
-    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+    overlay.approval ||
+    overlay.sudo ||
+    overlay.secret ||
+    overlay.vaultSaveLogin ||
+    overlay.vaultUnlock ||
+    overlay.clarify
       ? '⚠'
       : ui.busy
         ? '⏳'
@@ -1187,6 +1195,22 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.vaultUnlock, respondWith]
   )
 
+  const answerVaultSaveLogin = useCallback(
+    (value: string) => {
+      if (!overlay.vaultSaveLogin) {
+        return
+      }
+
+      const requestId = overlay.vaultSaveLogin.requestId
+
+      respondWith(requestId, { value }, () => {
+        patchOverlayState({ vaultSaveLogin: null })
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [overlay.vaultSaveLogin, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1297,6 +1321,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
@@ -1321,6 +1346,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       closeLiveSession,

@@ -444,3 +444,59 @@ Reproduced on an isolated temporary board, no real card touched:
 
 Carved onto card `t_76bca50a` (`parents=[t_8c480dce]`) with the acceptance
 criteria, alongside the round-1 carve-out `t_f0b49db9`. Not implemented here.
+
+## Escalation classification (EM regression, t_de12518a / PR #4952)
+
+**Defect.** A supervision turn escalated to the human although (a) a documented,
+authorised **opaque** non-author review identity existed, (b) an independent
+artifact review had been done at a pinned SHA, and (c) only a formal review gate
+remained. Nothing in that state is irreversible, financial, or external-policy —
+the correct action was to route the scoped review. Escalating burned a human
+round trip.
+
+**Fix.** `escalation.py` classifies a `STOP-CHECK-ESCALATION:` marker into one of
+four decisions, and `stopcheck._classify` step 3b acts on it *before* the
+human-gate branch (so a routable escalation can never be laundered into
+"attended by a human gate" and left quiet):
+
+| decision | finding kind | when |
+|---|---|---|
+| `route_scoped_review` | `escalation_routable` | `class=review_gate`, documented opaque capability, `review_sha` == current head |
+| `require_fresh_review` | `escalation_stale_review` | head moved, or head unobservable — the pinned review is stale, capability must NOT be used |
+| `access_blocker` | `escalation_access_blocker` | no documented identity, or it is non-opaque / would reveal or mint a credential |
+| `human_required` | *(unchanged)* | any other class, or no class at all |
+
+Fail-closed by construction: only `class=review_gate` is routable, an undeclared
+capability refuses rather than assumes, and an unknown head never matches a
+pinned review. Head resolution prefers a live resolver / operator observation
+over the marker's own `head_sha` — the marker is precisely the thing that goes
+stale.
+
+**Config** (`agentpod_stop_check`):
+
+```yaml
+review_capabilities:
+  - name: app-review
+    opaque: true              # false => reviews as the author, blocked
+    reveals_credential: false # true  => blocked
+current_heads: {"*": "<sha>"}  # or head_resolver: callable(task) -> sha
+```
+
+**Proof.** `test_51`–`test_55` in `test_stop_check.py` drive the real runtime
+path (`pre_llm_call` → `pre_verify` → `finalize_turn`), not wording. Mutation
+receipt:
+
+```
+# delete the step-3b dispatch from stopcheck._classify (763 chars)
+$ scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py \
+    -k "test_51 or test_52 or test_53 or test_55"
+=== Summary: 1 files, 0 tests passed, 4 failed ===       # RED
+$ git checkout -- contrib/den-plugins/agentpod-stop-check/stopcheck.py
+$ scripts/run_tests.sh contrib/den-plugins/agentpod-stop-check/test_stop_check.py
+=== Summary: 1 files, 70 tests passed, 0 failed ===       # GREEN
+```
+
+`install_runtime()` now derives the installed module set by globbing
+`*.py` instead of a hand-maintained tuple — the previous literal list would have
+silently omitted `escalation.py` from the installed plugin while the suite
+stayed green against the source tree (P-GUARD).

@@ -1196,6 +1196,24 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    @classmethod
+    def _looks_like_polling_stall(cls, error: Exception) -> bool:
+        """True when the error represents a confirmed polling stall rather than a transient transport drop.
+
+        A wedged getUpdates consumer (CLOSE-WAIT socket or unquiesced server session) cannot safely be recovered
+        by restarting the same Updater in-place: stop() may return while the underlying action did not quiesce,
+        leaving subsequent in-place polling attempts deaf (#113618).
+        """
+        for cur in _iter_exception_graph(error):
+            text = str(cur).lower()
+            if (
+                "polling stall watchdog" in text
+                or "general path healthy but getupdates stalled" in text
+                or "getupdates made no progress" in text
+            ):
+                return True
+        return False
+
     def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
         value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
         if value is None:
@@ -1996,6 +2014,18 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._drain_polling_connections()
         if self._teardown_started:
             return
+        if self._looks_like_polling_stall(error):
+            message = (
+                "Telegram polling stall confirmed (getUpdates made no progress); "
+                "rebuilding the adapter instead of reusing an Updater whose long-poll action did not quiesce."
+            )
+            await self._go_fatal_network(
+                message,
+                "[%s] %s (rebuilding adapter via supervisor)",
+                self.name,
+                message,
+            )
+            return
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
@@ -2227,6 +2257,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "[%s] Telegram polling stalled: no getUpdates progress for %.0fs "
             "(generation %d). Rebuilding the long-poll consumer through the reconnect ladder instead of staying silently deaf.",
             self.name, stalled_for, getattr(self, "_polling_generation", 0))
+        self._send_path_degraded = True
+        if getattr(self, "_running", False):
+            self._mark_degraded()
         self._spawn_polling_recovery(
             asyncio.get_running_loop(),
             self._handle_polling_network_error(

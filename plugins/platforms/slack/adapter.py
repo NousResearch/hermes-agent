@@ -6061,7 +6061,9 @@ class SlackAdapter(BasePlatformAdapter):
         ``is_safe_url`` AND the Slack-CDN allowlist (token exfiltration); redirects are
         re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+        from tools.url_safety import (
+            create_ssrf_safe_async_client, is_safe_url, redirect_target_from_response,
+        )
         if not is_safe_url(url):
             raise ValueError(
                 f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}")
@@ -6071,18 +6073,41 @@ class SlackAdapter(BasePlatformAdapter):
                 f"{safe_url_for_log(url)}")
         bot_token = self._resolve_download_token(url, team_id)
         async with create_ssrf_safe_async_client(
-            timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]}
+            timeout=30.0, follow_redirects=False, event_hooks={"response": [_ssrf_redirect_guard]}
         ) as client:
             for attempt in range(3):
                 try:
-                    response = await client.get(
-                        url, headers={"Authorization": f"Bearer {bot_token}"})
+                    download_url = url
+                    redirect_count = 0
+                    while True:
+                        # httpx drops Authorization across origins. Enterprise Grid
+                        # needs it on files-origin, but never send it off Slack's CDN.
+                        response = await client.get(
+                            download_url, headers={"Authorization": f"Bearer {bot_token}"})
+                        if response.status_code not in (301, 302, 303, 307, 308):
+                            break
+                        target = redirect_target_from_response(response)
+                        if not target:
+                            break  # raise_for_status reports the malformed redirect.
+                        if not is_safe_url(target):
+                            raise ValueError(
+                                "Blocked unsafe Slack file redirect (SSRF protection): "
+                                f"{safe_url_for_log(target)}")
+                        if not self._is_slack_cdn_url(target):
+                            raise ValueError(
+                                "Blocked non-Slack-CDN file redirect (token-exfiltration protection): "
+                                f"{safe_url_for_log(target)}")
+                        if redirect_count == 3:
+                            raise ValueError("Too many Slack file redirects (maximum 3)")
+                        download_url = target
+                        redirect_count += 1
                     response.raise_for_status()
                     ct = response.headers.get("content-type", "")
                     if "text/html" in ct:
                         raise ValueError(
                             f"Slack returned HTML instead of {html_label} (content-type: {ct}); "
-                            "check bot token scopes and file permissions")
+                            "check bot token scopes and file permissions, or a cross-origin "
+                            "redirect dropped the token (Enterprise Grid files-origin)")
                     return response.content
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:

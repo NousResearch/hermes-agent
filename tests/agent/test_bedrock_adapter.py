@@ -1049,6 +1049,68 @@ class TestBedrockContextProbe:
                 region="eu-central-1") == 1_000_000
 
 
+class TestApplicationInferenceProfileContextLength:
+    """Application inference profile ARNs carry no model name, so the static
+    table always misses them. Resolve the wrapped model via GetInferenceProfile
+    instead of silently sizing at the 128k default (#114474)."""
+
+    APP_ARN = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456"
+    WRAPPED_ARN = "arn:aws:bedrock:us-west-2::inference-profile/us.anthropic.claude-sonnet-4-6"
+
+    def _runtime_client(self, message):
+        client = MagicMock()
+        client.converse.side_effect = Exception(message)
+        return client
+
+    def test_app_profile_resolves_wrapped_model_window(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+
+        control = MagicMock()
+        control.get_inference_profile.return_value = {"models": [{"modelArn": self.WRAPPED_ARN}]}
+
+        def converse(**kwargs):
+            # The ARN itself probes unparseably (the reported behavior); the
+            # wrapped model ARN probes its real 1M window.
+            if kwargs.get("modelId") == self.APP_ARN:
+                raise Exception("InternalServerException: opaque")
+            raise Exception("prompt is too long: 5000032 tokens > 1000000 maximum")
+
+        runtime = MagicMock()
+        runtime.converse.side_effect = converse
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=control), patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client", return_value=runtime
+        ):
+            assert get_bedrock_context_length(self.APP_ARN, region="us-west-2") == 1_000_000
+        control.get_inference_profile.assert_called_once()
+
+    def test_app_profile_denied_falls_back_to_default_with_warning(self, caplog):
+        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+
+        control = MagicMock()
+        control.get_inference_profile.side_effect = Exception(
+            "AccessDeniedException: not authorized to perform bedrock:GetInferenceProfile"
+        )
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=control), patch(
+            "agent.bedrock_adapter._get_bedrock_runtime_client",
+            return_value=self._runtime_client("InternalServerException: opaque"),
+        ), caplog.at_level("WARNING", logger="agent.bedrock_adapter"):
+            assert (
+                get_bedrock_context_length(self.APP_ARN, region="us-west-2")
+                == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            )
+        assert any("application-inference-profile" in r.message for r in caplog.records)
+
+    def test_plain_ids_never_touch_the_control_plane(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+
+        with patch(
+            "agent.bedrock_adapter._get_bedrock_control_client"
+        ) as mock_control, patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
+            assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
+            mock_control.assert_not_called()
+            mock_probe.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Tool-calling capability detection
 # ---------------------------------------------------------------------------

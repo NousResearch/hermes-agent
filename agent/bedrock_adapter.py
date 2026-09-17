@@ -1108,13 +1108,52 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     return None
 
 
+# Application inference profiles (cost-allocation wrappers) carry an opaque profile id instead of a
+# model name, so neither the probe error nor the static table can size them (#114474).
+_APPLICATION_PROFILE_RE = re.compile(r"application-inference-profile/", re.IGNORECASE)
+
+
+def _resolve_application_profile_model(model_id: str, region: str) -> Optional[str]:
+    """Wrapped model ARN for an application inference profile id, else ``None`` (no region, no
+    permission, empty profile). One extra IAM permission (``bedrock:GetInferenceProfile``); failures
+    stay debug-level here — the caller warns when it actually falls back to the default."""
+    if not region:
+        return None
+    try:
+        client = _get_bedrock_control_client(region)
+    except Exception as exc:  # boto3 missing / credential resolution failure
+        logger.debug("Bedrock inference-profile lookup skipped for %s: %s", model_id, exc)
+        return None
+    try:
+        resp = client.get_inference_profile(inferenceProfileIdentifier=model_id)
+    except Exception as exc:  # not permitted / unknown profile
+        logger.debug("Bedrock GetInferenceProfile failed for %s: %s", model_id, exc)
+        return None
+    for member in resp.get("models", []) or []:
+        wrapped = (member or {}).get("modelArn", "")
+        if wrapped and wrapped != model_id:
+            return wrapped
+    return None
+
+
 def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = True) -> int:
     """Context window: live probe (if ``probe`` and ``region``) → static table → default. The table is fallback
     only: a stale substring match silently caps the window (a 1M Opus pinned to 200K via "opus-4")."""
     if probe and region and (probed := probe_bedrock_context_length(model_id, region)):
         return probed
-    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in model_id.lower()]
-    return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)] if matches else BEDROCK_DEFAULT_CONTEXT_LENGTH
+    lowered = (model_id or "").lower()
+    if _APPLICATION_PROFILE_RE.search(lowered):
+        wrapped = _resolve_application_profile_model(model_id, region)
+        if wrapped:
+            return get_bedrock_context_length(wrapped, region, probe)
+    matches = [key for key in BEDROCK_CONTEXT_LENGTHS if key in lowered]
+    if matches:
+        return BEDROCK_CONTEXT_LENGTHS[max(matches, key=len)]
+    if lowered.startswith("arn:"):
+        logger.warning(
+            "Bedrock context window for %s unresolved; using default %s — size the profile's model "
+            "explicitly or grant bedrock:GetInferenceProfile", model_id, f"{BEDROCK_DEFAULT_CONTEXT_LENGTH:,}")
+    return BEDROCK_DEFAULT_CONTEXT_LENGTH
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

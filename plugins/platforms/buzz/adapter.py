@@ -313,7 +313,109 @@ def _configured_home_channel(extra: dict) -> str:
 
 def _configured_cli_path(extra: dict) -> str:
     raw = _scoped_platform_setting("BUZZ_CLI_PATH", extra, "cli_path")
-    return _resolve_cli_path(str(raw or "").strip() or str(extra.get("cli_path", "") or ""))
+    pin = _configured_cli_sha256(extra)
+    configured = str(raw or "").strip() or str(extra.get("cli_path", "") or "")
+    # PATH search is only for an unpinned binary. A sha256 pin requires an explicit path.
+    return _resolve_cli_path(configured, allow_path_search=not pin)
+
+
+def _configured_cli_sha256(extra: dict) -> str:
+    raw = _scoped_platform_setting("BUZZ_CLI_SHA256", extra, "cli_sha256")
+    return str(raw if raw is not None else extra.get("cli_sha256", "") or "").strip().lower()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _pinned_cli_exec_path(cli_path: str, extra: dict) -> str:
+    """Return the resolved CLI path after a just-in-time sha256 check, or "" on mismatch.
+
+    Symlinks are hashed and executed at ``Path.resolve()`` so a replaced target cannot
+    ride a pin taken at connect time.
+    """
+    pin = _configured_cli_sha256(extra)
+    if not pin or not cli_path:
+        return ""
+    try:
+        real = Path(cli_path).expanduser().resolve()
+    except OSError:
+        return ""
+    if not real.is_file():
+        return ""
+    try:
+        actual = _sha256_file(real)
+    except OSError:
+        return ""
+    if actual != pin:
+        logger.error("Buzz: CLI sha256 mismatch")
+        return ""
+    return str(real)
+
+
+def _split_destinations(raw) -> List[str]:
+    items = _split_csv(raw) if raw is not None else []
+    if not isinstance(items, (list, tuple)):
+        return []
+    return [entry.strip() for entry in items if isinstance(entry, str) and entry.strip()]
+
+
+def _configured_destinations(extra: dict) -> Optional[set]:
+    """None = unset (legacy unrestricted). Empty set = refuse every destination."""
+    raw = _scoped_platform_setting("BUZZ_ALLOWED_DESTINATIONS", extra, "allowed_destinations")
+    if raw is None:
+        if "allowed_destinations" not in (extra or {}):
+            return None
+        raw = extra.get("allowed_destinations")
+    return set(_split_destinations(raw))
+
+
+def _destination_not_allowed(dest: str, allowed: Optional[set]) -> bool:
+    """True when *allowed* is configured and *dest* is missing from it. Logs the first 8 chars only."""
+    if allowed is None:
+        return False
+    token = str(dest or "").strip()
+    if token and token in allowed:
+        return False
+    logger.warning("Buzz: destination not allowed: %s", token[:8] if token else "")
+    return True
+
+
+_DESTINATION_DENIED = "destination not allowed"
+_DEFAULT_FORWARD_ACK_TIMEOUT = 10.0
+_FORWARD_FRAME_MAX = 8 * 1024 * 1024
+_FORWARD_ACK_STATUSES = frozenset({"accepted", "duplicate", "rejected"})
+
+
+def _env_flag(raw: Any) -> bool:
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _forward_dedupe_key(event_id: str, direction: str, destination: str) -> str:
+    return hashlib.sha256(f"{event_id}{direction}{destination}".encode("utf-8")).hexdigest()
+
+
+def _encode_len_prefixed(obj: dict) -> bytes:
+    blob = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(blob) > _FORWARD_FRAME_MAX:
+        raise ValueError("forward frame too large")
+    return len(blob).to_bytes(4, "big") + blob
+
+
+async def _read_len_prefixed(reader: asyncio.StreamReader, timeout: float) -> dict:
+    header = await asyncio.wait_for(reader.readexactly(4), timeout=timeout)
+    size = int.from_bytes(header, "big")
+    if size <= 0 or size > _FORWARD_FRAME_MAX:
+        raise ValueError("invalid forward ack length")
+    payload = await asyncio.wait_for(reader.readexactly(size), timeout=timeout)
+    data = json.loads(payload.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("invalid forward ack")
+    return data
 
 
 def _configured_credentials_file(extra: Optional[dict]) -> str:
@@ -322,11 +424,16 @@ def _configured_credentials_file(extra: Optional[dict]) -> str:
     return configured or str((extra or {}).get("credentials_file", "") or "").strip()
 
 
-def _resolve_cli_path(configured: str = "") -> str:
-    """Resolve the buzz binary: explicit config → ``buzz`` on PATH → ``~/bin/buzz``; "" if none."""
+def _resolve_cli_path(configured: str = "", *, allow_path_search: bool = True) -> str:
+    """Resolve the buzz binary: explicit config → ``buzz`` on PATH → ``~/bin/buzz``; "" if none.
+
+    PATH / ``~/bin/buzz`` search runs only when no sha256 pin is configured.
+    """
     if configured:
         p = Path(configured).expanduser()
         return str(p) if p.is_file() else ""
+    if not allow_path_search:
+        return ""
     if found := shutil.which("buzz"):
         return found
     fallback = Path.home() / "bin" / "buzz"
@@ -540,6 +647,24 @@ class BuzzAdapter(BasePlatformAdapter):
         # never dispatch; allowed_users wins on overlap.
         self._allowed_pubkeys: set = _pubkey_set(_setting_or("BUZZ_ALLOWED_USERS", extra, "allowed_users", []))
         self._reaction_only_pubkeys: set = _pubkey_set(_setting_or("BUZZ_REACTION_ONLY_USERS", extra, "reaction_only_users", []))
+        self._allowed_destinations: Optional[set] = _configured_destinations(extra)
+        self._forward_only = _env_flag(_setting_or("BUZZ_FORWARD_ONLY", extra, "forward_only", False))
+        self._forward_socket = str(_setting_or("BUZZ_FORWARD_SOCKET", extra, "forward_socket", "") or "").strip()
+        try:
+            self._forward_ack_timeout = max(
+                0.1,
+                float(
+                    _setting_or(
+                        "BUZZ_FORWARD_ACK_TIMEOUT", extra, "forward_ack_timeout", _DEFAULT_FORWARD_ACK_TIMEOUT
+                    )
+                    or _DEFAULT_FORWARD_ACK_TIMEOUT
+                ),
+            )
+        except (TypeError, ValueError):
+            self._forward_ack_timeout = _DEFAULT_FORWARD_ACK_TIMEOUT
+        self._input_scope: Optional[set] = None
+        self._empty_allowlist_warned = False
+        self._forward_delivery_unknown = False
         # Secret — resolved lazily (never at import time, never logged); connect() re-resolves.
         self._private_key = self._auth_tag = ""
         # Identity — filled in by connect() from ``buzz users get``
@@ -588,7 +713,12 @@ class BuzzAdapter(BasePlatformAdapter):
         if not self._private_key:
             self._private_key = _resolve_private_key(self._extra)
             self._auth_tag = _resolve_auth_tag(self._extra)
-        return await _exec_buzz(self.cli_path, args, relay_url=self.relay_url, private_key=self._private_key,
+        exec_path = self.cli_path
+        if _configured_cli_sha256(self._extra):
+            exec_path = _pinned_cli_exec_path(self.cli_path, self._extra)
+            if not exec_path:
+                return 4, "", json.dumps({"error": "cli_sha256_mismatch", "message": "buzz CLI sha256 mismatch"})
+        return await _exec_buzz(exec_path, args, relay_url=self.relay_url, private_key=self._private_key,
                                 auth_tag=self._auth_tag, input_text=input_text)
 
     async def _cli_json(self, args: List[str], default):
@@ -612,6 +742,40 @@ class BuzzAdapter(BasePlatformAdapter):
             return self._connect_failed(
                 "cli_missing", "buzz CLI binary not found", "Buzz: buzz CLI binary not found (set BUZZ_CLI_PATH or put 'buzz' on PATH)"
             )
+        pin = _configured_cli_sha256(self._extra)
+        if pin:
+            exec_path = _pinned_cli_exec_path(self.cli_path, self._extra)
+            if not exec_path:
+                return self._connect_failed(
+                    "config_invalid",
+                    "buzz CLI sha256 mismatch",
+                    "Buzz: CLI sha256 mismatch",
+                )
+            self.cli_path = exec_path
+        if self._forward_only:
+            if not self._forward_socket:
+                return self._connect_failed(
+                    "config_missing",
+                    "BUZZ_FORWARD_SOCKET must be set",
+                    "Buzz: forward-only mode requires BUZZ_FORWARD_SOCKET",
+                )
+            if not Path(self._forward_socket).exists():
+                return self._connect_failed(
+                    "config_missing",
+                    "BUZZ_FORWARD_SOCKET does not exist",
+                    "Buzz: forward socket is missing",
+                )
+            if not self.channels:
+                return self._connect_failed(
+                    "config_missing",
+                    "BUZZ_CHANNELS must be set",
+                    "Buzz: forward-only mode requires BUZZ_CHANNELS",
+                )
+            if self._allowed_destinations is None:
+                self._allowed_destinations = set()
+            if not self._allowed_pubkeys and not self._empty_allowlist_warned:
+                logger.warning("Buzz: forward-only mode with empty allowed_users denies every sender")
+                self._empty_allowlist_warned = True
         try:
             self._private_key = _resolve_private_key(self._extra)
             self._auth_tag = _resolve_auth_tag(self._extra)
@@ -655,6 +819,9 @@ class BuzzAdapter(BasePlatformAdapter):
                 self._channel_names[str(ch_id)] = str(ch.get("name") or ch_id)
                 self._channel_meta[str(ch_id)] = ch
         watch = self.channels or list(self._channel_names)
+        if self._forward_only:
+            watch = list(self.channels)
+            self._input_scope = set(watch)
         if not watch:
             return self._connect_failed(
                 "config_missing", "no Buzz channels to watch", "Buzz: no channels to watch (configure BUZZ_CHANNELS or join a channel)"
@@ -690,7 +857,8 @@ class BuzzAdapter(BasePlatformAdapter):
             self.relay_url, self._display_name or self._self_npub[:16], len(self._channel_state),
             transport_used, "" if transport_used == "websocket" else f", poll interval {self.poll_interval:.1f}s",
         )
-        self._wire_plugin_handlers(None)
+        if not self._forward_only:
+            self._wire_plugin_handlers(None)
         return True
 
     async def disconnect(self) -> None:
@@ -810,7 +978,23 @@ class BuzzAdapter(BasePlatformAdapter):
             code, out, err = await self._run_cli(args + ["--mention", self._self_pubkey], input_text=content)
         return code, out, err
 
+    def _destination_error(self, chat_id: str) -> Optional[str]:
+        allowed = self._allowed_destinations
+        if self._forward_only and allowed is None:
+            allowed = set()
+        if _destination_not_allowed(chat_id, allowed):
+            return _DESTINATION_DENIED
+        return None
+
+    def _in_input_scope(self, channel_id: str) -> bool:
+        scope = self._input_scope
+        if scope is None:
+            return True
+        return channel_id in scope
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        if denied := self._destination_error(chat_id):
+            return SendResult(success=False, error=denied)
         if not content:
             return SendResult(success=False, error="Empty message")
         # Anchor: metadata.thread_id, then metadata.reply_to_message_id (stream/progress sends), then reply_to.
@@ -860,6 +1044,8 @@ class BuzzAdapter(BasePlatformAdapter):
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a sent message (streamed replies). The CLI reports a NEW event id but the stream consumer
         keeps addressing the original, so return the given id, never the CLI's."""
+        if denied := self._destination_error(chat_id):
+            return SendResult(success=False, error=denied)
         if not message_id:
             return SendResult(success=False, error="Buzz edit needs a message id")
         if not content:
@@ -908,6 +1094,8 @@ class BuzzAdapter(BasePlatformAdapter):
 
         See #74999.
         """
+        if denied := self._destination_error(chat_id):
+            return SendResult(success=False, error=denied)
         local = Path(file_path).expanduser()
         if probe and not local.is_file():
             # Never leak host filesystem paths into chat-visible errors.
@@ -1218,7 +1406,10 @@ class BuzzAdapter(BasePlatformAdapter):
                 logger.warning("Buzz: poll sweep failed", exc_info=True)
 
     def _new_channel_state(self, chat_type: str) -> dict:
-        return {"chat_type": chat_type, "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict()}
+        return {
+            "chat_type": chat_type, "last_ts": 0, "seen": OrderedDict(), "event_meta": OrderedDict(),
+            "pending_forwards": {},
+        }
 
     # ── Durable channel cursors ───────────────────────────────────────────
 
@@ -1322,7 +1513,7 @@ class BuzzAdapter(BasePlatformAdapter):
         code, out, _err = await self._run_cli(["dms", "list"])
         for dm in _parse_json_list(out) if code == 0 else []:
             dm_id = str(dm.get("dm_id") or "")
-            if dm_id and dm_id not in self._channel_state and dm_id not in self._restricted_channels:
+            if dm_id and dm_id not in self._channel_state and dm_id not in self._restricted_channels and self._in_input_scope(dm_id):
                 await self._adopt_conversation(dm_id, seed)
                 self._channel_names.setdefault(dm_id, "DM")
         code, out, _err = await self._run_cli(["channels", "list"])
@@ -1338,6 +1529,8 @@ class BuzzAdapter(BasePlatformAdapter):
             if self._may_reclassify_as_dm(ch_id):
                 # DM-shaped entries promote to DM — including ones already watched.
                 # See #77987, #87899, #99431.
+                if not self._in_input_scope(ch_id):
+                    continue
                 if ch_id in self._channel_state:
                     self._channel_state[ch_id]["chat_type"] = "dm"
                 else:
@@ -1348,6 +1541,8 @@ class BuzzAdapter(BasePlatformAdapter):
                 # explicit channels list) a channel the agent is added to after connect() must start
                 # dispatching without a gateway restart. Unlike a fresh DM its history predates us, so it is
                 # always seeded from its newest events — only messages sent after adoption dispatch.
+                if not self._in_input_scope(ch_id):
+                    continue
                 await self._seed_channel(ch_id, chat_type="group")
                 logger.info("Buzz: adopted newly joined channel %s (%s)", ch_id, self._channel_names.get(ch_id, ch_id))
 
@@ -1375,7 +1570,14 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _handle_events(self, channel_id: str, state: dict, events: List[dict]) -> None:
         """Handle a batch, trim, and persist only when the cursor moved (idle channels don't rewrite the file)."""
         before = self._cursor_mark(state)
-        for event in events:
+        self._forward_delivery_unknown = False
+        batch = events
+        if self._forward_only:
+            batch = sorted(
+                events,
+                key=lambda item: (int(item.get("created_at") or 0), str(item.get("id") or "")),
+            )
+        for event in batch:
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
         if self._cursor_mark(state) != before:
@@ -1482,28 +1684,62 @@ class BuzzAdapter(BasePlatformAdapter):
     async def _cache_inbound_attachments(self, metadata_items: List[dict]) -> List[CachedMedia]:
         return [a for m in metadata_items if (a := await self._download_attachment(m)) is not None]
 
+    @staticmethod
+    def _clamp_cursor_to_pending(state: dict) -> None:
+        """Keep last_ts strictly before the oldest delivery-unknown forward on this channel."""
+        pending = state.get("pending_forwards") or {}
+        if not pending:
+            return
+        low_water = min(int(ts) for ts in pending.values())
+        cap = max(low_water - 1, 0)
+        if int(state.get("last_ts") or 0) > cap:
+            state["last_ts"] = cap
+
+    def _note_pending_forward(self, state: dict, event_id: str, created_at: int) -> None:
+        pending = state.setdefault("pending_forwards", {})
+        pending[event_id] = int(created_at)
+        self._clamp_cursor_to_pending(state)
+
+    def _commit_event_cursor(self, state: dict, event_id: str, created_at: int) -> None:
+        state["seen"][event_id] = None
+        pending = state.get("pending_forwards")
+        if isinstance(pending, dict):
+            pending.pop(event_id, None)
+        state["last_ts"] = max(int(state.get("last_ts") or 0), created_at)
+        self._clamp_cursor_to_pending(state)
+
     async def _handle_event(self, channel_id: str, state: dict, event: dict) -> None:
         """De-dupe, filter, and dispatch a single ``messages get`` event."""
         event_id = str(event.get("id") or "")
         created_at = int(event.get("created_at") or 0)
         if not event_id or event_id in state["seen"]:
             return
-        state["seen"][event_id] = None
-        state["last_ts"] = max(state["last_ts"], created_at)
+        delay_cursor = self._forward_only
+        if not delay_cursor:
+            self._commit_event_cursor(state, event_id, created_at)
         if int(event.get("kind") or 0) not in _DISPATCH_KINDS:
+            if delay_cursor:
+                self._commit_event_cursor(state, event_id, created_at)
             return
         pubkey = str(event.get("pubkey") or "").lower()
         content = event.get("content")
         attachment_metadata, rejected_attachments = self._parse_imeta_attachments(event)
         if not pubkey or not isinstance(content, str) or not (content.strip() or attachment_metadata or rejected_attachments):
+            if delay_cursor:
+                self._commit_event_cursor(state, event_id, created_at)
             return
         # Cache before any early return so self-echo and concurrent-author traffic can still be reply parents.
         self._remember_event(state, event)
         # See #75826.
         if pubkey == self._self_pubkey:
+            if delay_cursor:
+                self._commit_event_cursor(state, event_id, created_at)
             return
         # Reclassify a leaked DM before gating so its first un-mentioned message both latches and dispatches.
         self._maybe_latch_dm(channel_id, state, event)
+        if self._forward_only and not self._in_input_scope(channel_id):
+            self._commit_event_cursor(state, event_id, created_at)
+            return
         is_dm = state["chat_type"] == "dm"
         reply_parent_id = _event_reply_parent_id(event)
         reply_meta = self._lookup_event_meta(state, reply_parent_id) if reply_parent_id else None
@@ -1511,12 +1747,42 @@ class BuzzAdapter(BasePlatformAdapter):
         # Channels dispatch only when addressed (@mention or p-tag) or replying to us (Signal/WhatsApp parity),
         # unless require_mention is off. DMs always dispatch.
         if not is_dm and self.require_mention and not self._is_addressed(event) and not reply_to_is_own:
+            if delay_cursor:
+                self._commit_event_cursor(state, event_id, created_at)
             return
         # Adapter-level allow-list (gateway also applies it centrally); empty = no filter.
+        # Forward-only treats an empty/invalid list as deny-all.
+        if self._forward_only and not self._allowed_pubkeys:
+            logger.debug("Buzz: ignoring message — empty allowlist in forward-only")
+            self._commit_event_cursor(state, event_id, created_at)
+            return
         if self._allowed_pubkeys and pubkey not in self._allowed_pubkeys:
-            if pubkey in self._reaction_only_pubkeys and _p_tagged(event, self._self_pubkey) and self._is_mentioned(content):
+            if (
+                not self._forward_only
+                and pubkey in self._reaction_only_pubkeys
+                and _p_tagged(event, self._self_pubkey)
+                and self._is_mentioned(content)
+            ):
                 await self.send_reaction(channel_id, event_id, "👀")
             logger.debug("Buzz: ignoring message from unauthorized pubkey %s…", pubkey[:8])
+            if delay_cursor:
+                self._commit_event_cursor(state, event_id, created_at)
+            return
+        if self._forward_only:
+            self._note_pending_forward(state, event_id, created_at)
+            self._forward_delivery_unknown = False
+            await self._dispatch_message(
+                text=content if isinstance(content, str) else "",
+                chat_id=channel_id,
+                chat_type="dm" if is_dm else "group",
+                user_id=pubkey,
+                user_name="",
+                message_id=event_id,
+                created_at=created_at,
+                raw_message=event,
+            )
+            if not self._forward_delivery_unknown:
+                self._commit_event_cursor(state, event_id, created_at)
             return
         # Strip a leading @mention (DMs often open with one too) so "@Chip /whoami" is recognized as a command.
         dispatch_text = self._strip_mention(content)
@@ -1545,6 +1811,8 @@ class BuzzAdapter(BasePlatformAdapter):
             reply_to_is_own_message=reply_to_is_own, media_urls=[attachment.path for attachment in attachments],
             media_types=[attachment.media_type for attachment in attachments], message_type=message_type, raw_message=event,
         )
+        if delay_cursor and not self._forward_delivery_unknown:
+            self._commit_event_cursor(state, event_id, created_at)
 
     # ── DM classification: DMs leak in via ``channels list`` as "group"; a real channel's p-tag is only addressing ──
 
@@ -1578,6 +1846,8 @@ class BuzzAdapter(BasePlatformAdapter):
     def _maybe_latch_dm(self, channel_id: str, state: dict, event: dict) -> None:
         """Latch a group conversation to "dm" once a direct message is seen; it sticks."""
         if state["chat_type"] == "dm" or not self._is_direct_message_event(channel_id, event):
+            return
+        if not self._in_input_scope(channel_id):
             return
         state["chat_type"] = "dm"
         self._channel_names.setdefault(channel_id, "DM")
@@ -1766,6 +2036,14 @@ class BuzzAdapter(BasePlatformAdapter):
         message_type: MessageType = MessageType.TEXT, raw_message: Any = None,
     ) -> None:
         """Build a MessageEvent and hand it to the base class handler."""
+        if self._forward_only:
+            if not isinstance(raw_message, dict):
+                self._forward_delivery_unknown = True
+                return
+            delivered = await self._forward_inbound(raw_message, chat_id, chat_type)
+            if not delivered:
+                self._forward_delivery_unknown = True
+            return
         if not self._message_handler:
             return
         media_urls = list(media_urls or [])
@@ -1799,6 +2077,51 @@ class BuzzAdapter(BasePlatformAdapter):
             await self.send_reaction(chat_id, message_id, "👀")
         except Exception:
             logger.debug("Buzz: reaction failed for message %s", message_id[:12], exc_info=True)
+
+    async def _forward_inbound(self, event: dict, channel_id: str, chat_type: str) -> bool:
+        """Write one length-prefixed relay event to the forward socket and wait for ack.
+
+        A missing ack is delivery-unknown: the caller must not advance the cursor.
+        """
+        event_id = str(event.get("id") or "")
+        direction = "inbound"
+        frame = {
+            "event": event,
+            "direction": direction,
+            "chat_type": chat_type,
+            "channel_id": channel_id,
+            "dedupe_key": _forward_dedupe_key(event_id, direction, channel_id),
+        }
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(self._forward_socket),
+                timeout=self._forward_ack_timeout,
+            )
+        except Exception:
+            logger.warning("Buzz: forward socket connect failed for %s", event_id[:8])
+            return False
+        try:
+            writer.write(_encode_len_prefixed(frame))
+            await writer.drain()
+            ack = await _read_len_prefixed(reader, self._forward_ack_timeout)
+        except Exception:
+            logger.warning("Buzz: forward ack missing/timeout for %s", event_id[:8])
+            return False
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        status = ack.get("status")
+        if ack.get("ack") != event_id or status not in _FORWARD_ACK_STATUSES:
+            logger.warning("Buzz: forward ack malformed for %s", event_id[:8])
+            return False
+        # accepted / duplicate / rejected all advance the cursor. rejected means the
+        # consumer discarded the event after validation; retrying would yield the same
+        # outcome, so treating it as delivery-unknown would stall the channel forever.
+        # Only a missing or malformed ack is delivery-unknown.
+        if status == "rejected":
+            logger.warning("Buzz: forward rejected by consumer reason=%s", ack.get("reason") or "")
+        return True
 
 
 # ── Plugin registration ──────────────────────────────────────────────────────
@@ -1853,7 +2176,10 @@ _YAML_BRIDGE = (  # (extra key, env var, kind) for apply_yaml_bridge
     ("home_channel", "BUZZ_HOME_CHANNEL", "str"), ("transport", "BUZZ_TRANSPORT", "str"),
     ("poll_interval", "BUZZ_POLL_INTERVAL", "str"),
     ("channels", "BUZZ_CHANNELS", "csv"), ("allowed_users", "BUZZ_ALLOWED_USERS", "csv"),
+    ("allowed_destinations", "BUZZ_ALLOWED_DESTINATIONS", "csv"),
     ("reaction_only_users", "BUZZ_REACTION_ONLY_USERS", "csv"), ("allow_all_users", "BUZZ_ALLOW_ALL_USERS", "lower"),
+    ("forward_only", "BUZZ_FORWARD_ONLY", "lower"), ("forward_socket", "BUZZ_FORWARD_SOCKET", "str"),
+    ("cli_sha256", "BUZZ_CLI_SHA256", "str"),
     ("require_mention", "BUZZ_REQUIRE_MENTION", "lower"), ("reply_in_thread", "BUZZ_REPLY_IN_THREAD", "lower"),
     ("reply_to_mode", "BUZZ_REPLY_TO_MODE", "lower"),
 )
@@ -1906,6 +2232,16 @@ async def _standalone_send(
         return send_error("Buzz standalone send: buzz CLI binary not found")
     if not (target := (chat_id or "").strip() or _configured_home_channel(extra)):
         return send_error("Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)")
+    allowed = _configured_destinations(extra)
+    if _env_flag(_setting_or("BUZZ_FORWARD_ONLY", extra, "forward_only", False)) and allowed is None:
+        allowed = set()
+    if _destination_not_allowed(target, allowed):
+        return send_error(_DESTINATION_DENIED)
+    if _configured_cli_sha256(extra):
+        pinned = _pinned_cli_exec_path(cli_path, extra)
+        if not pinned:
+            return send_error("Buzz standalone send: buzz CLI sha256 mismatch")
+        cli_path = pinned
     args = ["messages", "send", "--channel", target, "--content", "-"]
     # Same reply_to_mode / reply_in_thread gate as the live adapter.
     if thread_id and _reply_to_mode(pconfig, extra) != "off":

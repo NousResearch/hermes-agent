@@ -35,6 +35,39 @@ def _wait_for_frame(out: io.StringIO, predicate, timeout: float = 2.0) -> dict:
     raise AssertionError(f"timed out waiting for frame; saw={_json_lines(out)}")
 
 
+def test_compute_host_emit_degrades_an_unserializable_frame_instead_of_raising():
+    """``emit`` must go through ``serialize_frame`` like every other transport (#92506): a frame the
+    JSON encoder chokes on (e.g. a stray ``datetime`` in a turn's session_info) becomes a -32603
+    JSON-RPC error frame instead of raising out of the caller — a compute-host turn future is
+    fire-and-forget (``ThreadPoolExecutor.submit`` with no ``.result()``), so an uncaught exception
+    here would vanish silently instead of ever reaching the parent."""
+    import datetime
+
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+
+    host.emit({"type": "turn.end", "request_id": "rid-1", "session_info": {"bad": datetime.datetime.now()}})
+
+    frames = _json_lines(out)
+    assert len(frames) == 1
+    assert frames[0]["error"]["code"] == -32603
+    assert frames[0]["id"] is None
+    assert "not JSON serializable" in frames[0]["error"]["message"]
+
+
+def test_compute_host_emit_keeps_the_compact_separators_on_the_happy_path():
+    """The wire format compute-host has always used (no spaces after ``,``/``:``) must survive
+    routing ``emit`` through the shared ``serialize_frame`` helper."""
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+
+    host.emit({"type": "hb", "progress_counter": 3})
+
+    line = out.getvalue().splitlines()[0]
+    assert '"type":"hb"' in line
+    assert '"type": "hb"' not in line
+
+
 def test_compute_host_workers_inherit_tui_pool_env_or_8(monkeypatch):
     monkeypatch.delenv("HERMES_TUI_RPC_POOL_WORKERS", raising=False)
     monkeypatch.delenv("HERMES_COMPUTE_HOST_WORKERS", raising=False)

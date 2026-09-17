@@ -241,3 +241,83 @@ def streak_cost_usd(agent: Any) -> Optional[Decimal]:
     """Accumulated estimated cost of the current empty streak, if known."""
     cost = getattr(agent, _STREAK_COST_ATTR, None)
     return cost if cost is not None and cost > 0 else None
+
+
+# ── Server-side truncation starvation ────────────────────────────────────────────
+# ``finish_reason`` length/max_tokens with zero visible output means the endpoint's
+# output cap consumed the response. When reasoning counts against that cap (typical
+# for thinking models behind OpenAI-compatible gateways that apply an internal cap
+# when the request omits ``max_tokens``), the ENTIRE allocation goes to reasoning
+# before any answer token: retrying is guaranteed to truncate identically, and the
+# ladder's nudge/prefill/retries each re-bill the full input for no possible gain.
+_TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _completion_reasoning_tokens(canonical: Any) -> int:
+    """Best-effort reasoning-token count from canonical usage (0 when unreported)."""
+    return getattr(canonical, "reasoning_tokens", 0) or 0
+
+
+def is_output_starvation(
+    agent: Any,
+    *,
+    finish_reason: str,
+    response: Any,
+    has_visible_content: bool,
+    has_tool_calls: bool,
+) -> bool:
+    """True when the response provably hit the endpoint's output cap with nothing
+    usable delivered: truncating finish reason + usage-backed completion tokens,
+    no tool calls, no visible content. Callers pass ``has_visible_content`` AFTER
+    stripping inline think blocks so a truncated-mid-thought response (content is
+    only an unclosed think tag) does not fail open. Fails OPEN on ambiguous
+    evidence — any surviving content, tool calls, missing usage, or a disabled
+    guard keeps legacy ladder behaviour.
+    """
+    if not guard_enabled(agent):
+        return False
+    if str(finish_reason or "") not in _TRUNCATION_FINISH_REASONS:
+        return False
+    if has_tool_calls or has_visible_content:
+        return False
+    canonical = _normalized_usage(agent, response, "starvation detection")
+    if canonical is None:
+        return False
+    completion = getattr(canonical, "output_tokens", 0) or 0
+    if completion <= 0:
+        # Zero output + length-finish is the deterministic-empty guard's case.
+        return False
+    reasoning = _completion_reasoning_tokens(canonical)
+    if reasoning <= 0:
+        # Gateways often omit reasoning breakdown; completion tokens with empty
+        # content on a truncating finish reason still proves the cap ate the
+        # output UNLESS the content was actually delivered (checked above).
+        # Treated as starvation: the retry would truncate identically.
+        return True
+    # Reasoning breakdown present: starvation when reasoning effectively consumed
+    # the completion budget (>=95%) with no content surviving.
+    return reasoning >= completion * 0.95
+
+
+def starvation_retry_budget(agent: Any, finish_reason: str) -> int:
+    """Retry budget when the current streak is a proven output-cap starvation:
+    ONE retry for the first starved attempt, ZERO for every attempt after (a
+    systematic cap truncates identically; a second retry is a pure re-bill), then
+    the ladder proceeds to fallback/terminal. Any truncating finish reason across
+    the streak counts (gateways normalize length/max_tokens differently); mixed
+    non-truncating evidence keeps the default budget."""
+    if not guard_enabled(agent):
+        return DEFAULT_EMPTY_RETRY_BUDGET
+    if str(finish_reason or "") not in _TRUNCATION_FINISH_REASONS:
+        return DEFAULT_EMPTY_RETRY_BUDGET
+    attempts = getattr(agent, _ATTEMPTS_ATTR, None) or []
+    if not attempts:
+        return DEFAULT_EMPTY_RETRY_BUDGET
+    if not all(a.finish_reason in _TRUNCATION_FINISH_REASONS for a in attempts):
+        return DEFAULT_EMPTY_RETRY_BUDGET
+    retries = getattr(agent, "_empty_content_retries", 0)
+    if retries >= 1:
+        # Already burned the one controlled retry — further attempts on the same
+        # cap are guaranteed identical truncations.
+        return 0
+    return REDUCED_EMPTY_RETRY_BUDGET

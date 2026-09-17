@@ -272,12 +272,16 @@ class TestRunCompressContextWithProgressTimeout:
         assert result_prompt == "ok-prompt"
         assert "fence" in fence_holder
 
-    def test_active_stream_can_finish_after_pre_stream_ceiling(self):
+    def test_active_stream_can_finish_after_pre_stream_ceiling(self, monkeypatch):
         """Regression for #113646: a healthy slow stream owns its hard ceiling."""
         original = [{"role": "user", "content": "a"}]
         compressed = [{"role": "user", "content": "summarized"}]
 
+        progress_started = threading.Event()
+
         def worker(fence: CompressionCommitFence):
+            fence.touch_progress()
+            progress_started.set()
             for _ in range(6):
                 time.sleep(0.03)
                 fence.touch_progress()
@@ -287,14 +291,26 @@ class TestRunCompressContextWithProgressTimeout:
             finally:
                 fence.finish_commit()
 
-        result = run_compress_context_with_progress_timeout(
-            worker=worker,
-            messages=original,
-            system_prompt_fallback="fallback",
-            idle_timeout_seconds=0.1,
-            total_ceiling_seconds=0.1,
-            stall_fallback=False,
-        )
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        class _StartBeforeReturnExecutor:
+            def submit(self, fn, *args):
+                future = executor.submit(fn, *args)
+                assert progress_started.wait(timeout=2)
+                return future
+
+        monkeypatch.setattr(cc, "_get_compress_timeout_executor", lambda: _StartBeforeReturnExecutor())
+        try:
+            result = run_compress_context_with_progress_timeout(
+                worker=worker,
+                messages=original,
+                system_prompt_fallback="fallback",
+                idle_timeout_seconds=0.1,
+                total_ceiling_seconds=0.1,
+                stall_fallback=False,
+            )
+        finally:
+            executor.shutdown(wait=True)
 
         assert result == (compressed, "ok-prompt")
 
@@ -610,7 +626,7 @@ class TestCompressContextForwarderOwnsTimeout:
             provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
         )
 
-    def test_owned_total_ceiling_reports_progress_accurately(self, monkeypatch):
+    def test_stream_that_stalls_after_progress_reports_inactivity(self, monkeypatch):
         from run_agent import AIAgent
         from agent.context_compressor import ContextCompressor
 
@@ -634,9 +650,7 @@ class TestCompressContextForwarderOwnsTimeout:
 
         def streaming_compress(agent_obj, messages, system_message, **kwargs):
             fence = kwargs["commit_fence"]
-            while not fence.deadline_exceeded:
-                fence.touch_progress()
-                time.sleep(0.005)
+            fence.touch_progress()
             release.wait(timeout=2)
             return messages, "sys"
 
@@ -668,14 +682,13 @@ class TestCompressContextForwarderOwnsTimeout:
         assert out_msgs is original
         assert out_prompt == "sys"
         warning = agent._emit_warning.call_args.args[0]
-        assert "total ceiling" in warning
-        assert "summary output was observed" in warning
-        assert "no output" not in warning
+        assert "total ceiling" not in warning
+        assert "without new summary output" in warning
         cooldown_error = (
             agent.context_compressor._record_compression_failure_cooldown
             .call_args.args[1]
         )
-        assert "total ceiling exhausted" in cooldown_error
+        assert "host compress_context timeout" in cooldown_error
 
     def test_fallback_prompt_resolved_lazily_on_timeout(self, monkeypatch):
         """Eager prompt rebuild must not run before compression starts."""

@@ -1695,9 +1695,14 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
     reaped = False
     windows = is_windows()
     for pid in orphans:
-        with contextlib.suppress(Exception):
-            write_planned_stop_marker(pid)
         if windows:
+            expected_start_time = orphan_identity.get(pid)
+            if expected_start_time is None:
+                continue
+            with contextlib.suppress(Exception):
+                write_planned_stop_marker(
+                    pid, expected_start_time=expected_start_time
+                )
             # SIGTERM is TerminateProcess on Windows. Give the gateway's
             # planned-stop watcher the full drain window before escalating.
             reaped = True
@@ -1713,6 +1718,8 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
                 },
             )
             continue
+        with contextlib.suppress(Exception):
+            write_planned_stop_marker(pid)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:

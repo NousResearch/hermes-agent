@@ -1408,7 +1408,7 @@ def _drain_gateway_pid(
 ) -> bool:
     """Write the planned-stop marker and wait for the PID to exit. Windows can't deliver POSIX signals
     to an asyncio loop, so the marker is the ONLY way to ask the gateway to drain and persist."""
-    if pid <= 0:
+    if pid <= 0 or expected_start_time is None:
         return False
     try:
         from gateway.status import write_planned_stop_marker
@@ -1416,7 +1416,7 @@ def _drain_gateway_pid(
         return False
 
     try:
-        write_planned_stop_marker(pid)
+        write_planned_stop_marker(pid, expected_start_time=expected_start_time)
     except Exception:
         pass   # best-effort; caller escalates to a hard kill
 

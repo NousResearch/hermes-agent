@@ -3546,9 +3546,10 @@ def _unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:
 
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
-    ``force`` writes an unknown path under a known section (otherwise refused), skips the
-    unknown-top-level-key notice AND authorizes replacing a mapping section with a
-    scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
+    ``force`` writes a known key given under the wrong prefix (``gateway.discord.foo`` where
+    ``discord.foo`` is known; otherwise refused — any other unknown path under a known section
+    is written with a did-you-mean notice), skips the unknown-top-level-key notice AND
+    authorizes replacing a mapping section with a scalar. Without it, scalar writes over mappings are refused and bare ``model`` is redirected
     to ``model.default``."""
     if is_managed():
         managed_error("set configuration values")

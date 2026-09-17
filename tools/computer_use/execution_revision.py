@@ -1,11 +1,10 @@
 """Internal execution-revision contract for computer_use (Phase 0B of #112734).
 
 ``admit at epoch N → do work → validate epoch N → publish / commit``, extracted from the Bot Screen
-lease-epoch mechanics (#108914) into one internal record. Only facts the runtime can prove today are
-populated; the rest stay None and their dependencies validate open — a revision is never invented.
-When #108914 lands, its lease epoch and display identity plug into ``control_epoch`` /
-``display_identity`` and the same ``validate()`` calls grow teeth. No scheduler, no speculative
-mutations, no model-facing change (#112734 §K).
+lease-epoch mechanics (#108914) into one internal record. The lease epoch comes from the vendored
+#108914 abstraction (``tools/bot_desktop/lease.py``) — populated today, so ``validate()`` already
+grows teeth on CONTROL; the driver snapshot id stays None and validates open. No scheduler, no
+speculative mutations, no model-facing change (#112734 §K).
 """
 
 from __future__ import annotations
@@ -24,8 +23,9 @@ SNAPSHOT = "snapshot"
 _ALL_DEPS: FrozenSet[str] = frozenset({DISPLAY, BACKEND, CONTROL, TARGET, SNAPSHOT})
 
 # Operation → the facts it relies on (#112734 §A). Capture fences on display/backend/target; input
-# additionally needs the control epoch and a fresh driver snapshot. Both are unprovable on main until
-# #108914 lands, so they validate open here and fail closed once populated.
+# additionally needs the control epoch and a fresh driver snapshot. The epoch is provable now (the
+# vendored #108914 lease bumps it on every control transition); the snapshot id stays None until
+# cua-driver exposes one, and validates open meanwhile.
 CAPTURE_DEPS: FrozenSet[str] = frozenset({DISPLAY, BACKEND, TARGET})
 INPUT_DEPS: FrozenSet[str] = frozenset({CONTROL, DISPLAY, BACKEND, TARGET, SNAPSHOT})
 
@@ -45,7 +45,7 @@ class ExecutionRevision:
     profile_key: str
     display_identity: Optional[str] = None  # e.g. DISPLAY=":21"; None where the OS exposes none
     backend_generation: Optional[int] = None  # per-session install counter owned by tool.py
-    control_epoch: Optional[int] = None  # lease epoch; None until #108914 lands
+    control_epoch: Optional[int] = None  # lease epoch from the vendored #108914 abstraction
     app: Optional[str] = None  # sticky target app at admission
     pid: Optional[int] = None
     window_id: Optional[str] = None

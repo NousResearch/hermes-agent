@@ -213,13 +213,15 @@ def _scoped_sid(session_id: str) -> str:
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
 
 def _current_revision_facts(sid: str) -> Dict[str, object]:
-    """Ground truth for the provable revision fields. control_epoch stays None until #108914 lands its lease
-    epochs; display identity is only provable where the OS names the display (X11 DISPLAY). Unprovable
-    fields validate open — a revision is never invalidated on a fact the runtime cannot prove."""
+    """Ground truth for the provable revision fields. control_epoch is the Bot Screen lease epoch,
+    vendored from #108914 (tools/bot_desktop/lease.py) instead of waiting for it to merge: it bumps
+    on every control transition, so admit/validate catches a human takeover under an in-flight
+    action. Display identity is only provable where the OS names the display (X11 DISPLAY)."""
+    from tools.bot_desktop import lease as _lease  # vendored #108914; the real module replaces this
     return {
         "display_identity": os.environ.get("DISPLAY") if sys.platform == "linux" else None,
         "backend_generation": _backend_generations.get(sid),
-        "control_epoch": None,  # deferred: populated when #108914 (Bot Screen lease epochs) lands
+        "control_epoch": _lease.get().epoch,  # lease reads fail closed upstream (human holds)
     }
 
 def _execution_state(session_id: Optional[str]) -> ExecutionState:

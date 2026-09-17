@@ -405,8 +405,18 @@ def _write_task_script() -> Path:
 
 def _atomic_write(path: Path, content: str, tmp: Path) -> None:
     """Write ``content`` verbatim (no newline translation) via ``tmp`` then rename over ``path``."""
-    tmp.write_text(content, encoding="utf-8", newline="")
-    tmp.replace(path)
+    try:
+        tmp.write_text(content, encoding="utf-8", newline="")
+        tmp.replace(path)
+    except OSError:
+        # A staging file left in the Startup folder is opened by Windows at
+        # every login (#114093); elsewhere it is still debris. Best-effort
+        # discard, then surface the original failure.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 # ── Install / uninstall
@@ -1157,6 +1167,7 @@ def uninstall() -> None:
 
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        (get_startup_entry_path().with_suffix(".tmp"), "Windows login item staging file"),
         (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
     ):
         try:

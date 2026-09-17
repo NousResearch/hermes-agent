@@ -364,6 +364,57 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Atomic staging writes — issue #114093
+# ---------------------------------------------------------------------------
+
+
+def test_atomic_write_discards_staging_file_when_swap_fails(monkeypatch, tmp_path):
+    """A failed rename must not leave the .tmp staging file behind.
+
+    Windows opens every file in the Startup folder at login, so a leftover
+    Hermes_Gateway.tmp pops up in Notepad after every login (#114093).
+    """
+    target = tmp_path / "Hermes_Gateway.vbs"
+    staging = tmp_path / "Hermes_Gateway.tmp"
+
+    def _denied_replace(self, dest):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(gateway_windows.Path, "replace", _denied_replace)
+
+    with pytest.raises(OSError, match="Access is denied"):
+        gateway_windows._atomic_write(target, "staging content", staging)
+
+    assert not staging.exists()
+
+
+def test_uninstall_removes_startup_staging_leftover(monkeypatch, tmp_path):
+    """uninstall() must also sweep a .tmp left behind by a previously failed install.
+
+    A re-run that succeeds via the Scheduled Task path never touches the
+    Startup fallback, so the debris would persist until uninstall (#114093).
+    """
+    entry = tmp_path / "Startup" / "Hermes_Gateway_alice.vbs"
+    staging = tmp_path / "Startup" / "Hermes_Gateway_alice.tmp"
+    script = tmp_path / "task" / "Hermes_Gateway_alice.cmd"
+    entry.parent.mkdir(parents=True)
+    staging.write_text("stale staging file", encoding="utf-8")
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_alice")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+    monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: entry)
+    monkeypatch.setattr(
+        gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "Startup" / "Hermes_Gateway_alice.cmd"
+    )
+
+    gateway_windows.uninstall()
+
+    assert not staging.exists()
+
+
 
 
 

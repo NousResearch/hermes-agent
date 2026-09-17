@@ -32,6 +32,9 @@ export class HermesGateway extends JsonRpcGatewayClient {
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: 'Hermes gateway is not connected',
+      // The channel already answered -32603; surface the crash in devtools like the dial-failure sink.
+      onRequestHandlerError: (error, request) =>
+        console.error(`[gateway] server request handler crashed for ${request.method} (${request.id}):`, error),
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
   }

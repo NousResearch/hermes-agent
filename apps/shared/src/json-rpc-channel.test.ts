@@ -221,7 +221,14 @@ describe('JsonRpcRequestChannel', () => {
   // deliverRequest inside the socket listener — no response frame at all, so
   // the backend (clarify_tool: 3600s deadline) waited out the whole block.
   it('answers -32603 when a handler throws, keeps later frames working, and still answers -32601 otherwise', () => {
-    const channel = new JsonRpcRequestChannel()
+    const crashed: Array<{ id: string; method: string; message: string }> = []
+    const unhandled: string[] = []
+
+    const channel = new JsonRpcRequestChannel({
+      onRequestHandlerError: (error, req) => void crashed.push({ id: req.id, method: req.method, message: error.message }),
+      onUnhandledRequest: req => void unhandled.push(req.method)
+    })
+
     const { sent, transport } = spyTransport()
 
     channel.attach(transport)
@@ -249,6 +256,9 @@ describe('JsonRpcRequestChannel', () => {
     expect(frames[0].error?.message).toContain('boom')
     expect(frames[1].id).toBe('srq-2')
     expect(frames[1].error?.code).toBe(-32601)
+    // The crash reports through its own hook; it is not an "unhandled" request.
+    expect(crashed).toEqual([{ id: 'srq-1', method: 'boom', message: 'handler exploded' }])
+    expect(unhandled).toEqual(['nobody'])
 
     // The channel survives: a normal request after the crash still routes.
     channel.handleFrame(JSON.stringify({ id: 'srq-3', jsonrpc: '2.0', method: 'clarify', params: { session_id: 's1' } }))

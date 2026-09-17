@@ -10,6 +10,8 @@ import json
 import os
 from typing import Any, Iterable, Optional
 
+from agent.delegation_context import owned_kanban_task
+
 
 _TERMINAL_KANBAN_TOOLS = frozenset(
     {
@@ -70,10 +72,12 @@ def _configured_review_profile() -> str | None:
 
 
 def kanban_stop_nudge_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it."""
+    """On when ``HERMES_KANBAN_TASK`` is set for the dispatcher-owned worker, unless
+    ``HERMES_KANBAN_STOP_NUDGE`` disables it. In-process delegate_task children and cron runs
+    inherit the env var but own no board task and carry no kanban toolset."""
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
         return False
-    return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())
+    return bool(owned_kanban_task())
 
 
 def kanban_shutdown_drain_requested() -> bool:

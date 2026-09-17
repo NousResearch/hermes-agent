@@ -24,6 +24,16 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 
+<<<<<<< HEAD
+||||||| b6b53c69a6
+_SKIP_PARTS = {".archive", ".hub", "node_modules", ".git"}
+_USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
+
+=======
+_SKIP_PARTS = {".archive", ".hub", ".locks", "node_modules", ".git"}
+_USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
+
+>>>>>>> upstream/main
 
 @dataclass
 class SkillNode:
@@ -245,6 +255,7 @@ def _memory_skill_edges(memory_cards: list[dict[str, Any]], skills: list[SkillNo
     return edges
 
 
+<<<<<<< HEAD
 def _skill_roots() -> list[tuple[str, Path]]:
     repo = Path(__file__).resolve().parent.parent
     home_skills = get_hermes_home() / "skills"
@@ -325,6 +336,18 @@ def _shared_edges(
     return sorted(edges)
 
 
+||||||| b6b53c69a6
+=======
+def _has_learning_signal(node: SkillNode) -> bool:
+    """Graph-worthy: agent-created, user-taught (/learn), or actually used.
+
+    ``created_by="learn"`` is a learning-signal marker only — curator management stays keyed
+    strictly on ``"agent"`` (see ``tools.skill_usage._is_curator_managed_record``).
+    """
+    return node.created_by in {"agent", "learn"} or node.use_count > 0
+
+
+>>>>>>> upstream/main
 def build_learning_graph() -> dict[str, Any]:
     """Full payload for the desktop learning panel.
 
@@ -335,9 +358,17 @@ def build_learning_graph() -> dict[str, Any]:
     """
     all_skills = build_skill_nodes(_skill_roots())
     learned_skills = {
+<<<<<<< HEAD
         name: node
         for name, node in all_skills.items()
         if node.source != "base" and (node.created_by == "agent" or node.use_count > 0)
+||||||| b6b53c69a6
+        name: node for name, node in build_skill_nodes(roots).items()
+        if node.source != "base" and (node.created_by == "agent" or node.use_count > 0)
+=======
+        name: node for name, node in build_skill_nodes(roots).items()
+        if node.source != "base" and _has_learning_signal(node)
+>>>>>>> upstream/main
     }
     skill_edges = build_edges(learned_skills)
     memory_cards = _memory_cards()

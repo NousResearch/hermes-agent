@@ -1077,6 +1077,38 @@ class TestStreamLeakOnStartFailure:
         mock_stream.close.assert_called_once()
 
 
+class TestStreamStartTimeoutRetry:
+    """PortAudio paTimedOut (-9987) on a cold bridge: retry the open once (#109303)."""
+
+    def test_timed_out_start_retries_once_and_succeeds(self, mock_sd):
+        cold = MagicMock()
+        cold.start.side_effect = OSError("Error starting stream: Wait timed out [PaErrorCode -9987]")
+        warm = MagicMock()
+        mock_sd.InputStream.side_effect = [cold, warm]
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        recorder._ensure_stream()
+
+        assert recorder._stream is warm
+        cold.close.assert_called_once()
+        warm.close.assert_not_called()
+
+    def test_persistent_timeout_raises_after_second_attempt(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError, match="Wait timed out"):
+            recorder._ensure_stream()
+
+        assert mock_sd.InputStream.call_count == 2
+        assert mock_stream.close.call_count == 2
+        assert recorder._stream is None
+
+
 # ============================================================================
 # listen_for_speech — VAD barge-in monitor
 # ============================================================================

@@ -178,6 +178,19 @@ Provider-supplied `reset_at` timestamps override these default cooldowns.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 
+**Anthropic 429s are per model.** Anthropic enforces its rate limits per model, so a generic 429 for
+one Claude model cools that credential down for *that model only* — the same key keeps serving every
+other Claude model, and `ANTHROPIC_API_KEY` / borrowed Claude Code tokens honour the same per-model
+cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the whole credential.
+
+**A dead OAuth login is reported, not benched.** When a refresh token is rejected for good
+(`invalid_grant`, `invalid_token`, `refresh_token_reused` — the token was revoked, or another program
+holding the same login rotated it first), the pool logs one WARNING naming the entry and the repair
+command (`hermes auth add <provider>`), and the credential leaves rotation — marked `dead`, or dropped
+when it only mirrored a token file the pool has just cleared — until you sign in again. This applies to Anthropic, Codex, xAI
+and Nous OAuth logins alike. A dead credential never re-enters rotation on a timer, so a lost login
+shows up once in the log instead of failing quietly every hour.
+
 ## Custom Endpoint Pools
 
 Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).
@@ -213,6 +226,7 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 | Source | Example | Auto-seeded? |
 |--------|---------|-------------|
 | Environment variables | `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY` | Yes |
+| Numbered env siblings | `OPENROUTER_API_KEY_2`, `OPENROUTER_API_KEY_3`, … | Yes (see below) |
 | OAuth tokens (auth.json) | Codex device code, Nous device code | Yes |
 | Claude Code credentials | `~/.claude/.credentials.json` | Yes (Anthropic) |
 | Hermes PKCE OAuth | `~/.hermes/auth.json` | Yes (Anthropic) |
@@ -220,6 +234,15 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 | Manual entries | Added via `hermes auth add` | Persisted in auth.json |
 
 Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
+
+### Several keys from the environment
+
+Want more than one key for a provider without storing any of them in `auth.json`? Number them. Next to `NVIDIA_API_KEY` set `NVIDIA_API_KEY_2`, `NVIDIA_API_KEY_3`, … in your shell, `.env`, or secret manager (Bitwarden Secrets, Vault, …) and each becomes its own pool entry on the next load — no command, no config. Discovery stops at the first missing number, so a stray `_5` with no `_4` is ignored. Combine with `credential_pool_strategies` to rotate them:
+
+```yaml
+credential_pool_strategies:
+  nvidia: round_robin
+```
 
 Borrowed runtime secrets (for example env vars, Bitwarden/Vault/keyring/systemd references, and custom config values) are reference-only at the `auth.json` boundary. Hermes can use the resolved value in memory for the current run, but it persists only metadata such as the source ref, label, status, request counters, and a non-reversible fingerprint. Manual entries and Hermes-owned OAuth/device-code state keep the durable tokens they need to refresh.
 
@@ -245,7 +268,7 @@ For the full data flow diagram, see [`docs/credential-pool-flow.excalidraw`](htt
 
 The credential pool integrates at the provider resolution layer:
 
-1. **`agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns; **`agent/credential_pool_admin.py`** owns locked target resolution, reset, add, removal, and priority mutations
+1. **`agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns; **`agent/credential_pool_admin.py`** owns locked target resolution, reset, add, removal, and priority mutations; **`agent/credential_pool_model_cooldowns.py`** owns the per-model Anthropic 429 cooldowns
 2. **`hermes_cli/auth_commands.py`** — CLI commands and interactive wizard
 3. **`hermes_cli/runtime_provider.py`** — Pool-aware credential resolution
 4. **`agent/turn_api_error.py`** — Error recovery: 429/402/401 → pool rotation → fallback
@@ -286,6 +309,8 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
 ```
 
 The OpenRouter entry above was borrowed from an external source, so the raw key is not stored in `auth.json`. The manual Anthropic entry was intentionally added to Hermes' credential store, so its token remains persistable.
+
+An `env:` row is re-hydrated from the environment on every load, and the variable name does not have to be one Hermes declares for the provider: numbered siblings (`OPENROUTER_API_KEY_2`, see [Auto-Discovery](#auto-discovery)) appear here automatically, and a hand-written row pointing at any other variable is filled the same way, without the secret ever being written to `auth.json`.
 
 Strategies are stored in `config.yaml` (not `auth.json`):
 

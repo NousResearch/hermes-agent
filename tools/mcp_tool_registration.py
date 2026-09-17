@@ -17,7 +17,7 @@ from tools.mcp_tool_handlers import (
     _make_list_resources_handler, _make_read_resource_handler)
 from tools.mcp_tool_schema import (
     _UTILITY_CAPABILITY_ATTRS, _build_utility_schemas, _normalize_name_filter, matches_name_filter)
-from tools.mcp_tool_scope import _key_name, _resolve_server_key, _server_key
+from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
 
 if TYPE_CHECKING:  # pragma: no cover
     from tools.mcp_tool import MCPServerTask
@@ -51,18 +51,43 @@ def _annotation_read_only_hint(mcp_tool: Any) -> bool:
     return hint is True
 
 
-def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any]) -> None:
+def _record_tool_trust_metadata(server_name: str, config: dict, tools: List[Any], key=None) -> None:
     """Capture per-server trust and per-tool readOnlyHint at discovery — the security boundary: the call-time gate
-    classifies from data we control, never re-read server-supplied state."""
+    classifies from data we control, never re-read server-supplied state. *key* is the connection (default: the
+    registering profile's own); the ``trust`` policy is recorded under it for the profile that owns it — an
+    adopting profile records its own policy in ``_record_scope_trust``."""
     with _core._lock:
+<<<<<<< HEAD
         key = _resolve_server_key(server_name, lock_held=True)
+||||||| b6b53c69a6
+        key = _resolve_server_key(server_name)
+=======
+        if key is None:
+            key = _server_key(server_name)
+>>>>>>> upstream/main
         _core._server_trust_levels[key] = _normalize_server_trust((config or {}).get("trust"))
         hints = _core._tool_read_only_hints.setdefault(key, {})
         hints.update({t.name: _annotation_read_only_hint(t) for t in tools if getattr(t, "name", None)})
 
 
+<<<<<<< HEAD
 def _track_mcp_tool_server(tool_name: str, server_name: str, *, key=None, scope=None) -> None:
     """Remember raw connection and public server provenance for *tool_name*."""
+||||||| b6b53c69a6
+def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
+    """Remember the exact raw MCP server that registered *tool_name*."""
+=======
+def _record_scope_trust(server_name: str, config: dict, scope: str) -> None:
+    """``trust`` is the CONSUMING profile's policy, never the connection's: an ``untrusted`` profile that
+    adopts a ``full`` profile's live connection must still be asked before every write-capable call."""
+    with _core._lock:
+        _core._server_trust_levels[_server_key(server_name, scope, current=False)] = _normalize_server_trust(
+            (config or {}).get("trust"))
+
+
+def _track_mcp_tool_server(tool_name: str, server_name: str) -> None:
+    """Remember the exact raw MCP server that registered *tool_name*."""
+>>>>>>> upstream/main
     with _core._lock:
         scope = _core._mcp_registry_scope() if scope is None else scope
         if key is None:
@@ -177,8 +202,13 @@ def _remove_server_scope(key, scope: str) -> None:
             _core._server_tool_scopes[key] = scopes
         else:
             _core._server_tool_scopes.pop(key, None)
+<<<<<<< HEAD
     for tool_name in removed_tools:
         _forget_mcp_tool_server(tool_name, removed_key=key)
+||||||| b6b53c69a6
+=======
+        _core._server_trust_levels.pop(_server_key(server_name, scope, current=False), None)
+>>>>>>> upstream/main
     _restore_server_toolset_alias(key)
 
 
@@ -433,7 +463,7 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     ``toolsets.TOOLSETS``; lossy normalization collisions (``read-file``/``read_file``) fail closed."""
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
-    _record_tool_trust_metadata(name, config, server._tools)
+    _record_tool_trust_metadata(name, config, server._tools, key)
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     registered = _register_candidates(
@@ -452,9 +482,16 @@ def _connection_identity(config: dict) -> tuple:
     """What makes one live connection reusable for another profile: the route fingerprint PLUS
     everything that authenticates it (``config_fingerprint`` deliberately excludes credentials so
     the schema cache survives a token rotation). Two profiles pointing at the same URL with different
+<<<<<<< HEAD
     headers/env/auth are two identities; borrowing across them would call tools as the other user.
     OAuth and mTLS inputs are included here as well, even though profile-owned credentials still
     require an owner-scope check below."""
+||||||| b6b53c69a6
+    headers/env/auth are two identities; borrowing across them would call tools as the other user."""
+=======
+    headers/env/auth/client certificates are two identities; borrowing across them would call tools
+    as the other user."""
+>>>>>>> upstream/main
     from tools.mcp_schema_cache import config_fingerprint
     from tools.mcp_tool_config import _CONNECTION_EXTERNAL_ENV_KEY, _external_secret_env
 
@@ -470,6 +507,7 @@ def _connection_identity(config: dict) -> tuple:
     if external_env is None and "command" in config and "url" not in config:
         external_env = _external_secret_env()
     return (config_fingerprint(config), _frozen(config.get("env")), _frozen(config.get("headers")),
+<<<<<<< HEAD
             _frozen(auth_inputs), _frozen(external_env))
 
 
@@ -477,10 +515,27 @@ def _profile_owned_auth(config: dict) -> bool:
     """Whether a live MCP session can retain credentials owned by one profile."""
     return ((config.get("auth") or "").lower().strip() == "oauth"
             or config.get("client_cert") is not None or config.get("client_key") is not None)
+||||||| b6b53c69a6
+            (config.get("auth") or "").lower().strip())
+=======
+            _auth_type(config), _frozen(config.get("client_cert")), _frozen(config.get("client_key")))
+>>>>>>> upstream/main
 
 
-def _same_server_route(server: Any, config: dict) -> bool:
-    return _connection_identity(getattr(server, "_config", {}) or {}) == _connection_identity(config)
+def _auth_type(config: dict) -> str:
+    return (config.get("auth") or "").lower().strip()
+
+
+def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
+    """Whether *server* matches *config*, with OAuth connections never reusable across profiles.
+
+    OAuth credentials live in the owning profile's token storage rather than the static config,
+    so identical OAuth configs cannot prove that two profiles authenticate as the same account.
+    """
+    if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
+        return False
+    # Identities match, so both sides carry the same normalised auth type.
+    return not (cross_profile and _auth_type(config) == "oauth")
 
 
 def _connection_reusable_in_scope(name: str, server: Any, config: dict, scope: str, *, owner_key=None) -> bool:
@@ -552,10 +607,24 @@ def _register_connected_into_current_scope(servers: dict) -> int:
             if scope not in scopes:
                 continue
             server = _core._servers.get(key)
+<<<<<<< HEAD
             config = servers.get(_core._server_public_names.get(key, _key_name(key)))
+||||||| b6b53c69a6
+            config = servers.get(_key_name(key))
+=======
+            config = servers.get(_key_name(key))
+            cross_profile = _key_scope(key) != scope
+>>>>>>> upstream/main
             if (config is None or not _server_enabled(config) or server is None
+<<<<<<< HEAD
                     or getattr(server, "session", None) is None
                     or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+||||||| b6b53c69a6
+                    or getattr(server, "session", None) is None or not _same_server_route(server, config)):
+=======
+                    or getattr(server, "session", None) is None
+                    or not _same_server_route(server, config, cross_profile=cross_profile)):
+>>>>>>> upstream/main
                 stale.append(key)
     for key in stale:
         _remove_server_scope(key, scope)
@@ -569,15 +638,24 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 continue  # this profile has its own connection for the name
             # Any other profile's live connection with the same route AND credentials is shareable.
             shared = [(key, live) for key, live in _core._servers.items()
+<<<<<<< HEAD
                       if _core._server_public_names.get(key, _key_name(key)) == name
                       and getattr(live, "session", None) is not None
                       and _connection_reusable_in_scope(name, live, config, scope, owner_key=key)]
+||||||| b6b53c69a6
+                      if _key_name(key) == name and getattr(live, "session", None) is not None
+                      and _same_server_route(live, config)]
+=======
+                      if _key_name(key) == name and getattr(live, "session", None) is not None
+                      and _same_server_route(live, config, cross_profile=True)]
+>>>>>>> upstream/main
         if not shared:
             continue
         key, server = shared[0]
         # Visibility for this profile: the owner keeps teardown, this scope sees the connection.
         with _core._lock:
             _core._server_tool_scopes.setdefault(key, set()).add(scope)
+        _record_scope_trust(name, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
         candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)

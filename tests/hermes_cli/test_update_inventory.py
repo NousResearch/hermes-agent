@@ -8,8 +8,9 @@ import pytest
 import hermes_cli.update_inventory as ui
 
 
-def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None):
-    record = {"pid": pid}
+def _write_state(home: Path, pid: int, sha: str | None = None, version: str | None = None,
+                 gateway_state: str = "running"):
+    record = {"pid": pid, "gateway_state": gateway_state}
     if sha:
         record["code_sha"] = sha
     if version:
@@ -31,6 +32,9 @@ def fleet(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: default_home / "profiles")
     monkeypatch.setattr("hermes_cli.profiles._PROFILE_ID_RE", re.compile(r"^[a-z0-9][a-z0-9_-]*$"), raising=False)
     monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in (100, 200))
+    # A runtime is a VERIFIED gateway identity: live PID whose command line is a gateway's for that home.
+    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
+        100: "hermes gateway run", 200: "hermes --profile work gateway run"}.get(pid))
     monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda all_profiles=False: {100})
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda exclude_pids=None: [])
@@ -80,6 +84,16 @@ class TestCollectInventory:
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
         plan = ui.collect_runtime_inventory()
         assert plan.runtimes == []
+
+    def test_stopped_record_with_recycled_pid_is_not_a_runtime(self, fleet, monkeypatch):
+        """#109680: a ``stopped`` record whose PID an unrelated process now holds must not fabricate a
+        gateway the restart phase can never touch (that phantom made `hermes update` exit partial)."""
+        work_home = fleet / "home" / "profiles" / "work"
+        _write_state(work_home, 200, gateway_state="stopped")
+        monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: {
+            100: "hermes gateway run", 200: "C:/Windows/system32/dllhost.exe /Processid:{X}"}.get(pid))
+        plan = ui.collect_runtime_inventory()
+        assert [r.profile for r in plan.runtimes] == ["default"]
 
     def test_pid_file_fallback_covers_unstamped_profiles(self, fleet, monkeypatch):
         """Gateways with a PID file but no runtime-status record still appear."""

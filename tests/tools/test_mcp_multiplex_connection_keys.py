@@ -38,7 +38,8 @@ def two_profiles(tmp_path, monkeypatch):
     ledgers = ("_servers", "_server_scope_keys", "_server_tool_scopes", "_server_connecting",
                "_server_connect_errors", "_server_connect_retry_after", "_server_connect_failures",
                "_server_error_counts", "_server_breaker_opened_at", "_lazy_server_configs",
-               "_mcp_tool_server_names", "_orphaned_adopters", "_parallel_safe_servers")
+               "_mcp_tool_server_names", "_orphaned_adopters", "_parallel_safe_servers",
+               "_server_trust_levels", "_tool_read_only_hints")
     saved = {n: type(getattr(core, n))(getattr(core, n)) for n in ledgers}
     for n in ledgers:
         getattr(core, n).clear()
@@ -87,6 +88,66 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     assert "x" in disc._select_new_servers({"x": cfg_b})
     assert not disc._connect_cooldown_active("y")
     assert handlers._check_circuit_breaker("x") is None
+
+
+def test_oauth_server_is_not_adopted_across_profiles(two_profiles):
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    cfg = {"url": "https://mcp.example/x", "auth": "oauth"}
+
+    scope_a = two_profiles("a")
+    srv_a = _server("x", cfg)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg)
+    assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == 0
+    assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
+
+    scope_b = two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": dict(cfg)}) == 0
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+
+    # Driven through the public entry point, B must open its own connection (its own OAuth
+    # token) rather than adopt A's session.
+    connected = []
+
+    def fake_pass(new_servers):
+        for name, config in new_servers.items():
+            connected.append(_server(name, config))
+            disc._adopt_server(name, connected[-1])
+
+    with patch.object(disc, "_run_discovery_pass", fake_pass), \
+            patch.object(disc._loop, "_ensure_mcp_loop", lambda: None):
+        disc.register_mcp_servers({"x": dict(cfg)})
+    assert connected and core._servers[(scope_b, "x")] is connected[0]
+    assert core._servers[(scope_a, "x")] is srv_a
+
+
+def test_same_named_server_with_other_mtls_identity_is_a_separate_connection(two_profiles):
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+
+    cfg_a = {
+        "url": "https://mcp.example/x",
+        "client_cert": "/certs/profile-a.pem",
+        "client_key": "/certs/profile-a.key",
+    }
+    cfg_b = {
+        "url": "https://mcp.example/x",
+        "client_cert": "/certs/profile-b.pem",
+        "client_key": "/certs/profile-b.key",
+    }
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    reg.register_connected_into_current_scope({"x": cfg_b})
+    assert "x" in disc._select_new_servers({"x": cfg_b})
 
 
 def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profiles):
@@ -185,3 +246,156 @@ def test_parallel_policy_is_scoped_to_same_named_connections(two_profiles):
     assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is False
     two_profiles("b")
     assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is True
+
+
+def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gate(two_profiles, monkeypatch):
+    """Trust is the consuming profile's policy: adopting A's ``trust: full`` connection must not let
+    B's ``trust: untrusted`` write-capable call skip approval."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
+    from tools import mcp_tool_registration as reg
+    import tools.approval_prompt as approval_prompt
+
+    route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+    cfg_a, cfg_b = dict(route, trust="full"), dict(route, trust="untrusted")
+    asked = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                        lambda *a, **k: asked.append(a) or "deny")
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": cfg_b}) == 1
+    assert handlers._trust_gate_check("x", "t") is not None and asked
+
+    two_profiles("a")
+    assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
+
+
+def test_parallel_safe_opt_in_is_per_profile(two_profiles):
+    """B's ``supports_parallel_tool_calls`` on its own same-named server never makes A's serial
+    server's tool parallel-safe (the batch planner would run two A calls concurrently)."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    cfg_b = dict(cfg_a, headers={"Authorization": "Bearer B"}, supports_parallel_tool_calls=True)
+
+    two_profiles("a")
+    disc._select_new_servers({"x": cfg_a})
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    disc._select_new_servers({"x": cfg_b})
+    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is True
+
+    two_profiles("a")
+    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is False
+
+
+def test_served_profile_without_multiplex_flag_gets_its_own_connection(two_profiles, monkeypatch):
+    """A dashboard/desktop backend serves profiles through the HERMES_HOME override with
+    ``gateway.multiplex_profiles`` off; a same-named server with other credentials must still be a
+    separate connection there, or profile B calls the server as profile A (#111151). The launch
+    profile itself (no override) keeps the bare, unscoped key."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.mcp_tool_scope import _resolve_server_key, _server_key
+    from tools.registry import registry
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    cfg_b = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer B"}}
+
+    scope_a = two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+    assert (scope_a, "x") in core._servers
+
+    two_profiles("b")
+    assert _resolve_server_key("x") != (scope_a, "x")
+    assert registry.get_tool_names_for_toolset("mcp-x") == []
+    assert "x" in disc._select_new_servers({"x": cfg_b})
+
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        assert core._mcp_registry_scope() is None
+        assert _server_key("x") == "x"
+
+
+def test_served_profile_check_fn_verdict_does_not_shadow_launch_profile(two_profiles, monkeypatch):
+    """With multiplex off, a served profile's (correct) "not my connection" verdict must not sit in
+    the process-wide check_fn cache under the launch profile's key: the cache scope has to follow
+    the same served-profile predicate as the registry scope, or the owner loses its live tools."""
+    import tools.registry as registry_mod
+    from tools import mcp_tool_discovery as disc
+    from tools import mcp_tool_registration as reg
+    from tools.registry import registry
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    srv_a = _server("x", cfg_a)
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        disc._adopt_server("x", srv_a)
+        srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+        entry = registry._tools["mcp__x__t"]
+    registry_mod.invalidate_check_fn_cache()
+    try:
+        two_profiles("b")
+        assert registry_mod.check_fn_cache_scope() is not None
+        assert registry_mod._check_fn_cached(entry.check_fn) is False
+        with patch("hermes_constants.get_hermes_home_override", return_value=None):
+            assert registry_mod._check_fn_cached(entry.check_fn) is True
+    finally:
+        registry.deregister("mcp__x__t")
+        registry_mod.invalidate_check_fn_cache()
+
+
+def test_launch_profile_pruning_a_server_keeps_served_profiles_same_named_connection(two_profiles, monkeypatch):
+    """The launch profile's registry scope is ``None``; when it drops server ``x`` from its config,
+    ``reconcile_mcp_servers_with_config`` prunes with ``shutdown_mcp_servers(scope=None,
+    names={"x"})``. ``scope=None`` must mean *the unscoped owner* there, not *every owner* —
+    otherwise the dashboard's own profile silently tears down profile B's ``(B, "x")``."""
+    import tools.mcp_tool as core
+    from tools import mcp_tool_discovery as disc, mcp_tool_lifecycle as lifecycle, mcp_tool_loop as loop
+
+    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    cfg = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+
+    scope_b = two_profiles("b")
+    srv_b = _server("x", cfg)
+    disc._adopt_server("x", srv_b)
+    assert core._server_scope_keys[(scope_b, "x")] == scope_b
+
+    with patch("hermes_constants.get_hermes_home_override", return_value=None):
+        assert core._mcp_registry_scope() is None
+        srv_launch = _server("x", cfg)
+        disc._adopt_server("x", srv_launch)
+        assert core._server_scope_keys["x"] is None
+    # A third profile adopted the launch profile's connection: pruning it must remember the
+    # adopter so the next discovery pass re-registers it.
+    core._server_tool_scopes["x"] = {"c"}
+
+    closed = []
+
+    async def _shutdown(self):
+        closed.append(self.name)
+
+    for srv in (srv_b, srv_launch):
+        srv.shutdown = _shutdown.__get__(srv)
+
+    loop._ensure_mcp_loop()
+    try:
+        lifecycle.shutdown_mcp_servers(scope=None, names={"x"})
+    finally:
+        loop._stop_mcp_loop()
+
+    assert "x" not in core._servers and "x" not in core._server_scope_keys
+    assert core._servers[(scope_b, "x")] is srv_b
+    assert core._server_scope_keys[(scope_b, "x")] == scope_b
+    assert closed == ["x"]
+    assert core._orphaned_adopters == {"c": {"x"}}

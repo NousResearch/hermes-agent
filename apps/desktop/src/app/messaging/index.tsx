@@ -164,6 +164,33 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }, [])
 
+<<<<<<< HEAD
+||||||| b6b53c69a6
+  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
+  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
+  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+    if (hotServed) {
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+      return
+    }
+
+    setRestartNeeded(true)
+  }, [])
+
+=======
+  // A multiplexed named profile is re-served from its new config at once (`hot_served`): no restart
+  // banner; re-read status once the adapter had a moment to connect. Anything else needs a restart.
+  const settleAfterUpdate = useCallback((hotServed: boolean | undefined) => {
+    if (hotServed) {
+      window.setTimeout(() => void refreshPlatformsRef.current(true), 4000)
+
+      return
+    }
+
+    setRestartNeeded(true)
+  }, [])
+
+>>>>>>> upstream/main
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -420,7 +447,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       if (!ok) {
         setRestartNeeded(true)
-        notifyError(new Error(m.restartFailedManual), m.restartFailedManual)
+        notify({
+          kind: 'error',
+          title: m.restartFailedManual,
+          message: m.restartFailedManualDetail,
+          action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
+          secondaryAction: { label: m.openLogs, onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined) }
+        })
       }
 
       void refreshPlatforms(true)

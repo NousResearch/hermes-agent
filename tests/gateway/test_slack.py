@@ -2593,6 +2593,35 @@ class TestSendTyping:
 class TestFormatMessage:
     """Test markdown to Slack mrkdwn conversion."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target,pattern", [
+        ("files", "*test*.py"),
+        ("content", r"test_.*_.*\.py"),
+    ])
+    async def test_tool_progress_preserves_search_pattern(self, adapter, target, pattern):
+        from gateway.run_turn_runner import TurnRunner
+
+        args = {"target": target, "pattern": pattern}
+        ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
+        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        message = TurnRunner(runner, ctx)._progress_build_message("search_files", pattern, args)
+        client = adapter._app.client
+        client.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}
+        client.chat_update.return_value = {"ok": True, "ts": "123.456"}
+
+        assert (await adapter.send("C123", message)).success
+        assert (await adapter.edit_message("C123", "123.456", message)).success
+        for method in (client.chat_postMessage, client.chat_update):
+            assert method.call_args.kwargs["text"].endswith(f"`{pattern}`")
+        assert args == {"target": target, "pattern": pattern}
+
+    def test_tool_preview_backticks_do_not_break_code_span(self, adapter):
+        from agent.display import ToolPreview
+
+        preview = ToolPreview(text="`*test*`.py")
+        rendered = adapter.format_message(adapter.format_tool_preview(preview))
+        assert rendered == "`ˋ*test*ˋ.py`"
+        assert preview.text == "`*test*`.py"
 
     def test_italic_asterisk_conversion(self, adapter):
         assert adapter.format_message("*hello*") == "_hello_"
@@ -6020,3 +6049,39 @@ class TestAgentSessionsApiRouting:
             thread_ts="171234.0001",
             title="Summarize the incident",
         )
+
+
+# ---------------------------------------------------------------------------
+# TestNonConversationalSubtypeAllowlist
+# ---------------------------------------------------------------------------
+
+
+class TestNonConversationalSubtypeAllowlist:
+    """#110778 — Slack system messages must not start a turn in free-response channels; the
+    gate is an allowlist so subtypes Slack adds later are dropped instead of readmitted."""
+
+    @staticmethod
+    def _event(subtype, **extra):
+        # Distinct ts per subtype: the prefilter dedups by (team, ts) before the subtype gate.
+        event = {"type": "message", "user": "U_HUMAN", "text": "hello",
+                 "ts": f"12345.{abs(hash(subtype)) % 10**6}", "channel": "C_FREE",
+                 "client_msg_id": "m1", **extra}
+        if subtype is not None:
+            event["subtype"] = subtype
+        return event
+
+    @pytest.mark.asyncio
+    async def test_housekeeping_subtypes_are_dropped(self, adapter):
+        for subtype in ("channel_join", "channel_topic", "channel_convert_to_private",
+                        "pinned_item", "file_comment", "message_deleted"):
+            assert await adapter._prefilter_inbound(self._event(subtype), None) is None, subtype
+
+    @pytest.mark.asyncio
+    async def test_conversational_subtypes_still_pass(self, adapter):
+        adapter.config.extra["allow_bots"] = "all"
+        events = [self._event(s) for s in (None, "file_share", "thread_broadcast", "me_message",
+                                           "document_mention")]
+        events.append(self._event("bot_message", bot_id="B_OTHER"))
+        for event in events:
+            accepted = await adapter._prefilter_inbound(event, None)
+            assert accepted is not None and accepted[0]["channel"] == "C_FREE", event.get("subtype")

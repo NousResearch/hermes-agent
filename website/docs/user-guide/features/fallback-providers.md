@@ -95,6 +95,7 @@ OpenAI-compatible base URL continues to use the compatible client instead.
 | LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
+| Mixture of Agents preset | `moa` (`model` = preset name) | A configured MoA preset whose aggregator has credentials — the fallback runs the whole preset (references + aggregator), not the aggregator alone |
 
 ### Custom Endpoint Fallback
 
@@ -116,7 +117,7 @@ The fallback activates automatically when the primary model fails with:
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately
-- **Invalid responses** — when the API returns malformed or empty responses repeatedly
+- **Invalid responses** — when the API returns malformed or empty responses repeatedly. A streamed refusal (the model declining with an explanation on the refusal channel) is a terminal `content_filter` result, not an empty response, so it is surfaced rather than retried.
 
 When triggered, Hermes:
 

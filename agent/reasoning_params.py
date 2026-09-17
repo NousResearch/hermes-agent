@@ -5,7 +5,6 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import time
-from typing import Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.message_sanitization import matches_reasoning_echo_family
@@ -112,11 +111,6 @@ class ReasoningParamsMixin:
         except Exception:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
-
-    def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
-        """Safe top-level ``reasoning_effort`` for LM Studio; shared with the iteration-limit summary call."""
-        from agent.lmstudio_reasoning import resolve_lmstudio_effort
-        return resolve_lmstudio_effort(self.reasoning_config, self._lmstudio_reasoning_options_cached())
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""

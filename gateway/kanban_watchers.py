@@ -102,6 +102,18 @@ class GatewayKanbanWatchersMixin:
         dispatcher respawned a crashed task). All SQLite work runs in a thread;
         one tick's failure never stops the next.
         """
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            cfg = _load_config()
+            kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        except Exception as exc:
+            logger.warning("kanban notifier: cannot load config (%s); continuing enabled", exc)
+            kanban_cfg = {}
+        if not kanban_cfg.get("notify_in_gateway", True):
+            logger.info("kanban notifier: disabled via config kanban.notify_in_gateway=false")
+            return
+
         from gateway.config import Platform as _Platform
 
         try:
@@ -177,15 +189,21 @@ class GatewayKanbanWatchersMixin:
         reference only), and upload errors are logged, never raised.
         """
         raw_paths: list[str] = []
+        prose_paths: list[str] = []
         if isinstance(event_payload, dict):
             raw = event_payload.get("artifacts")
             if isinstance(raw, (list, tuple)):
                 raw_paths += [item for item in raw if isinstance(item, str)]
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
-                raw_paths += adapter.extract_local_files(summary)[0]
+                prose_paths += adapter.extract_local_files(summary)[0]
         if task is not None and getattr(task, "result", None):
-            raw_paths += adapter.extract_local_files(str(task.result))[0]
+            prose_paths += adapter.extract_local_files(str(task.result))[0]
+        # A staged copy and the scratch original it was copied from are the
+        # same deliverable; on a review handoff the original still exists, so
+        # prose mentions of it must not upload the file a second time.
+        staged_names = {os.path.basename(p) for p in raw_paths}
+        raw_paths += [p for p in prose_paths if os.path.basename(p) not in staged_names]
         candidates: list[str] = []
         for path in raw_paths:
             expanded = os.path.expanduser(path) if path else ""
@@ -297,6 +315,7 @@ class GatewayKanbanWatchersMixin:
         # broken PATH, missing venv, or credential loss.
         bad_ticks = 0
         last_warn_at = 0
+        results: Optional[list] = None
         dispatcher = _KanbanDispatcher(_kb, settings)
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
@@ -332,12 +351,13 @@ class GatewayKanbanWatchersMixin:
                     ) else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
+                    held = _kbd.describe_suppression(res for _slug, res in (results or []))
                     logger.warning(
                         "kanban dispatcher stuck: ready queue non-empty for "
-                        "%d consecutive ticks but 0 workers spawned. Check "
+                        "%d consecutive ticks but 0 workers spawned.%s Check "
                         "profile health (venv, PATH, credentials) and "
                         "`hermes kanban list --status ready`.",
-                        bad_ticks,
+                        bad_ticks, f" Last tick held back: {held}." if held else "",
                     )
                     last_warn_at = now
             except asyncio.CancelledError:

@@ -673,3 +673,54 @@ def test_read_only_handles_do_not_count_toward_the_duplicate_writer_warning(db, 
     finally:
         for d in extra:
             d.close()
+
+
+def test_closed_handles_do_not_count_toward_the_duplicate_writer_warning(db, caplog):
+    """Retained but closed SessionDB objects hold ``_conn is None`` and no longer carry
+    a writer connection, write lock, or close-time checkpoint.  They must not trip the
+    duplicate-writer warning (#113637)."""
+    import logging
+
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _HANDLES_PER_PATH_WARN
+
+    closed = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            for _ in range(_HANDLES_PER_PATH_WARN + 2):
+                handle = SessionDB(db_path=db.db_path)
+                handle.close()
+                closed.append(handle)
+        # Every retained object has _conn is None.
+        assert all(h._conn is None for h in closed)
+        assert not any(
+            "live SessionDB handles on" in r.getMessage() for r in caplog.records
+        ), "retained closed handles were counted as live writers"
+    finally:
+        for d in closed:
+            d.close()
+
+
+def test_failed_init_does_not_leave_a_registered_member(tmp_path, caplog):
+    """A SessionDB that fails during initialization must not remain in the
+    path budget's member set (#113637)."""
+    import logging
+
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _read_budget_for, _read_budget_key
+
+    bad_path = tmp_path / "does" / "not" / "exist" / "state.db"
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            SessionDB(db_path=bad_path)
+    except Exception:
+        pass  # expected: directory does not exist
+    budget = _read_budget_for(bad_path)
+    key = _read_budget_key(bad_path)
+    # The budget may have been created for the path, but must have zero members
+    # (or no budget at all if GC collected it).
+    with budget._lock:
+        member_count = len(budget._members)
+    assert member_count == 0, (
+        f"failed init left {member_count} member(s) in the path budget"
+    )

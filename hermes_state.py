@@ -501,7 +501,6 @@ class SessionDB(
         # per DATABASE PATH, not per instance: the descriptors they ration belong to the file, and one
         # process holds several SessionDB objects on the same state.db (#98573). See _PathReadBudget.
         self._read_budget = _read_budget_for(self.db_path)
-        self._read_budget.register(self)
         self._read_permits = self._read_budget.permits
         self._read_conns_lock = threading.Lock()
         # Set when close() begins; an in-flight reader then closes its own connection
@@ -561,6 +560,9 @@ class SessionDB(
             if not initialization_complete:
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+        # Register AFTER initialization succeeds so the duplicate-writer warning
+        # never counts a partially initialized or failed handle (#113637).
+        self._read_budget.register(self)
 
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
@@ -1424,6 +1426,9 @@ class SessionDB(
                     # Only a clean close ends the generation; retain the recorded
                     # identity when retiring an unsafe handle.
                     self._db_sidecar_identity = {}
+        # Deterministically unregister from the writer count so a retained but
+        # closed handle is never counted as a live writer (#113637).
+        self._read_budget.unregister(self)
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays

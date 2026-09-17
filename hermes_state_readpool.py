@@ -163,7 +163,12 @@ class _PathReadBudget:
             # Only writable handles carry the cost the warning names (writer connection, write
             # lock, close-time checkpoint). Read-only attaches (dashboard routers, status/lookup
             # one-shots) open per request by design and must not trip it.
-            handles = sum(1 for member in self._members if not member.read_only)
+            # Closed handles (_conn is None) must also be excluded: they no longer hold a
+            # writer connection, write lock, or close-time checkpoint (#113637).
+            handles = sum(
+                1 for member in self._members
+                if not member.read_only and member._conn is not None
+            )
             warn = (handles > _HANDLES_PER_PATH_WARN and not self._duplicate_handles_warned)
             if warn:
                 self._duplicate_handles_warned = True
@@ -180,6 +185,15 @@ class _PathReadBudget:
                 "for the file). A long-lived process should share one handle per path.",
                 handles, db.db_path, _READ_POOL_MAX,
             )
+
+    def unregister(self, db: "SessionDB") -> None:
+        """Deterministically remove a closed handle from the writer count.
+
+        ``close()`` drains the connection but the object may remain referenced; without
+        this call the closed handle stays in ``_members`` until garbage collection.
+        """
+        with self._lock:
+            self._members.discard(db)
 
     def acquire(self, requester: "SessionDB") -> bool:
         """Take a permit for a new read connection, or refuse (caller degrades to the

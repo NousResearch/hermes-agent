@@ -303,13 +303,13 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
-    def test_test_unknown_server_exit_code_two(self, tmp_path, capsys):
+    def test_test_unknown_server_exit_code_three(self, tmp_path, capsys):
         _seed_config(tmp_path, {
             "ink": {"url": "https://mcp.ml.ink/mcp"},
         })
         from hermes_cli.mcp_config import cmd_mcp_test
 
-        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 2
+        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
         out = capsys.readouterr().out
         assert "not found in config" in out
 

@@ -763,12 +763,13 @@ def cmd_mcp_test(args):
 
     Returns the process exit code so probes and watchdogs can branch on the
     outcome instead of parsing this output: 0 = connected, 1 = connection
-    failed, 2 = server not in the config.
+    failed, 3 = server not in the config. 3 (not argparse's usage-error 2)
+    keeps "server not in the config" distinguishable from "bad flags".
     """
     name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
-        return 2
+        return 3
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
     if "url" in cfg:
@@ -1088,7 +1089,7 @@ def mcp_command(args):
     if handler:
         rc = handler(args)
         # `test` reports its outcome as an exit code (0 connected, 1 failed,
-        # 2 unknown server); propagate it so callers can use `$?` instead of
+        # 3 unknown server); propagate it so callers can use `$?` instead of
         # parsing the human output.
         if action == "test" and rc:
             import sys as _sys

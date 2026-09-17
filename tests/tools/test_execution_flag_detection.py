@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from functools import lru_cache
 
 import pytest
 
@@ -32,6 +33,66 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
+@lru_cache(maxsize=None)
+def _runs_clean(probe: tuple) -> bool:
+    """True when *probe* exits 0 — a behavioural check for one userland's option grammar."""
+    try:
+        return subprocess.run(
+            probe, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@lru_cache(maxsize=None)
+def _is_gnu(tool: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [tool, "--version"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "GNU" in completed.stdout
+
+
+@lru_cache(maxsize=None)
+def _help_mentions(tool: str, option: str) -> bool:
+    """True when *tool*'s own usage documents *option*. BSD man prints a usage block
+    without --pager; man-db documents it. Asking the binary beats asking the platform,
+    and unlike running the option it does not depend on a manual page being installed."""
+    try:
+        completed = subprocess.run(
+            [tool, "--help"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return option in completed.stdout + completed.stderr
+
+
+# Rows whose option only exists in the GNU userland; BSD/macOS ships a different grammar
+# under the same tool name. Apple's sort accepts --buffer-size and even lists
+# --compress-program in its usage, yet never spawns it, so that row is gated on the
+# implementation rather than on the option string.
+_OPTION_SUPPORTED = {
+    ("sort", "--buffer-size=1K"): lambda: _is_gnu("sort"),
+    ("man", "--pager"): lambda: _help_mentions("man", "--pager"),
+}
+
+
+def _under_tty(argv):
+    """*argv* wrapped so it runs on a pty, or None when no usable script(1) exists.
+    util-linux takes the command as one -c string; BSD script takes argv after the file."""
+    if shutil.which("script") is None:
+        return None
+    if _runs_clean(("script", "-qec", "true", os.devnull)):
+        return ["script", "-qec", shlex.join(argv), os.devnull]
+    if _runs_clean(("script", "-q", os.devnull, "true")):
+        return ["script", "-q", os.devnull, *argv]
+    return None
+
+
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [
@@ -47,8 +108,11 @@ def test_real_binaries_execute_leading_dash_program_payload(
     tmp_path, tool, args, stdin, needs_tty
 ):
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
-    if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
-        pytest.skip(f"{tool} or script is not installed")
+    if shutil.which(tool) is None:
+        pytest.skip(f"{tool} is not installed")
+    supported = _OPTION_SUPPORTED.get((tool, args[0]))
+    if supported and not supported():
+        pytest.skip(f"this {tool} does not own {args[0]} (GNU-only option; BSD userland differs)")
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"
@@ -70,7 +134,9 @@ def test_real_binaries_execute_leading_dash_program_payload(
     }
     argv = [tool, *resolved_args]
     if needs_tty:
-        argv = ["script", "-qec", shlex.join(argv), "/dev/null"]
+        argv = _under_tty(argv)
+        if argv is None:
+            pytest.skip("no script(1) here can allocate a tty")
 
     subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
 

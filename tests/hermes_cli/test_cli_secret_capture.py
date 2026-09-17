@@ -86,19 +86,40 @@ def test_cancel_secret_capture_marks_setup_skipped():
 def test_secret_capture_uses_masked_prompt_without_tui():
     cli = _make_cli_stub()
 
-    with patch("hermes_cli.callbacks.masked_secret_prompt", return_value="secret-value"), patch(
-        "hermes_cli.callbacks.save_env_value_secure"
+    with patch("hermes_cli.callbacks.masked_secret_prompt", return_value="secret-value") as prompt_secret, patch(
+        "agent.secret_sources.bitwarden_write.store_bitwarden_secret"
     ) as save_secret:
         save_secret.return_value = {
             "success": True,
             "stored_as": "TENOR_API_KEY",
             "validated": False,
         }
-        result = prompt_for_secret(cli, "TENOR_API_KEY", "Tenor API key")
+        result = prompt_for_secret(
+            cli,
+            "TENOR_API_KEY",
+            "Tenor API key",
+            {"destination": "bitwarden_sm"},
+        )
 
     assert result["success"] is True
     assert result["stored_as"] == "TENOR_API_KEY"
     assert result["skipped"] is False
+    assert "Storage destination: the configured Bitwarden Secrets Manager project" in prompt_secret.call_args.args[0]
+
+
+def test_secret_capture_tui_panel_discloses_destination():
+    cli = _make_cli_stub(with_app=True)
+    cli._secret_state = {
+        "var_name": "TENOR_API_KEY",
+        "prompt": "Tenor API key",
+        "metadata": {"destination": "bitwarden_sm"},
+    }
+    cli._render_sudo_style_panel = lambda title, lines: (title, lines)
+
+    title, lines = cli._get_secret_display_fragments()
+
+    assert title == "🔑 Skill Setup Required"
+    assert "Storage destination: the configured Bitwarden Secrets Manager project" in lines
 
 
 def test_secret_capture_timeout_clears_hidden_input_buffer():

@@ -455,10 +455,8 @@ class TestSkillViewSecureSetupOnLoad:
             }
 
         monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
+            "tools.secret_capture_tool.get_secret_capture_callback",
+            lambda: fake_secret_callback,
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -504,10 +502,8 @@ class TestSkillViewSecureSetupOnLoad:
             }
 
         monkeypatch.setattr(
-            skills_tool_module,
-            "_secret_capture_callback",
-            fake_secret_callback,
-            raising=False,
+            "tools.secret_capture_tool.get_secret_capture_callback",
+            lambda: fake_secret_callback,
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

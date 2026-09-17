@@ -33,6 +33,12 @@ def _skipped(var_name: str, reason: str, message: str) -> dict:
         "validated": False, "skipped": True, "message": message}
 
 
+def _secret_destination_label(metadata=None) -> str:
+    if (metadata or {}).get("destination") == "bitwarden_sm":
+        return "the configured Bitwarden Secrets Manager project"
+    return "the active profile .env"
+
+
 def _secret_result(var_name: str, value: str, metadata=None) -> dict:
     """Store ``value`` (or report a skip when empty) and build the callback result dict."""
     if not value:
@@ -70,7 +76,11 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         if not hasattr(cli, "_secret_deadline"):
             cli._secret_deadline = 0
         try:
-            value = masked_secret_prompt(f"{prompt} (hidden, ESC or empty Enter to skip): ")
+            destination = _secret_destination_label(metadata)
+            value = masked_secret_prompt(
+                f"{prompt}\nStorage destination: {destination}\n"
+                "Enter secret (hidden, ESC or empty Enter to skip): "
+            )
         except (EOFError, KeyboardInterrupt):
             value = ""
         return _secret_result(var_name, value, metadata)

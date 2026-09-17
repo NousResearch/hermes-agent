@@ -119,6 +119,11 @@ providers intentionally do not run during cron.
   its home from `os.environ` at flush time (`Path(_session_db.db_path).parent` is the ground truth).
   Provider background work starts through `memory_provider.py::spawn_context_thread` (copies the
   contextvars), never a bare `threading.Thread`; `title_generator.py` is the shape.
+- The post-turn self-improvement review (`agent/background_review.py`, deferred via
+  `agent/review_idle_queue.py`) admits, bounds and names every decision ONLY through
+  `agent/review_admission.py` — live-turn registry, follow-up fence, replay ceiling, and the
+  body-free reason slugs + hashed owner tags every review log line carries; a new gate or slug
+  goes there, never inline at a call site.
 - `agent/secret_scope.py::get_secret` fails closed (`UnscopedSecretError`) only after
   `set_multiplex_active(True)`; the gateway, cron, migrate and `serve` set it. A new multi-home host
   must too, or every guard is silently off. Isolation is BETWEEN profiles; children inherit via

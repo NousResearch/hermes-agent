@@ -780,13 +780,16 @@ DEFAULT_CONFIG = {
         # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
         # enabled=false skips auto spawns (/refine still works). An explicit max_input_tokens caps
         # the SUM of replayed input tokens over the review loop (iterations capped at 16); the loop
-        # stops before crossing it. When unset, the runtime derives a budget from the active model
-        # context window. <= 0 = unlimited.
+        # stops before crossing it. When unset, the runtime derives a budget from the review model's
+        # context window (75%, capped at 600000). 600000 is a hard ceiling: larger, <= 0 or invalid
+        # values fall back to the derived default. max_replay_tokens caps the verbatim conversation
+        # replay of one AUTOMATIC review (agent/review_admission.py): 120000 is the default AND the
+        # hard ceiling — lower values narrow the replay; <= 0, larger or invalid fall back to it.
         # reasoning_effort is IGNORED while the review stays on the main model: the fork inherits the
         # conversation's reasoning config verbatim so its request bytes keep the parent's warm
         # prompt-cache prefix (#30532). Set provider/model below to route the review to another model
         # if you want a different effort level; a one-time warning says so when the key is set.
-        "background_review": {"enabled": True, **_aux(120)},
+        "background_review": {"enabled": True, **_aux(120), "max_replay_tokens": 120000},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

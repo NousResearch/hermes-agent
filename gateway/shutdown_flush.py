@@ -268,7 +268,10 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id, which real payloads lack — the resolver supplies it.
+    # needs the real session_id, which real payloads lack — the resolver supplies it together with
+    # the store owning the key. ``session_db`` (the owned default) serves only payloads that already
+    # carry a session_id; a resolver-resolved payload goes to the resolver's db alone, never the
+    # ambient root store (a None db from the resolver is not a fallback signal — it is "preserve").
     session_id, target_db = data.get("session_id", ""), session_db
     if not session_id and session_resolver is not None:
         try:
@@ -276,9 +279,8 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
         except Exception as exc:
             logger.debug("Session key->id resolution failed for %s: %s", session_key, exc)
             resolved = None
-        if resolved:
-            session_id, routed_db = resolved
-            target_db = routed_db if routed_db is not None else session_db
+        if resolved and resolved[1] is not None:
+            session_id, target_db = resolved
     if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
                        "session_key-to-id resolution failed. "

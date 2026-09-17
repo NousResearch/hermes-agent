@@ -28,9 +28,10 @@ def _store(tmp_path, db):
     return store
 
 
-def test_resolve_profile_namespaced_key_does_not_adopt_main_row(tmp_path):
+def test_resolve_profile_namespaced_key_does_not_adopt_main_row(tmp_path, monkeypatch):
     """A profile-namespaced key must never resolve into the root store's
-    ``agent:main`` row: the exact-key finder only matches the namespaced key."""
+    ``agent:main`` row: the exact-key finder only matches the namespaced key, and an
+    unresolvable profile store (``_db_for_key`` → None) yields None, never the root store."""
     db = _FakeGatewayDB({"agent:main:whatsapp:dm:15551234567": {"id": "main-row"}})
     store = _store(tmp_path, db)
     assert (
@@ -39,6 +40,14 @@ def test_resolve_profile_namespaced_key_does_not_adopt_main_row(tmp_path):
     )
     assert db.queries and all("agent:test-bot" in q for q in db.queries)
     assert not any(q.startswith("agent:main") for q in db.queries)
+    # Fail-closed store: when the profile's home is unresolvable, _db_for_key returns None and the
+    # resolver must answer None too — even with a routing-map hit — so the flush file is preserved
+    # instead of being appended to the ambient root store (#66887/#102157 split-identity class).
+    key = "agent:test-bot:whatsapp:dm:15551234567"
+    monkeypatch.setattr(store, "peek_session_id", lambda session_key: "routed-sid")
+    monkeypatch.setattr(store, "_db_for_key", lambda session_key: None)
+    assert store.resolve_session_id_for_key(key) is None
+    assert store.resolve_session_id_for_key(key, not_after=1700000000) is None
 
 
 def test_resolve_db_fallback_rejects_row_started_after_flush(tmp_path):

@@ -197,11 +197,16 @@ class SessionRecoveryMixin:
         recoverable reasons match; explicit boundaries do not). A row started after the flush
         (``started_at > not_after``) cannot be the origin and is never adopted. Never mints a
         session; None means the caller must preserve the flush file. ``db`` is the store owning
-        the key, so the append lands in the right profile partition.
+        the key, so the append lands in the right profile partition. When that store cannot be
+        resolved (``_db_for_key`` fails closed for a profile without a reachable home) the answer
+        is None even if the routing map knows the id: appending to the ambient root store would
+        split one session identity across two physical stores (#66887/#102157).
         """
         if not session_key:
             return None
         db = self._db_for_key(session_key)
+        if db is None:
+            return None
         session_id = self.peek_session_id(session_key)
         if session_id:
             return session_id, db

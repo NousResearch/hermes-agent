@@ -116,15 +116,26 @@ def test_recover_payload_without_session_id_uses_resolver_and_deletes_file(
     flush_file.write_text(json.dumps(payload), encoding="utf-8")
 
     mock_db = MagicMock()
-    resolver = MagicMock(return_value=("sid-resolved", None))
+    routed_db = MagicMock()  # the store owning the key, as the resolver reports it
+    resolver = MagicMock(return_value=("sid-resolved", routed_db))
     count = recover_pending_to_db(mock_db, session_resolver=resolver)
 
     assert count == 1
     resolver.assert_called_once_with("agent:main:whatsapp:dm:15551234567", not_after=ts)
-    mock_db.append_message.assert_called_once_with(
+    routed_db.append_message.assert_called_once_with(
         session_id="sid-resolved", role="user", content="lost message", timestamp=ts
     )
+    # The resolver's db is authoritative: the owned default store never sees a resolved payload.
+    mock_db.append_message.assert_not_called()
     assert not flush_file.exists()
+
+    # A resolver that names an id but no store (fail-closed profile home) preserves the file
+    # instead of appending to the owned root store.
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+    resolver = MagicMock(return_value=("sid-resolved", None))
+    assert recover_pending_to_db(mock_db, session_resolver=resolver) == 0
+    mock_db.append_message.assert_not_called()
+    assert flush_file.exists()
 
 
 def test_recover_closes_owned_db_when_unexpected_exception_escapes(

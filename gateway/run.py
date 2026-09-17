@@ -5282,6 +5282,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Set here (not at import) so incidental gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
 
+    # A service manager may spawn us while the predecessor is still draining.
+    # Do not import/start the new runtime until the predecessor process, scoped
+    # credential locks, and shared listener ports are all observably released.
+    from gateway.restart_barrier import wait_for_restart_barrier
+    barrier_ready, barrier_evidence = await asyncio.to_thread(wait_for_restart_barrier)
+    if not barrier_ready:
+        print(
+            "Gateway successor blocked: predecessor resources were not released "
+            f"within the bounded wait ({barrier_evidence}).",
+            file=sys.stderr,
+        )
+        return False
+
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 

@@ -1455,6 +1455,23 @@ def _finish_pulled_update(
         node_failures=node_failures, desktop_build_ok=desktop_build_ok,
         pre_update_version=opts.pre_update_version)
 
+    # Phase 1 of the code/runtime cutover: prove boot-critical imports and gateway
+    # config parsing in a fresh interpreter before touching any live gateway.
+    from hermes_cli.update_preflight import (
+        rollback_source_after_preflight_failure, run_gateway_startup_preflight,
+    )
+    _preflight = run_gateway_startup_preflight(_m().PROJECT_ROOT)
+    _record_update_step("gateway_startup_preflight", bool(_preflight.get("ok")), json.dumps(_preflight))
+    if not _preflight.get("ok"):
+        _rollback = rollback_source_after_preflight_failure(
+            _m().PROJECT_ROOT, git_cmd, pre_pull_sha)
+        _record_update_step("preflight_source_rollback", bool(_rollback.get("ok")), json.dumps(_rollback))
+        if gateway_mode:
+            _write_gateway_update_exit_code(False)
+        print("✗ Updated code failed gateway startup preflight; live gateways were not replaced.")
+        print("  Source rollback: " + ("verified" if _rollback.get("ok") else "FAILED — update stopped"))
+        sys.exit(1)
+
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
     # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
     # the marker would never land and the new gateway's watcher would time out spuriously.

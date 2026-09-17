@@ -593,9 +593,13 @@ class GatewayStartupMixin:
             await adapter.cancel_background_tasks()
         await self._safe_adapter_disconnect(adapter, platform)
 
-    def _startup_retry_entry(self, platform, adapter, platform_config, *, queued: bool = True) -> dict:
+    def _startup_retry_entry(
+        self, platform, adapter, platform_config, *, queued: bool = True,
+        attempts: int = 1, delay: float = 30,
+    ) -> dict:
         """``_failed_platforms`` entry for a platform that failed at startup (first retry in 30s)."""
-        return self._reconnect_queue_entry(platform, adapter, platform_config, attempts=1, delay=30, queued=queued)
+        return self._reconnect_queue_entry(
+            platform, adapter, platform_config, attempts=attempts, delay=delay, queued=queued)
 
     async def _abort_startup_if_shutdown_requested(
         self, adapter: Optional[BasePlatformAdapter] = None, platform: Optional[Platform] = None
@@ -1160,9 +1164,11 @@ class GatewayStartupMixin:
                     platform, adapter, platform_config, "failed to connect", startup_retryable_errors
                 )
                 continue
-            # A live foreign token holder is an ownership conflict, not a blip: retryable only for
-            # MID-RUN reconnects; at startup route it non-retryable so the gateway exits 78, not deaf.
-            _retryable = adapter.fatal_error_retryable and not is_global_startup_conflict(adapter.fatal_error_code)
+            # A predecessor may still own the token during a supervised replacement. Treat the
+            # ownership conflict as retryable at startup too: the reconnect watcher performs a
+            # bounded fast reacquire window, then falls back to its normal capped backoff.
+            _lock_conflict = is_global_startup_conflict(adapter.fatal_error_code)
+            _retryable = adapter.fatal_error_retryable
             self._update_platform_runtime_status(
                 platform.value, platform_state="retrying" if _retryable else "fatal",
                 error_code=adapter.fatal_error_code, error_message=adapter.fatal_error_message,
@@ -1170,9 +1176,14 @@ class GatewayStartupMixin:
             target = startup_retryable_errors if _retryable else startup_nonretryable_errors
             target.append(f"{platform.value}: {adapter.fatal_error_message}")
             if _retryable:
-                self._failed_platforms[platform] = self._startup_retry_entry(
-                    platform, adapter, platform_config, queued=False
+                _entry = self._startup_retry_entry(
+                    platform, adapter, platform_config, queued=False,
+                    attempts=0 if _lock_conflict else 1,
+                    delay=1 if _lock_conflict else 30,
                 )
+                if _lock_conflict:
+                    _entry["startup_lock_retry_deadline"] = time.monotonic() + 60.0
+                self._failed_platforms[platform] = _entry
         return connected_count
 
     def _startup_fail_fatal_config(self, reason: str) -> None:

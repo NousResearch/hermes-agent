@@ -490,14 +490,8 @@ class _ForeignTokenLockAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, tmp_path):
-    """Salvage of #83183 claim 1: a LIVE foreign holder of the bot token at
-    zero-connected startup is a single-writer conflict, not a transient blip.
-
-    ``_acquire_platform_lock`` deliberately emits the conflict retryable so a
-    *mid-run* reconnect can recover once the holder exits.  The startup router
-    used to key solely off that flag, so the gateway stayed alive, deaf, and
-    retry-queued forever instead of exiting 78 (EX_CONFIG)."""
+async def test_live_foreign_token_lock_at_startup_is_retry_queued(monkeypatch, tmp_path):
+    """A live predecessor lock is transient during handoff, never permanently parked."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     # A live foreign holder: acquire_scoped_lock reports (False, record).
@@ -520,20 +514,20 @@ async def test_live_foreign_token_lock_at_startup_exits_ex_config(monkeypatch, t
     ok = await runner.start()
 
     assert ok is True
-    assert runner.should_exit_cleanly is True
-    assert runner.exit_code == GATEWAY_FATAL_CONFIG_EXIT_CODE
-    assert runner._failed_platforms == {}
-    state = read_runtime_status()
-    assert state["gateway_state"] == "startup_failed"
-    assert state["platforms"]["telegram"]["state"] == "fatal"
-    assert state["platforms"]["telegram"]["error_code"] == "telegram-bot-token_lock"
+    try:
+        assert runner.should_exit_cleanly is False
+        assert runner.exit_code is None
+        assert set(runner._failed_platforms) == {Platform.TELEGRAM}
+        state = read_runtime_status()
+        assert state["gateway_state"] == "running"
+        assert state["platforms"]["telegram"]["state"] == "retrying"
+    finally:
+        await runner.stop()
 
 
 @pytest.mark.asyncio
 async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path):
-    """A lock conflict alongside a genuinely transient peer failure is the
-    NS-609 mixed mode: the lock is parked fatal, the peer keeps its retry, and
-    the gateway stays alive (no exit 78)."""
+    """A lock conflict and transient peer are both retained for bounded-backoff retry."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setattr(
@@ -568,10 +562,10 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
         assert ok is True
         assert runner.should_exit_cleanly is False
         assert runner.exit_code is None
-        assert set(runner._failed_platforms) == {Platform.DISCORD}
+        assert set(runner._failed_platforms) == {Platform.TELEGRAM, Platform.DISCORD}
         state = read_runtime_status()
         assert state["gateway_state"] == "running"
-        assert state["platforms"]["telegram"]["state"] == "fatal"
+        assert state["platforms"]["telegram"]["state"] == "retrying"
         assert state["platforms"]["discord"]["state"] == "retrying"
     finally:
         await runner.stop()

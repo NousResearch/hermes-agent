@@ -685,6 +685,11 @@ class GatewayAdapterLifecycleMixin:
             platform.value, platform_state="retrying", error_code=error_code, error_message=error_message,
         )
         backoff = _reconnect_backoff(attempt)
+        if (
+            is_global_startup_conflict(error_code)
+            and time.monotonic() < float(info.get("startup_lock_retry_deadline") or 0)
+        ):
+            backoff = min(backoff, 2)
         info["attempts"] = attempt
         info["next_retry"] = time.monotonic() + backoff
         return backoff
@@ -1226,6 +1231,12 @@ class GatewayAdapterLifecycleMixin:
                     return
                 attempts += 1
                 backoff = _reconnect_backoff(attempts)
+                if (
+                    adapter is not None
+                    and is_global_startup_conflict(getattr(adapter, "fatal_error_code", None))
+                    and attempts <= 6
+                ):
+                    backoff = min(backoff, 2)
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name
                 )
@@ -1249,16 +1260,10 @@ class GatewayAdapterLifecycleMixin:
         if not getattr(adapter, "fatal_error_retryable", True):
             return
         if is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
-            # A live foreign token holder is an ownership conflict, not a blip: park it fatal.
-            logger.error(
-                # Park it fatal (like ``duplicate_credential``) instead of retry-storming the token every
-                # backoff (#83183).
-                "[MULTIPLEX] Profile '%s': %s credential is held by another "
-                "gateway (%s) — parked, not retried. %s", profile_name, platform.value,
-                adapter.fatal_error_code, adapter.fatal_error_message or "",
+            logger.info(
+                "[MULTIPLEX] Profile '%s': %s credential is still held by a predecessor; "
+                "starting bounded reacquire retries", profile_name, platform.value,
             )
-            self._mark_platform_fatal(f"{profile_name}:{platform.value}", adapter)
-            return
 
         def _handoff() -> None:
             try:

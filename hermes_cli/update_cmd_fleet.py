@@ -775,6 +775,8 @@ def _restart_macos_launchd_gateways(
                 continue  # A profile without an installed job has no restart target.
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
+                from gateway.restart_barrier import write_restart_barrier
+                write_restart_barrier(old_pid, home=_gateway_home_for_pid(old_pid))
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
                 from hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
@@ -1362,11 +1364,24 @@ def _recover_after_restart_phase_abort(
 
 
 def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
-    """Restart every running gateway (systemd, launchd, manual) onto the pulled code.
+    """Serialize the update restart against CLI, safe-wrapper, and recovery paths."""
+    from hermes_cli.restart_lease import RestartLeaseBusy, restart_lease
+    try:
+        with restart_lease("hermes-update-fleet-restart", timeout=0.0):
+            return _restart_gateway_fleet_after_update_under_lease(_pre_update_plan, gateway_mode)
+    except RestartLeaseBusy as exc:
+        out = _GatewayRestartOutcome(
+            incomplete=True, phase_errors=[str(exc)], pre_restart_gateway_pids=[],
+            restarted_services=[], failed_or_stale_units=["restart-lease-busy"],
+            relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        )
+        out.record_receipt(phase_error=str(exc))
+        print(f"  ✗ Gateway restart deferred: {exc}")
+        return out
 
-    Never raises: a phase abort runs fresh-child recovery and fails closed unless
-    every planned gateway is verifiably covered.
-    """
+
+def _restart_gateway_fleet_after_update_under_lease(_pre_update_plan, gateway_mode: bool):
+    """Restart every running gateway onto pulled code while holding the lifecycle lease."""
     from hermes_cli.update_cmd import _m, _write_gateway_update_exit_code
     # All bookkeeping is declared before the try so abort recovery and fleet reconciliation
     # can read it even if the phase raises early. ``pre_restart_gateway_pids`` stays empty

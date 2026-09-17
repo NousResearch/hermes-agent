@@ -4212,7 +4212,7 @@ def launchd_uninstall():
     print("✓ Service uninstalled")
 
 
-def launchd_start():
+def _launchd_start_unleased():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
 
@@ -4239,6 +4239,17 @@ def launchd_start():
         if not _launchd_bootstrap_and_kickstart(plist_path, label):
             return
     _launchd_ok("✓ Service started")
+
+
+def launchd_start():
+    """Start under the lifecycle lease shared by update, restart, and recovery."""
+    from hermes_cli.restart_lease import RestartLeaseBusy, restart_lease
+    try:
+        with restart_lease("launchd-start", timeout=30.0):
+            return _launchd_start_unleased()
+    except RestartLeaseBusy as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return False
 
 
 def _launchctl_kickstart_current(label: str) -> None:
@@ -4339,6 +4350,12 @@ def launchd_restart():
     from gateway.status import get_running_pid
     try:
         pid = get_running_pid()
+        if pid is not None:
+            # KeepAlive may start the successor before the old worker has finished
+            # releasing token locks/listeners.  The successor consumes this barrier
+            # before importing/starting the runtime.
+            from gateway.restart_barrier import write_restart_barrier
+            write_restart_barrier(pid)
         if pid is not None and _request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
             return
@@ -6389,6 +6406,16 @@ def _restart_all(system: bool) -> None:
 
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
+    from hermes_cli.restart_lease import RestartLeaseBusy, restart_lease
+    try:
+        with restart_lease("gateway-cli-restart", timeout=0.0):
+            return _cmd_restart_under_lease(args)
+    except RestartLeaseBusy as exc:
+        print_error(f"Restart deferred: {exc}")
+        sys.exit(75)
+
+
+def _cmd_restart_under_lease(args):
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)

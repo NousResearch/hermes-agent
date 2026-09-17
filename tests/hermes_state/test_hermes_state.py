@@ -3302,6 +3302,46 @@ class TestCompressionChainProjection:
 
 
 
+    def test_get_compression_tip_ignores_reset_sibling(self, db):
+        """A ``_reset_from`` sibling of a genuine compression continuation must
+        never win tip projection, even when it was closed later than the real
+        tip (regression test for #114271: a reset fork with a later
+        ``ended_at`` hijacked the ``ELSE 2`` ordering branch and buried the
+        actual, still-live compression continuation from every list/resume
+        surface)."""
+        import time as _time
+        t0 = _time.time() - 7200
+        root_id, delegate_id, mid_id, tip_id = self._build_compression_chain(db, t0)
+        # tip1 is the real, still-live continuation from _build_compression_chain
+        # (started_at set, ended_at left NULL). Close it here — e.g. the user
+        # ended that session normally later on — so it lands in the same
+        # "closed" ordering bucket as everything else being compared.
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 3600, "user_closed", tip_id),
+        )
+        # Now add a *reset* sibling of tip1 under the same parent, closed
+        # even later than tip1 was. Without excluding `_reset_from` children
+        # from chain-step candidacy, this sibling ties tip1's ordering
+        # bucket ("closed, non-compression") and then wins on the
+        # last-active/ended_at DESC tiebreaker purely for being newer,
+        # burying the genuine compression continuation.
+        db.create_session(
+            "reset_sibling1", "telegram", parent_session_id="mid1",
+            model_config={"_reset_from": "mid1"},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 3700, t0 + 9999, "session_reset", "reset_sibling1"),
+        )
+        db.append_message("reset_sibling1", "user", "harto")
+        db._conn.commit()
+
+        # The reset sibling must never win projection over the genuine,
+        # still-live compression continuation.
+        assert db.get_compression_tip("root1") == "tip1"
+        assert db.get_compression_tip("mid1") == "tip1"
+
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial
         end_session call that didn't finish creating the child) must not

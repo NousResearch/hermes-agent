@@ -31,6 +31,7 @@ _CHAIN_STEP_SQL = f"""
                       AND parent.end_reason = 'compression'
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                     ORDER BY
                       CASE

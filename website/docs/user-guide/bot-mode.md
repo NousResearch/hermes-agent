@@ -54,7 +54,7 @@ An **Advanced** disclosure opens the full capabilities surface:
 - **Model & provider pin** — give the Bot its own model. Any provider/model pair Hermes knows about works, and different Bots can run on different models side by side. Leave it unset to inherit from the launch profile.
 - **Custom SOUL.md** — the Bot's persona and standing instructions.
 - **Per-skill, per-toolset, and per-MCP-server enablement** — tick exactly the capabilities this specialist needs.
-- **Shared keys** — by default the new Bot shares one OAuth/token pool with the main profile, so credential refreshes cannot invalidate each other. (Older gateways copy credentials instead — still functional, just forked.)
+- **Credentials** — every new Bot owns an isolated credential store; it never shares an OAuth/token pool with the main profile, so each profile refreshes only its own credentials. If credential mirroring is enabled, Hermes copies supported credentials into the new profile rather than sharing them. Legacy `share_auth` and `shared_auth` create fields are ignored.
 
 ### Choosing which machine it lives on ("Create on")
 

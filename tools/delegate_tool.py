@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
     _ChildRun, _attach_child, _build_child_goal_message, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
+    _apply_truncation_auto_continue, _get_continue_on_truncation_enabled,  # KENSEI CUSTOM: auto-continue
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
@@ -37,7 +38,10 @@ from tools.delegate_tool_config import (  # noqa: F401
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
-from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_dispatch import (  # noqa: F401
+    _Batch, _announce_batch, _capture_origin, _run_batch,
+    _split_child_budget,  # KENSEI CUSTOM: batch budget split (tests + facade callers)
+)
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
@@ -50,7 +54,8 @@ from tools.delegate_tool_registry import (  # noqa: F401
     steer_subagent,
 )
 from tools.delegate_tool_tasks import (  # noqa: F401
-    _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+    _MAX_TASK_IMAGES, _NESTED_DEFAULT_SCHEMA, _coerce_task_images, _coerce_task_schemas,  # KENSEI CUSTOM
+    _normalize_task_images, _normalize_task_list,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -413,6 +418,12 @@ def _run_single_child_impl(
         if failure_entry is not None:
             return failure_entry
 
+        # KENSEI CUSTOM: one bounded continuation turn for a budget-cut child, before
+        # schema validation so a continuation that completes the shape can satisfy it.
+        _continued, _continuation_text = _apply_truncation_auto_continue(
+            child, result, task_index, run.child_task_id, run.relay_text,
+            _get_continue_on_truncation_enabled(),
+        )
         schema = _validate_child_output_schema(child, result, task_index, run.child_task_id, run.relay_text)
         _merge_late_steer(result, _subagent_id, child)
         # Flush any remaining batched progress to gateway
@@ -421,7 +432,8 @@ def _run_single_child_impl(
                 child_progress_cb._flush()
 
         duration = run.elapsed()
-        entry = _build_result_entry(child, result, task_index, duration, schema)
+        entry = _build_result_entry(child, result, task_index, duration, schema,
+                                    continued=_continued, continuation=_continuation_text)
         run.append_sibling_write_reminder(entry)
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
@@ -672,7 +684,10 @@ def delegate_task(
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
-        task_schemas, err = _coerce_task_schemas(task_list, output_schema)
+        # KENSEI CUSTOM: nested spawns without a contract get the minimal
+        # default schema so validate + one-retry always enforces a shape.
+        _nested_default = _NESTED_DEFAULT_SCHEMA if depth >= 1 else None
+        task_schemas, err = _coerce_task_schemas(task_list, output_schema, _nested_default)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
     if err:
@@ -847,10 +862,27 @@ DELEGATE_TASK_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            # The handler also accepts the legacy single-goal shape (top-level `goal`/`context`/`output_schema`),
-            # wrapped into a one-entry batch at dispatch, and a per-task `role` (legacy, ignored: capability is
-            # depth-derived). Both unadvertised on purpose (old transcripts only); do not re-add. No maxItems — the
-            # runtime limit (delegation.max_concurrent_children) is enforced with a clear error in delegate_task().
+            # KENSEI CUSTOM (restored): the explicit single-goal surface is the
+            # lead-routing contract's primary form. Upstream's tasks-only batch
+            # interface sits alongside it for fan-out work. A per-task `role`
+            # stays unadvertised (legacy, ignored: capability is depth-derived).
+            "goal": _p(
+                "string",
+                "What the subagent should accomplish. Be specific and self-contained — it knows nothing "
+                "about your conversation history.",
+            ),
+            "context": _p(
+                "string",
+                "Background THIS child needs: file paths, error messages, constraints. Each child sees only "
+                "its own context — repeat shared background in every task that needs it.",
+            ),
+            "output_schema": _p(
+                "object",
+                "Optional JSON Schema this child's final answer must validate against (told to the child up "
+                "front; parent validates with one bounded correction retry; result gains schema_valid, plus "
+                "schema_errors on failure — the child's raw text is still returned as summary, never discarded). "
+                "Keep it forgiving — require only fields you will read.",
+            ),
             "tasks": {
                 "type": "array",
                 "minItems": 1,

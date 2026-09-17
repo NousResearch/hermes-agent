@@ -18,6 +18,21 @@ _TEMPLATE_MARKER_RE = re.compile(
 )
 _MIN_BATCH_GOAL_LEN = 10
 
+# KENSEI CUSTOM (restored): a nested spawn that supplies no contract still gets a
+# minimal default schema, so the existing validate + one-bounded-retry path always
+# enforces a shape. Only applied at depth >= 1 (a top-level child's shape is the
+# caller's business); `additionalProperties` stays True so a richer answer is legal.
+_NESTED_DEFAULT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "receipts": {"type": "array", "items": {"type": "string"}},
+        "status": {"type": "string"},
+    },
+    "required": ["summary"],
+    "additionalProperties": True,
+}
+
 def _recover_tasks_from_json_string(tasks: Any) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
     """``(parsed_list, None)`` for a JSON-array string, ``(None, error)`` for a bad string, ``(None, None)`` otherwise."""
     if not isinstance(tasks, str):
@@ -105,16 +120,23 @@ def _normalize_task_list(
     return (None, batch_error) if batch_error else (task_list, None)
 
 def _coerce_task_schemas(
-    task_list: List[Dict[str, Any]], output_schema: Optional[Dict[str, Any]]
+    task_list: List[Dict[str, Any]], output_schema: Optional[Dict[str, Any]],
+    nested_default: Optional[Dict[str, Any]] = None,
 ) -> tuple[List[Optional[Dict[str, Any]]], Optional[str]]:
     """Per-task coerced output schemas. A malformed output_schema fails the whole call before any child spawns;
-    schema-less tasks resolve to None and take no new code paths downstream."""
+    schema-less tasks resolve to None and take no new code paths downstream.
+
+    ``nested_default`` (KENSEI CUSTOM): a minimal contract applied where a task
+    declared none, so nested spawns always run the shape-enforcement path. Pass
+    None for flat (depth-0) delegations to keep their payload byte-identical."""
     from tools.delegation_output_schema import coerce_output_schema
     task_schemas: List[Optional[Dict[str, Any]]] = []
     for i, task in enumerate(task_list):
         raw_schema = task.get("output_schema")
         if raw_schema is None and len(task_list) == 1 and output_schema is not None:
             raw_schema = output_schema
+        if raw_schema is None and nested_default is not None:
+            raw_schema = nested_default
         coerced_schema, schema_err = coerce_output_schema(raw_schema)
         if schema_err:
             return [], f"Task {i} output_schema invalid: {schema_err}"

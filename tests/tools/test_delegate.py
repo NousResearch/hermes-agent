@@ -2359,7 +2359,9 @@ class TestRegistrySurfaceChain(unittest.TestCase):
         keys = [(e["provider"], e["model"], e["base_url"]) for e in chain]
         self.assertEqual(len(keys), len(set(keys)))
         # Governed tail: tier-correct Codex then local final.
-        self.assertEqual(chain[-1]["provider"], "custom:turbohaul-local")
+        # The local provider was renamed turbohaul-local -> turbofit-local with the
+        # Turbofit gateway (port 8091); assert the CURRENT governed tail name.
+        self.assertEqual(chain[-1]["provider"], "custom:turbofit-local")
         self.assertEqual(chain[-2]["provider"], "openai-codex")
         # No credentials ever ride the chain entries.
         for entry in chain:

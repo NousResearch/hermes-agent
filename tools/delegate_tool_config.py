@@ -575,9 +575,14 @@ def _get_delegation_fallback_enabled() -> bool:
 
     Set delegation.fallback_enabled: false in config.yaml to restore the
     previous inherit-only behavior without a code revert.
+
+    ``_load_config`` is resolved through the ``tools.delegate_tool`` facade at
+    call time (not the local name) so ``patch("tools.delegate_tool._load_config")``
+    keeps intercepting — the same seam every other delegation config reader uses.
     """
     try:
-        return is_truthy_value(_load_config().get("fallback_enabled", True))
+        from tools.delegate_tool import _load_config as _facade_load_config
+        return is_truthy_value(_facade_load_config().get("fallback_enabled", True))
     except Exception:
         return True
 

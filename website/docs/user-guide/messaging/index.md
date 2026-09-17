@@ -140,6 +140,7 @@ Supported tokens:
 - `SILENT`
 - `NO_REPLY`
 - `NO REPLY`
+- `[静默]` / `静默` and `[沉默]` / `沉默` — the Chinese renderings a model produces when it translates the sentinel instead of emitting it literally
 
 Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
 
@@ -175,6 +176,13 @@ hermes gateway stop         # Stop the default service
 hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
 ```
+
+### Stack dump on demand (`SIGUSR2`)
+
+On Linux and macOS, `kill -USR2 <gateway pid>` appends a dump of every thread's
+stack to `~/.hermes/logs/gateway_faulthandler.log` and the gateway keeps
+running — use it to see what a stalled or misbehaving gateway is doing without
+restarting it.
 
 ### Optional Linux event-loop watchdog
 
@@ -284,7 +292,7 @@ continuation, not the history loaded when you send a message.
 
 ## Per-Channel Model & System Prompt Overrides
 
-Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
@@ -519,9 +527,9 @@ display:
 | Mode | What you receive |
 |------|-----------------|
 | `concise` | One-line status message on completion; failures append a short output tail (default) |
-| `all` | Running-output updates **and** the final raw-output message |
-| `result` | Only the final raw-output completion message (regardless of exit code) |
-| `error` | Only the final raw-output message when the exit code is non-zero |
+| `all` | Running-output updates **and** the final status message with the output tail |
+| `result` | Only the final status message with the output tail (regardless of exit code) |
+| `error` | Only the final status message with the output tail when the exit code is non-zero |
 | `off` | No process watcher messages at all |
 
 You can also set this via environment variable:
@@ -529,6 +537,8 @@ You can also set this via environment variable:
 ```bash
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
+
+With `terminal(background=true, notify_on_complete=true)` the finished process starts a new agent turn and the agent reports the result itself, so no separate status line is sent. The exception is a process that finishes while the turn that launched it is still running: the completion is queued as the agent's next turn and you get the one-line `concise` status right away (unless the mode is `off`, or `error` with a zero exit code), instead of silence until that turn ends.
 
 ### Use Cases
 
@@ -586,6 +596,10 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 :::
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
+
+:::note Inside a container, only the system scope is offered
+`hermes gateway install` (and the `hermes gateway setup` wizard) refuse to install a **user** service when Hermes detects it is running inside a container. A user unit lands in `~/.config/systemd/user`, and when that home is bind-mounted from the host (podman/distrobox), the host's own `systemd --user` enables and starts the same unit — a second gateway polling the same bot token. Run the gateway as the container's main process (`hermes gateway run`, with a container restart policy), or in a systemd container (systemd as PID 1) install the isolated system scope: `sudo hermes gateway install --system --run-as-user <user>`.
+:::
 
 :::info Multiple installations
 If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
@@ -731,7 +745,7 @@ Once upstream is healthy, `/platform resume <name>` clears the breaker and re-ar
 
 ### Restart notifications
 
-When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `gateway-config.yaml`, which defaults to `true`:
+When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:
@@ -748,7 +762,7 @@ Disable it on noisy or low-priority platforms while leaving it on for your prima
 
 ### Typing indicators
 
-While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:
+While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `config.yaml`, which defaults to `true`:
 
 ```yaml
 gateway:

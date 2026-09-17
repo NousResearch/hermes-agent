@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.turn_api_call import stop_thinking_spinner
+from agent.turn_failure_copy import invalid_response_failure_reason, provider_label_for, site_copy, stamp_failure
 from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
 from agent.turn_usage import record_response_usage
 
@@ -67,7 +68,7 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
         return _codex_finish_reason(response)
     transport = agent._get_transport()
     if agent.api_mode == "anthropic_messages":
-        return transport.map_finish_reason(response.stop_reason)
+        return transport.response_finish_reason(response)
     normalized = transport.normalize_response(response)  # Bedrock already normalized at dispatch
     finish_reason = normalized.finish_reason
     if agent.api_mode != "bedrock_converse" and agent._should_treat_stop_as_truncated(
@@ -197,7 +198,8 @@ def check_api_response(
     if agent.provider == "nous":
         try:
             from agent.nous_rate_guard import clear_nous_rate_limit
-            clear_nous_rate_limit()
+            from hermes_cli.anon_auth import is_anonymous_agent
+            clear_nous_rate_limit(anonymous=is_anonymous_agent(agent))
         except Exception:
             pass
     from agent import relay_llm
@@ -287,15 +289,23 @@ def retry_invalid_response(
         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
         logger.error("%sInvalid API response after %d retries.", agent.log_prefix, max_retries)
         agent._persist_session(messages, conversation_history)
-        _final_response = f"Invalid API response after {max_retries} retries: {_failure_hint}"
-        return _verdict("return", {
+        # "model=<id>" is describe_invalid_response's OpenRouter fallback, not a provider name.
+        _label = (
+            provider_label_for(agent.provider)
+            if provider_name in ("Unknown", "") or provider_name.startswith("model=")
+            else provider_name
+        )
+        _final_response = site_copy(
+            "invalid_response", label=_label, attempts=max_retries, detail=_failure_hint,
+        )
+        return _verdict("return", stamp_failure({
             "final_response": _final_response,
             "messages": messages,
             "completed": False,
             "api_calls": api_call_count,
-            "error": _final_response,
+            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
             "failed": True,
-        })
+        }, invalid_response_failure_reason(response), True))
 
     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")

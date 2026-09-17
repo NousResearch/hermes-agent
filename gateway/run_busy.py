@@ -19,7 +19,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, _session_key_namespace
 from typing import Any, Dict, Optional, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -220,6 +220,40 @@ class GatewayBusySessionMixin:
                 return bool(children)
         except Exception:
             return False
+
+    @staticmethod
+    def _steer_active_subagents(running_agent: Any, text: str) -> int:
+        """Queue *text* into every live child of *running_agent*; returns how many accepted it.
+
+        A parent blocked inside ``delegate_task`` only drains its own steer queue after the tool
+        returns, i.e. after the child finishes — so a steer aimed at a looping child would sit
+        unread for the whole delegation (#112095, Telegram). Children are the parent's own
+        ``_active_children`` (identity-scoped, same snapshot ``interrupt()`` fans out to)."""
+        children = getattr(running_agent, "_active_children", None)
+        if not isinstance(children, (list, tuple, set)) or not children:
+            return 0
+        lock = getattr(running_agent, "_active_children_lock", None)
+        try:
+            with lock if lock is not None else contextlib.nullcontext():
+                snapshot = list(children)
+        except Exception:
+            return 0
+        accepted = 0
+        for child in snapshot:
+            steer = getattr(child, "steer", None)
+            if not callable(steer):
+                continue
+            try:
+                accepted += bool(steer(text))
+            except Exception as exc:
+                logger.warning("Steer into subagent %r failed: %s", getattr(child, "_delegate_id", child), exc)
+        return accepted
+
+    def _steer_running_agent(self, running_agent: Any, text: str) -> bool:
+        """``running_agent.steer(text)`` plus fan-out to its active subagents (see
+        :meth:`_steer_active_subagents`); True when the parent or any child queued it."""
+        accepted = bool(running_agent.steer(text))
+        return bool(self._steer_active_subagents(running_agent, text)) or accepted
 
     async def _session_has_compression_in_flight(self, session_key: str) -> bool:
         """True when a compression lock is held for this session's id (callers demote interrupt →
@@ -544,6 +578,8 @@ class GatewayBusySessionMixin:
         """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
+            if verb == "steer":
+                return self._steer_running_agent(running_agent, call_text)
             return bool(getattr(running_agent, verb)(call_text))
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
@@ -624,7 +660,10 @@ class GatewayBusySessionMixin:
             except Exception:
                 pass
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        if is_steer_mode:
+        if is_steer_mode and self._agent_has_active_subagents(running_agent):
+            head = "⏩ Steered into current run and its active subagent(s)"
+            tail = ". Your message arrives after their next tool call."
+        elif is_steer_mode:
             head, tail = "⏩ Steered into current run", ". Your message arrives after the next tool call."
         elif is_redirect_mode:
             head, tail = "↪ Redirected current run", ". I'll adjust using your correction."
@@ -674,14 +713,19 @@ class GatewayBusySessionMixin:
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775.
-        if not self._is_user_authorized(event.source):
+        # See #17775. A primary transport can route a turn into a secondary
+        # profile, so authorize in the stamped transport scope.
+        if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,
                 event.source.platform.value if event.source.platform else "unknown", session_key,
             )
             return True  # handled (silently dropped); do not fall through
+        # A steered or queued follow-up never reaches _hm_admit_event, so the budget is charged here.
+        if not self._admit_bot_message_for_source(event.source):
+            return True
+        event._bot_loop_admitted = True
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
@@ -762,7 +806,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "update", "version",
+        "commands", "profile", "login", "update", "version",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (
@@ -950,14 +994,15 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback("No active agent — /steer queued for the next turn.")
         try:
-            accepted = running_agent.steer(self._steer_text_with_origin(steer_text, event))
+            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return f"⚠️ Steer failed: {exc}"
         if not accepted:
             return "Steer rejected (empty payload)."
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
+        target = "run and its active subagent(s)" if self._agent_has_active_subagents(running_agent) else "run"
+        return f"⏩ Steer queued into current {target} — arrives after the next tool call: '{preview}'"
 
     async def _busy_goal_command(self, event: MessageEvent, quick_key: str, source):
         # Control verbs are safe mid-run (state only); setting new goal text is rejected so we don't
@@ -1013,8 +1058,15 @@ class GatewayBusySessionMixin:
         platform = source.platform.value
         chat_type = getattr(source, "chat_type", None) or ""
         # Match the exact key or prefix + ":" so a thread id that merely starts with this one
-        # is not matched.
-        prefix = ":".join(["agent:main", platform, chat_type, str(chat_id), str(thread_id)])
+        # is not matched. The namespace follows the source's profile so a named-profile run
+        # under multiplexing still matches its own keys.
+        prefix = ":".join([
+            _session_key_namespace(getattr(source, "profile", None)),
+            platform,
+            chat_type,
+            str(chat_id),
+            str(thread_id),
+        ])
         return [
             key
             for key, agent in self._running_agent_items()
@@ -1220,6 +1272,29 @@ class GatewayBusySessionMixin:
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack
+                # P5(b): distinguish a connector egress DECLINE from a lane
+                # failure. On a decline the connector refused this destination,
+                # so returning `message` as the direct reply would deliver the
+                # very content it refused, as text, to the same chat. Suppress
+                # the fallback and tear down the registration — no card
+                # rendered, so a later reply must not be captured as an answer
+                # to an invisible prompt.
+                #
+                # Classify the STRUCTURED response (see _approval_send_outcome):
+                # a code-only decline has no marker colon in its rendered text,
+                # and an ambiguous result must not be treated as a definite
+                # refusal.
+                from gateway.relay.egress import declined_send
+
+                _confirm_err = getattr(button_result, "error", None)
+                if declined_send(button_result):
+                    logger.warning(
+                        "slash-confirm DECLINED by the connector's egress "
+                        "guard for %s on %s — suppressing the text fallback: %s",
+                        command, source.platform, _confirm_err,
+                    )
+                    _slash_confirm_mod.clear(session_key)
+                    return None
             except Exception as exc:
                 logger.debug("send_slash_confirm failed for %s on %s: %s", command, source.platform, exc)
         # Text fallback — the prompt message itself is the direct reply.

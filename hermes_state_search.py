@@ -12,16 +12,24 @@ import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
-from utils import env_float
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
-    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql,
+    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
+
+
+def _search_slow_ms() -> float:
+    """``sessions.search_slow_ms`` for the served profile (default 1000; 0 logs every call)."""
+    value = routed_sessions_setting("search_slow_ms", "HERMES_SEARCH_SLOW_MS")
+    try:
+        return 1000.0 if value is None or str(value).strip() == "" else float(value)
+    except (TypeError, ValueError):
+        return 1000.0
 
 # Characters FTS5's query grammar rejects outside a quoted phrase (anything missing
 # reaches MATCH raw and raises -> zero results). ``%`` is deliberately excluded: the
@@ -129,12 +137,17 @@ def _search_select_sql(snippet_sql: str, from_sql: str, where: List[str], order_
 
 def _search_filter_clauses(
     where: List[str], params: list, *, include_inactive: bool, source_filter: Optional[List[str]],
-    exclude_sources: Optional[List[str]], role_filter: Optional[List[str]]) -> None:
-    """Append the visibility/source/role predicates every search route shares. Live rows
-    (active=1) AND compaction-archived rows (compacted=1) are discoverable; only
-    rewind/undo rows (active=0, compacted=0) are hidden."""
+    exclude_sources: Optional[List[str]], role_filter: Optional[List[str]],
+    after_ts: Optional[int] = None, before_ts: Optional[int] = None) -> None:
+    """Append the visibility/source/role/session-start predicates every search route shares. Live
+    rows (active=1) AND compaction-archived rows (compacted=1) are discoverable; only
+    rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
+    ``sessions.started_at`` (inclusive / exclusive) inside the query so LIMIT cannot be
+    filled by out-of-window hits."""
     if not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")
+    # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
+    where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:
         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
         params.extend(source_filter)
@@ -144,6 +157,12 @@ def _search_filter_clauses(
     if role_filter:
         where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
         params.extend(role_filter)
+    if after_ts is not None:
+        where.append("s.started_at >= ?")
+        params.append(int(after_ts))
+    if before_ts is not None:
+        where.append("s.started_at < ?")
+        params.append(int(before_ts))
 
 
 class SessionSearchMixin:
@@ -528,7 +547,13 @@ class SessionSearchMixin:
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\') "
+                    # messages_fts_cjk* is an independent v23+ index, not part of the
+                    # demoted legacy layout: fts5's xRename renames the entire shadow
+                    # family in one step, so sweeping the cjk vtable here aborts the
+                    # loop on the next cjk shadow entry and drags _config — needed by
+                    # the vtable constructor — into the trash family (#103647).
+                    "AND name NOT LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\'"
                 ).fetchall():
                     conn.execute(f"ALTER TABLE {row[0]} RENAME TO fts_v22_trash_{row[0]}")
             # Claim the backfill BEFORE the empty v23 tables exist so a crash before
@@ -730,7 +755,9 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
+        # with the in-memory user_originated_turn_view count.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, content FROM messages WHERE session_id = ? AND role = 'user'"
@@ -816,6 +843,21 @@ class SessionSearchMixin:
                     return True
                 run = 0
         return run == 1
+
+    @staticmethod
+    def _or_relaxed_query(query: str) -> Optional[str]:
+        """The sanitized implicit-AND query rewritten as an any-term OR query, or ``None`` when
+        relaxation does not apply: fewer than two searchable units (a single term cannot relax)
+        or explicit ``OR``/``NOT`` (the caller expressed exact semantics). Quoted phrases stay
+        whole units: ``"docker networking" tls`` -> ``"docker networking" OR tls``."""
+        units: List[str] = []
+        for raw_token in _LIKE_TOKEN_RE.findall(query):
+            upper = raw_token.upper()
+            if upper in {"OR", "NOT"}:
+                return None
+            if upper != "AND":
+                units.append(raw_token)
+        return " OR ".join(units) if len(units) >= 2 else None
 
     @staticmethod
     def _trigram_eligible_tokens(query: str) -> bool:
@@ -993,6 +1035,7 @@ class SessionSearchMixin:
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        after_ts: Optional[int] = None, before_ts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
         path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
@@ -1001,11 +1044,12 @@ class SessionSearchMixin:
         try:
             rows = self._search_messages_impl(
                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
-                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields)
+                limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
+                after_ts=after_ts, before_ts=before_ts)
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
-            if elapsed_ms >= env_float("HERMES_SEARCH_SLOW_MS", 1000.0):
+            if elapsed_ms >= _search_slow_ms():
                 logger.info("slow session search: path=%s elapsed=%.0fms rows=%s query=%r",
                             self._describe_search_path(query), elapsed_ms, len(rows) if rows is not None else "err",
                             query[: 200])
@@ -1014,12 +1058,15 @@ class SessionSearchMixin:
         self, query: str, source_filter: List[str] = None, exclude_sources: List[str] = None,
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
+        after_ts: Optional[int] = None, before_ts: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
         projection. ``sort``: None = BM25 rank; "newest"/"oldest" = timestamp then rank (the
         CJK LIKE fallback ignores it). Rewound rows (``active=0, compacted=0``) are excluded
-        by default; compaction-archived rows ARE included; ``include_inactive`` = every row."""
+        by default; compaction-archived rows ARE included; ``include_inactive`` = every row.
+        ``after_ts``/``before_ts`` bound ``sessions.started_at`` on every route (FTS5, CJK,
+        trigram, LIKE fallback, unindexed-gap supplement)."""
         result_fields = self._search_message_fields(fields)
         if not query or not query.strip():
             return []
@@ -1027,7 +1074,8 @@ class SessionSearchMixin:
         if not query:
             return []
         filters = dict(include_inactive=include_inactive, source_filter=source_filter,
-                       exclude_sources=exclude_sources, role_filter=role_filter)
+                       exclude_sources=exclude_sources, role_filter=role_filter,
+                       after_ts=after_ts, before_ts=before_ts)
         # New oversized tool results index only a bounded prefix; an explicit tool-role search is the
         # opt-in full-body path and scans canonical rows via LIKE.
         if role_filter and "tool" in role_filter:
@@ -1095,6 +1143,21 @@ class SessionSearchMixin:
                 matches = self._match_rows("messages_fts_cjk", fb_query, **route) or matches
             if not matches and self._trigram_available and self._trigram_eligible_tokens(query):
                 matches = self._match_rows("messages_fts_trigram", fb_query, **route) or matches
+
+        # OR-relaxed retry: the implicit AND between terms means a paraphrased multi-word query
+        # misses a stored sentence that lacks even ONE word ("when does Sarah like her standup
+        # scheduled" vs "Sarah prefers the standup meeting scheduled ... Thursday mornings"). Once
+        # the exact query and the substring fallbacks all miss, retry the unicode61 index matching
+        # ANY term. The caller's ``sort`` still applies (``route`` carries order_by_sql): rank order
+        # puts rows covering more terms first, newest/oldest keep their timestamp order. Gated on a
+        # zero-result miss so hits keep exact-match semantics; explicit OR/NOT, single-term and
+        # CJK-routed queries are left alone.
+        if not matches and not is_cjk and not self._fts_stale:
+            relaxed = self._or_relaxed_query(query)
+            if relaxed is not None:
+                matches = self._match_rows("messages_fts", relaxed, fail_open="OR-relaxed",
+                                           operational_debug="OR-relaxed FTS retry failed; keeping empty result",
+                                           **route) or matches
         return self._finalize_search_matches(matches, result_fields=result_fields)
 
     def _search_cjk(self, query: str, wants_unindexed_rows: bool, route: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1119,7 +1182,8 @@ class SessionSearchMixin:
         non_op_tokens = _non_operator_tokens(raw_query) or [raw_query]
         like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
         like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
-        filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter")}
+        filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
+                                         "after_ts", "before_ts")}
         _search_filter_clauses(like_where, like_params, **filters)
         # instr() for the snippet uses the first search token.
         return self._like_rows(like_where, [non_op_tokens[0], *like_params, route["limit"], route["offset"]],
@@ -1182,7 +1246,11 @@ class SessionSearchMixin:
     def optimize_fts(self) -> int:
         """Merge fragmented FTS5 segments into one per index (``'optimize'``). Pure
         maintenance: changes neither results nor ``snippet()`` output, only layout and
-        speed; VACUUM then returns the freed pages. Returns the number optimized."""
+        speed; VACUUM then returns the freed pages. Returns the number optimized. A quarantined
+        handle never issues ``'optimize'``: it rewrites index segments in place and would compound
+        structural damage (or a split WAL generation) instead of leaving it diagnosable."""
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
             for tbl in self._present_fts_tables():
@@ -1202,7 +1270,8 @@ class SessionSearchMixin:
 
         Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
         rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
-        the index data entirely. See #50502.
+        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
+        #50502.
         A full structural rebuild must never run concurrently in two processes sharing one state.db — that
         interleaving has structurally corrupted the database in production (PR #93200) — so this admits
         through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
@@ -1211,6 +1280,8 @@ class SessionSearchMixin:
         path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
         and at next startup.
         """
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:

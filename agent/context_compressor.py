@@ -12,8 +12,9 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _is_connection_error,
@@ -25,8 +26,9 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
+from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
+    CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
 )
 from agent.redact import redact_sensitive_text
@@ -85,6 +87,22 @@ def take_pinned_summary_route() -> Optional[Dict[str, Any]]:
     if route is not None:
         _SUMMARY_ROUTE_PIN.set(None)
     return route
+
+
+# Pinned route that names NO summary model: compress() skips the summary LLM and inserts its deterministic
+# fallback summary instead (``abort_on_summary_failure`` still aborts). The host pins it when the summary
+# route stalls again after a stall-class backoff already burned one idle window (#112420), so a provably
+# unhealthy route degrades once instead of re-entering the same silent stream every turn.
+DETERMINISTIC_SUMMARY_ROUTE: Dict[str, Any] = {"label": "deterministic fallback summary", "deterministic": True}
+
+
+def take_deterministic_summary_pin() -> bool:
+    """Consume the pin when it is the deterministic sentinel; a real route (or no pin) is left in place."""
+    route = _SUMMARY_ROUTE_PIN.get()
+    if not (isinstance(route, dict) and route.get("deterministic") is True):
+        return False
+    _SUMMARY_ROUTE_PIN.set(None)
+    return True
 
 
 def _pinned_summary_call_kwargs() -> Dict[str, Any]:
@@ -954,7 +972,7 @@ def _collect_protected_skill_names(messages: List[Dict[str, Any]], prune_boundar
     }
 
 
-_CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN = CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 # Fallback handoff preserves continuity anchors only, not a transcript copy.
@@ -981,6 +999,8 @@ _PRESSURE_KEEP_RECENT_MESSAGES = 3
 # Native vision_analyze / computer_use screenshots that sit inside the protected tail cannot be demoted by
 # pass 2, so they ride every later request until anti-thrash disables compression (#92699).
 _MAX_KEEP_TOOL_IMAGES = 3
+# Compaction window only. The send path's same-valued OUTBOUND_IMAGE_FLOOR (agent/image_eviction_policy.py)
+# is a satisfiability floor with different semantics; do not merge the two.
 
 # Below this window the threshold is floored (raise-only): at 50% the incompressible
 # floor eats the reclaimed headroom and compaction re-fires every 1-2 turns.
@@ -1203,10 +1223,14 @@ def _replace_image_parts(parts: Any, placeholder: str) -> Optional[List[Any]]:
     return [{"type": "text", "text": placeholder} if _is_image_part(p) else p for p in parts]
 
 
+def _tool_result_parts(content: Any) -> Any:
+    """Part list of a tool-result body, unwrapping the ``_multimodal`` envelope."""
+    return content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
+
+
 def _tool_content_has_images(content: Any) -> bool:
     """True when a tool-result body (part list or ``_multimodal`` envelope) carries images."""
-    inner = content.get("content") if isinstance(content, dict) and content.get("_multimodal") else content
-    return _content_has_images(inner)
+    return _content_has_images(_tool_result_parts(content))
 
 
 def _strip_images_from_tool_msg(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1229,7 +1253,10 @@ def _rewritten(msg: Dict[str, Any], content: Any) -> Dict[str, Any]:
 def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES) -> int:
     """Replace image payloads on older tool results with text placeholders.
     Keeps the newest ``keep_newest`` image-bearing tool messages; user uploads untouched. Mutates
-    ``result`` in place; returns the number of messages rewritten."""
+    ``result`` in place; returns the number of messages rewritten. Compaction only: it commits the
+    rewrite into the canonical transcript once. The send path uses
+    :func:`evict_stale_outbound_tool_images` (a per-request keep-newest window rewrites the cached
+    prefix on every new image, #113517)."""
     seen = pruned = 0
     for i in range(len(result) - 1, -1, -1):
         msg = result[i]
@@ -1245,21 +1272,72 @@ def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: 
     return pruned
 
 
-def evict_stale_outbound_tool_images(
-    api_messages: List[Dict[str, Any]],
-    keep_newest: int = _MAX_KEEP_TOOL_IMAGES,
-) -> int:
+def _image_payload(msg: Dict[str, Any]) -> Tuple[int, int]:
+    """``(blocks, bytes)`` of image payload in a message.
+
+    The provider counts BLOCKS: one ``tool_result`` carrying three screenshots is three against
+    the per-request limit. Bytes are the data-URL / base64 length — the payload is ASCII and the
+    JSON framing around it is noise against a 24 MB budget, so no per-request re-serialization.
+    """
+    parts = _tool_result_parts(msg.get("content"))
+    if not isinstance(parts, list):
+        return 0, 0
+    blocks = payload = 0
+    for p in parts:
+        if not _is_image_part(p):
+            continue
+        blocks += 1
+        image_url = p.get("image_url")
+        source = p.get("source")
+        data = (
+            (image_url.get("url") if isinstance(image_url, dict) else image_url)
+            or (source.get("data") if isinstance(source, dict) else None)
+            or ""
+        )
+        payload += len(data) if isinstance(data, str) else 0
+    return blocks, payload
+
+
+def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     """Drop stale screenshot/vision payloads from the per-call API copy.
 
-    Compression's keep-newest pass only runs when prune/compress fires, and
-    the Anthropic adapter's screenshot eviction only sees nested
-    ``tool_result`` blocks. OpenAI-style ``image_url`` tool results
-    otherwise ride every subsequent request until a 413 forces the reactive
-    strip (#89286). Call this on the cloned ``api_messages`` list after
-    sanitization so older frames never leave the box (#89296). Do not pass
-    persisted history — the rewrite is send-path only.
+    Compression's keep-newest pass only runs when prune/compress fires, and the Anthropic
+    adapter's screenshot eviction only sees nested ``tool_result`` blocks. OpenAI-style
+    ``image_url`` tool results otherwise ride every subsequent request until a 413 forces
+    the reactive strip (#89286). Call this on the cloned ``api_messages`` list after
+    sanitization (#89296). Do not pass persisted history — the rewrite is send-path only.
+
+    Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
+    reserved against the ceiling but never rewritten — policy and rationale in
+    :mod:`agent.image_eviction_policy`. Returns the number of messages rewritten.
     """
-    return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
+    carriers: List[Tuple[int, Tuple[int, int]]] = []
+    reserved_blocks = reserved_bytes = 0
+    for i in range(len(api_messages) - 1, -1, -1):
+        msg = api_messages[i]
+        if not isinstance(msg, dict):
+            continue
+        blocks, size = _image_payload(msg)
+        if not blocks:
+            continue
+        if msg.get("role") == "tool":
+            carriers.append((i, (blocks, size)))
+        else:
+            reserved_blocks += blocks
+            reserved_bytes += size
+    retire = outbound_image_retire_count(
+        [blocks for _, (blocks, _) in carriers],
+        reserved_blocks,
+        carrier_bytes_newest_first=[size for _, (_, size) in carriers],
+        reserved_bytes=reserved_bytes,
+    )
+    pruned = 0
+    for i, _ in carriers[len(carriers) - retire:]:
+        new_msg = _strip_images_from_tool_msg(api_messages[i])
+        if new_msg is not None:
+            api_messages[i] = new_msg
+            pruned += 1
+    return pruned
 
 
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
@@ -1456,7 +1534,25 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
     truncation_marker = "...[truncated]"
-    response = _json_dict(content).get("user_response")
+    parsed = _json_dict(content)
+    response = parsed.get("user_response")
+    # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
+    # rather than the top level; without this every batch answer was lost and the summarizer only
+    # saw "asked user a question" (#106077).
+    if response is None:
+        batch_responses = parsed.get("responses")
+        if isinstance(batch_responses, list) and batch_responses:
+            collected = []
+            for entry in batch_responses:
+                if not isinstance(entry, dict):
+                    continue
+                single = entry.get("user_response")
+                # multi_select emits a list of strings; flatten it so the summary keeps every choice.
+                if isinstance(single, str) and single:
+                    collected.append(single)
+                elif isinstance(single, list) and all(isinstance(s, str) and s for s in single):
+                    collected.extend(single)
+            response = collected if collected else None
     is_answer_shaped = (isinstance(response, str) and bool(response)) or (
         isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
     )
@@ -1471,8 +1567,51 @@ def _sum_clarify(name, args, content, content_len, line_count):
     return "[clarify] asked user a question"
 
 
-def _sum_named(name, args, content, content_len, line_count):
-    return f"[{name}] name={args.get('name', '?')} ({content_len:,} chars)"
+def _sum_skill_manage(name, args, content, content_len, line_count):
+    # The advertised call shape is an operations array; the legacy flat shape
+    # (top-level action/name) is still accepted, so both must summarize to a
+    # skill name instead of `name=?` — there is no top-level `name` arg here.
+    ops = args.get("operations")
+    if isinstance(ops, list) and ops:
+        rendered = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            action = _str_arg(op, "action", "?")
+            op_name = _str_arg(op, "name", "?")
+            rendered.append(f"{action} {op_name}")
+        summary = f"[skill_manage] {'; '.join(rendered[:3])}"
+        if len(ops) > 3:
+            summary += f" (+{len(ops) - 3} more)"
+    else:
+        action = _str_arg(args, "action", "?")
+        op_name = _str_arg(args, "name", "?")
+        summary = f"[skill_manage] {action} {op_name}"
+    return f"{summary}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _sum_skills_list(name, args, content, content_len, line_count):
+    # `skills_list` takes only `category`, not a top-level `name` — the count
+    # from the payload is what identifies the call after compression.
+    category = _str_arg(args, "category")
+    scope = f" category={category}" if category else ""
+    payload = _json_dict(content)
+    count = payload.get("count")
+    listed = f" {count} skills" if isinstance(count, int) else ""
+    return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _skill_result_failure_suffix(content: str) -> str:
+    """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
+    The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
+    failed batch compresses into the same line as a success and the post-compaction agent chases the
+    stub text as the error (#112710). Bounded to one line so the stub stays a stub."""
+    payload = _json_dict(content)
+    error = payload.get("error")
+    if not error and payload.get("success") is not False:
+        return ""
+    preview = " ".join(str(error).split())[:80] if error else ""
+    return f" FAILED: {preview}" if preview else " FAILED"
 
 
 def _sum_template(template: str, **defaults):
@@ -1498,8 +1637,8 @@ _TOOL_RESULT_SUMMARIZERS = {
     "delegate_task": _sum_delegate_task,
     "execute_code": _sum_execute_code,
     "skill_view": _sum_skill_view,
-    "skills_list": _sum_named,
-    "skill_manage": _sum_named,
+    "skills_list": _sum_skills_list,
+    "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
     ),
@@ -1536,13 +1675,31 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
-def resolve_model_threshold(model: str, model_thresholds: dict[str, float] | None, default: float) -> float:
-    """Per-model threshold: longest matching ``model_thresholds`` substring key wins, else ``default``.
-    Module-level so plugin context engines can reuse it."""
+def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":
+    """Match rank for one ``model_thresholds`` key, or None when it does not apply.
+    ``"<provider>:<substr>"`` keys apply only on that provider; bare keys apply on every route.
+    The same slug means different windows on different routes (Codex caps Astra at 272K; OpenRouter
+    serves the full window), so a bare ``astra: 0.85`` written for Codex silently leaks everywhere.
+    Rank = (substring length, scoped): the most specific model match wins, scope breaks ties."""
+    scope, sep, substr = key.partition(":")
+    if not sep:
+        return (len(key), 0) if key in model else None
+    return (len(substr), 1) if scope.strip().lower() == provider and substr in model else None
+
+
+def resolve_model_threshold(
+    model: str, model_thresholds: dict[str, float] | None, default: float, provider: str = "",
+) -> float:
+    """Per-model threshold: longest matching ``model_thresholds`` key wins, else ``default``.
+    Keys are substrings of the model name, optionally provider-scoped as ``"<provider>:<substr>"``
+    (a scoped key outranks a bare one of the same substring). Module-level so plugin context
+    engines can reuse it."""
     if not model_thresholds or not model:
         return default
-    best_key = max((key for key in model_thresholds if key in model), key=len, default="")
-    return float(model_thresholds[best_key]) if best_key else default
+    provider = (provider or "").strip().lower()
+    ranked = ((_model_threshold_key_rank(key, model, provider), key) for key in model_thresholds)
+    best = max(((rank, key) for rank, key in ranked if rank is not None), default=None)
+    return float(model_thresholds[best[1]]) if best else default
 
 
 def _memory_provider_section(memory_context: str) -> str:
@@ -2113,7 +2270,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
         """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts."""
         stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
-        self._record_compression_failure_cooldown(float(_next_timeout_cooldown(self)), stamped)
+        seconds = float(_next_timeout_cooldown(self))
+        # The first rung (60s) is shorter than the default idle stall window (120s): the next oversized turn
+        # re-entered the same silent route ~1 min after burning the full window (#112420). A stall cooldown
+        # can never be shorter than the window that just failed to show progress.
+        with contextlib.suppress(Exception):
+            from agent.conversation_compression import resolve_context_compression_timeouts
+            idle, _ceiling = resolve_context_compression_timeouts()
+            seconds = max(seconds, float(idle))
+        self._record_compression_failure_cooldown(seconds, stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # Fence check BEFORE cooldown-clear: a late cancelled worker must not undo the host's timeout cooldown.
@@ -2150,7 +2315,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.context_length = context_length
         # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
         _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct)
+        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct, provider)
         self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
@@ -2276,7 +2441,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
         self._config_threshold_percent = threshold_percent
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent)
+        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent, provider)
         self.threshold_percent = self._base_threshold_percent
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
@@ -3644,7 +3809,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return False
         # display_kind rows (internal notifications, hidden scaffolding) are not human input
         # and must not anchor the tail or seed auto-focus. Mirrors is_user_originated_turn.
-        if message.get("display_kind") or cls._is_context_summary_message(message):
+        # A /steer row is typed for the renderer and the alternation repair, but it IS human input.
+        display_kind = message.get("display_kind")
+        if (display_kind and display_kind != STEER_DISPLAY_KIND) or cls._is_context_summary_message(message):
             return False
         return not cls._is_blank_user_turn(message)
 
@@ -4777,10 +4944,10 @@ def split_user_originated_turn(message: Any) -> tuple[Optional[Dict[str, Any]], 
         candidate = None if display_kind and display_kind != "hidden" else ContextCompressor._strip_context_summary_handoff_message(message)
         if candidate is None:
             return handoff, None
-    elif message.get("display_kind"):
+    elif message.get("display_kind") and message.get("display_kind") != STEER_DISPLAY_KIND:
         return None, None
     else:
-        candidate = message.copy()
+        candidate = message.copy()  # includes a typed /steer row: full user authority
 
     for key in (
         COMPRESSED_SUMMARY_METADATA_KEY, COMPRESSED_SUMMARY_HAS_USER_TURN_KEY, MICRO_COMPACT_MARKER_KEY,

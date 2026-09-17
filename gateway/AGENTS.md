@@ -64,6 +64,13 @@ completion and triggers a new agent turn. Verbosity: `display.background_process
 tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
 (final raw output only on non-zero exit), `off`.
 
+The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
+_register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
+is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
+while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
+receipt (the agent's next turn is the report) unless the launching turn is still running at exit
+— then the injection only queues a follow-up, so the concise receipt goes out immediately.
+
 The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
 required. Notify-off drains these without waking. Transport failures are retried; unavailable
 durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
@@ -75,9 +82,43 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
-Cron deliveries are NOT mirrored into the target gateway session — they land in their own cron
-session with a header/footer frame so the main conversation's role alternation stays intact
+Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
+reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
+or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
+briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
+
+## `/login` (off-turn, paired DM only)
+
+`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
+`desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
+`GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
+`chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
+conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
+an agent peer, so posting a consent link there would publish it.
+
+**It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
+approves the code owns this gateway's inference and connectors for every chat it serves. Slash
+gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to
+DM the bot can run it. Operators of shared gateways must set it.
+
+The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
+executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
+close/checkpoint. One attempt per process, stamped with the identity that started it: the same
+identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
+chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
+worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
+`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
+task is dying and its adapters may already be gone — but if the server had already completed the
+transfer it still persists, because that transfer is irreversible.
+
+On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
+session model override pinned to it. It does not switch agents in place and does not write a model
+override: `settle_after_upgrade` already moved `model.default`/`model.base_url` in the config, every
+turn re-resolves the config and the credentials, and `_agent_config_signature` already forces a
+rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
+an expiring access token that nothing refreshes.
 
 ## Gateway lifecycle vs. the Desktop app
 
@@ -90,7 +131,7 @@ replaced by #92091's `pause-for-update`. Do NOT "fix" gateway-dies-with-app by r
 gateway under the backend, and do NOT "fix" update locks by widening the tree-kill. Gateways stamp
 `code_sha`/`code_version` into `gateway_state.json` (`status.py`) so the updater can verify a fleet.
 
-## Profiles and secrets in adapters
+## Profile scope (adapters, turns, and everything between turns)
 
 - **Token locks.** An adapter that connects with a unique credential (bot token, API key) calls
   `acquire_scoped_lock()` from `gateway.status` in `connect()`/`start()` and `release_scoped_lock()`
@@ -99,17 +140,52 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 - **Multiplex profile-scoped env reads MUST fail closed — never borrow from `os.environ`**
   (`agent/secret_scope.py`; #72348, #86905). Under `gateway.multiplex_profiles`, `os.environ` holds
   the DEFAULT profile's values; a secondary profile's `.env` exists only in its secret scope,
-  installed per turn by `_profile_runtime_scope`. All profile-level env config — credentials
+  bound per profile *activity* by `_profile_runtime_scope` (turn, callback, eviction, tick — never
+  only "per turn"). All profile-level env config — credentials
   (`app_secret`, tokens) AND authorization (`FEISHU_ALLOWED_USERS`, `{PLATFORM}_ALLOW_ALL_USERS`,
   `GATEWAY_ALLOW_ALL_USERS`, `group_policy`, `allow_bots`) — is read scope-aware: adapters via
-  `_get_scoped_secret()` (canonical fail-closed copy: `plugins/platforms/feishu/adapter.py`),
-  gateway authz via `_auth_env()` / `_platform_gate_env()` (`authz_mixin.py`). Scope installed +
+  `gateway.platforms._shared.get_scoped_secret` (the ONE implementation; adapters import it as
+  `_get_scoped_secret`; `extra_or_secret` / `seed_extra_from_env` / `env_is_connected` build on it),
+  gateway authz via `_shared.platform_gate_env` (imported by `authz_mixin.py` as `_auth_env`). Scope installed +
   multiplex active → a scoped miss returns the **default**, NEVER `os.environ` (a leaked allowlist
   skips the allow-all check and silently rejects every secondary-profile sender, #86905). The
   unscoped default-profile path (`UnscopedSecretError`) and single-profile deployments keep the
-  `os.environ` read — there it IS the profile's own value. `_get_scoped_secret` is copy-pasted
-  across ~15 adapters: when touching one, verify fail-closed semantics and never reintroduce the
-  `except _UnscopedSecretError: val = os.getenv(...)` fallback-after-miss shape.
+  `os.environ` read — there it IS the profile's own value. Never re-implement the reader in an
+  adapter (the `try get_secret / except UnscopedSecretError: os.getenv` shape drifts into a
+  fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
+  asserts every plugin's `_env_enablement` reads only through it.
+- **Scope is bound per profile activity, not per turn.** `run.py::_profile_runtime_scope(home)`
+  wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
+  that touches a session's home, secrets or terminal scope with no turn on the stack: release and
+  eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
+  eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
+  shutdown (`run_shutdown.py::_finalize_session`), post-turn media delivery
+  (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
+  routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
+  Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
+  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
+  wrote a secondary profile's memories into the default profile's store, silently.
+- **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
+  profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
+  activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
+  standalone entry point (`run_turn.py::_profile_scope_for_source`, the primary adapter's message /
+  busy / platform-event handlers via `run_adapters.py::_standalone_scoped`) then binds the launch
+  profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
+  activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
+  `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
+- **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
+  register_from_config` and lifecycle observers are prepared under each profile's scope at startup
+  and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
+  time (a module constant freezes to the first importer).
+- **Adapter YAML never reaches `os.environ` under multiplex.** `platforms/_shared.py::
+  apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary
+  profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):
+  os.environ[X] = …` bridge is first-profile-wins across the process — test two profiles with
+  conflicting flags before touching precedence.
+- **Unserved is reported, never silent.** Shared-ingress platforms (WhatsApp bridge, Relay) run on
+  the default profile only; a secondary enabling one is logged once with the remedy and stamped
+  into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). `needs_attention` is
+  set and cleared at the single writer (`_update_platform_runtime_status`) on the connect path.
 
 ## Tests
 

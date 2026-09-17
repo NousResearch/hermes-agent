@@ -466,6 +466,9 @@ def wire_env():
             session_db=db, session_id=sid,
         )
         agent.valid_tool_names = {"read_file"}
+        # Direct build_api_messages() tests bypass the normal turn prologue,
+        # which now stamps the replay-cleanup clock at admission.
+        agent._current_turn_timestamp = 10_000.0
         return agent
 
     try:
@@ -1267,22 +1270,23 @@ class TestMaxIterationsSummaryReplay:
         class _Completions:
             def create(self, **kwargs):
                 captured.update(kwargs)
-                return "RAW-RESPONSE"
+                return types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="SUMMARY", tool_calls=None),
+                        finish_reason="stop",
+                    )],
+                )
 
         client = types.SimpleNamespace(
             chat=types.SimpleNamespace(completions=_Completions())
         )
-        transport = types.SimpleNamespace(
-            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
-        )
-
         messages = [
             {"role": "user", "content": "q1", "api_content": "q1\n\nPLUGIN-CTX"},
             {"role": "assistant", "content": "a1"},
         ]
         with patch.object(
             agent, "_ensure_primary_openai_client", return_value=client
-        ), patch.object(agent, "_get_transport", return_value=transport):
+        ):
             out = handle_max_iterations(agent, messages, 5)
 
         assert out == "SUMMARY"
@@ -1312,6 +1316,7 @@ class TestMaxIterationsSummaryReplay:
         agent._cached_system_prompt = "SYS"
         agent.ephemeral_system_prompt = None
         agent.prefill_messages = []
+        agent._current_turn_timestamp = 10_000.0
         snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
         messages = [
             {
@@ -1358,6 +1363,7 @@ class TestMaxIterationsSummaryReplay:
         agent._cached_system_prompt = "SYS"
         agent.ephemeral_system_prompt = None
         agent.prefill_messages = []
+        agent._current_turn_timestamp = 10_000.0
         snapshot = "Latitude: 51.5074\nLongitude: -0.1278"
         messages = [
             {
@@ -1417,6 +1423,7 @@ class TestMaxIterationsSummaryReplay:
                 skip_memory=True,
             )
             instance.ephemeral_system_prompt = None
+            instance._current_turn_timestamp = 10_000.0
             return instance
 
         parent = make_agent()

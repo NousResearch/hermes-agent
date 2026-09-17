@@ -24,7 +24,7 @@ if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
-from hermes_constants import OPENROUTER_MODELS_URL
+from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -105,8 +105,10 @@ def _strip_provider_prefix(model: str) -> str:
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
-_endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
-_endpoint_model_metadata_cache_time: Dict[str, float] = {}
+# In-memory memo keyed by (base_url, api-key fingerprint): per-key gateways return a per-key catalog, and
+# in a multiplexed process two profiles may share a URL with different keys. The disk memo stays per URL.
+_endpoint_model_metadata_cache: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+_endpoint_model_metadata_cache_time: Dict[Tuple[str, str], float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 # Server-type verdicts (server_type, monotonic_ts): positive ones live an hour so a
 # server swap on the same port is re-detected; None gets the short TTL so a
@@ -339,10 +341,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     # Google / Gemma ("gemma4" is Ollama-style naming, e.g. gemma4:31b-cloud)
     "gemini": 1048576,
     "gemma-4": 256000, "gemma4": 256000, "gemma-4-31b": 256000, "gemma-3": 131072, "gemma": 8192,
-    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes.
+    # DeepSeek — V4 family is 1M; deepseek-chat/-reasoner alias v4-flash modes. ``deepseek-flash``
+    # (version-less canonical id, 2026-09 Flash refresh) needs a discrete entry or the
+    # longest-key-first scan falls through to the 128K ``deepseek`` catch-all below.
     # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
-    "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
-    "deepseek-reasoner": 1_000_000, "deepseek": 128000,
+    "deepseek-v4-pro": 1_000_000, "deepseek-v4.1-flash": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000, "deepseek-flash": 1_000_000, "deepseek": 128000,
     # Meta; Muse Spark family (1.1/1.2/1.3, -contributor(-free), meta/ prefixed) is 1M per OpenRouter,
     # models.dev and api.commandcode.ai /models — keep the "muse-spark" prefix (bare "muse" would match
     # muse-image/muse-voice). Thinking Machines inkling (covers inkling-small and :free/:batch variants)
@@ -353,9 +357,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000, "qwen3-coder": 262144, "qwen3-max": 262144, "qwen": 131072,
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
-    # GLM — 5.2/5.3 are 1M (5.2 verified empirically at 789K on api.z.ai); older GLM ~202K.
+    # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
-    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000, "glm-5.3": 1_048_576, "glm": 202752,
+    "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
+    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576,
+    "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
+    "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
+    "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,
     # xAI — /v1/models returns no context_length, so these prevent probe-down on api.x.ai
     # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
     # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
@@ -367,13 +376,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
-    # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
-    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
+    # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
+    # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
+    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
-    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); NVIDIA Nemotron (128K
+    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
+    # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
     # except 3.5 Lightning); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
-    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576,
+    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576, "union-alpha": 262144,
     "nemotron-3.5-lightning": 1_000_000, "nemotron": 131072,
     "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
@@ -469,6 +480,45 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _strip_openrouter_routing_variant(
+    model: str, base_url: str = "", provider: str = ""
+) -> str:
+    """Strip an OpenRouter routing-variant suffix for catalog lookup.
+
+    ``:nitro`` / ``:floor`` / ``:exacto`` / ``:online`` are request-time
+    routing modifiers, NOT catalog entries — OpenRouter's ``/models`` lists
+    only the base id, and a variant shares the base model's context window.
+    Without this, every lookup below misses and the resolver falls through to
+    a generic family default (``x-ai/grok-4.6:nitro`` → the 131K ``grok``
+    catch-all instead of its real 2M window).
+
+    Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
+    stays on the wire, so the routing opt-in is preserved — the same rule
+    :func:`hermes_cli.models.validate_requested_model` applies. Sharing the
+    base's cache key is intentional: the window is identical, so a variant and
+    its base must never disagree.
+
+    Narrow by design: only applied when the request actually routes through
+    OpenRouter, so a local ``model:tag`` that happens to end in one of these
+    words is untouched.
+    """
+    if not model:
+        return model
+    is_openrouter = (provider or "").strip().lower() == "openrouter" or (
+        bool(base_url) and _infer_provider_from_url(base_url) == "openrouter"
+    )
+    if not is_openrouter:
+        return model
+    base = openrouter_variant_base(model)
+    if base is None:
+        return model
+    logger.debug(
+        "Resolving context length for OpenRouter routing variant %r via base id %r",
+        model, base,
+    )
+    return base
+
+
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
@@ -488,11 +538,31 @@ def _server_root(base_url: str) -> str:
     return server_url[:-3] if server_url.endswith("/v1") else server_url
 
 
+# Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
+# match only on an id boundary, after folding aggregator slugs (``solar-pro-3``) into the native form.
+_BOUNDARY_MATCHED_KEY_PREFIXES = ("solar-",)
+_HYPHENATED_GENERATION_RE = re.compile(
+    rf"((?:{'|'.join(map(re.escape, _BOUNDARY_MATCHED_KEY_PREFIXES))})[a-z]+)-(\d{{1,2}})(?=[-:.@]|$)")
+
+
+def _catalog_key_matches(key: str, model_lower: str) -> bool:
+    """Substring match with version separators normalised on both sides, so a relay slug like
+    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398).
+    Boundary-matched families: a key must be followed by ``-:.@`` or the end, and a key ending in
+    ``-`` is the family default for bare names (``org/`` allowed) continuing with a lineup letter."""
+    if key.startswith(_BOUNDARY_MATCHED_KEY_PREFIXES):
+        model_lower = _HYPHENATED_GENERATION_RE.sub(r"\1\2", model_lower)
+        if key.endswith("-"):
+            return re.match(re.escape(key) + "[a-z]", model_lower.rsplit("/", 1)[-1]) is not None
+        return re.search(re.escape(key) + r"(?:[-:.@]|$)", model_lower) is not None
+    return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
+
+
 def _longest_key_match(table: Dict[str, int], model_lower: str) -> Optional[Tuple[str, int]]:
     """First ``(key, value)`` whose key is a substring of ``model_lower``, longest key first so
     specific entries (``gpt-5.4-mini``) beat their family catch-all (``gpt-5``); ties keep table order."""
     for key, value in sorted(table.items(), key=lambda x: len(x[0]), reverse=True):
-        if key in model_lower:
+        if _catalog_key_matches(key, model_lower):
             return key, value
     return None
 
@@ -600,8 +670,10 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host is None:
         return False
-    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts entries, mDNS.
-    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or (host and "." not in host):
+    # Unqualified hostnames (no dots) are local by definition — Docker Compose service names, /etc/hosts
+    # entries, mDNS — as is `*.local` (RFC 6762 mDNS, LAN-only). IPv6 literals have no dots either, so
+    # they are excluded here and classified by scope below (a global address is not local).
+    if host in _LOCAL_HOSTS or host.endswith(_CONTAINER_LOCAL_SUFFIXES) or host.endswith(".local") or (host and "." not in host and ":" not in host):
         return True
     try:
         addr = ipaddress.ip_address(host)
@@ -733,6 +805,33 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
     return int(raw) if isinstance(raw, (int, float)) and int(raw) > 0 else None
 
 
+# Generic ``/models`` pricing: an explicit ``unit`` beside the rates wins; without one, a token rate
+# at or above $0.001/token ($1,000/MTok — no real model charges that) can only be a per-million quote.
+_PRICING_UNIT_DIVISORS = {
+    "per_token": 1, "per_1k_tokens": 1_000, "per_thousand_tokens": 1_000,
+    "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
+}
+_PER_MILLION_QUOTE_MIN = 0.001
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+
+
+def _normalize_token_rates(pricing: Dict[str, Any], unit: Any) -> Dict[str, Any]:
+    """Rescale the generic path's token rates to per-token strings (the contract usage_pricing
+    multiplies by 1e6), the way the Novita/DeepInfra branches already do for their known units."""
+    rates: Dict[str, float] = {}
+    for key in _TOKEN_RATE_FIELDS:
+        try:
+            rates[key] = float(pricing[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    divisor = _PRICING_UNIT_DIVISORS.get(str(unit or "").strip().lower())
+    if divisor is None:
+        divisor = 1_000_000 if any(v >= _PER_MILLION_QUOTE_MIN for v in rates.values()) else 1
+    if divisor != 1:
+        pricing.update({key: str(value / divisor) for key, value in rates.items()})
+    return pricing
+
+
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     def _per_token(source: Dict[str, Any], fields: Dict[str, str], scale) -> Dict[str, Any]:
         # Provider $/MTok (or Novita's 1/10_000-$ per M) -> per-token strings, the same path usage_pricing uses for OpenRouter.
@@ -762,7 +861,7 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
-            return pricing
+            return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}
 
 
@@ -886,9 +985,15 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _remember_endpoint_models(normalized: str, cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    _endpoint_model_metadata_cache[normalized] = cache
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
+    from agent.credential_persistence import fingerprint_secret_value
+    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
+    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
+
+
+def _remember_endpoint_models(memo_key: Tuple[str, str], cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    _endpoint_model_metadata_cache[memo_key] = cache
+    _endpoint_model_metadata_cache_time[memo_key] = time.time()
     return cache
 
 
@@ -908,13 +1013,14 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     _ensure_requests()
     local = is_local_endpoint(normalized)
+    memo_key = _endpoint_memo_key(normalized, api_key)
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(normalized, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
+        cached = _endpoint_model_metadata_cache.get(memo_key)
+        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
         memo = _endpoint_disk_cache_get(normalized) if not local else None
         if memo is not None:
-            return _remember_endpoint_models(normalized, memo)
+            return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
@@ -926,7 +1032,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if local:
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(normalized, _lmstudio_native_models(normalized, headers))
+                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -951,7 +1057,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(normalized, cache)
+            return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -960,7 +1066,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 response.close()
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    return _remember_endpoint_models(normalized, {})
+    return _remember_endpoint_models(memo_key, {})
 
 
 def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -1057,8 +1163,13 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
-    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any."""
+    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
+
+    A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
+    bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
     error_lower = error_msg.lower()
+    if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
+        return None
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
@@ -1094,12 +1205,17 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     if not _any_phrase_group(error_lower, _PARSEABLE_OUTPUT_CAP_SIGNALS):
         return None
     # Direct cap figures, most specific first: "exceeds model's maximum output tokens (65536)", "Range of
-    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "= available_tokens: 10000", last "= N".
+    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "max_tokens: 100000 > 64000, which
+    # is the maximum allowed number of output tokens" (the ceiling is the right-hand side), Anthropic
+    # "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
+        # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
+        r'output limit (?:of|is)\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1138,11 +1254,13 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
 
 # Each entry is a phrase group; the group matches when ALL phrases are present.
-# DashScope, Anthropic, OpenRouter/Nous, LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
+# DashScope, Anthropic (available_tokens / "maximum allowed number of output tokens"), OpenRouter/Nous,
+# LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
 _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",), ("maximum allowed number of output tokens",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1157,6 +1275,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
 )
 
 
@@ -1288,6 +1407,9 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
+    "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
+    "deepseek-chat", "deepseek-reasoner",
 })
 
 
@@ -1295,7 +1417,7 @@ def _stale_pre_catalog_cache_entry(model: str, cached: int) -> bool:
     """True when a persisted window is a pre-catalog leftover: the model resolves (longest-key-first) to a
     _PRE_CATALOG_STALE_KEYS key and the cached value is <= the largest shorter matching catch-all (or 256K)."""
     model_lower = model.lower()
-    matches = [(key, value) for key, value in DEFAULT_CONTEXT_LENGTHS.items() if key in model_lower]
+    matches = [(key, value) for key, value in DEFAULT_CONTEXT_LENGTHS.items() if _catalog_key_matches(key, model_lower)]
     if not matches:
         return False
     specific_key, specific_value = max(matches, key=lambda kv: len(kv[0]))
@@ -1520,6 +1642,13 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+# The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
+# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
+# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
+# the full account catalog; other out-of-sequence values return an empty catalog and omitting
+# the parameter is HTTP 400.
+CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
+CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
@@ -1555,7 +1684,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         headers["ChatGPT-Account-Id"] = acct_id
     try:
         _ensure_requests()
-        resp = requests.get("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
             return {}, False
@@ -1879,6 +2008,14 @@ def get_model_context_length(
         logger.info("No model id provided for context length resolution — defaulting to %s tokens.", f"{DEFAULT_FALLBACK_CONTEXT:,}")
         return DEFAULT_FALLBACK_CONTEXT
     model = _strip_provider_prefix(model)  # "local:x" -> "x"; Ollama "model:tag" colons preserved
+    # OpenRouter routing variants (":nitro", ":floor", ...) are request-time
+    # modifiers, not catalog entries — resolve the window from the BASE id.
+    # Deliberately placed AFTER the explicit config overrides above (0b/0c) so
+    # a user who pinned the fully-suffixed id keeps winning, and BEFORE every
+    # cache/catalog lookup below so the base's real window is found instead of
+    # a generic family default. Mirrors the validation path's base/suffix split
+    # in hermes_cli.models.validate_requested_model.
+    model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.
     endpoint_context = _endpoint_scoped_context_length(model, base_url)
@@ -1954,6 +2091,10 @@ async def get_model_context_length_async(model: str, base_url: str = "", api_key
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul
 # Jamo (+Ext-A), CJK radicals/ideographs (+compat), Hangul syllables, fullwidth/halfwidth.
+# Rough chars-per-token ratio for ASCII text; the single source for every "N tokens ≈ N*4 chars"
+# budget conversion (context files, tool-output budgets, whisper prompt cap, compressor metadata).
+CHARS_PER_TOKEN = 4
+
 _CJK_DENSE_RE = re.compile("[\u1100-\u11ff\u2e80-\u9fff\ua960-\ua97f\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
 
@@ -1975,10 +2116,10 @@ def estimate_tokens_rough(text: str) -> int:
         return 0
     text = str(text)
     if text.isascii():  # flag check on CPython; ASCII cannot contain token-dense CJK
-        return (len(text) + 3) // 4
+        return (len(text) + 3) // CHARS_PER_TOKEN
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:

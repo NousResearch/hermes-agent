@@ -231,6 +231,26 @@ class TestAnthropicOAuthClassifierAlias:
     def _tool(self, name, description="x"):
         return {"type": "function", "function": {"name": name, "description": description, "parameters": {}}}
 
+    def _relocated_system_text(self, kwargs):
+        """Return relocated prose and prove it was not duplicated in system[]."""
+        from agent.anthropic_adapter import _CLAUDE_CODE_SYSTEM_PREFIX
+
+        system_text = "\n".join(
+            block["text"]
+            for block in kwargs["system"]
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        assert system_text == _CLAUDE_CODE_SYSTEM_PREFIX
+
+        first_user = next(message for message in kwargs["messages"] if message["role"] == "user")
+        content = first_user["content"]
+        assert isinstance(content, list)
+        return "\n".join(
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
     def test_oauth_aliases_session_search_and_memory_names(self):
         kwargs = self._build([
             self._tool("session_search", "Use session_search to recall prior chats."),
@@ -260,11 +280,9 @@ class TestAnthropicOAuthClassifierAlias:
                 {"role": "user", "content": "Hi"},
             ],
         )
-        system_text = "\n".join(
-            b["text"] for b in kwargs["system"] if isinstance(b, dict) and b.get("type") == "text"
-        )
-        assert "chat_history_lookup" in system_text
-        assert "session_search" not in system_text
+        relocated_text = self._relocated_system_text(kwargs)
+        assert "chat_history_lookup" in relocated_text
+        assert "session_search" not in relocated_text
 
     def test_oauth_does_not_alias_longer_identifier_containing_token(self):
         """Word-boundary matching: a path like tools/session_search_tool.py
@@ -276,10 +294,8 @@ class TestAnthropicOAuthClassifierAlias:
                 {"role": "user", "content": "Hi"},
             ],
         )
-        system_text = "\n".join(
-            b["text"] for b in kwargs["system"] if isinstance(b, dict) and b.get("type") == "text"
-        )
-        assert "tools/session_search_tool.py" in system_text
+        relocated_text = self._relocated_system_text(kwargs)
+        assert "tools/session_search_tool.py" in relocated_text
 
     def test_oauth_tool_choice_named_alias_matches_wire_name(self):
         """The gap left open by prior alias work: a forced tool_choice must

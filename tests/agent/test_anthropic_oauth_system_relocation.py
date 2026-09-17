@@ -269,6 +269,65 @@ class TestOAuthCacheBreakpointCap:
         total = _count_cache_markers(kw.get("system")) + _count_cache_markers(kw.get("messages"))
         assert total <= 4, f"OAuth wire exceeded Anthropic's 4-breakpoint cap: {total}"
 
+    def test_oauth_direct_tool_cache_layout_stays_within_cap(self):
+        """Relocation composes with the native tools-array cache layout."""
+        from agent.prompt_caching import build_prompt_cache_plan
+
+        messages = [
+            {"role": "system", "content": "stable prefix\nvolatile tail"},
+            {"role": "user", "content": "first request"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "first", "function": {"name": "read_file", "arguments": "{}"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "first", "content": "first result"},
+            {"role": "user", "content": "second request"},
+        ]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        plan = build_prompt_cache_plan(
+            api_messages=messages,
+            tools=tools,
+            cache_ttl="1h",
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+            direct_native_tool_cache=True,
+        )
+
+        kw = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=plan.messages,
+            tools=plan.tools,
+            max_tokens=8,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        total = sum(
+            _count_cache_markers(kw.get(section))
+            for section in ("system", "tools", "messages")
+        )
+        assert total <= 4, f"OAuth wire exceeded Anthropic's 4-breakpoint cap: {total}"
+        assert kw["system"] == [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
+        assert kw["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        first_user = next(message for message in kw["messages"] if message["role"] == "user")
+        assert first_user["content"][0]["text"].startswith("<system_context>\nstable prefix")
+        assert first_user["content"][0]["cache_control"] == {
+            "type": "ephemeral",
+            "ttl": "1h",
+        }
+
     def test_oauth_relocation_defaults_to_5m_without_marker(self):
         """No cache marker on the displaced system block → plain 5m ephemeral."""
         kw = build_anthropic_kwargs(

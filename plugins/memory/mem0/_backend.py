@@ -78,8 +78,13 @@ class SelfHostedBackend(Mem0Backend):
         return resp.json() if resp.content else {}
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
-        # rerank is platform-only; the self-hosted /search ignores it. user_id belongs in filters (top-level is deprecated).
-        return _unwrap_results(self._json("POST", "/search", json={"query": query, "top_k": top_k, **({"filters": filters} if filters else {})}))
+        # rerank is forwarded: the server's /search accepts it and reranks when a reranker is
+        # configured (a server without one treats it as a no-op). user_id belongs in filters
+        # (top-level is deprecated).
+        payload = {"query": query, "top_k": top_k, **({"filters": filters} if filters else {})}
+        if rerank:
+            payload["rerank"] = True
+        return _unwrap_results(self._json("POST", "/search", json=payload))
 
     def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False, metadata: dict | None = None) -> dict:
         return self._json("POST", "/memories", json={"messages": messages, **_add_kwargs(user_id, agent_id, infer, metadata)})
@@ -191,7 +196,8 @@ class OSSBackend(Mem0Backend):
                             cur.execute(pgsql.SQL("DROP TABLE IF EXISTS {}").format(pgsql.Identifier(collection_name)))
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
-        return _unwrap_results(self._memory.search(query, filters=filters, top_k=top_k))
+        # OSS runs in-process, so Memory.search takes the flag directly.
+        return _unwrap_results(self._memory.search(query, filters=filters, top_k=top_k, rerank=rerank))
 
     def add(self, messages: list, *, user_id: str, agent_id: str, infer: bool = False, metadata: dict | None = None) -> dict:
         return self._memory.add(messages, **_add_kwargs(user_id, agent_id, infer, metadata))

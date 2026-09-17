@@ -205,6 +205,78 @@ describe('scanDiskPlugins (#66899)', () => {
       delete (globalThis as unknown as { __uniRegister?: unknown }).__uniRegister
     }
   })
+
+  it('pairs a half pulled from a CONNECTED gateway (`.hermes-gateway.json`) with its package, OPT-IN', async () => {
+    // The remote-backend install path writes this marker (see
+    // electron/desktop-plugin-gateway-install.ts). It must mean the same thing
+    // as the unified copy to the Plugins page — one package, ONE row, the same
+    // installed-but-inert posture — while staying out of the reconcile prune
+    // that would delete it (its package lives on another machine).
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    const root = '/local/.hermes/desktop-plugins'
+
+    readDir.mockImplementation(async dir => {
+      if (dir === root) {
+        return { entries: [{ isDirectory: true, name: 'mc', path: `${root}/mc` }] }
+      }
+
+      if (dir === `${root}/mc`) {
+        return {
+          entries: [
+            { isDirectory: false, name: '.hermes-gateway.json', path: `${root}/mc/.hermes-gateway.json` },
+            { isDirectory: false, name: 'plugin.js', path: `${root}/mc/plugin.js` }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __gwRegister: unknown }).__gwRegister = register
+    readFileText.mockImplementation(async file =>
+      file.endsWith('.hermes-gateway.json')
+        ? { text: JSON.stringify({ bytes: 42, name: 'mission-control', sha256: 'abc', source: 'git' }) }
+        : { text: 'export default { id: "mc", register: globalThis.__gwRegister }' }
+    )
+    watchPreviewFile.mockResolvedValue({ id: 'w-mc' })
+
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      await discoverRuntimePlugins()
+
+      expect($pluginRecords.get().mc).toMatchObject({
+        kind: 'disk',
+        packageName: 'mission-control',
+        status: 'disabled'
+      })
+      expect(register).not.toHaveBeenCalled()
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      delete (globalThis as unknown as { __gwRegister?: unknown }).__gwRegister
+    }
+  })
 })
 
 describe('watchRuntimePlugins dir watch (#66899)', () => {

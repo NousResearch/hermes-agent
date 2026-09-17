@@ -1952,7 +1952,7 @@
     },
     {
       "name": "plugins.manage",
-      "summary": "Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install.",
+      "summary": "Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install, or read a plugin's Desktop UI half as text.",
       "params": [
         {
           "name": "params",
@@ -17967,7 +17967,8 @@
           "list",
           "toggle",
           "install",
-          "update"
+          "update",
+          "desktop_half"
         ],
         "title": "PluginsAction",
         "type": "string"
@@ -17997,7 +17998,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``.",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``desktop_half``: ``key``/``name``.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18117,7 +18118,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``; ``desktop_half`` \u2192 ``ok``/``name``/``key``/``source``/``sha256``/\n``bytes``/``text`` (the half's bytes as text, for a client that is not on this machine).",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -18193,6 +18194,18 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Key"
           },
           "plugin": {
             "anyOf": [
@@ -18282,6 +18295,54 @@
             ],
             "default": null,
             "title": "Sha"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha256"
+          },
+          "bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bytes"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Text"
           }
         },
         "title": "PluginsManageResult",

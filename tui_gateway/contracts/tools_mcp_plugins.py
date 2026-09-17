@@ -571,11 +571,12 @@ class PluginsAction(WireEnum):
     toggle = "toggle"
     install = "install"
     update = "update"
+    desktop_half = "desktop_half"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
+    (+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``desktop_half``: ``key``/``name``."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -612,7 +613,8 @@ class AgentPluginRow(Result):
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``;
     ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` →
-    ``ok``/``unchanged``/``sha``."""
+    ``ok``/``unchanged``/``sha``; ``desktop_half`` → ``ok``/``name``/``key``/``source``/``sha256``/
+    ``bytes``/``text`` (the half's bytes as text, for a client that is not on this machine)."""
 
     plugins: list[AgentPluginRow] | None = None
     user_count: int | None = None
@@ -620,6 +622,7 @@ class PluginsManageResult(Result):
     ok: bool | None = None
     unchanged: bool | None = None
     name: str | None = None
+    key: str | None = None
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None
     warnings: list[str] | None = None
@@ -627,7 +630,12 @@ class PluginsManageResult(Result):
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None
+    source: str | None = None
+    sha256: str | None = None
+    bytes: int | None = None
+    text: str | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
-       doc="Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install.")
+       doc="Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install, "
+           "or read a plugin's Desktop UI half as text.")

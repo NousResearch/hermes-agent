@@ -1796,6 +1796,14 @@ export const en: Translations = {
       desktopHalfPending: 'copying…',
       desktopHalfPendingTip:
         'This package ships a desktop half that has not been copied into the app yet. Use Rescan, or restart the app.',
+      installDesktopHalf: 'Install from gateway',
+      installDesktopHalfTip:
+        "This package ships a desktop half on the backend you are connected to, but this app has no local copy — that is why it is missing here. Install it: the half is read from the connected gateway and written into this app's desktop-plugins folder, exactly like a hand-copied file.",
+      installDesktopHalfBusy: 'Installing…',
+      installDesktopHalfDone: (name: string) => `${name}'s desktop half is installed.`,
+      installDesktopHalfFailed: 'Could not install the desktop half',
+      installDesktopHalfUnavailable:
+        'This build of the desktop app cannot install a desktop half from a gateway — update the app.',
       emptyAll: 'No plugins yet.',
       empty: 'No agent plugins installed for this profile.',
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',

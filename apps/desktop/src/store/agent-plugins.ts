@@ -280,3 +280,93 @@ export async function updateAgentPlugin(
     $agentPluginBusy.set(null)
   }
 }
+
+export interface AgentPluginDesktopHalf {
+  bytes?: number
+  error?: string
+  key?: string
+  name: string
+  ok: boolean
+  /** Gateway-side provenance ('user' | 'git' | 'bundled'). */
+  source?: string
+  /** sha256 of `text` — the app verifies this before writing anything. */
+  sha256: string
+  text: string
+}
+
+/**
+ * Read one plugin's Desktop UI half OFF THE CONNECTED GATEWAY.
+ *
+ * This is the remote-backend half of the desktop-plugin install path. A desktop
+ * plugin extends THIS APP, whose plugin root is local to the machine running the
+ * app (#66899), so a package installed on an SSH/URL/cloud backend strands there:
+ * Electron's unified-package copy has no local folder to copy from and the owner
+ * hand-copies a file to their laptop. `plugins.manage list` already advertises
+ * `has_desktop_half`; this reads the bytes over the SAME session-authenticated
+ * channel, never the dashboard's unauthenticated `/dashboard-plugins/` asset
+ * route, which cannot carry an auth header (the SPA loads plugin JS with
+ * `<script src>`) — and the app evaluates this text as code with the app's own
+ * authority, so the transport has to be authenticated. The caller writes it via
+ * `window.hermesDesktop.installDesktopPluginFromGateway`, which re-verifies the
+ * same digest before anything lands on disk.
+ */
+export async function fetchAgentPluginDesktopHalf(
+  request: GatewayRequest,
+  opts: { key?: null | string; name?: null | string; profile?: string | null }
+): Promise<AgentPluginDesktopHalf> {
+  const key = String(opts.key ?? '').trim()
+  const name = String(opts.name ?? '').trim()
+
+  if (!key && !name) {
+    return { ok: false, name: '', sha256: '', text: '', error: 'a plugin key or name is required' }
+  }
+
+  try {
+    const result = await request<{
+      bytes?: number
+      key?: string
+      name?: string
+      ok?: boolean
+      sha256?: string
+      source?: string
+      text?: string
+    }>(
+      'plugins.manage',
+      withProfile(
+        { action: 'desktop_half', ...(key ? { key } : {}), ...(name ? { name } : {}) },
+        opts.profile
+      )
+    )
+
+    if (!result?.ok || typeof result.text !== 'string' || !result.text || !result.sha256) {
+      return { ok: false, name, sha256: '', text: '', error: 'the backend returned no desktop half' }
+    }
+
+    return {
+      bytes: result.bytes,
+      key: result.key,
+      name: result.name ?? name,
+      ok: true,
+      sha256: result.sha256,
+      source: result.source,
+      text: result.text
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+
+    // An older backend answers the action with its generic dispatch error. Say
+    // what that MEANS ("update Hermes there") instead of relaying
+    // "unknown plugins action: desktop_half" at the user.
+    const unsupported = /unknown\s+plugins\s+action:\s*desktop_half/i.test(message)
+
+    return {
+      ok: false,
+      name,
+      sha256: '',
+      text: '',
+      error: unsupported
+        ? 'the connected backend does not serve desktop halves yet — update Hermes on that machine'
+        : message
+    }
+  }
+}

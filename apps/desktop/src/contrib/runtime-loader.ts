@@ -264,6 +264,17 @@ async function diskRoots(): Promise<DiskRoot[]> {
  *  agent row. */
 const PACKAGE_MARKER = '.hermes-package.json'
 
+/** Marker written by `hermes:plugin:installDesktopFromGateway` (see
+ *  electron/desktop-plugin-gateway-install.ts) when the half was pulled off a
+ *  CONNECTED gateway instead of copied out of a local package folder. It means
+ *  the same thing to the Plugins page — this folder is the package's desktop
+ *  half — so it is paired the same way. It is deliberately NOT
+ *  `.hermes-package.json`: that marker's `source` is a path this machine can
+ *  stat and reconcile PRUNES the copy when the source is gone, which for a
+ *  gateway-installed half (the package lives on another machine) would delete
+ *  the plugin on the next root resolution. */
+const GATEWAY_MARKER = '.hermes-gateway.json'
+
 interface PackageMarker {
   origin?: { catalogName?: string; repo?: string; sha?: string }
   package: string
@@ -272,7 +283,10 @@ interface PackageMarker {
 async function readPackageMarker(desktop: Window['hermesDesktop'], folder: string): Promise<null | PackageMarker> {
   try {
     const { entries } = await desktop.readDir(folder)
-    const marker = entries.find(entry => entry.name === PACKAGE_MARKER && !entry.isDirectory)
+
+    const marker = entries.find(
+      entry => (entry.name === PACKAGE_MARKER || entry.name === GATEWAY_MARKER) && !entry.isDirectory
+    )
 
     if (!marker) {
       return null
@@ -280,9 +294,16 @@ async function readPackageMarker(desktop: Window['hermesDesktop'], folder: strin
 
     const parsed = JSON.parse((await desktop.readFileText(marker.path)).text) as {
       catalogName?: string
+      name?: string
       package?: string
       repo?: string
       sha?: string
+    }
+
+    if (marker.name === GATEWAY_MARKER) {
+      const name = String(parsed.name ?? '').trim()
+
+      return name ? { package: name } : null
     }
 
     if (!parsed.package) {

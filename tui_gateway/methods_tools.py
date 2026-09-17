@@ -6,6 +6,7 @@ Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / 
 """
 
 import contextlib
+import hashlib
 import sys
 from pathlib import Path
 
@@ -1452,8 +1453,39 @@ def _plugins_update(rid, params):
     return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
 
 
+def _plugins_desktop_half(rid, params):
+    """One plugin's Desktop UI half (``desktop/plugin.js``) as TEXT, for a client that is NOT on this machine.
+
+    The half is code the desktop app evaluates with the app's own authority, so it must reach the app
+    over an AUTHENTICATED channel. The dashboard's static asset route (``/dashboard-plugins/<name>/…``)
+    cannot be that channel: the SPA loads plugin JS with ``<script src>``, which carries no auth header,
+    so that route is deliberately unauthenticated — fetching the half from there and running it would
+    turn any local writer of that route into renderer code execution. This action rides the same
+    session-authenticated RPC as ``list`` (whose ``has_desktop_half`` is what makes the app offer the
+    install in the first place) and hands back the bytes with a sha256 for the app to verify before it
+    writes them into its own app-level ``desktop-plugins`` root.
+    """
+    ident = (params.get("key") or params.get("name") or "").strip()
+    if not ident:
+        return _err(rid, 4019, "plugins.manage desktop_half requires a 'key' or 'name'")
+    row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
+    if row is None:
+        return _err(rid, 4020, f"no plugin '{ident}'")
+    if not row["has_desktop_half"]:
+        return _err(rid, 4021, f"'{row['name']}' ships no desktop half")
+    path = Path(str(row["install_dir"])) / "desktop" / "plugin.js"
+    try:
+        raw = path.read_bytes()
+    except OSError as e:
+        return _err(rid, 4022, f"desktop half unreadable: {e}")
+    return _ok(rid, {
+        "ok": True, "name": row["name"], "key": row["key"], "source": row["source"],
+        "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "text": raw.decode("utf-8"),
+    })
+
+
 _PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update}
+                    "update": _plugins_update, "desktop_half": _plugins_desktop_half}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
@@ -1461,7 +1493,9 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
+    default True); ``update`` re-pins a catalog install to the current catalog SHA; ``desktop_half``
+    → {name, key, source, sha256, bytes, text} — a plugin's Desktop half as text, so a desktop app
+    connected to this backend over SSH/URL can install it locally instead of being hand-copied."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

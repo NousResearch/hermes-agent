@@ -3638,7 +3638,7 @@ export interface LegacyPluginRow {
   version: string
   enabled: boolean
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name``. */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``desktop_half``: ``key``/``name``. */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -3651,8 +3651,8 @@ export interface PluginsManageParams {
   force?: boolean | null
   ref?: string | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'update'
-/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``. */
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'desktop_half'
+/** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` → ``ok``/``unchanged``/``sha``; ``desktop_half`` → ``ok``/``name``/``key``/``source``/``sha256``/ ``bytes``/``text`` (the half's bytes as text, for a client that is not on this machine). */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
   user_count?: number | null
@@ -3660,6 +3660,7 @@ export interface PluginsManageResult {
   ok?: boolean | null
   unchanged?: boolean | null
   name?: string | null
+  key?: string | null
   plugin?: AgentPluginRow | null
   plugin_name?: string | null
   warnings?: string[] | null
@@ -3667,6 +3668,10 @@ export interface PluginsManageResult {
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null
+  source?: string | null
+  sha256?: string | null
+  bytes?: number | null
+  text?: string | null
 }
 /** ``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance. */
 export interface AgentPluginRow {
@@ -4392,7 +4397,7 @@ export interface RpcMethods {
   ping: { params: PingParams; result: PingResult }
   /** Loaded plugin manager entries (legacy flat view); the Plugins Hub uses plugins.manage list. */
   'plugins.list': { params: PluginsListParams; result: PluginsListResult }
-  /** Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install. */
+  /** Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install, or read a plugin's Desktop UI half as text. */
   'plugins.manage': { params: PluginsManageParams; result: PluginsManageResult }
   /** Spawn a hidden agent that brings the desktop preview's dev server back up. */
   'preview.restart': { params: PreviewRestartParams; result: TaskIdResult }

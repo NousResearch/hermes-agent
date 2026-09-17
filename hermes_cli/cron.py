@@ -61,7 +61,7 @@ def _builtin_gateway_liveness() -> Optional[bool]:
                 return True
         from hermes_cli.gateway import (
             find_gateway_pids, named_profile_served_by_running_multiplexer)
-        # Satellite profile: no local gateway.pid, but the default multiplexer ticks its store.
+        # List/create use this cheap host probe; status separately checks the satellite's ticker heartbeat.
         return bool(find_gateway_pids()) or named_profile_served_by_running_multiplexer()
     except Exception:
         return None
@@ -442,6 +442,8 @@ def cron_status():
             if served_by_multiplexer:
                 print("  Scheduler host: default-profile multiplexer")
                 _print_ticker_health(pids, restart_command="hermes --profile default gateway restart")
+                print(color("  If the Desktop app is open, it may have taken over scheduling for this profile; "
+                            "check that the profile is enabled in its scheduler.", Colors.DIM))
             else:
                 _print_ticker_health(pids)
         else:
@@ -457,6 +459,8 @@ def cron_status():
                       "    configure a running default gateway to tick this profile:\n"
                       "      hermes --profile default config set gateway.multiplex_profiles true\n"
                       "      hermes --profile default gateway restart\n"
+                      "    To migrate existing per-profile services with preflight checks:\n"
+                      "      hermes --profile default gateway migrate --multiplex\n"
                       "  Check: hermes cron status from this profile should show its ticker heartbeat.\n")
 
     print()
@@ -544,20 +548,11 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
         issues.append("last delivery unverified (adapter acked without evidence): "
                       + _unverified_targets(unverified))
     # Dispatch records measure lateness, not whether the scheduler process was running.
-    if isinstance(job.get("last_dispatch"), dict):
-        kind = job["last_dispatch"].get("kind")
-        if kind == "catch_up":
-            lateness = job["last_dispatch"].get("lateness_seconds", 0)
-            scheduled = job["last_dispatch"].get("scheduled_at", "?")
-            issues.append(
-                f"last fire was a catch-up after a missed schedule (scheduled {scheduled}, "
-                f"{_format_lateness(lateness)} late)")
-        elif kind == "late":
-            lateness = job["last_dispatch"].get("lateness_seconds", 0)
-            scheduled = job["last_dispatch"].get("scheduled_at", "?")
-            issues.append(
-                f"last fire was late (scheduled {scheduled}, {_format_lateness(lateness)} late) — "
-                f"scheduler was delayed")
+    if isinstance(dispatch := job.get("last_dispatch"), dict):
+        labels = {"catch_up": "a catch-up after a missed schedule", "late": "late"}
+        if label := labels.get(dispatch.get("kind", "")):
+            issues.append(f"last fire was {label} (scheduled {dispatch.get('scheduled_at', '?')}, "
+                          f"{_format_lateness(dispatch.get('lateness_seconds', 0))} late)")
     if isinstance(fire_err := job.get("last_fire_error"), dict) and fire_err.get("detail"):
         # The handoff error survives next_run_at advancing beyond the failed dispatch.
         issues.append(f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}")

@@ -7,7 +7,7 @@ import pytest
 
 
 @pytest.fixture
-def profile(tmp_path, monkeypatch):
+def served_root(tmp_path, monkeypatch):
     from cron import jobs
 
     root = tmp_path / "home"
@@ -35,7 +35,7 @@ def profile(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["missing", "fresh", "stale", "disabled", "excluded", "local", "external", "unrelated_pid"])
-def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, mode):
+def test_status_preserves_profile_health_contract(served_root, capsys, monkeypatch, mode):
     from cron import jobs
     from hermes_cli import cron
 
@@ -44,9 +44,9 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
     if mode == "stale":
         (jobs.CRON_DIR / "ticker_heartbeat").write_text(str(time.time() - 3600))
     if mode == "disabled":
-        profile.joinpath("config.yaml").write_text("gateway:\n  multiplex_profiles: false\n")
+        served_root.joinpath("config.yaml").write_text("gateway:\n  multiplex_profiles: false\n")
     if mode == "excluded":
-        profile.joinpath("gateway_state.json").write_text(json.dumps({"served_profiles": ["other"]}))
+        served_root.joinpath("gateway_state.json").write_text(json.dumps({"served_profiles": ["other"]}))
     if mode == "local":
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [os.getpid()])
     if mode == "external":
@@ -62,6 +62,8 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
         assert "hermes --profile default gateway restart" in output
     if mode == "missing":
         assert "has not reported a heartbeat" in output
+        assert "Desktop app is open" in output
+        assert "enabled in its scheduler" in output
     if mode == "stale":
         assert "STALLED" in output
     if mode in {"disabled", "excluded"}:
@@ -75,10 +77,10 @@ def test_status_preserves_profile_health_contract(profile, capsys, monkeypatch, 
 
 
 @pytest.mark.parametrize("home_kind", ["default", "custom", "named"])
-def test_standalone_guidance_matches_profile_membership(profile, monkeypatch, capsys, home_kind):
+def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch, capsys, home_kind):
     from hermes_cli.cron import cron_status
 
-    homes = {"default": profile, "custom": profile.parent / "custom", "named": profile / "profiles/probe"}
+    homes = {"default": served_root, "custom": served_root.parent / "custom", "named": served_root / "profiles/probe"}
     home = homes[home_kind]
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -91,11 +93,11 @@ def test_standalone_guidance_matches_profile_membership(profile, monkeypatch, ca
 
 
 @pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", "", None])
-def test_doctor_bounds_persisted_fire_errors(profile, capsys, detail):
+def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
     from cron import jobs
     from hermes_cli.cron import _short_reason, cron_doctor
 
-    job = jobs.create_job(prompt="probe", schedule="every 1h")
+    jobs.create_job(prompt="probe", schedule="every 1h")
     records = jobs.load_jobs()
     records[0]["last_fire_error"] = {"at": "test-time", "detail": detail}
     jobs.save_jobs(records)
@@ -110,7 +112,7 @@ def test_doctor_bounds_persisted_fire_errors(profile, capsys, detail):
 
 
 @pytest.mark.parametrize("dispatch", ["catch_up", "late", "forward_error"])
-def test_doctor_reports_persisted_dispatch_health(profile, capsys, dispatch):
+def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch):
     from cron import jobs
     from hermes_cli.cron import cron_doctor
 

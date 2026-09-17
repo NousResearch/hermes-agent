@@ -1625,11 +1625,11 @@ def _record_task_failure(
             if release_claim:
                 # Spawn path: still running, also clear claim state.
                 conn.execute(
-                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
                     "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'triage', 'review')",
-                    (retry_status, failures, error[:500], task_id),
+                    (failures, error[:500], task_id),
                 )
             else:
                 # Timeout/crash path: source phase already restored with claim

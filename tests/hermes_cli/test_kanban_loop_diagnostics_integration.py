@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.kanban_db as kb
+from hermes_cli.kanban_db_dispatch import _record_spawn_failure
 from hermes_cli.observability.loop_diagnostics_recorder import (
     loop_traces_dir,
 )
@@ -339,7 +340,7 @@ def test_spawn_failure_exposes_diagnosis_event(
 
         _write_trace_for_task(tid, run_id, _failure_trace(run_id, tid))
 
-        blocked = kb._record_spawn_failure(conn, tid, "spawn boom", failure_limit=99)
+        blocked = _record_spawn_failure(conn, tid, "spawn boom", failure_limit=99)
         assert blocked is False
 
         evs = _events(conn, tid)
@@ -422,3 +423,51 @@ def test_successful_completion_no_diagnosis_event(
         assert "completed" in kinds
         assert "diagnosis" not in kinds
         assert kb.get_task(conn, tid).status == "done"
+
+
+# ---------------------------------------------------------------------------
+# Spawn-failure breaker TRIP (regression)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_failure_breaker_trip_blocks_and_persists_counter(
+    kanban_home, loop_diag_enabled,
+):
+    """Tripping the spawn-failure breaker blocks the task and persists the counter.
+
+    Regression: every other test in this module passes ``failure_limit=99``, so
+    the breaker never trips and the trip block is never executed. That block's
+    spawn path bound a 3-tuple to a 4-placeholder UPDATE, raising
+    ``sqlite3.ProgrammingError`` the moment a real limit was reached — so a
+    genuinely failing card was never blocked and its counter never persisted.
+
+    ``failure_limit=1`` trips on the first failure, which is the path
+    ``dispatch_once`` uses when a worker cannot be spawned.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="spawn-trip", assignee="a")
+        kb.claim_task(conn, tid, claimer="host:ws")
+        row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id=?", (tid,)
+        ).fetchone()
+        run_id = int(row["current_run_id"])
+
+        _write_trace_for_task(tid, run_id, _failure_trace(run_id, tid))
+
+        # failure_limit=1 -> the breaker trips on this very call.
+        blocked = _record_spawn_failure(conn, tid, "spawn boom", failure_limit=1)
+        assert blocked is True
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert task.last_failure_error == "spawn boom"
+        # The spawn path must also release the claim it cleared.
+        assert task.claim_lock is None
+
+        kinds = [e["kind"] for e in _events(conn, tid)]
+        assert "gave_up" in kinds
+
+        gave_up = [e for e in _events(conn, tid) if e["kind"] == "gave_up"][0]
+        assert gave_up["payload"]["failures"] == 1
+        assert gave_up["payload"]["effective_limit"] == 1

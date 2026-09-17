@@ -414,3 +414,14 @@ def test_fake_planner_uses_only_published_schema_and_contract(compiler):
         result = agent.run_conversation("Read a.txt using the published contract.")
     assert result["final_response"] == "verified" and reads == ["a.txt"]
     assert agent.client.chat.completions.create.call_count == 2
+
+
+def test_graph_changes_are_new_experiments_without_entity_value_identity():
+    first = {"steps": [{"tool": "fake_create", "args": {"title": "$item.title"}, "expect": {"ok": True}}]}
+    second = copy.deepcopy(first)
+    second["steps"][0]["tool"] = "different_create"
+    repeated = {"steps": [*first["steps"], *first["steps"]]}
+    changed_expect = copy.deepcopy(first)
+    changed_expect["steps"][0]["expect"] = {"persisted": True}
+    key = ExperimentKey.from_call("work_execute", first)
+    assert all(ExperimentKey.from_call("work_execute", args) != key for args in (second, repeated, changed_expect))

@@ -277,11 +277,15 @@ class ExperimentKey:
     @classmethod
     def from_call(cls, tool_name, args, context=None):
         def hypothesis(value, field=""):
+            if field == "expect":
+                return value  # Verification predicates define the hypothesis.
             if isinstance(value, Mapping):
                 return {k: hypothesis(v, k) for k, v in sorted(value.items())}
             if isinstance(value, list):
+                if field in {"steps", "setup_steps", "finalize_steps", "depends_on", "verifies"}:
+                    return [hypothesis(v) if isinstance(v, Mapping) else v for v in value]
                 return sorted({canonical_tool_args({"v": hypothesis(v, field)}) for v in value})
-            if field in {"action", "operation", "method", "selector", "testid", "script", "code", "command", "query", "path", "operation_key", "route", "step_id", "recipe_fingerprint", "capability_fingerprint", "verification_generation"}:
+            if field in {"action", "operation", "method", "tool", "recipe_key", "selector", "testid", "script", "code", "command", "query", "path", "operation_key", "route", "step_id", "recipe_fingerprint", "capability_fingerprint", "verification_generation"}:
                 return value
             return type(value).__name__
         return cls(_sha256(canonical_tool_args({"tool": tool_name, "shape": hypothesis(args or {}), "context": context or {}})))

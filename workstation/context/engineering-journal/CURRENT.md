@@ -1,6 +1,6 @@
 # CURRENT — Workstation Engineering Journal
 
-## H-052 — Verified recipes, canary admission and durable planner context (2026-09-16)
+## H-062 — Verified recipes, canary admission and durable planner context (2026-09-16)
 
 Starting HEAD `a977651539dd4b793e26f96c6116bce187677cc9`; only existing
 `.workstation-audit/` is untracked. No upstream comparison or general re-audit.
@@ -29,7 +29,28 @@ separate suite with faulthandler identifies committed SQLite fsync in the
 Lock, license policy, compileall and core anchors pass. Three replay scenarios
 passed: invalid workflow exposes 1 mutation, corrected completes 12, restart
 recipe hits once; each uses 2 fake-provider calls and 0 executor model calls.
-Full final suite and real GitHub run pending.
+Full local Workstation suite: 387 passed, 2 Windows skips; subsequent focused
+contracts and published-schema fake planner passed. Final experiment-identity
+correction: 9 passed, 29 deselected; graph tool identity, step multiplicity and
+verifier predicate changes now distinguish hypotheses without item-value identity.
+
+Seven controlled replay scenarios passed. Invalid workflow: 1 mutation, zero
+completed items and zero failed fan-out items (remaining items stay pending).
+Corrected workflow: 12 completed, 53 physical tools, 3 shared setup calls,
+2 fake-provider calls, zero executor LLM calls and zero replayed mutations.
+Restarted recipe hit: 12 completed, zero new canary attempts, one recipe hit.
+Stale preflight: zero mutations, one invalidation. Corrected/new-v2 repeats the
+verified path; failed-after-stale still exposes only one item.
+Corrected final provider wire: 1711 bytes, handoff 1439 bytes, duplicate compaction
+bytes suppressed 2878, artifacts 1289737 bytes. Usage/cost remain unknown/null;
+modeled baseline counters are not paid-provider evidence.
+
+GitHub acceptance for implementation `334d5823554954875675e0d835b34d124ddfd9a4`:
+[Workstation CI 35161635997](https://github.com/kevynlucasprofissional-stack/hermes-agent/actions/runs/35161635997)
+is GREEN: 393 Workstation contracts and 255 core seam tests passed on Ubuntu.
+Both contracts and core-patch-dry-run passed, including the controlled replay.
+The final documentation/experiment-identity follow-up must pass the same gate.
+PR #19 remains a draft; no automatic main merge is authorized by this stage.
 
 ## H-051 — Final durable execution hardening (2026-09-16)
 

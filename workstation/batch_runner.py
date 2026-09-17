@@ -103,6 +103,7 @@ class DurableBatchRunner:
         metadata: Optional[Dict[str, Any]] = None,
         stop_on_exception: bool = False,
         can_start_item: Optional[Callable[[WorkItem], bool]] = None,
+        guardrails: Any | None = None,
     ) -> BatchSummary:
         """Run batch processing with per-item atomic persistence and validation."""
         start_time = time.monotonic()
@@ -118,6 +119,8 @@ class DurableBatchRunner:
             )
 
         work_items = self.store.get_work_items(plan.id)
+        if plan.metadata.get("circuit", {}).get("status") == "SYSTEMIC_FAILURE_SUSPECTED":
+            raise ValueError("systemic_failure_requires_diagnosis")
         success_count = 0
         retry_success_count = 0
         failed_count = 0
@@ -145,6 +148,7 @@ class DurableBatchRunner:
 
             item_start = time.monotonic()
             item_success = False
+            raw_data = None
 
             for attempt in range(item.attempts + 1, self.max_retries + 2):
                 try:
@@ -242,6 +246,15 @@ class DurableBatchRunner:
                         })
                         break
 
+            if guardrails is not None:
+                decision = guardrails.record_work_item_result(
+                    item.id, raw_data.get("systemic_failure") if isinstance(raw_data, dict) and not item_success else None)
+                if decision.should_halt:
+                    remaining = sum(i.status == WorkItemStatus.PENDING and i.item_index > item.item_index for i in work_items)
+                    self.store.update_plan_metadata(plan.id, {
+                        "circuit": {"status": decision.code, "failed_items": decision.count,
+                                    "systemic_items_prevented": remaining}})
+                    break
             if anomalies and stop_on_exception:
                 break
 

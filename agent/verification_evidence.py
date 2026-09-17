@@ -103,6 +103,11 @@ def _transaction() -> Iterator[sqlite3.Connection]:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS outcome_verification_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
+        task_id TEXT NOT NULL, session_id TEXT NOT NULL, verifier TEXT NOT NULL,
+        target TEXT NOT NULL, passed INTEGER NOT NULL, evidence_ref TEXT NOT NULL,
+        environment TEXT NOT NULL)""")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS meta (
@@ -152,6 +157,35 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         (str(_VERIFY_SCHEMA_VERSION),),
     )
     conn.commit()
+
+
+def record_outcome_verifiers(task_id: str, session_id: str, results: list[dict], *, environment: str) -> list[int]:
+    """Add task-scoped readback verification to the existing evidence ledger."""
+    ids = []
+    with _DB_LOCK, _transaction() as conn:
+        for result in results:
+            if not result.get("verifier") or not result.get("evidence_ref"):
+                raise ValueError("verifier identity and evidence reference are required")
+            cursor = conn.execute("""INSERT INTO outcome_verification_events
+                (created_at, task_id, session_id, verifier, target, passed, evidence_ref, environment)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (_utc_now(), task_id, session_id, result["verifier"], result.get("target", task_id),
+                 int(result.get("passed") is True), result["evidence_ref"], environment))
+            ids.append(cursor.lastrowid)
+    return ids
+
+
+def outcome_verifiers_recorded(task_id: str, session_id: str, results: list[dict], event_ids: list[int]) -> bool:
+    """Completion metadata cannot invent verifier events by asserting passed."""
+    if not event_ids or len(event_ids) > 1000 or any(type(i) is not int or i <= 0 for i in event_ids):
+        return False
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            f"SELECT verifier, evidence_ref, passed FROM outcome_verification_events WHERE task_id=? AND session_id=? AND id IN ({','.join('?' for _ in event_ids)})",
+            (task_id, session_id, *event_ids)).fetchall()
+    recorded = {(r["verifier"], r["evidence_ref"]) for r in rows if r["passed"] == 1}
+    required = {(r.get("verifier"), r.get("evidence_ref")) for r in results if r.get("required", True)}
+    return bool(required) and required <= recorded
 
 
 def _split_shell_segments(command: str, *, posix: bool = True) -> list[_ShellSegment]:

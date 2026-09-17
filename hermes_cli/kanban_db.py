@@ -1330,6 +1330,10 @@ class Event:
 # ---------------------------------------------------------------------------
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS task_acceptance_contracts (
+    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+    contract_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS tasks (
     id                   TEXT PRIMARY KEY,
     title                TEXT NOT NULL,
@@ -2500,7 +2504,7 @@ def connect(
       ``<root>/kanban/current`` → ``default``.
     """
     if db_path is not None:
-        path = db_path
+        path = Path(db_path)
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -5599,6 +5603,36 @@ def complete_task(
     ``suspected_hallucinated_references`` event. This pass is advisory
     and never blocks.
     """
+    # A closed failed run cannot become successful from a late worker report.
+    # An explicit human/manual completion remains supported for legacy tasks.
+    last_run = latest_run(conn, task_id)
+    if last_run is not None and last_run.outcome in {"timed_out", "failed", "cancelled"}:
+        if expected_run_id is not None or (metadata or {}).get("workstation"):
+            return False
+    ws = (metadata or {}).get("workstation")
+    owned = conn.execute("SELECT created_by FROM tasks WHERE id=?", (task_id,)).fetchone()
+    hybrid_owned = conn.execute("SELECT 1 FROM hybrid_card_delegations WHERE agent_task_id=? LIMIT 1", (task_id,)).fetchone()
+    if ((owned and owned[0] == "workstation") or hybrid_owned) and not isinstance(ws, dict):
+        return False
+    if isinstance(ws, dict):
+        from workstation.contracts import AcceptanceContract, AcceptanceEvaluator, EvidenceRef, OutcomeStatus, TaskOutcome
+        data = ws.get("outcome")
+        if not isinstance(data, dict) or ws.get("acceptance_approved") is not True:
+            return False
+        try:
+            outcome = TaskOutcome(**{**data, "status": OutcomeStatus(data["status"]),
+                                     "evidence_refs": [EvidenceRef(**e) for e in data.get("evidence_refs", [])]})
+            saved = conn.execute("SELECT contract_json FROM task_acceptance_contracts WHERE task_id=?", (task_id,)).fetchone()
+            contract = AcceptanceContract(**json.loads(saved[0])) if saved else AcceptanceContract()
+            if outcome.task_id != task_id or AcceptanceEvaluator().evaluate(outcome, contract):
+                return False
+            if contract.policy == "evidence":
+                from agent.verification_evidence import outcome_verifiers_recorded
+                if not outcome_verifiers_recorded(task_id, outcome.session_id, outcome.verifier_results,
+                                                  ws.get("verification_event_ids", [])):
+                    return False
+        except (TypeError, ValueError, KeyError):
+            return False
     now = int(time.time())
     # Fail before validating cards or staging artifacts; re-check inside the
     # final write transaction below to close the parent-reopen race.
@@ -5641,6 +5675,10 @@ def complete_task(
         # ``review`` or ``running``.
         if not _parents_satisfied(conn, task_id):
             return False
+        closing_run = latest_run(conn, task_id)
+        if closing_run is not None and closing_run.outcome in {"timed_out", "failed", "cancelled"}:
+            if expected_run_id is not None or isinstance(ws, dict):
+                return False
         prior = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
             (task_id,),

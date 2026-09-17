@@ -119,6 +119,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "clamped by the provider at request time. Omit to follow config."
         ),
     )
+    cron_create.add_argument("--model-policy", choices=("follow_global_model", "pin_current_model"),
+                             help="Follow future global model changes or pin the current resolved provider/model.")
     cron_create.add_argument(
         "--continuity",
         dest="continuity",
@@ -254,6 +256,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "the pin and follow config resolution."
         ),
     )
+    cron_edit.add_argument("--model-policy", choices=("follow_global_model", "pin_current_model"),
+                           help="Set the inference policy for this job.")
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

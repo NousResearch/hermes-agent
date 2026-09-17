@@ -230,12 +230,22 @@ def test_agent_completion_projects_result_ref_and_evidence_without_payload_copy(
     _, _, card = _delegation_fixture(conn)
     delegated = hybrid.delegate_card(conn, card_id=card["id"], session_id="s-1")
     task_id = delegated["delegation"]["agent_task_id"]
+    from workstation.contracts import TaskOutcome, OutcomeStatus, AcceptanceContract, EvidenceRef
+    from dataclasses import asdict
+    outcome = TaskOutcome(task_id, "s-1", "Launch brief", OutcomeStatus.VERIFIED_COMPLETED,
+                          "Launch brief is ready.", evidence_refs=[EvidenceRef("verification", "sha256:evidence-1")],
+                          verifier_results=[{"verifier": "brief-review", "passed": True, "evidence_ref": "sha256:evidence-1"}])
+    from agent.verification_evidence import record_outcome_verifiers
+    verifier_ids = record_outcome_verifiers(task_id, "s-1", outcome.verifier_results, environment="test")
     assert kb.complete_task(
         conn,
         task_id,
         result="A very large canonical result remains owned by the task.",
         summary="Launch brief is ready.",
-        metadata={"result_ref": "sha256:result-1", "evidence_refs": ["sha256:evidence-1"]},
+        metadata={"result_ref": "sha256:result-1", "evidence_refs": ["sha256:evidence-1"],
+                  "workstation": {"outcome": outcome.to_dict(), "acceptance_approved": True,
+                                  "verification_event_ids": verifier_ids,
+                                  "acceptance_contract": asdict(AcceptanceContract())}},
     ) is True
 
     projected = hybrid.sync_card_delegations(conn, card_id=card["id"])

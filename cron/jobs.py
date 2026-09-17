@@ -1912,6 +1912,27 @@ def _validate_job_mode_invariants(
         raise ValueError(NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
 
+def _apply_model_policy(job: Dict[str, Any]) -> Dict[str, Any]:
+    policy = job.get("model_policy")
+    if policy is None:
+        return job  # legacy drift protection is deliberately retained
+    if policy not in {"follow_global_model", "pin_current_model"}:
+        raise ValueError("model_policy must be follow_global_model or pin_current_model")
+    if policy == "follow_global_model":
+        if job.get("model") or job.get("provider") or job.get("base_url"):
+            raise ValueError("follow_global_model cannot be combined with inference overrides")
+    elif not job.get("no_agent"):
+        provider, model = _compute_provider_model_snapshots(
+            provider=job.get("provider"), model=job.get("model"),
+            base_url=job.get("base_url"), no_agent=False)
+        job["provider"] = job.get("provider") or provider
+        job["model"] = job.get("model") or model
+        if not job["provider"] or not job["model"]:
+            raise ValueError("Cannot pin unresolved provider/model; configure inference first")
+        job["provider_snapshot"] = job["model_snapshot"] = None
+    return job
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1933,6 +1954,7 @@ def create_job(
     monitor_script: Optional[str] = None,
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    model_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -2149,6 +2171,9 @@ def create_job(
     # absent key = job follows config resolution (pre-feature behavior).
     if normalized_reasoning_effort is not None:
         job["reasoning_effort"] = normalized_reasoning_effort
+    if model_policy is not None:
+        job["model_policy"] = model_policy
+        _apply_model_policy(job)
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -2266,6 +2291,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            _apply_model_policy(updated)
 
             if is_terminal_job(job) and (
                 updated.get("state") not in {"completed", "error"}
@@ -2345,6 +2371,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updated["next_run_at"] = updated_next_run
 
             if inference_fields_changed:
+                if updated.get("migration_state") == "NEEDS_MIGRATION":
+                    updated["migration_state"] = "RESOLVED"
+                    updated["enabled"] = True
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
                     provider=updated.get("provider"),
                     model=updated.get("model"),
@@ -2615,6 +2644,44 @@ def clear_preflight_alerted(job_id: str) -> None:
 def mark_drift_alerted(job_id: str) -> bool:
     """Mark the job as drift-alerted; return True if it already was."""
     return _set_alert_flag(job_id, "drift_alerted", True)
+
+
+def mark_needs_migration(job_id: str, *, current_provider: str, current_model: str, reason: str) -> bool:
+    """Pause scheduling on config drift without consuming further failed ticks."""
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                job["migration_state"] = "NEEDS_MIGRATION"
+                job["migration"] = {"previous_provider": job.get("provider_snapshot"),
+                                    "previous_model": job.get("model_snapshot"),
+                                    "current_provider": current_provider, "current_model": current_model,
+                                    "reason": reason, "detected_at": datetime.now().astimezone().isoformat()}
+                job["enabled"] = False
+                save_jobs(jobs)
+                return True
+        return False
+
+
+def resolve_model_migration(job_id: str, action: str) -> Optional[Dict[str, Any]]:
+    """Explicit resolution: adopt global, pin previous, or keep paused."""
+    if action not in {"adopt_global", "pin_previous", "pause"}:
+        raise ValueError("unknown migration resolution")
+    with _jobs_lock():
+        job = next((j for j in load_jobs() if j["id"] == job_id), None)
+    if job is None:
+        return None
+    migration = job.get("migration") or {}
+    updates = {"migration_state": "RESOLVED", "enabled": action != "pause", "drift_alerted": False}
+    if action == "adopt_global":
+        updates.update(provider=None, model=None, provider_snapshot=migration.get("current_provider"),
+                       model_snapshot=migration.get("current_model"), model_policy="follow_global_model")
+    elif action == "pin_previous":
+        if not migration.get("previous_provider") or not migration.get("previous_model"):
+            raise ValueError("Previous inference identity is incomplete; select an explicit provider/model")
+        updates.update(provider=migration.get("previous_provider"), model=migration.get("previous_model"),
+                       model_policy="pin_current_model")
+    return update_job(job_id, updates)
 
 
 def clear_drift_alerted(job_id: str) -> None:

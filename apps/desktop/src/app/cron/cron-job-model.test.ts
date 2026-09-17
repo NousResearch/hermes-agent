@@ -60,6 +60,11 @@ describe('cron delivery targets', () => {
 })
 
 describe('cronEditorUpdates', () => {
+  it('passes the explicit policy while clearing previous inference pins', () => {
+    const updates = cronEditorUpdates({ deliver: 'local', model: '', provider: '', name: 'Daily',
+      prompt: 'go', schedule: 'every 5m', modelPolicy: 'follow_global_model' }, { scriptOnlyJob: false })
+    expect(updates).toMatchObject({ model_policy: 'follow_global_model', model: null, provider: null })
+  })
   it('omits prompt when saving a script-only job with an empty prompt', () => {
     expect(
       cronEditorUpdates(

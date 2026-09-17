@@ -388,6 +388,7 @@ class CronJobCreate(BaseModel):
     enabled_toolsets: Optional[List[str]] = None
     workdir: Optional[str] = None
     no_agent: bool = False
+    model_policy: Optional[Literal["follow_global_model", "pin_current_model"]] = None
 
 
 class CronJobUpdate(BaseModel):
@@ -738,4 +739,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

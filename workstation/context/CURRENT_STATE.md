@@ -342,3 +342,10 @@ they actually exercised; they do **not** close the 2026-09-17 reliability gate.
 - V1 #1.5, V1.1, V2, V2.1, V2.5, and V3: substantial implementation exists and prior scoped verification remains valid for those boundaries.
 - V3.1–V3.4: **CONTRACT LAYER IMPLEMENTED & VALIDATED** for their tested boundaries; this does not imply cross-domain causal completion correctness.
 - **Canonical Execution Reliability Gate (2026-09-17): ACTIVE / BLOCKS FURTHER FEATURE EXPANSION.**
+
+## Canonical Work Loop hardening (2026-09-17)
+
+The working tree extends canonical acceptance/intent/liveness/journal and durable
+execution owners. The full product program is still IN PROGRESS. See
+[implementation evidence](CANONICAL_WORK_LOOP.md) for exact scope, additive
+migrations, compatibility boundaries and remaining integrations.

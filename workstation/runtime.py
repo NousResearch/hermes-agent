@@ -42,6 +42,17 @@ class ExecutionStatus(str, Enum):
     HOLD = "hold"
 
 
+class EvidenceClass(str, Enum):
+    LIVE_HANDLE = "live_handle"
+    DURABLE_PROOF = "durable_proof"
+
+
+LIVE_HANDLE_KINDS = frozenset({
+    "worker", "worker_id", "process", "process_id", "browser_operation",
+    "job", "job_id", "upload", "watcher", "subprocess", "lease",
+})
+
+
 @dataclass(slots=True)
 class OperationalEvidence:
     kind: str
@@ -49,12 +60,22 @@ class OperationalEvidence:
     observed_at: str = field(default_factory=_utc_now)
     expires_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    evidence_class: EvidenceClass | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence_class is None:
+            self.evidence_class = (
+                EvidenceClass.LIVE_HANDLE if self.kind in LIVE_HANDLE_KINDS
+                else EvidenceClass.DURABLE_PROOF
+            )
+        else:
+            self.evidence_class = EvidenceClass(self.evidence_class)
 
     def is_live(self, now: str | None = None) -> bool:
-        if not self.reference.strip():
+        if self.evidence_class != EvidenceClass.LIVE_HANDLE or not self.reference.strip():
             return False
         if not self.expires_at:
-            return True
+            return False
         return _parse_time(self.expires_at) > _parse_time(now or _utc_now())
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,8 +132,11 @@ class EvidenceState:
         ttl_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
         now: str | None = None,
+        evidence_class: EvidenceClass | None = None,
     ) -> OperationalEvidence:
         stamp = now or _utc_now()
+        if ttl_seconds is None and (evidence_class == EvidenceClass.LIVE_HANDLE or kind in LIVE_HANDLE_KINDS):
+            ttl_seconds = 120.0
         expires_at = None
         if ttl_seconds is not None:
             expires_at = (
@@ -124,10 +148,11 @@ class EvidenceState:
             observed_at=stamp,
             expires_at=expires_at,
             metadata=metadata or {},
+            evidence_class=evidence_class,
         )
         self.evidence.append(item)
         self.last_activity = stamp
-        if self.status in {
+        if item.is_live(stamp) and self.status in {
             ExecutionStatus.READY,
             ExecutionStatus.QUEUED,
             ExecutionStatus.STALLED,
@@ -179,6 +204,7 @@ class EvidenceState:
                     observed_at=str(item.get("observed_at", _utc_now())),
                     expires_at=item.get("expires_at"),
                     metadata=dict(item.get("metadata", {})),
+                    evidence_class=item.get("evidence_class"),
                 )
                 for item in data.get("evidence", [])
                 if isinstance(item, dict) and item.get("kind") and item.get("reference")
@@ -299,6 +325,15 @@ class EventSubscription:
                 pass
 
 
+@dataclass(slots=True)
+class WaitContract:
+    event_type: str
+    task_id: str
+    deadline: str
+    correlation_id: str | None = None
+    session_id: str | None = None
+
+
 class RuntimeEventBus:
     """Non-blocking fan-out bus with bounded subscriber queues."""
 
@@ -319,6 +354,32 @@ class RuntimeEventBus:
                 self._subscriptions.append(subscription)
         return subscription
 
+    def unsubscribe(self, subscription: EventSubscription) -> None:
+        subscription.close()
+        with self._lock:
+            self._subscriptions = [s for s in self._subscriptions if s is not subscription]
+
+    def wait(self, contract: WaitContract, *, subscription: EventSubscription | None = None) -> RuntimeEvent:
+        """Subscribe before dispatch to avoid losing a fast completion event."""
+        owned = subscription is None
+        subscription = subscription or self.subscribe()
+        try:
+            while True:
+                remaining = (_parse_time(contract.deadline) - _parse_time(_utc_now())).total_seconds()
+                if remaining <= 0:
+                    raise TimeoutError("event wait deadline exceeded")
+                try:
+                    event = subscription.get(timeout=remaining)
+                except queue.Empty as exc:
+                    raise TimeoutError("event wait deadline exceeded") from exc
+                if (event.type == contract.event_type and event.task_id == contract.task_id
+                        and (contract.session_id is None or event.session_id == contract.session_id)
+                        and (contract.correlation_id is None or event.payload.get("correlation_id") == contract.correlation_id)):
+                    return event
+        finally:
+            if owned:
+                self.unsubscribe(subscription)
+
     def publish(self, event: RuntimeEvent) -> None:
         if self._journal is not None and event.task_id and event.session_id:
             try:
@@ -327,7 +388,12 @@ class RuntimeEventBus:
                 kind_map = {
                     "task.created": ExecutionEventKind.TASK_CREATED,
                     "task.started": ExecutionEventKind.TASK_STARTED,
-                    "task.completed": ExecutionEventKind.TASK_COMPLETED,
+                    "task.completed": (
+                        ExecutionEventKind.TASK_COMPLETED
+                        if event.payload.get("outcome_status") == "verified_completed"
+                        and event.payload.get("acceptance_approved") is True
+                        else ExecutionEventKind.PROGRESS
+                    ),
                     "error": ExecutionEventKind.ERROR,
                     "approval.requested": ExecutionEventKind.APPROVAL_REQUESTED,
                     "worker.message": ExecutionEventKind.WORKER_MESSAGE,

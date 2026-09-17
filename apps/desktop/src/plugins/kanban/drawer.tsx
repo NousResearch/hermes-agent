@@ -802,6 +802,24 @@ export function TaskDrawer({
 
             <EstimateSection id={task.id} />
 
+            {detail?.cockpit && (
+              <Section label={k.workCockpit}>
+                <div className="flex flex-col gap-2 text-[0.8125rem]">
+                  <p>{detail.cockpit.objective}</p>
+                  <p>{k.workOutcome}: {detail.cockpit.outcome_status.replaceAll('_', ' ')}</p>
+                  <progress aria-label={k.workVerifiedProgress} max={1} value={detail.cockpit.verified_progress} />
+                  <p>{k.workVerifiedProgress}: {Math.round(detail.cockpit.verified_progress * 100)}%</p>
+                  {detail.cockpit.current_activity && <p>{detail.cockpit.current_activity}</p>}
+                  {detail.cockpit.last_activity && <time dateTime={detail.cockpit.last_activity}>{detail.cockpit.last_activity}</time>}
+                  {detail.cockpit.blockers.map((blocker, index) => <p key={index}>{blocker}</p>)}
+                  <p>{k.workEvidence}: {detail.cockpit.evidence_count}</p>
+                  {detail.cockpit.deliverables.map((deliverable, index) => (
+                    <p className="break-all" key={index}>{deliverable}</p>
+                  ))}
+                </div>
+              </Section>
+            )}
+
             {task.result && (
               <Section label={k.result}>
                 <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>

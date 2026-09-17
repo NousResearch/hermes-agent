@@ -2504,3 +2504,11 @@ Inválido expõe uma mutação; stale expõe zero. Handoff correto 1439 bytes e 
 final ao provider 1711 bytes, mantendo 1289737 bytes de artifacts. Tokens cached/
 uncached e custo são null quando não reportados; não inferir economia paga dos
 bytes ou do baseline modelado. Evidência GitHub/SHAs está no journal H-062.
+
+## Canonical Work Loop current implementation (2026-09-17)
+
+[Canonical Work Loop implementation evidence](CANONICAL_WORK_LOOP.md) records
+verified completion, intent authority, live handles vs durable proof, lineage,
+additive migrations and exact pending integrations. Prior descriptions of
+unconditional report completion and automatic critical-event promotion are
+superseded by these fail-closed contracts. The complete program remains active.

@@ -216,6 +216,26 @@ test('session identity binds once, persists, and never creates or retargets a pa
   assert.equal(browser.pageCount(), pageCount)
 })
 
+test('two web sessions keep distinct pages through repeated activation and binding conflicts', () => {
+  const browser = fakeBrowser()
+  const lifecycle = new BrowserTaskLifecycle(browser.bindings)
+  lifecycle.createTask({ taskId: 'task-a', sessionHost: 'session-a' })
+  lifecycle.createTask({ taskId: 'task-b', sessionHost: 'session-b' })
+  const pageA = browser.pages.get('task-a')
+  const pageB = browser.pages.get('task-b')
+  assert.ok(pageA && pageB)
+  assert.notEqual(pageA.id, pageB.id)
+  for (let i = 0; i < 10; i += 1) {
+    lifecycle.showTask('task-a', { host: 'session-a' })
+    lifecycle.showTask('task-b', { host: 'session-b' })
+  }
+  assert.throws(() => lifecycle.bindSessionHost('task-a', 'session-b'), /session identity mismatch/)
+  assert.equal(browser.pages.get('task-a'), pageA)
+  assert.equal(browser.pages.get('task-b'), pageB)
+  assert.equal(browser.pageCount(), 2)
+  assert.equal(browser.destroyCount(), 0)
+})
+
 test('an existing task recreates one missing page and records recovery', () => {
   const browser = fakeBrowser()
   const lifecycle = new BrowserTaskLifecycle(browser.bindings)

@@ -7,6 +7,8 @@ selector readiness, text presence, minimum content length, and DOM settlement.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -123,3 +125,49 @@ def wait_for_condition(
     last_res["timeout"] = True
     last_res["elapsed_seconds"] = round(time.monotonic() - start_time, 3)
     return last_res
+
+
+
+@dataclass(slots=True)
+class BrowserReadinessContract:
+    path: str
+    required_semantic_targets: list[str] = field(default_factory=list)
+    require_auth: bool = False
+    require_hydration: bool = False
+    entity_identity: str | None = None
+    timeout_seconds: float = 30
+
+    def evaluate(self, observation: dict) -> dict:
+        if not isinstance(observation, dict):
+            return {"ready": False, "code": "not_ready", "diagnostic": browser_diagnostic({}, "not_ready")}
+        if observation.get("captcha_required"):
+            code = "captcha_required"
+        elif observation.get("auth_required") or (self.require_auth and observation.get("authenticated") is not True):
+            code = "auth_required"
+        elif observation.get("surface") in {"canvas", "non_dom"}:
+            code = "unsupported_surface"
+        elif urlsplit(str(observation.get("url", ""))).path != self.path:
+            code = "not_ready"
+        elif self.require_hydration and observation.get("hydrated") is not True:
+            code = "hydration_timeout"
+        elif self.entity_identity is not None and observation.get("entity_identity") != self.entity_identity:
+            code = "dom_drift"
+        elif set(self.required_semantic_targets) - set(observation.get("semantic_targets", [])):
+            code = "dom_drift"
+        else:
+            code = "ready"
+        return {"ready": code == "ready", "code": code,
+                "diagnostic": browser_diagnostic(observation, code) if code != "ready" else None}
+
+
+def browser_diagnostic(observation: dict, failure_code: str) -> dict:
+    classification = {"auth_required": "AUTH_REQUIRED", "dom_drift": "DOM_DRIFT",
+                      "captcha_required": "AUTH_REQUIRED",
+                      "hydration_timeout": "HYDRATION_PENDING", "unsupported_surface": "CANVAS_OR_NON_DOM_SURFACE"}
+    return {"classification": classification.get(failure_code, "UNKNOWN_BROWSER_STATE"),
+            "url": str(observation.get("url", ""))[:2048],
+            "readyState": observation.get("readyState"),
+            "title": str(observation.get("title", ""))[:200],
+            "semantic_targets": list(observation.get("semantic_targets", []))[:50],
+            "overlay": bool(observation.get("overlay")), "hydrated": observation.get("hydrated"),
+            "recipe_fingerprint": observation.get("recipe_fingerprint")}

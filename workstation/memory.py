@@ -190,6 +190,11 @@ class WebProcedure:
     validation_evidence: list[dict[str, Any]] = field(default_factory=list)
     validated_at: str | None = None
     promoted_at: str | None = None
+    capability_fingerprint: str | None = None
+    runtime_family: str | None = None
+    scope: dict[str, Any] = field(default_factory=dict)
+    last_failure: str | None = None
+    savings: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -211,6 +216,11 @@ class WebProcedure:
             "validation_evidence": self.validation_evidence,
             "validated_at": self.validated_at,
             "promoted_at": self.promoted_at,
+            "capability_fingerprint": self.capability_fingerprint,
+            "runtime_family": self.runtime_family,
+            "scope": self.scope,
+            "last_failure": self.last_failure,
+            "savings": self.savings,
         }
 
     @classmethod
@@ -235,6 +245,9 @@ class WebProcedure:
             validation_evidence=[item for item in data.get("validation_evidence", []) if isinstance(item, dict)],
             validated_at=data.get("validated_at"),
             promoted_at=data.get("promoted_at"),
+            capability_fingerprint=data.get("capability_fingerprint"),
+            runtime_family=data.get("runtime_family"), scope=dict(data.get("scope", {})),
+            last_failure=data.get("last_failure"), savings=dict(data.get("savings", {})),
         )
 
 
@@ -405,6 +418,8 @@ class ProceduralMemory:
         if not proc:
             return False
         proc.failure_count += 1
+        proc.last_failure = reason
+        proc.lifecycle = ProcedureLifecycle.DISCOVERED
         proc.confidence = max(0.1, proc.confidence - 0.2)
         proc.updated_at = _utc_now()
         self._persist()

@@ -16632,6 +16632,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 self._pending_one_turn_model_restore = None
                 try:
+                    from workstation.contracts import MessageEnvelope, MessageOrigin, IntentAuthority
+                    _work_envelope = MessageEnvelope(MessageOrigin.HUMAN, IntentAuthority.CREATE_WORK,
+                        self.agent._conversation_root_id() or self.session_id,
+                        message if isinstance(message, str) else "")
                     result = self.agent.run_conversation(
                         user_message=agent_message,
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
@@ -16639,6 +16643,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         task_id=self.session_id,
                         persist_user_message=_persist_clean_user_message,
                         moa_config=_moa_cfg,
+                        message_envelope=_work_envelope,
                     )
                     if getattr(self, "_pending_moa_disable_after_turn", False):
                         _restore = getattr(self, "_pending_moa_restore_model", None) or {}

@@ -140,28 +140,7 @@ class SystemEventPipeline:
             event.processed = True
             return event
 
-        # Case 2: Untracked high-severity system event (e.g. process crash, build failure)
-        # Promotes into a canonical Kanban task via existing WorkstationKanbanBridge
-        if event.severity in (SystemEventSeverity.ERROR, SystemEventSeverity.CRITICAL):
-            try:
-                prompt_body = (
-                    f"System event triggered automatic triage task.\n\n"
-                    f"Type: {event.event_type.value}\n"
-                    f"Severity: {event.severity.value}\n"
-                    f"Source: {event.source}\n"
-                    f"Details: {event.message}\n"
-                    f"Timestamp: {event.timestamp}\n"
-                    f"Metadata: {event.metadata}"
-                )
-                task_id = self.kanban_bridge.promote_request_if_multistep(
-                    prompt=prompt_body,
-                    session_id=session_id,
-                    title=f"[System Event] {event.title}",
-                    force=True,
-                )
-                event.resulting_task_id = task_id
-            except Exception as exc:
-                _log.error("Failed to promote critical system event into Kanban: %s", exc)
-
+        # Uncorrelated system events are observations, never new work intent.
+        # Subscribers may correlate/wake an existing task or request human triage.
         event.processed = True
         return event

@@ -42,6 +42,84 @@ def test_100_items_no_llm_and_reference_boundary(compiler):
     assert all(i.evidence_refs for i in compiler.store.get_work_items(result["plan_id"]))
 
 
+def test_event_wait_subscribes_before_dispatch_and_reverifies_source(compiler):
+    from workstation.runtime import RuntimeEvent, RuntimeEventBus
+    bus = RuntimeEventBus()
+    calls = []
+    req = request(1)
+    req["steps"][0].update(expect={"done": True}, wait={"event_type": "worker.result",
+        "correlation_id": "item-0", "timeout_seconds": 2})
+    def dispatch(*args):
+        calls.append(args)
+        if len(calls) == 1:
+            bus.publish(RuntimeEvent("worker.result", "other-task", "session", {"correlation_id": "item-0"}))
+            bus.publish(RuntimeEvent("worker.result", "browser-task", "other-session", {"correlation_id": "item-0"}))
+            bus.publish(RuntimeEvent("worker.result", "browser-task", "session", {"correlation_id": "item-0"}))
+        return {"done": len(calls) == 2}
+    result = compiler.execute(req, task_id="browser-task", session_id="session", dispatch=dispatch, event_bus=bus)
+    assert result["completed"] == 1
+    assert len(calls) == 2
+    assert bus._subscriptions == []
+
+
+def test_event_wait_timeout_never_completes_or_polls(compiler):
+    from workstation.runtime import RuntimeEvent, RuntimeEventBus
+    bus = RuntimeEventBus()
+    calls = []
+    req = request(1)
+    req["steps"][0].update(expect={"done": True}, wait={"event_type": "worker.result",
+        "correlation_id": "item-0", "timeout_seconds": 0.05})
+    def dispatch(*args):
+        calls.append(args)
+        bus.publish(RuntimeEvent("worker.result", "browser-task", "session", {"correlation_id": "other"}))
+        return {"done": False}
+    result = compiler.execute(req, task_id="browser-task", session_id="session", dispatch=dispatch, event_bus=bus)
+    assert result["completed"] == 0
+    assert len(calls) == 1
+    assert bus._subscriptions == []
+
+
+def test_event_wait_requires_owning_bus_before_dispatch(compiler):
+    req = request(1)
+    req["steps"][0].update(expect={"done": True}, wait={"event_type": "worker.result", "correlation_id": "item-0"})
+    with pytest.raises(ValueError, match="owning runtime event bus"):
+        run(compiler, req, lambda *a: pytest.fail("Must not dispatch without event ownership"))
+
+
+@pytest.mark.parametrize("observation,reason", [
+    ({"captcha_required": True}, "captcha_required"),
+    ({"auth_required": True}, "auth_required"),
+    ({"surface": "canvas"}, "unsupported_surface"),
+])
+def test_browser_handoff_is_bounded_persisted_and_explicitly_resumed(compiler, observation, reason):
+    from workstation.durable_tasks import WorkItemStatus
+    from workstation.runtime import HumanHandoffManager
+    req = request(1)
+    req["preflight"] = [{"tool": "read_file", "args": {"path": "readiness"},
+        "expect": {"url": "https://example.com/card"}, "readiness": {"path": "/card"}}]
+    calls = []
+    def dispatch(tool, args, *rest):
+        calls.append(args["path"])
+        return {"url": "https://example.com/card", **observation} if args["path"] == "readiness" else {"ok": True}
+    first = run(compiler, req, dispatch)
+    item = compiler.store.get_work_items(first["plan_id"])[0]
+    assert first["completed"] == 0
+    assert item.status == WorkItemStatus.WAITING_FOR_USER
+    assert calls == ["readiness"]
+    handoff_id = item.validation_result["handoff_id"]
+    restored = HumanHandoffManager(compiler.handoffs.path)
+    handoff = restored.get(handoff_id)
+    assert (handoff.task_id, handoff.session_id, handoff.reason) == ("browser-task", "session", reason)
+    compiler.resume(first["plan_id"], session_id="session", dispatch=dispatch)
+    assert calls == ["readiness"]  # no polling or mutation while human owns control
+    assert restored.resume(handoff_id, returned_by="user")
+    compiler.handoffs = HumanHandoffManager(compiler.handoffs.path)
+    completed = compiler.resume(first["plan_id"], session_id="session",
+        dispatch=lambda *a: {"url": "https://example.com/card", "ok": True})
+    assert completed["completed"] == 1
+    assert completed["plan_id"] == first["plan_id"]
+
+
 def test_restart_at_37_and_ledger_independent_of_transcript(compiler, tmp_path):
     calls = []
     def crash(tool, args, task, call):

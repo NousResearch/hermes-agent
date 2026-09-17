@@ -8461,7 +8461,9 @@ class AIAgent:
                                          self._tool_guardrails.mark_verified_progress,
                                          getattr(self, "_work_user_constraints", {}),
                                          getattr(self, "_current_provider_usage", None),
-                                         getattr(self, "_work_completed_mutations", {}))
+                                         getattr(self, "_work_completed_mutations", {}),
+                                         event_bus=getattr(self, "_workstation_event_bus", None),
+                                         canonical_task_id=getattr(self, "_canonical_work_task_id", None))
         _work_context.__enter__()
         try:
             if len(tool_calls) <= 1:
@@ -8646,6 +8648,7 @@ class AIAgent:
         persist_user_display_kind: Optional[str] = None,
         persist_user_display_metadata: Optional[Dict[str, Any]] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        message_envelope=None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review deliberately shares this agent's session_id for prompt-cache
@@ -9021,6 +9024,7 @@ class AIAgent:
                         persist_user_display_kind=persist_user_display_kind,
                         persist_user_display_metadata=persist_user_display_metadata,
                         moa_config=moa_config,
+                        message_envelope=message_envelope,
                     )
                 finally:
                     # The lease remains held through relay/task finalization, but

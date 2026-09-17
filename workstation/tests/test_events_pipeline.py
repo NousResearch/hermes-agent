@@ -55,7 +55,7 @@ def test_ingest_event_enriches_existing_task(tmp_path, monkeypatch):
     assert events[0].metadata["source"] == "vitest_watcher"
 
 
-def test_ingest_critical_untracked_event_promotes_to_kanban():
+def test_ingest_critical_untracked_event_has_no_intent_authority():
     mock_bridge = MagicMock()
     mock_bridge.promote_request_if_multistep.return_value = "kanban-task-auto-999"
 
@@ -69,11 +69,9 @@ def test_ingest_critical_untracked_event_promotes_to_kanban():
     )
 
     assert evt.processed is True
-    assert evt.resulting_task_id == "kanban-task-auto-999"
-    mock_bridge.promote_request_if_multistep.assert_called_once()
-    args, kwargs = mock_bridge.promote_request_if_multistep.call_args
-    assert kwargs["force"] is True
-    assert "[System Event] Chromium renderer crashed unexpectedly" in kwargs["title"]
+    assert evt.resulting_task_id is None
+    mock_bridge.promote_request_if_multistep.assert_not_called()
+
 
 
 def test_custom_handler_and_history():

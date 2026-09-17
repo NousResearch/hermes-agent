@@ -498,6 +498,8 @@ class DurableTaskStore:
     def mark_item_validated(self, item_id: str, validation_result: Dict[str, Any]) -> WorkItem:
         valid = validation_result.get("valid", False)
         status = WorkItemStatus.VALIDATED.value if valid else WorkItemStatus.BLOCKED.value
+        if not valid and validation_result.get("waiting_for_human") is True:
+            status = WorkItemStatus.WAITING_FOR_USER.value
         with self._lock, self.get_connection() as conn:
             cur = conn.execute("SELECT checkpoints FROM work_items WHERE id = ?", (item_id,))
             row = cur.fetchone()
@@ -522,6 +524,20 @@ class DurableTaskStore:
         item = self.get_item(item_id)
         assert item is not None
         return item
+
+    def resume_waiting_item(self, item_id: str) -> None:
+        """Reset only a waiting read result after the owning human handoff returns."""
+        with self._lock, self.get_connection() as conn:
+            row = conn.execute("SELECT status, checkpoints FROM work_items WHERE id = ?", (item_id,)).fetchone()
+            if row is None or row[0] != WorkItemStatus.WAITING_FOR_USER.value:
+                raise ValueError("Work item is not waiting for human control")
+            checkpoints = json.loads(row[1] or "{}")
+            for key in ("persist", "normalize", "validate"):
+                checkpoints.pop(key, None)
+            conn.execute("UPDATE work_items SET status = ?, raw_output_ref = NULL, normalized_output_ref = NULL, "
+                         "validation_result = '{}', checkpoints = ? WHERE id = ?",
+                         (WorkItemStatus.PENDING.value, json.dumps(checkpoints), item_id))
+            conn.commit()
 
     def complete_item(self, item_id: str) -> WorkItem:
         """Mark item as COMPLETED after verifying strict persistence and validation invariants."""
@@ -611,6 +627,8 @@ class DurableTaskStore:
         plan = self.get_plan(task_id)
         if not plan:
             return []
+
+        self.reconcile_running_items(plan.id)
 
         with self.get_connection() as conn:
             cur = conn.execute(
@@ -709,6 +727,29 @@ class DurableTaskStore:
         with self._lock, self.get_connection() as conn:
             conn.execute("UPDATE work_plans SET status=?, updated_at=?, completed_at=? WHERE id=?",
                          (status, _utc_now(), _utc_now() if status == "completed" else None, plan_id))
+            if status in {"interrupted", "failed", "cancelled", "blocked"}:
+                conn.execute(
+                    "UPDATE work_items SET status='blocked', last_error=? WHERE plan_id=? AND status='running'",
+                    ("parent stopped; reconcile dispatched effects before resume", plan_id),
+                )
+            conn.commit()
+
+    def reconcile_running_items(self, plan_id: str, *, live_item_ids: set[str] | None = None) -> int:
+        """Recover durable state against handles proved live by the current runtime.
+
+        Stored RUNNING is never proof of execution. Block rather than retry:
+        a dispatched mutation might already have landed.
+        """
+        live = live_item_ids or set()
+        changed = 0
+        with self._lock, self.get_connection() as conn:
+            for row in conn.execute("SELECT id FROM work_items WHERE plan_id=? AND status='running'", (plan_id,)).fetchall():
+                if row[0] not in live:
+                    conn.execute("UPDATE work_items SET status='blocked', last_error=? WHERE id=?",
+                                 ("recovery-required: no live handle; reconcile effect", row[0]))
+                    changed += 1
+            conn.commit()
+        return changed
 
     def update_plan_metadata(self, plan_id: str, values: dict) -> None:
         with self._lock, self.get_connection() as conn:

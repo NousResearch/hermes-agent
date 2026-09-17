@@ -1,5 +1,37 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-064 — Canonical Work Loop (2026-09-17)
+
+Continuation experiment: subscribe on the owning RuntimeEventBus before compiler
+dispatch; filter task/correlation, then verify the real source after notification.
+Immediate notifications must survive; unrelated notifications must not wake work;
+timeout must retain incomplete state and release the subscription. External
+sources retain bounded polling. Focused compiler/runtime gates will verify this.
+
+Base: main/origin/main `edaa8cc8fd1180de05f92450caede853ec862daf`.
+Existing `.workstation-audit/` is preserved. Hypothesis: report completion,
+untracked critical events and expiry-free evidence bypass safety semantics.
+Confirmed in kanban.py/events.py/runtime.py. Extend these owners, never stores.
+Experiment: native pytest with isolated homes; 20 existing focused tests PASS.
+Sandbox run failed before useful validation with WinError 5; native run required.
+P0 expansion: 32 PASS, four failures exposed unsupported block kind `acceptance`;
+corrected to canonical `needs_input`. Re-run before extending execution semantics.
+Journal experiment: explicit malformed/altered/deleted-line detection; legacy
+read without rewriting; hash chain and interprocess append lock. Artifact
+experiment: JSON in .data resolves structurally; binary remains metadata;
+changed bytes must fail integrity. Full program remains IN PROGRESS.
+
+Observed final evidence: 422 Workstation PASS / 2 pre-existing skips; upstream
+owner gate 124 PASS; subsequent integrated gate 98 PASS; final policy/ledger/
+multiwriter/continuity contracts 49 PASS; latest actual artifact read_file and
+semantic recipe preflight plus P0 29 PASS. Work100 executes 31 covered tests PASS
+but returns exit 1 for required cases 4/5/6/8/9 without coverage. No fabricated
+skip/PASS. Native Desktop gates not run. Full scope and file ledger are in
+`../CANONICAL_WORK_LOOP.md`. Safety contracts are implemented; full ingress,
+publisher, event-wait/browser/handoff/lineage/UI parity remains outstanding.
+Intermediate cron NameError corrected; verification fixtures passed when their
+temporary projects were moved outside this checkout (project-root resolution).
+
 ## H-063 — Close Desktop gates before HW-022 promotion (2026-09-17)
 
 Candidate `089704eb00`, main `a977651539`; no tracked dirty work or merge conflicts.

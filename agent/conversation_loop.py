@@ -1831,6 +1831,7 @@ def run_conversation(
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    message_envelope=None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -1889,8 +1890,8 @@ def run_conversation(
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
     # ── Per-turn setup (the prologue) ──
-    from workstation.task_compiler import batch_intent
-    agent._work_batch_candidate = batch_intent(user_message)
+    from workstation.work_intent import prepare_turn_work
+    prepare_turn_work(agent, user_message, message_envelope)
     agent._work_compile_replans = 0
     agent._work_completed_mutations = {}
     agent._work_mutation_shapes = {}

@@ -132,6 +132,10 @@ type KanbanMessages = {
   cancelEdit: string
   noDescription: string
   result: string
+  workCockpit: string
+  workOutcome: string
+  workVerifiedProgress: string
+  workEvidence: string
   latestSummary: string
   dependencies: string
   blockedBy: string
@@ -333,6 +337,10 @@ export const en: KanbanMessages = {
   cancelEdit: 'Cancel edit',
   noDescription: 'No description yet.',
   result: 'Result',
+  workCockpit: 'Work cockpit',
+  workOutcome: 'Outcome',
+  workVerifiedProgress: 'Verified progress',
+  workEvidence: 'Evidence',
   latestSummary: 'Latest summary',
   dependencies: 'Dependencies',
   blockedBy: 'Blocked by',
@@ -534,6 +542,10 @@ const ja: KanbanMessages = {
   cancelEdit: '編集をキャンセル',
   noDescription: 'まだ説明はありません。',
   result: '結果',
+  workCockpit: '作業コックピット',
+  workOutcome: '成果',
+  workVerifiedProgress: '検証済み進捗',
+  workEvidence: '証拠',
   latestSummary: '最新のサマリー',
   dependencies: '依存関係',
   blockedBy: 'ブロック元',
@@ -734,6 +746,10 @@ const zh: KanbanMessages = {
   cancelEdit: '取消编辑',
   noDescription: '暂无描述。',
   result: '结果',
+  workCockpit: '工作驾驶舱',
+  workOutcome: '结果',
+  workVerifiedProgress: '已验证进度',
+  workEvidence: '证据',
   latestSummary: '最新摘要',
   dependencies: '依赖关系',
   blockedBy: '受阻于',
@@ -932,6 +948,10 @@ const zhHant: KanbanMessages = {
   cancelEdit: '取消編輯',
   noDescription: '尚無描述。',
   result: '結果',
+  workCockpit: '工作駕駛艙',
+  workOutcome: '結果',
+  workVerifiedProgress: '已驗證進度',
+  workEvidence: '證據',
   latestSummary: '最新摘要',
   dependencies: '相依關係',
   blockedBy: '受阻於',

@@ -236,3 +236,11 @@ The native smoke proved same-page identity across hide/show and park/show, expli
 ## Closing an issue here
 
 When an issue is fixed, move it to the resolved section with the validated behavior and test/evidence boundary. Do not delete the historical symptom if it documents a regression class that future tests protect.
+
+## Canonical Work Loop program gaps (2026-09-17)
+
+The safety contract implementation is not the full program. Work100 explicitly
+tracks five uncovered scenarios; ingress/publisher parity, internal event-wait
+adoption, browser observation/handoff, full lineage and Desktop cockpit wiring
+remain. See [implementation evidence](CANONICAL_WORK_LOOP.md). Do not classify
+these as PASS from Python projection tests.

@@ -992,8 +992,13 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        cockpit = None
+        if task.created_by == "workstation":
+            from workstation.cockpit import task_cockpit
+            cockpit = task_cockpit(conn, task_id)
         return {
             "task": task_d,
+            "cockpit": cockpit,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],

@@ -210,7 +210,12 @@ def _latest_task_projection(conn: sqlite3.Connection, task_id: str) -> tuple[Opt
     summary = run_summary or (task.result if task.status == "done" else None)
     if summary is not None:
         summary = str(summary)[:2_000]
-    return _delegation_state(task.status), summary, evidence_refs
+    state = _delegation_state(task.status)
+    if state == "completed":
+        ws = metadata.get("workstation", {})
+        if ws.get("acceptance_approved") is not True or ws.get("outcome", {}).get("status") != "verified_completed":
+            state = "waiting"
+    return state, summary, evidence_refs
 
 
 def _sync_card_delegations_in_txn(conn: sqlite3.Connection, card_id: str) -> None:
@@ -333,7 +338,7 @@ def create_board(conn: sqlite3.Connection, *, name: str, description: str = "", 
         raise HybridKanbanError("Board name is required")
     actor_type = _require_actor(actor_type)
     board_id, now = _id("hb"), _now()
-    with kanban_db.write_txn(conn):
+    with kanban_db.write_txn(conn, allow_nested=True):
         conn.execute("INSERT INTO hybrid_boards (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", (board_id, name, description, now, now))
         _activity(conn, board_id=board_id, kind="board_created", actor_type=actor_type, actor_id=actor_id, session_id=session_id, source=source, payload={"name": name})
     return get_board(conn, board_id)
@@ -366,7 +371,7 @@ def create_column(conn: sqlite3.Connection, *, board_id: str, name: str, actor_t
         raise HybridKanbanError("Column name is required")
     actor_type = _require_actor(actor_type)
     column_id, now = _id("hc"), _now()
-    with kanban_db.write_txn(conn):
+    with kanban_db.write_txn(conn, allow_nested=True):
         _require_board(conn, board_id)
         position = len(_ordered_ids(conn, "hybrid_columns", "board_id", board_id))
         conn.execute("INSERT INTO hybrid_columns (id, board_id, name, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", (column_id, board_id, name, position, now, now))
@@ -394,7 +399,7 @@ def create_card(conn: sqlite3.Connection, *, board_id: str, column_id: str, titl
         raise HybridKanbanError("Card title is required")
     actor_type = _require_actor(actor_type)
     card_id, now = _id("hcard"), _now()
-    with kanban_db.write_txn(conn):
+    with kanban_db.write_txn(conn, allow_nested=True):
         _require_board(conn, board_id)
         column = _require_column(conn, column_id)
         if column["board_id"] != board_id:

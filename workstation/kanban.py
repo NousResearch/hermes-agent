@@ -9,6 +9,8 @@ from hermes_cli import kanban_db
 from workstation.config import load_workstation_config
 from workstation.contracts import BrowserTaskReport, DiscoveredTask, ExecutionEventKind, RiskLevel
 from workstation.journal import ExecutionJournal
+from workstation.contracts import (AcceptanceContract, AcceptanceEvaluator, MessageEnvelope, OutcomeStatus, TaskOutcome)
+from dataclasses import asdict
 
 _log = logging.getLogger(__name__)
 
@@ -76,12 +78,19 @@ class WorkstationKanbanBridge:
         session_id: str,
         title: Optional[str] = None,
         force: bool = False,
+        envelope: MessageEnvelope | None = None,
+        acceptance_contract: AcceptanceContract | None = None,
     ) -> Optional[str]:
         """Automatically create a parent Kanban task for a multistep request."""
+        if (envelope is None or not envelope.can_create_work
+                or envelope.session_id != session_id or envelope.content != prompt):
+            return None
         cfg = load_workstation_config()
+        from workstation.work_intent import work_intent
+        intent = work_intent(envelope)
         should_create = force or (
             cfg.raw.get("tasks", {}).get("create_kanban_for_multistep", True)
-            and is_multistep_request(prompt)
+            and intent.requires_task
         )
         if not should_create:
             return None
@@ -97,6 +106,10 @@ class WorkstationKanbanBridge:
                 board=self.board,
                 initial_status="running",
             )
+            contract = acceptance_contract or AcceptanceContract()
+            conn.execute("INSERT INTO task_acceptance_contracts(task_id, contract_json) VALUES (?,?)",
+                         (task_id, json.dumps(asdict(contract))))
+            conn.commit()
 
         # Start journal for this task
         journal = ExecutionJournal(task_id, session_id)
@@ -182,20 +195,145 @@ class WorkstationKanbanBridge:
     ) -> bool:
         """Complete Kanban task with structured Workstation report metadata."""
         metadata = report.to_kanban_metadata()
+        if report.task_id != task_id:
+            raise ValueError("report task identity mismatch")
+        status = report.outcome_status or (
+            OutcomeStatus.VERIFIED_COMPLETED if report.completed else OutcomeStatus.BLOCKED
+        )
+        if not report.completed and status == OutcomeStatus.VERIFIED_COMPLETED:
+            status = OutcomeStatus.BLOCKED
+        outcome = TaskOutcome(
+            task_id=task_id, session_id=report.session_id, objective=report.objective,
+            status=status, summary=report.result, evidence_refs=report.evidence,
+            verifier_results=report.verifier_results, deliverables=report.deliverables,
+            pending_items=report.pending_items, uncertain_mutation=report.uncertain_mutation,
+        )
+        with self.get_connection() as conn:
+            saved = conn.execute("SELECT contract_json FROM task_acceptance_contracts WHERE task_id=?", (task_id,)).fetchone()
+        contract = AcceptanceContract(**json.loads(saved[0])) if saved else AcceptanceContract()
+        reasons = AcceptanceEvaluator().evaluate(outcome, contract)
+        if reasons:
+            if outcome.uncertain_mutation:
+                outcome.status = OutcomeStatus.UNCERTAIN
+            elif outcome.status == OutcomeStatus.VERIFIED_COMPLETED:
+                outcome.status = OutcomeStatus.FAILED if "verifier_failed" in reasons else OutcomeStatus.BLOCKED
+            with self.get_connection() as conn:
+                kanban_db.block_task(conn, task_id, reason="; ".join(reasons), kind="needs_input")
+            ExecutionJournal(task_id, report.session_id).record(
+                ExecutionEventKind.PROGRESS, report.result, evidence=report.evidence,
+                metadata={"completed": False, "outcome": outcome.to_dict(), "acceptance_reasons": reasons},
+            )
+            return False
+        metadata["workstation"]["outcome"] = outcome.to_dict()
+        metadata["workstation"]["acceptance_approved"] = True
+        metadata["workstation"]["acceptance_contract"] = asdict(contract)
+        journal = ExecutionJournal(task_id, report.session_id)
+        journal.read_events()  # Corrupt evidence fails closed before the canonical commit.
+        if report.verifier_results:
+            from agent.verification_evidence import record_outcome_verifiers
+            metadata["workstation"]["verification_event_ids"] = record_outcome_verifiers(
+                task_id, report.session_id, report.verifier_results, environment=journal.environment)
+        journal.record(ExecutionEventKind.PROGRESS, "verified outcome submitted to canonical acceptance gate",
+                       evidence=report.evidence, metadata={"boundary": "acceptance", "outcome": outcome.to_dict()})
         with self.get_connection() as conn:
             success = kanban_db.complete_task(
                 conn,
                 task_id=task_id,
                 result=report.result,
-                summary=report.objective,
+                summary=report.result,
                 metadata=metadata,
             )
 
+        if not success:
+            return False
         journal = ExecutionJournal(task_id, report.session_id)
         journal.record(
             ExecutionEventKind.TASK_COMPLETED,
             f"Workstation task completed: {report.result}",
             evidence=report.evidence,
-            metadata={"completed": report.completed, "sites": report.sites},
+            metadata={"completed": report.completed, "sites": report.sites,
+                      "outcome": outcome.to_dict(), "acceptance_approved": True,
+                      "verification_event_ids": metadata["workstation"].get("verification_event_ids", [])},
         )
+        if report.repeatability_hint and report.procedure_steps:
+            from workstation.memory import ProceduralMemory
+            from workstation.routines import RoutinePromotionService
+            candidate = RoutinePromotionService(ProceduralMemory()).experience_candidate(
+                outcome, contract, site=report.procedure_scope,
+                steps=report.procedure_steps, repeatable=True,
+                metrics={"actions": len(report.actions), "tokens": report.input_tokens + report.output_tokens,
+                         "duration_seconds": report.duration_seconds})
+            if candidate:
+                journal.record(ExecutionEventKind.ACTION, "experience candidate created; validation required",
+                               metadata={"procedure_id": candidate.id})
         return success
+
+    def finalize_turn_candidate(self, task_id: str, session_id: str, turn_result: dict) -> dict:
+        """Verify persisted execution before submitting the turn's outcome candidate."""
+        from workstation.artifacts import ArtifactStore
+        from workstation.contracts import EvidenceRef
+        artifacts = ArtifactStore()
+        evidence, verifiers, pending, handoffs = [], [], [], []
+        conn = self.get_connection()
+        try:
+            task = kanban_db.get_task(conn, task_id)
+            if task is None or task.session_id != session_id:
+                raise ValueError("Outcome candidate must belong to the canonical task/session")
+            if task.status == "done":
+                run = kanban_db.latest_run(conn, task_id)
+                metadata = run.metadata if run and isinstance(run.metadata, dict) else {}
+                workstation = metadata.get("workstation") or {}
+                accepted = workstation.get("acceptance_approved") is True and workstation.get("outcome", {}).get("status") == "verified_completed"
+                return {"task_id": task_id, "status": "verified_completed" if accepted else "uncertain", "acceptance_approved": accepted}
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            plans = []
+            if "work_plans" in tables:
+                for row in conn.execute("SELECT id, status, metadata FROM work_plans WHERE session_id=?", (session_id,)):
+                    metadata = json.loads(row[2] or "{}")
+                    if metadata.get("canonical_task_id") == task_id:
+                        plans.append((row[0], row[1], metadata))
+            if not plans:
+                pending.append("No persisted execution verifies the acceptance contract")
+            for plan_id, plan_status, metadata in plans:
+                if metadata.get("handoff", {}).get("status") == "waiting-for-human":
+                    handoffs.append(metadata["handoff"]["handoff_id"])
+                if plan_status != "completed":
+                    pending.append(f"Plan {plan_id} remains {plan_status}")
+                rows = conn.execute("SELECT id, status, normalized_output_ref, validation_result, checkpoints FROM work_items WHERE plan_id=?", (plan_id,)).fetchall()
+                if not rows:
+                    pending.append(f"Plan {plan_id} has no verified items")
+                for row in rows:
+                    validation = json.loads(row[3] or "{}")
+                    checkpoints = json.loads(row[4] or "{}")
+                    if row[1] != "completed" or validation.get("valid") is not True or checkpoints.get("validate") != "ok":
+                        pending.append(f"Item {row[0]} is not verified")
+                        continue
+                    try:
+                        resolved = artifacts.resolve_structured(row[2])
+                        output = resolved.get("content")
+                        if not isinstance(output, dict) or output.get("valid") is not True:
+                            raise ValueError("Persisted output is not a verified compiler result")
+                        for result in output.get("results", []):
+                            if result.get("verified") is not True:
+                                raise ValueError("Step result is not verified")
+                            artifacts.resolve_structured(result["artifact_ref"], max_content_bytes=0)
+                        evidence.append(EvidenceRef("durable_proof", row[2], sha256=resolved["sha256"]))
+                        verifiers.append({"verifier": "durable_item:" + row[0], "passed": True, "evidence_ref": row[2]})
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        pending.append(f"Item {row[0]} evidence cannot be verified: {exc}")
+        finally:
+            conn.close()
+        stopped = not turn_result.get("completed") or turn_result.get("failed") or turn_result.get("interrupted")
+        if stopped:
+            pending.append("Execution stopped before a verified final outcome")
+        verified = not pending and not handoffs and bool(verifiers)
+        status = (OutcomeStatus.VERIFIED_COMPLETED if verified else OutcomeStatus.WAITING_FOR_HUMAN if handoffs
+                  else OutcomeStatus.FAILED if turn_result.get("failed") else OutcomeStatus.UNCERTAIN if stopped
+                  else OutcomeStatus.BLOCKED)
+        report = BrowserTaskReport(task_id, session_id, task.body or task.title,
+            str(turn_result.get("final_response") or "Execution has no verified final result"), verified,
+            pending_items=pending, evidence=evidence, verifier_results=verifiers,
+            deliverables=[e.uri for e in evidence], outcome_status=status)
+        accepted = self.complete_task_with_report(task_id, report)
+        return {"task_id": task_id, "status": status.value, "acceptance_approved": accepted,
+                "pending_items": pending, "planned_handoffs": handoffs}

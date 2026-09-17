@@ -35,6 +35,7 @@ export function validateCronEditor(input: CronEditorValidationInput): CronEditor
 }
 
 export interface CronEditorSaveValues {
+  modelPolicy?: 'follow_global_model' | 'pin_current_model'
   deliver: string
   /** Per-job model override ('' = follow the global default at fire time). */
   model: string
@@ -87,6 +88,7 @@ export function cronEditorUpdates(values: CronEditorSaveValues, options: { scrip
   // write both axes so resetting to "default" clears a previous pin (the
   // backend normalizes null/'' to "no override").
   if (!options.scriptOnlyJob) {
+    if (values.modelPolicy) updates.model_policy = values.modelPolicy
     updates.model = values.model.trim() || null
     updates.provider = values.provider.trim() || null
   }

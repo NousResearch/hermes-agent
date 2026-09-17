@@ -5963,6 +5963,9 @@ def run_job(
                 _drift.append(f"{_axis} '{_snapshot}' -> '{_current}'")
             if _drift:
                 _changes = "; ".join(_drift)
+                from cron.jobs import mark_needs_migration
+                mark_needs_migration(job_id, current_provider=_current_provider,
+                                     current_model=_current_model, reason=_changes)
                 # Lifecycle-aware remediation (#72056, @sashmatash): a finite
                 # one-shot is consumed by this attempted dispatch — telling an
                 # operator to edit a spent job is a dead end. Recurring and

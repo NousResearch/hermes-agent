@@ -33,11 +33,11 @@ def run(root: Path, count: int = 100) -> dict:
         calls.append((index, tool))
         return {"ok": index != count - 1 or tool == "read_file", "text": "synthetic row\n" * 4000}
     try:
-        compiler.execute(request, task_id="browser", session_id="session", dispatch=dispatch)
+        compiler.execute(request, task_id="browser", session_id="session", dispatch=dispatch, environment="benchmark")
     except KeyboardInterrupt:
         pass
     compiler = TaskCompiler(DurableTaskStore(conn=sqlite3.connect(root / "kanban.db")), artifacts)
-    result = compiler.execute(request, task_id="browser", session_id="session", dispatch=dispatch)
+    result = compiler.execute(request, task_id="browser", session_id="session", dispatch=dispatch, environment="benchmark")
     artifact_bytes = sum(p.stat().st_size for p in artifacts.root.rglob("*") if p.is_file() and not p.name.endswith(".meta.json"))
     inline = len(json.dumps(result).encode())
     baseline_bytes = count * len(json.dumps({"ok": True, "text": "synthetic row\n" * 4000}).encode())

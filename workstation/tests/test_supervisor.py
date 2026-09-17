@@ -82,3 +82,43 @@ def test_independent_subprocess_supervisor_recovers_a_stopped_runtime(tmp_path):
     assert recovered.healthy
     assert supervisor.state == SupervisorState.RUNNING
     supervisor.stop()
+
+
+def test_slow_backend_startup_keeps_same_process_until_ready(tmp_path):
+    from workstation.supervisor import SubprocessRuntime
+    marker = tmp_path / "ready"
+    runtimes = []
+    def factory():
+        runtime = SubprocessRuntime([sys.executable, "-c",
+            "import pathlib,sys,time; time.sleep(.25); pathlib.Path(sys.argv[1]).write_text('ready'); time.sleep(30)", str(marker)]).start()
+        runtimes.append(runtime)
+        return runtime
+    supervisor = RuntimeSupervisor(runtime_factory=factory,
+        health_check=lambda runtime: runtime.is_alive() and marker.exists(),
+        state_path=tmp_path / "supervisor.json", startup_timeout_seconds=5)
+    try:
+        assert not supervisor.start()
+        assert supervisor.state == SupervisorState.STARTING
+        original_pid = supervisor.runtime.process.pid
+        assert not supervisor.watchdog_step().healthy
+        assert len(runtimes) == 1
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        assert supervisor.watchdog_step().healthy
+        assert supervisor.runtime.process.pid == original_pid
+        assert supervisor.state == SupervisorState.RUNNING
+    finally:
+        supervisor.stop()
+
+
+def test_startup_deadline_fails_closed_without_unbounded_restart(tmp_path):
+    supervisor = RuntimeSupervisor.from_command([sys.executable, "-c", "import time; time.sleep(30)"],
+        state_path=tmp_path / "supervisor.json", startup_timeout_seconds=0)
+    supervisor.health_check = lambda runtime: False
+    try:
+        assert not supervisor.start()
+        assert supervisor.state == SupervisorState.FAILED
+        assert supervisor.last_error == "runtime readiness deadline exceeded"
+    finally:
+        supervisor.stop()

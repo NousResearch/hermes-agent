@@ -1375,7 +1375,10 @@ class SessionSearchMixin:
         tri_where = [f"{table} MATCH ?"]
         tri_params: list = [trigram_query]
         if not include_inactive:
-            tri_where.append("(m.active = 1 OR m.compacted = 1)")
+            tri_where.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
         if source_filter is not None:
             tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             tri_params.extend(source_filter)
@@ -1461,6 +1464,15 @@ class SessionSearchMixin:
                     len(rows) if rows is not None else "err",
                     query[:200],
                 )
+
+    def compacted_duplicate_metrics(self) -> dict:
+        """Measure redundant snapshots without deleting audit history."""
+        with self._lock:
+            row = self._conn.execute("""SELECT COUNT(*), COALESCE(SUM(LENGTH(CAST(m.content AS BLOB))),0)
+                FROM messages m WHERE m.active=0 AND m.compacted=1 AND EXISTS (
+                SELECT 1 FROM messages d WHERE d.session_id=m.session_id AND d.role=m.role
+                AND d.content=m.content AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))""").fetchone()
+        return {"duplicate_compacted_rows": row[0], "duplicate_compacted_bytes": row[1]}
 
     def _describe_search_path(self, query: str) -> str:
         """Best-effort name of the routing path a query takes (log-only)."""
@@ -1562,7 +1574,10 @@ class SessionSearchMixin:
 
         where = [f"({predicate})"]
         if not include_inactive:
-            where.append("(m.active = 1 OR m.compacted = 1)")
+            where.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
         if source_filter is not None:
             where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             params.extend(source_filter)
@@ -1802,7 +1817,10 @@ class SessionSearchMixin:
             # Live rows (active=1) AND compaction-archived rows (compacted=1)
             # are discoverable; only rewind/undo rows (active=0, compacted=0)
             # are hidden. See archive_and_compact() / #38763.
-            where_clauses.append("(m.active = 1 OR m.compacted = 1)")
+            where_clauses.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -1901,7 +1919,10 @@ class SessionSearchMixin:
                 cjk_where = ["messages_fts_cjk MATCH ?"]
                 cjk_params: list = [cjk_query]
                 if not include_inactive:
-                    cjk_where.append("(m.active = 1 OR m.compacted = 1)")
+                    cjk_where.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
                 if source_filter is not None:
                     cjk_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     cjk_params.extend(source_filter)
@@ -1989,7 +2010,10 @@ class SessionSearchMixin:
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
                 if not include_inactive:
-                    tri_where.append("(m.active = 1 OR m.compacted = 1)")
+                    tri_where.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -2082,7 +2106,10 @@ class SessionSearchMixin:
                     # Same visibility rule as the FTS5 paths: live rows and
                     # compaction-archived rows are discoverable; rewind/undo
                     # rows (active=0, compacted=0) are hidden (#38763).
-                    like_where.append("(m.active = 1 OR m.compacted = 1)")
+                    like_where.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -2258,7 +2285,10 @@ class SessionSearchMixin:
             )
             params += [f"%{esc}%"] * 3
         if not include_inactive:
-            where.append("(m.active = 1 OR m.compacted = 1)")
+            where.append("(m.active = 1 OR (m.compacted = 1 AND NOT EXISTS ("
+                        "SELECT 1 FROM messages d WHERE d.session_id=m.session_id "
+                        "AND d.role=m.role AND d.content=m.content "
+                        "AND (d.active=1 OR (d.compacted=1 AND d.id<m.id)))))")
         if source_filter is not None:
             where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
             params.extend(source_filter)

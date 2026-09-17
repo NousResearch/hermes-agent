@@ -3612,6 +3612,23 @@ async def get_workstation_events(task_id: str | None = None, limit: int = 200):
     return await asyncio.to_thread(read_events, task_id=task_id, limit=limit)
 
 
+@app.get("/api/workstation/tasks/{task_id}/cockpit")
+async def get_workstation_task_cockpit(task_id: str, request: Request, board: str | None = None):
+    _require_token(request)
+    def read():
+        from hermes_cli import kanban_db
+        from workstation.cockpit import task_cockpit
+        conn = kanban_db.connect(board=board)
+        try:
+            return task_cockpit(conn, task_id)
+        finally:
+            conn.close()
+    try:
+        return await asyncio.to_thread(read)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 _PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(
     # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE.  Platform
     # segment mirrors the Platform enum's normalized values: built-in members
@@ -13205,6 +13222,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
+            model_policy=body.model_policy,
         )
     except HTTPException:
         raise

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
+import os
 from typing import Any, Callable
 
 from workstation.contracts import ExecutionEventKind
@@ -49,6 +50,37 @@ class EvaluationHarness:
     def __init__(self, journal: ExecutionJournal | None = None) -> None:
         self.journal = journal
 
+    def outcome_metrics(self, runs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Local AVCR projection. Missing provenance is never production data."""
+        eligible = [r for r in runs if r.get("environment") in {"production", "dogfood"}
+                    and r.get("eligible_delegated") is True]
+        verified = [r for r in eligible if r.get("outcome_status") == "verified_completed"
+                    and r.get("acceptance_approved") is True]
+        autonomous = [r for r in verified if not r.get("unplanned_human_rescues")]
+        count, complete = len(eligible), len(verified)
+        ratio = lambda numerator, denominator: numerator / denominator if denominator and numerator is not None else None
+        known_sum = lambda key: sum(r[key] for r in eligible) if eligible and all(r.get(key) is not None for r in eligible) else None
+        recoveries = [r for r in eligible if r.get("recovery_attempted") is True]
+        return {
+            "eligible_delegated_tasks": count, "verified_completion": complete,
+            "AVCR": ratio(len(autonomous), count),
+            "false_completion_rate": ratio(sum(r.get("done") is True and r not in verified for r in eligible), count),
+            "zombie_running_rate": ratio(sum(r.get("running") is True and not r.get("live_handles") for r in eligible), count),
+            "planned_handoff_rate": ratio(sum(bool(r.get("planned_handoffs")) for r in eligible), count),
+            "unplanned_rescue_rate": ratio(sum(bool(r.get("unplanned_human_rescues")) for r in eligible), count),
+            "systemic_failure_amplification": sum(r.get("systemic_failure_amplification", 0) for r in eligible),
+            "tokens_per_verified_task": ratio(known_sum("tokens"), complete),
+            "cost_per_verified_task": ratio(known_sum("cost_usd"), complete),
+            "time_per_verified_task": ratio(known_sum("duration_seconds"), complete),
+            "tool_calls_per_verified_task": ratio(known_sum("tool_calls"), complete),
+            "recovery_success_rate": ratio(sum(r.get("recovery_success") is True for r in recoveries), len(recoveries)),
+            "evidence_coverage": ratio(sum(r.get("verified_evidence_count", 0) for r in eligible), sum(r.get("required_evidence_count", 0) for r in eligible)),
+            **{key: sum(r.get(key, 0) for r in eligible) for key in (
+                "model_interventions", "tool_calls", "no_progress_calls", "duplicate_calls_blocked", "routine_candidate")},
+            "routine_reuse": sum(r.get("routine_reuse", 0) for r in eligible),
+            "routine_savings": sum(r.get("routine_savings", 0) for r in eligible),
+        }
+
     def run(self, case: EvaluationCase, executor: Callable[[Any], dict[str, Any]]) -> EvaluationResult:
         started = time.monotonic()
         try:
@@ -64,6 +96,10 @@ class EvaluationHarness:
                 safety_ok=bool(result.get("safety_ok", True)),
                 metadata=dict(result.get("metadata", {})),
             )
+            evaluation.metadata.update({k: case.metadata[k] for k in (
+                "environment", "build_sha", "workstation_version", "test_case_id", "evaluation_run_id",
+                "task_id", "session_id") if k in case.metadata})
+            evaluation.metadata.setdefault("environment", "test" if os.environ.get("HERMES_TEST_ISOLATION") else "benchmark")
             self._record(evaluation)
             return evaluation
         except Exception as exc:

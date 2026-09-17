@@ -60,6 +60,15 @@ def tool_contract(name, *, scope=None, schema=None):
         effect = ToolEffect.PURE_READ
     else:
         effect = _BUILTINS.get(name, ToolEffect.MUTATION)
+    metadata.setdefault("name", name)
+    metadata.setdefault("result_schema", None)
+    metadata.setdefault("default_verifier", "external_readback" if effect in WRITE_EFFECTS else "result_contract")
+    metadata.setdefault("supports", {"cancellation": False, "event_completion": False,
+                                    "retry": effect in READ_EFFECTS, "rollback": False,
+                                    "semantic_readiness": False})
+    metadata.setdefault("artifact_encoding", "structured_reference")
+    metadata.setdefault("runtime_family", "unknown")
+    metadata.setdefault("idempotency", effect == ToolEffect.IDEMPOTENT_WRITE)
     return effect, metadata
 
 

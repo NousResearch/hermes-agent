@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import time
@@ -96,8 +97,8 @@ def requires_compilation(agent: Any, calls: list) -> bool:
 @contextmanager
 def execution_context(dispatch: Callable, session_id: str, progress: Callable | None = None,
                       constraints: dict | None = None, provider_usage: dict | None = None,
-                      completed_mutations: dict | None = None):
-    token = _dispatch_context.set((dispatch, session_id, {}, [], progress, provider_usage, completed_mutations or {}))
+                      completed_mutations: dict | None = None, event_bus=None, canonical_task_id=None):
+    token = _dispatch_context.set((dispatch, session_id, {}, [], progress, provider_usage, completed_mutations or {}, event_bus, canonical_task_id))
     constraint_token = _constraints.set(constraints or {})
     try:
         yield
@@ -192,13 +193,20 @@ def _decode_output(raw):
 
 
 class TaskCompiler:
-    def __init__(self, store: DurableTaskStore | None = None, artifacts: ArtifactStore | None = None, recipes=None):
+    def __init__(self, store: DurableTaskStore | None = None, artifacts: ArtifactStore | None = None, recipes=None,
+                 handoffs=None):
         self.store = store or DurableTaskStore()
         self.artifacts = artifacts or ArtifactStore()
         self.recipes = recipes or RecipeStore(self.artifacts)
+        if handoffs is None:
+            from hermes_constants import get_hermes_home
+            from workstation.runtime import HumanHandoffManager
+            handoffs = HumanHandoffManager(get_hermes_home() / "workstation" / "human_handoffs.json")
+        self.handoffs = handoffs
 
     def execute(self, request: dict, *, task_id: str, session_id: str, dispatch: Callable,
-                progress: Callable | None = None, provider_usage: dict | None = None) -> dict:
+                progress: Callable | None = None, provider_usage: dict | None = None,
+                environment: str | None = None, event_bus=None, canonical_task_id: str | None = None) -> dict:
         recipe_key = request.get("recipe_key")
         recipe = self.recipes.get(recipe_key) if recipe_key else None
         recipe_reused = bool(recipe and not request.get("steps"))
@@ -287,11 +295,18 @@ class TaskCompiler:
                 raise ValueError(f"Mutation {tool} requires an explicit result verifier")
             if step.get("wait") and (effect not in READ_EFFECTS or not step.get("expect")):
                 raise ValueError("Completion waits require a read-only probe and explicit verifier")
+            if step.get("wait", {}).get("event_type"):
+                if event_bus is None:
+                    raise ValueError("Event waits require the owning runtime event bus")
+                if not step["wait"].get("correlation_id"):
+                    raise ValueError("Event waits require an explicit correlation_id")
         fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
         plan = self.store.get_plan(durable_id)
         if plan and (plan.session_id != session_id or plan.metadata.get("fingerprint") != fingerprint):
             raise ValueError("Operation identity conflicts with the persisted plan")
         if plan:
+            if plan.metadata.get("circuit", {}).get("status") == "SYSTEMIC_FAILURE_SUSPECTED":
+                raise ValueError("systemic_failure_requires_diagnosis: correct the procedure and admit a new canary")
             pinned = plan.metadata.get("recipe", {}).get("fingerprint")
             if pinned and pinned != recipe_hash:
                 if recipe_key:
@@ -304,6 +319,22 @@ class TaskCompiler:
         metadata = {"classification": kind.value, "constraints": constraints,
                     "objective_ref": objective.ref, "fingerprint": fingerprint,
                     "browser_task_id": task_id, "verbosity": normalize_verbosity(request.get("verbosity")).value}
+        from hermes_cli import kanban_db
+        conn = self.store.get_connection()
+        candidate_id = canonical_task_id or task_id
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        canonical = kanban_db.get_task(conn, candidate_id) if "tasks" in tables else None
+        if canonical_task_id and (canonical is None or canonical.session_id != session_id):
+            raise ValueError("Canonical task does not belong to the owning conversation")
+        metadata["canonical_task_id"] = canonical.id if canonical and canonical.session_id == session_id else None
+        metadata["canonical_identity_status"] = "resolved" if metadata["canonical_task_id"] else "unresolved"
+        metadata["session_id"] = session_id
+        from workstation.journal import execution_provenance
+        metadata.update(execution_provenance())
+        if environment is not None:
+            if environment not in {"production", "dogfood", "benchmark", "test", "e2e", "replay"}:
+                raise ValueError("invalid execution environment")
+            metadata["environment"] = environment
         metadata["canary_required"] = canary_required
         metadata["recipe"] = {"recipe_id": recipe_key, "status": "VERIFIED" if recipe_reused else "UNVERIFIED",
                               "fingerprint": recipe_hash}
@@ -378,6 +409,22 @@ class TaskCompiler:
                     metrics["tool_calls"] += 1
                     evidence = content_reference(self.artifacts, durable_id, blob_references(self.artifacts, durable_id, output))
                     scope_valid = True
+                    if probe.get("readiness"):
+                        from workstation.browser_readiness import BrowserReadinessContract
+                        readiness = BrowserReadinessContract(**probe["readiness"]).evaluate(_decode_output(output))
+                        if not readiness["ready"]:
+                            if readiness["code"] in {"auth_required", "captcha_required", "unsupported_surface"}:
+                                existing = self.store.get_plan(item.plan_id).metadata.get("handoff")
+                                handoff = self.handoffs.get(existing["handoff_id"]) if existing else None
+                                if handoff is None or handoff.status != "waiting-for-human":
+                                    handoff = self.handoffs.request(task_id=task_id, session_id=session_id,
+                                        reason=readiness["code"], scope={"plan_id": item.plan_id, "work_item_id": item.id})
+                                self.store.update_plan_metadata(item.plan_id, {"handoff": {
+                                    "handoff_id": handoff.handoff_id, "status": handoff.status,
+                                    "reason": handoff.reason, "diagnostic": readiness["diagnostic"]}})
+                                return {"valid": False, "waiting_for_human": True,
+                                    "handoff_id": handoff.handoff_id, "code": readiness["code"], "results": [evidence]}
+                            return {"valid": False, "code": readiness["code"], "diagnostic": readiness["diagnostic"], "results": [evidence]}
                     if scope["route"] == "native_browser" and scope.get("host"):
                         decoded_probe = _decode_output(output)
                         try:
@@ -426,6 +473,8 @@ class TaskCompiler:
                 metrics["tool_calls"] += 1
                 metrics["tool_input_bytes"] += len(json.dumps(args).encode())
                 started = time.monotonic()
+                wait = step.get("wait", {})
+                subscription = event_bus.subscribe() if wait.get("event_type") else None
                 try:
                     from workstation.batch_detection import call_key
                     context = _dispatch_context.get()
@@ -436,7 +485,6 @@ class TaskCompiler:
                         metrics["tool_calls"] -= 1
                     else:
                         raw = dispatch(step["tool"], args, task_id, f"{item.id}_{index}")
-                    wait = step.get("wait", {})
                     deadline = started + min(300, max(0, float(wait.get("timeout_seconds", 30))))
                     max_polls = min(100, max(1, int(wait.get("max_polls", 20))))
                     polls = 1
@@ -445,7 +493,17 @@ class TaskCompiler:
                             break
                         # Intermediate waiting observations belong to the Data Plane.
                         content_reference(self.artifacts, durable_id, blob_references(self.artifacts, durable_id, raw))
-                        time.sleep(min(1, max(0, float(wait.get("interval_seconds", 0.2)))))
+                        if subscription is not None:
+                            from workstation.runtime import WaitContract
+                            contract = WaitContract(wait["event_type"], task_id,
+                                (datetime.now(timezone.utc) + timedelta(seconds=max(0, deadline - time.monotonic()))).isoformat(),
+                                str(_bind(wait["correlation_id"], payload, bindings)), session_id)
+                            try:
+                                event_bus.wait(contract, subscription=subscription)
+                            except TimeoutError:
+                                break
+                        else:
+                            time.sleep(min(1, max(0, float(wait.get("interval_seconds", 0.2)))))
                         metrics["tool_calls"] += 1
                         raw = dispatch(step["tool"], args, task_id, f"{item.id}_{index}_poll_{polls}")
                         polls += 1
@@ -456,6 +514,8 @@ class TaskCompiler:
                         raise
                     return {"valid": False, "code": "mutation_failed_requires_review", "results": results}
                 finally:
+                    if subscription is not None:
+                        event_bus.unsubscribe(subscription)
                     metrics["latency_ms"] += int((time.monotonic() - started) * 1000)
                     persist_metrics()
                 output_bytes = len((raw if isinstance(raw, str) else json.dumps(raw)).encode("utf-8", "surrogatepass"))
@@ -482,7 +542,14 @@ class TaskCompiler:
                         recipe_invalidated = True
                         metrics["recipe_invalidations"] += 1
                         self.store.update_plan_metadata(item.plan_id, {"recipe": {"recipe_id": recipe_key, "status": "QUARANTINED", "fingerprint": recipe_hash}})
-                    return {"valid": False, "results": results, "code": "unexpected_state"}
+                    return {"valid": False, "results": results, "code": "unexpected_state",
+                            "systemic_failure": {
+                                "tool": step["tool"], "step_id": step.get("id", str(index)),
+                                "failure_code": "unexpected_state", "verifier": step.get("id", str(index)),
+                                "procedure_fingerprint": recipe_hash,
+                                "capability_fingerprint": recipe_hash,
+                                "target_shape": {k: type(v).__name__ for k, v in payload.items()},
+                            }}
                 if graph:
                     decoded = _decode_output(raw)
                     bindings["steps"][step["id"]] = decoded
@@ -520,15 +587,19 @@ class TaskCompiler:
         token = _constraints.set(constraints)
         execution_token = _execution_active.set(True)
         try:
+            from agent.tool_guardrails import ToolCallGuardrailController
+            guardrails = ToolCallGuardrailController()
             runner = DurableBatchRunner(durable_id, task_store=self.store, artifact_store=self.artifacts,
                                         max_retries=2, backoff_seconds=0)
             summary = runner.execute_batch(request.get("title", key), work_payloads,
                 worker_fn=worker, validator_fn=lambda raw, _: {
                     "valid": raw.get("valid") is True, "reason": raw.get("code", ""),
+                    "waiting_for_human": raw.get("waiting_for_human") is True,
+                    "handoff_id": raw.get("handoff_id"),
                     "expected_delta": "verified_step", "actual_delta": raw.get("valid") is True},
                 session_id=session_id, metadata=metadata,
                 stop_on_exception=kind in {WorkClass.BROWSER_TRANSACTION, WorkClass.PROMPT_QUEUE},
-                can_start_item=can_start)
+                can_start_item=can_start, guardrails=guardrails)
         finally:
             _execution_active.reset(execution_token)
             _constraints.reset(token)
@@ -556,6 +627,10 @@ class TaskCompiler:
         metrics["work_items_completed"] = envelope["completed"]
         fan_items = [i for i in self.store.get_work_items(durable_id) if i.input_payload.get("_work_phase", "fan_out") == "fan_out"]
         metrics["failed_fanout_items"] = sum(i.status.value in {"blocked", "failed"} for i in fan_items[1:])
+        circuit = self.store.get_plan(durable_id).metadata.get("circuit", {})
+        metrics["systemic_failures_detected"] = int(circuit.get("status") == "SYSTEMIC_FAILURE_SUSPECTED")
+        metrics["systemic_items_prevented"] = circuit.get("systemic_items_prevented", 0)
+        metrics["systemic_failure_amplification"] = circuit.get("failed_items", 0)
         metrics["replans"] = int(envelope["needs_reasoning"] > 0)
         metrics["tool_calls_per_state_transition"] = metrics["tool_calls"] / max(1, metrics["state_transitions"])
         metrics["artifact_bytes"] = sum(a.size_bytes for a in self.artifacts.list_artifacts(durable_id)
@@ -601,15 +676,26 @@ class TaskCompiler:
 
     def resume(self, plan_id: str, *, session_id: str, dispatch: Callable,
                progress: Callable | None = None, provider_usage: dict | None = None,
-               status_only: bool = False) -> dict:
+               status_only: bool = False, event_bus=None) -> dict:
         plan = self.store.get_plan(plan_id)
         if plan is None or plan.id != plan_id or plan.session_id != session_id:
             raise ValueError("Plan not found in the owning conversation")
         if status_only:
             return self.store.operational_ledger(plan_id)
+        handoff_metadata = plan.metadata.get("handoff") or {}
+        handoff = self.handoffs.get(handoff_metadata.get("handoff_id", ""))
+        if handoff is not None and handoff.status == "ready":
+            if handoff.task_id != plan.metadata["browser_task_id"] or handoff.session_id != session_id:
+                raise ValueError("Handoff does not belong to this task/session")
+            from workstation.durable_tasks import WorkItemStatus
+            for item in self.store.get_work_items(plan_id):
+                if item.status == WorkItemStatus.WAITING_FOR_USER and item.validation_result.get("handoff_id") == handoff.handoff_id:
+                    self.store.resume_waiting_item(item.id)
+            self.store.update_plan_metadata(plan_id, {"handoff": {**handoff_metadata, "status": "ready"}})
         objective = self.artifacts.read_json(plan.metadata["objective_ref"])
         return self.execute(objective, task_id=plan.metadata["browser_task_id"], session_id=session_id,
-                            dispatch=dispatch, progress=progress, provider_usage=provider_usage)
+                            dispatch=dispatch, progress=progress, provider_usage=provider_usage, event_bus=event_bus,
+                            canonical_task_id=plan.metadata.get("canonical_task_id"))
 
 
 def execute_compiled_work(args: dict, **kwargs) -> str:
@@ -630,11 +716,11 @@ def execute_compiled_work(args: dict, **kwargs) -> str:
 
 
 def _execute_compiled_work(compiler, context, args, kwargs):
-    dispatch, session_id, _, references, progress, usage, _ = context
+    dispatch, session_id, _, references, progress, usage, _, event_bus, canonical_task_id = context
     if args.get("plan_id"):
         envelope = compiler.resume(args["plan_id"], session_id=session_id, dispatch=dispatch,
                                    progress=progress, provider_usage=usage,
-                                   status_only=args.get("action") == "status")
+                                   status_only=args.get("action") == "status", event_bus=event_bus)
         if args.get("action") == "status":
             references.append({"trusted": True, "version": 1, "source": "KanbanRun", "kind": "durable_work",
                                "id": envelope["plan_id"], "task_id": envelope["task_id"],
@@ -643,7 +729,7 @@ def _execute_compiled_work(compiler, context, args, kwargs):
     else:
         envelope = compiler.execute(args, task_id=str(kwargs.get("task_id") or session_id),
                                     session_id=session_id, dispatch=dispatch, progress=progress,
-                                    provider_usage=usage)
+                                    provider_usage=usage, event_bus=event_bus, canonical_task_id=canonical_task_id)
     references.append({"trusted": True, "version": 1, "source": "KanbanRun", "kind": "durable_work",
                        "id": envelope["plan_id"], "task_id": envelope["task_id"],
                        "owner_session_id": session_id, "result_ref": envelope["results_ref"]})

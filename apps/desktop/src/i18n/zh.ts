@@ -2216,6 +2216,7 @@ export const zh: Translations = {
     deliverNeedsHomeChannel: '请先设置主频道',
     modelLabel: '模型',
     modelDefault: '默认（全局模型）',
+    modelPinCurrent: '固定当前全局模型',
     customScheduleLabel: '自定义排程',
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',

@@ -490,3 +490,13 @@ but does not promote the separate production-like Desktop/Browser soak gate.
 ## Failure policy
 
 A red gate is investigated, not disabled. Never make CI green by deleting coverage, weakening a valid expectation, or turning a baseline-equivalent failure into a claimed pass. Record what failed, establish causality, and use the smallest test that corresponds to the actual risk.
+
+## Canonical Work Loop regressions
+
+Run `python -m pytest -q workstation/tests` and affected Kanban/guardrails/cron/
+SessionDB/verification-ledger tests. Use native Windows Python and a fresh
+`--basetemp` outside the checkout: fixture project-root resolution can identify
+Hermes instead of a nested synthetic project. Workstation conftest redirects
+both homes and Kanban DB. `python -m workstation.work100` shows the 30-case
+coverage ledger; `--run` launches covered regressions and fails on remaining
+coverage gaps. Native Desktop evidence remains a separate gate.

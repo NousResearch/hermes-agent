@@ -564,6 +564,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           schedule: values.schedule,
           name: values.name || undefined,
           deliver: values.deliver || DEFAULT_DELIVER,
+          model_policy: values.modelPolicy,
           ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
         })
       )
@@ -1136,6 +1137,7 @@ function CronEditorDialog({
   // stored pin visible and re-selectable rather than silently dropping it.
   const modelChoiceKnown =
     modelChoice === MODEL_DEFAULT_VALUE ||
+    modelChoice === '__pin_current__' ||
     modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
 
   async function handleSubmit(event: React.FormEvent) {
@@ -1172,6 +1174,7 @@ function CronEditorDialog({
       await onSave({
         deliver,
         model: overrideModel,
+        modelPolicy: modelChoice === MODEL_DEFAULT_VALUE ? 'follow_global_model' : 'pin_current_model',
         name: name.trim(),
         prompt: prompt.trim(),
         provider: overrideProvider,
@@ -1342,6 +1345,7 @@ function CronEditorDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
+                    <SelectItem value="__pin_current__">{c.modelPinCurrent}</SelectItem>
                     {!modelChoiceKnown && (
                       <SelectItem className="font-mono" value={modelChoice}>
                         {modelChoice.slice(modelChoice.indexOf(':') + 1)}
@@ -1416,6 +1420,7 @@ type EditorState =
   | { blueprintKey?: string; mode: 'create' }
 
 interface EditorValues {
+  modelPolicy?: 'follow_global_model' | 'pin_current_model'
   deliver: string
   /** Per-job model override ('' = follow the global default). */
   model: string

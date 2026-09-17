@@ -67,6 +67,19 @@ class RoutinePromotionService:
         procedure.promoted_at = _utc_now()
         return self.memory.update_procedure(procedure)
 
+    def experience_candidate(self, outcome, contract, *, site: str, steps: list[dict],
+                             repeatable: bool, metrics: dict | None = None):
+        from workstation.contracts import AcceptanceEvaluator
+        from workstation.recipes import sanitize
+        if not repeatable or not steps or not outcome.evidence_refs or AcceptanceEvaluator().evaluate(outcome, contract):
+            return None
+        procedure = self.memory.record_success(site, sanitize(outcome.objective), sanitize(steps))
+        procedure.validation_evidence = [sanitize({"uri": e.uri, "kind": e.kind}) for e in outcome.evidence_refs]
+        procedure.savings = {"baseline": sanitize(metrics or outcome.metrics)}
+        # A successful occurrence seeds a candidate; compatible replay must validate it.
+        procedure.lifecycle = ProcedureLifecycle.DISCOVERED
+        return self.memory.update_procedure(procedure)
+
 
 class DeterministicRoutineRunner:
     def __init__(self, memory: ProceduralMemory, journal: ExecutionJournal | None = None) -> None:
@@ -96,7 +109,7 @@ class DeterministicRoutineRunner:
             )
 
         for precondition in procedure.preconditions:
-            if check_precondition is not None and not check_precondition(precondition, context):
+            if check_precondition is None or not check_precondition(precondition, context):
                 return self._drift(procedure, f"precondition failed: {precondition}")
 
         elements = context.get("elements")
@@ -124,7 +137,7 @@ class DeterministicRoutineRunner:
             completed += 1
 
         for postcondition in procedure.postconditions:
-            if check_postcondition is not None and not check_postcondition(postcondition, context):
+            if check_postcondition is None or not check_postcondition(postcondition, context):
                 return self._drift(procedure, f"postcondition failed: {postcondition}", completed)
         result = RoutineExecutionResult(
             RoutineExecutionStatus.COMPLETED,
@@ -133,7 +146,7 @@ class DeterministicRoutineRunner:
             completed_steps=completed,
         )
         self._record(
-            ExecutionEventKind.TASK_COMPLETED,
+            ExecutionEventKind.ACTION,
             "deterministic routine completed",
             procedure.id,
             version=procedure.version,

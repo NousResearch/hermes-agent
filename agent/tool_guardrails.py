@@ -379,6 +379,8 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
+        self._systemic_failure_key = None
+        self._systemic_failure_items = set()
         self._verification_generation = 0
         self._current_experiments = {}
         self._call_history = deque(maxlen=64)
@@ -426,6 +428,33 @@ class ToolCallGuardrailController:
         self._identical_streak_count = 0
         self._verification_generation += 1
         self._current_experiments.clear()
+
+    def record_work_item_result(self, item_id: str, failure: Mapping[str, Any] | None,
+                                *, threshold: int = 3) -> ToolGuardrailDecision:
+        """Consecutive structural failures across targets share ExperimentKey.
+
+        Runtime supplies sanitized procedure/capability/verifier identities;
+        result prose never defines a new experiment.
+        """
+        if not failure:
+            self._systemic_failure_key = None
+            self._systemic_failure_items.clear()
+            return ToolGuardrailDecision()
+        key = ExperimentKey.from_call(str(failure.get("tool", "unknown")),
+                                     failure.get("target_shape", {}),
+                                     {k: failure.get(k) for k in (
+                                         "step_id", "failure_code", "verifier", "procedure_fingerprint",
+                                         "capability_fingerprint")})
+        if key != self._systemic_failure_key:
+            self._systemic_failure_key = key
+            self._systemic_failure_items.clear()
+        self._systemic_failure_items.add(item_id)
+        count = len(self._systemic_failure_items)
+        return ToolGuardrailDecision(
+            action="halt" if count >= max(2, threshold) else "allow",
+            code="SYSTEMIC_FAILURE_SUSPECTED" if count >= max(2, threshold) else "allow",
+            count=count, message="Stop fan-out; diagnose procedure and admit a new canary.",
+        )
 
     def _experiment_signature(self, tool_name, args):
         experiment = ExperimentKey.from_call(tool_name, args, {"verification_generation": self._verification_generation})

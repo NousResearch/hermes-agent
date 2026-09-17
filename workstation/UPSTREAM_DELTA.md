@@ -156,3 +156,13 @@ becoming a second BrowserTask/page store.
 Neither promotion makes Browser Hub, Chat Browser View, Preview unification,
 single-host transfer or complete Kanban/run integration part of the existing
 delta. Those require their own V1 #1.5 rows/expansions when implemented.
+
+## Canonical Work Loop working-tree seams (2026-09-17)
+
+Additive canonical acceptance table/gates and Hybrid completion projection;
+existing verification DB outcome events; shared ToolCallGuardrailController
+WorkItem systemic failures; tool_contract introspection defaults; artifact refs
+in read_file; cron drift migration metadata; SessionSearchMixin compacted dedup;
+authenticated cockpit route in web_server. Provider schemas/system prompts,
+SessionDB history and authorized red-team harness are unchanged. See
+[implementation scope](context/CANONICAL_WORK_LOOP.md).

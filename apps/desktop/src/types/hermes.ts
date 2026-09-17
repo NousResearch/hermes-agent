@@ -843,6 +843,7 @@ export interface AnalyticsTotals {
 }
 
 export interface CronJob {
+  model_policy?: 'follow_global_model' | 'pin_current_model' | null
   deliver?: null | string
   enabled: boolean
   id: string
@@ -861,6 +862,7 @@ export interface CronJob {
 }
 
 export interface CronJobCreatePayload {
+  model_policy?: 'follow_global_model' | 'pin_current_model'
   deliver?: string
   model?: string
   name?: string
@@ -876,6 +878,7 @@ export interface CronJobSchedule {
 }
 
 export interface CronJobUpdates {
+  model_policy?: 'follow_global_model' | 'pin_current_model'
   deliver?: string
   enabled?: boolean
   model?: null | string

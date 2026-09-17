@@ -1090,3 +1090,10 @@ demonstrates at least one of:
 The objective is not to make Hermes Workstation contain every agent feature. The
 objective is to make upstream Hermes **predictable, observable, recoverable,
 policy-bounded and pleasant to operate for long periods**.
+
+## Active: Canonical Work Loop
+
+Safety and canonical owner extensions are implemented in the working tree;
+complete integration parity, five Work100 gaps and native product validation
+before declaring this program delivered. Scope and remaining work:
+[Canonical Work Loop](context/CANONICAL_WORK_LOOP.md).

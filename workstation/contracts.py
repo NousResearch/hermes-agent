@@ -18,6 +18,113 @@ class RiskLevel(str, Enum):
     CRITICAL = "critical"
 
 
+class MessageOrigin(str, Enum):
+    HUMAN = "human"
+    AGENT = "agent"
+    WORKER = "worker"
+    RUNTIME = "runtime"
+    SYSTEM_EVENT = "system_event"
+    CONNECTOR = "connector"
+
+
+class IntentAuthority(str, Enum):
+    CREATE_WORK = "create_work"
+    DELEGATE_WORK = "delegate_work"
+    UPDATE_WORK = "update_work"
+    OBSERVATION_ONLY = "observation_only"
+
+
+@dataclass(slots=True)
+class MessageEnvelope:
+    origin: MessageOrigin
+    intent_authority: IntentAuthority
+    session_id: str
+    content: str
+    parent_task_id: str | None = None
+    correlation_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def can_create_work(self) -> bool:
+        # Constructed by trusted ingress; never deserialize authority from content.
+        return bool(self.session_id) and (
+            (self.origin == MessageOrigin.HUMAN and self.intent_authority == IntentAuthority.CREATE_WORK)
+            or (self.origin == MessageOrigin.AGENT
+                and self.intent_authority == IntentAuthority.DELEGATE_WORK
+                and bool(self.parent_task_id))
+        )
+
+
+class OutcomeStatus(str, Enum):
+    VERIFIED_COMPLETED = "verified_completed"
+    WAITING_FOR_HUMAN = "waiting_for_human"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(slots=True)
+class AcceptanceContract:
+    policy: str = "evidence"
+    required_deliverables: list[str] = field(default_factory=list)
+    required_verifiers: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TaskOutcome:
+    task_id: str
+    session_id: str
+    objective: str
+    status: OutcomeStatus
+    summary: str
+    result_ref: str | None = None
+    deliverables: list[str] = field(default_factory=list)
+    evidence_refs: list[EvidenceRef] = field(default_factory=list)
+    verifier_results: list[dict[str, Any]] = field(default_factory=list)
+    pending_items: list[str] = field(default_factory=list)
+    planned_handoffs: list[str] = field(default_factory=list)
+    unplanned_human_rescues: list[str] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    started_at: str | None = None
+    finished_at: str = field(default_factory=utc_now)
+    uncertain_mutation: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
+        return data
+
+
+class AcceptanceEvaluator:
+    def evaluate(self, outcome: TaskOutcome, contract: AcceptanceContract) -> list[str]:
+        reasons = []
+        if outcome.status != OutcomeStatus.VERIFIED_COMPLETED:
+            reasons.append("outcome_not_verified")
+        if outcome.pending_items:
+            reasons.append("blocking_pending_items")
+        if outcome.uncertain_mutation:
+            reasons.append("uncertain_mutation_requires_review")
+        evidence_uris = {e.uri for e in outcome.evidence_refs if e.uri}
+        passed = {v.get("verifier") for v in outcome.verifier_results
+                  if v.get("passed") is True and v.get("evidence_ref") in evidence_uris}
+        if any(v.get("required", True) and v.get("passed") is not True for v in outcome.verifier_results):
+            reasons.append("verifier_failed")
+        if set(contract.required_verifiers) - passed:
+            reasons.append("required_verifier_missing")
+        if set(contract.required_deliverables) - set(outcome.deliverables):
+            reasons.append("required_deliverable_missing")
+        if contract.policy == "advisory":
+            if not outcome.summary.strip():
+                reasons.append("advisory_result_missing")
+        elif contract.policy == "evidence":
+            if not passed or not outcome.evidence_refs:
+                reasons.append("verification_evidence_missing")
+        else:
+            reasons.append("unknown_acceptance_policy")
+        return reasons
+
+
 class ExecutionEventKind(str, Enum):
     TASK_CREATED = "task_created"
     TASK_STARTED = "task_started"
@@ -85,6 +192,16 @@ class ExecutionEvent:
     risk: RiskLevel = RiskLevel.LOW
     evidence: list[EvidenceRef] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    schema_version: int | None = None
+    sequence_number: int | None = None
+    previous_event_hash: str | None = None
+    event_hash: str | None = None
+    writer_id: str | None = None
+    environment: str | None = None
+    build_sha: str | None = None
+    workstation_version: str | None = None
+    test_case_id: str | None = None
+    evaluation_run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -112,6 +229,14 @@ class BrowserTaskReport:
     output_tokens: int = 0
     cost_usd: float | None = None
     evidence: list[EvidenceRef] = field(default_factory=list)
+    verifier_results: list[dict[str, Any]] = field(default_factory=list)
+    deliverables: list[str] = field(default_factory=list)
+    uncertain_mutation: bool = False
+    acceptance_contract: AcceptanceContract = field(default_factory=AcceptanceContract)
+    outcome_status: OutcomeStatus | None = None
+    repeatability_hint: bool = False
+    procedure_steps: list[dict[str, Any]] = field(default_factory=list)
+    procedure_scope: str = ""
 
     def to_kanban_metadata(self) -> dict[str, Any]:
         return {

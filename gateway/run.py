@@ -6401,6 +6401,14 @@ class TurnRunner:
                 "conversation_history": agent_history,
                 "task_id": ctx.session_id,
             }
+            from workstation.contracts import MessageEnvelope, MessageOrigin, IntentAuthority
+            _internal_turn = bool(ctx.persist_user_display_kind)
+            _conversation_kwargs["message_envelope"] = MessageEnvelope(
+                MessageOrigin.SYSTEM_EVENT if _internal_turn else MessageOrigin.HUMAN,
+                IntentAuthority.OBSERVATION_ONLY if _internal_turn else IntentAuthority.CREATE_WORK,
+                agent._conversation_root_id() or ctx.session_id,
+                ctx.message if isinstance(ctx.message, str) else "",
+                correlation_id=ctx.event_message_id)
             if _persist_user_message_override is not None:
                 _conversation_kwargs["persist_user_message"] = _persist_user_message_override
             elif observed_group_context:

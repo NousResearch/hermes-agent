@@ -114,12 +114,26 @@ export interface KanbanTaskFull extends KanbanTask {
 /** GET /tasks/:id — the task plus its related collections, which are SIBLINGS
  *  of `task`, not nested inside it. */
 export interface KanbanTaskDetail {
+  cockpit?: WorkCockpit | null
   task: KanbanTaskFull
   comments: KanbanComment[]
   events: KanbanEvent[]
   attachments: KanbanAttachment[]
   links: { parents: string[]; children: string[] }
   runs: KanbanRun[]
+}
+
+export interface WorkCockpit {
+  objective: string
+  outcome_status: string
+  current_activity: string | null
+  last_activity: string | null
+  verified_progress: number
+  blockers: string[]
+  evidence_count: number
+  deliverables: string[]
+  workers: string[]
+  browser_tasks: string[]
 }
 
 /** GET /boards — every board on disk + which one is the server's current. */

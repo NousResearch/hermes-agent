@@ -107,3 +107,12 @@ After the reliability gate closes, the deferred roadmap resumes from the sequenc
 - Close or formally classify superseded PRs before the next milestone.
 - Run the Mainline Consolidation Review after every major milestone and keep the
   full pre-1.5 ledger in `context/MAINLINE_CONSOLIDATION.md`.
+
+## Work Loop safety boundaries
+
+Do not relax a task acceptance policy at completion. Uncertain dispatched effects
+require reconciliation, never blind retry. Stored running without a current live
+handle is recovery-required. Journal corruption fails explicitly before accepted
+completion; legacy unverified evidence must remain distinguishable. Workstation
+tests isolate homes before collection and for each test; production AVCR excludes
+test/benchmark/e2e/replay and unknown provenance.

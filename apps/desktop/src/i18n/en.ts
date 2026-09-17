@@ -2033,6 +2033,7 @@ export const en: Translations = {
     deliverNeedsHomeChannel: 'set a home channel first',
     modelLabel: 'Model',
     modelDefault: 'Default (global model)',
+    modelPinCurrent: 'Pin the current global model',
     customScheduleLabel: 'Custom schedule',
     customPlaceholder: '0 9 * * * or weekdays at 9am',
     customHint: 'Cron expression, or phrases like "every hour" or "weekdays at 9am".',

@@ -140,6 +140,7 @@ models-dev-upstream/
 .cursor/
 .gemini/
 .zed/
+.workstation-audit/
 .mcp.json
 opencode.json
 config/mcporter.json

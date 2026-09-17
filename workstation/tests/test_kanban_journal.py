@@ -8,6 +8,7 @@ import pytest
 from hermes_cli import kanban_db
 from workstation.contracts import (
     BrowserTaskReport,
+    MessageEnvelope, MessageOrigin, IntentAuthority,
     DiscoveredTask,
     EvidenceRef,
     ExecutionEventKind,
@@ -65,6 +66,7 @@ def test_kanban_bridge_multistep_promotion(tmp_path, monkeypatch):
     task_id = bridge.promote_request_if_multistep(
         "First extract data from the page, then fill out the form and submit it",
         session_id="session-dogfood-1",
+        envelope=MessageEnvelope(MessageOrigin.HUMAN, IntentAuthority.CREATE_WORK, "session-dogfood-1", "First extract data from the page, then fill out the form and submit it"),
     )
     assert task_id is not None
     assert task_id.startswith("t_")
@@ -85,6 +87,7 @@ def test_kanban_bridge_followup_and_completion(tmp_path, monkeypatch):
     parent_id = bridge.promote_request_if_multistep(
         "Multistep workflow to book travel",
         session_id="session-dogfood-2",
+        envelope=MessageEnvelope(MessageOrigin.HUMAN, IntentAuthority.CREATE_WORK, "session-dogfood-2", "Multistep workflow to book travel"),
     )
     assert parent_id is not None
 
@@ -125,6 +128,8 @@ def test_kanban_bridge_followup_and_completion(tmp_path, monkeypatch):
         objective="Book travel",
         result="Travel booked successfully",
         completed=True,
+        evidence=[EvidenceRef("verification", "result://booking-readback")],
+        verifier_results=[{"verifier": "booking-readback", "passed": True, "evidence_ref": "result://booking-readback"}],
         sites=["https://airline.example.com"],
         discovered_tasks=[followup],
     )

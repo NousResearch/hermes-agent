@@ -1630,6 +1630,9 @@ def _special_file_kind(path) -> str | None:
 def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        if path.startswith("artifact://"):
+            from workstation.artifacts import ArtifactStore
+            return json.dumps(ArtifactStore().resolve_structured(path, max_content_bytes=_get_max_read_chars()), ensure_ascii=False)
         offset, limit = normalize_read_pagination(offset, limit)
 
         # ── Device path guard ─────────────────────────────────────────

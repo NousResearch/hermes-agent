@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import time
 from enum import Enum
 from typing import Any, Callable, Mapping
 from uuid import uuid4
@@ -99,6 +100,7 @@ class RuntimeSupervisor:
         state_path: Path | None = None,
         checkpoint_dir: Path | None = None,
         max_restart_attempts: int = 3,
+        startup_timeout_seconds: float = 30.0,
     ) -> None:
         root = get_hermes_home() / "workstation"
         self.state_path = Path(state_path or root / "supervisor.json")
@@ -111,6 +113,8 @@ class RuntimeSupervisor:
         self._checkpoints: list[RuntimeCheckpoint] = []
         self.max_restart_attempts = max(1, max_restart_attempts)
         self._restart_failures = 0
+        self.startup_timeout_seconds = min(300.0, max(0.0, float(startup_timeout_seconds)))
+        self._startup_deadline: float | None = None
         self._load_state()
 
     @classmethod
@@ -123,6 +127,7 @@ class RuntimeSupervisor:
         state_path: Path | None = None,
         checkpoint_dir: Path | None = None,
         max_restart_attempts: int = 3,
+        startup_timeout_seconds: float = 30.0,
     ) -> "RuntimeSupervisor":
         return cls(
             runtime_factory=lambda: SubprocessRuntime(command, cwd=cwd, env=env).start(),
@@ -130,6 +135,7 @@ class RuntimeSupervisor:
             state_path=state_path,
             checkpoint_dir=checkpoint_dir,
             max_restart_attempts=max_restart_attempts,
+            startup_timeout_seconds=startup_timeout_seconds,
         )
 
     def _load_state(self) -> None:
@@ -155,14 +161,17 @@ class RuntimeSupervisor:
         temp.replace(self.state_path)
 
     def start(self) -> bool:
+        if self.runtime is not None and self.state == SupervisorState.STARTING:
+            return self.health().healthy
         if self.runtime is not None and self.health().healthy:
             return True
         self.state = SupervisorState.STARTING
         self.last_error = None
         try:
             self.runtime = self.runtime_factory()
+            self._startup_deadline = time.monotonic() + self.startup_timeout_seconds
             if not self.health_check(self.runtime):
-                raise RuntimeError("runtime health check failed during start")
+                return self.health().healthy
             self.state = SupervisorState.RUNNING
             self._restart_failures = 0
             self._persist_state()
@@ -179,6 +188,19 @@ class RuntimeSupervisor:
         previous_state = self.state
         try:
             healthy = bool(self.health_check(self.runtime))
+            if self.state == SupervisorState.STARTING:
+                alive_probe = getattr(self.runtime, "is_alive", None)
+                alive = bool(alive_probe()) if callable(alive_probe) else True
+                if not alive:
+                    healthy = False
+                    self.state = SupervisorState.FAILED
+                    self.last_error = "runtime exited during startup"
+                elif healthy:
+                    self.state = SupervisorState.RUNNING
+                    self._restart_failures = 0
+                elif self._startup_deadline is None or time.monotonic() >= self._startup_deadline:
+                    self.state = SupervisorState.FAILED
+                    self.last_error = "runtime readiness deadline exceeded"
             if not healthy and self.state == SupervisorState.RUNNING:
                 self.state = SupervisorState.DEGRADED
             if self.state != previous_state:
@@ -196,6 +218,7 @@ class RuntimeSupervisor:
             if callable(stop):
                 stop()
         self.runtime = None
+        self._startup_deadline = None
         self.state = SupervisorState.STOPPED
         self._persist_state()
 
@@ -210,6 +233,8 @@ class RuntimeSupervisor:
         current = self.health()
         if current.healthy:
             return current
+        if self.state == SupervisorState.STARTING:
+            return current
         if self._restart_failures >= self.max_restart_attempts:
             self.state = SupervisorState.FAILED
             self.last_error = "runtime crash loop detected"
@@ -217,6 +242,8 @@ class RuntimeSupervisor:
             return RuntimeHealth(False, self.state, detail=self.last_error)
         self._restart_failures += 1
         if self.restart():
+            return self.health()
+        if self.state == SupervisorState.STARTING:
             return self.health()
         if self._restart_failures >= self.max_restart_attempts:
             self.state = SupervisorState.FAILED

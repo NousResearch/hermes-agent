@@ -4981,6 +4981,8 @@ def cron_model_drift_axes(
     """Return the unpinned axes that the fail-closed cron guard would block."""
     if not isinstance(job, dict) or not cron_model_drift_guard_enabled(config):
         return []
+    if job.get("model_policy") == "follow_global_model":
+        return []  # Explicit owner opt-in, never inferred from missing pins.
 
     current = {
         "provider": _model_assignment_text(current_provider).lower(),

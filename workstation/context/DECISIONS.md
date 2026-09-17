@@ -148,3 +148,13 @@ reliability.
 ## Changing a decision
 
 A replacement decision must state which decision it supersedes, why the old invariant no longer holds, how migration/backward compatibility is handled, and which tests prove the new contract. Do not silently drift architecture through implementation-only changes.
+
+## Canonical Work Loop contracts (2026-09-17)
+
+Intention authority comes from a trusted MessageEnvelope, never request prose.
+Workstation/Hybrid done requires a verified outcome accepted against the policy
+captured at creation. Live handles require bounded liveness; durable proof cannot
+prove running. Canonical execution lineage and Task Cockpit are projections over
+Kanban, WorkPlans, BrowserTask refs and journal, with no new task store. Routine
+execution stop remains distinct from accepted task completion. Implementation
+boundaries are documented in [Canonical Work Loop](CANONICAL_WORK_LOOP.md).

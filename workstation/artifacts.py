@@ -37,6 +37,8 @@ class ArtifactRef:
     schema: Optional[str] = None
     summary: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_utc_now)
+    media_type: str = "application/octet-stream"
+    encoding: str | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -126,6 +128,9 @@ class ArtifactStore:
             sha256=sha256,
             schema=schema,
             summary=computed_summary,
+            media_type="application/json" if isinstance(content, (dict, list)) else (
+                "text/plain" if isinstance(content, str) else "application/octet-stream"),
+            encoding="utf-8" if isinstance(content, (dict, list, str)) else None,
         )
 
         meta_path = target_path.with_suffix(target_path.suffix + ".meta.json")
@@ -187,6 +192,35 @@ class ArtifactStore:
     def read_json(self, ref_uri: str) -> Any:
         raw = self.read(ref_uri)
         return json.loads(raw)
+
+    def resolve_structured(self, ref_uri: str, *, max_content_bytes: int = 1_000_000) -> dict[str, Any]:
+        """Resolve data by reference, verifying containment and original bytes.
+
+        Binary and oversized content stay out of the reasoning plane.
+        """
+        path = self.resolve_ref(ref_uri)
+        if path is None:
+            raise FileNotFoundError(ref_uri)
+        meta_path = path.with_suffix(path.suffix + ".meta.json").resolve()
+        meta_path.relative_to(self.root.resolve())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if meta.get("ref") != ref_uri or digest != meta.get("sha256") or len(raw) != meta.get("size_bytes"):
+            raise ValueError("artifact integrity mismatch")
+        media_type = meta.get("media_type", "application/octet-stream")
+        encoding = meta.get("encoding")
+        # Legacy descriptors can safely identify JSON from an explicit suffix.
+        if "media_type" not in meta and path.suffix == ".json":
+            media_type, encoding = "application/json", "utf-8"
+        result = {"artifact_ref": ref_uri, "media_type": media_type, "encoding": encoding,
+                  "size_bytes": len(raw), "sha256": digest, "schema": meta.get("schema")}
+        if len(raw) <= max_content_bytes and encoding == "utf-8":
+            text = raw.decode("utf-8")
+            result["content"] = json.loads(text) if media_type == "application/json" else text
+        else:
+            result["content_omitted"] = "binary" if encoding != "utf-8" else "size_budget"
+        return result
 
     def list_artifacts(self, task_id: str) -> List[ArtifactRef]:
         task_dir = self._task_dir(task_id)

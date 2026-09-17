@@ -53,32 +53,33 @@ def test_conflicting_candidate_is_refused_and_enabled_plugins_are_untouched(tmp_
     resolve, calls = _fake_resolver({"tabulate<0.9"})
     monkeypatch.setattr(deps, "resolve", resolve)
     monkeypatch.setattr(deps, "core_constraints", lambda root: ["httpx==0.28.1"])
-    monkeypatch.setattr(deps, "all_homes", lambda: [home])
+    monkeypatch.setattr(deps, "dependency_homes", lambda: [home])
 
     with pytest.raises(deps.DependencyConflict):
         deps.check_candidate(deps.read_declaration(candidate), home=home, project_root=tmp_path)
 
     # The dry run saw the union (candidate + enabled peer) and never ran a real install.
-    assert calls == [["tabulate<0.9", "tabulate>=0.9"]]
+    assert [sorted(c) for c in calls] == [["tabulate<0.9", "tabulate>=0.9"]]
     assert (home / "plugins" / "good").is_dir()
     assert "good" in (home / "config.yaml").read_text()
 
 
 def test_reapply_disables_non_memory_plugin_loudly_and_keeps_memory_provider(tmp_path, monkeypatch):
-    home = _home(tmp_path, ["memory", "weather", "sidecar"])
+    home = _home(tmp_path, ["memory", "weather", "sidecar", "aaa-innocent"])
     _plugin(home, "memory", '"mnemosyne-memory>=3"', memory=True)
     _plugin(home, "weather", '"httpx<0.20"')
     _plugin(home, "sidecar", '"torch==99"', external=True)
+    _plugin(home, "aaa-innocent", '"tabulate>=0.9"')  # sorts before the culprit; must NOT be sacrificed
     resolve, calls = _fake_resolver({"httpx<0.20"})
     monkeypatch.setattr(deps, "resolve", resolve)
     monkeypatch.setattr(deps, "core_constraints", lambda root: ["httpx==0.28.1"])
-    monkeypatch.setattr(deps, "all_homes", lambda: [home])
+    monkeypatch.setattr(deps, "dependency_homes", lambda: [home])
     disabled: list[tuple[Path, str]] = []
 
     report = deps.reapply_all(project_root=tmp_path, disable=lambda h, n: disabled.append((h, n)))
 
     assert disabled == [(home, "weather")]
     assert report.dropped and report.dropped[0][0] == "weather"
-    assert report.installed == ["mnemosyne-memory>=3"]
+    assert sorted(report.installed) == ["mnemosyne-memory>=3", "tabulate>=0.9"]
     # External-runtime plugin never joined the union; memory provider was the survivor.
     assert all("torch==99" not in c for c in calls)

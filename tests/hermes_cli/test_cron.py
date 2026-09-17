@@ -1,7 +1,9 @@
 """Tests for hermes_cli.cron command handling."""
 
 import argparse
+import time
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -588,6 +590,50 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+
+class TestStatusSurfacesDeadScheduler:
+    """#114309 — with the ticker dead and a job's next_run_at stranded in the past, `cron
+    status` must not present the stale timestamp as an upcoming "Next run": flag it as
+    OVERDUE and say when the scheduler last ticked."""
+
+    def _dead_gateway(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
+        )
+        monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
+
+    def test_overdue_next_run_and_stale_heartbeat_are_loud(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch)
+        overdue = datetime.now(timezone.utc) - timedelta(hours=7)
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(job["id"])]["next_run_at"] = overdue.isoformat()
+        save_jobs(jobs)
+        (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "Gateway is not running" in out
+        assert "Scheduler last ticked" in out
+        assert "OVERDUE" in out
+        # The stale timestamp must no longer read as an upcoming run.
+        assert "Next run:" not in out
+
+    def test_future_next_run_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
+        create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch)
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "Next run:" in out
+        assert "OVERDUE" not in out
+        assert "Scheduler last ticked" not in out
 
 
 class TestSlashCronRunSkipped:

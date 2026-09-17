@@ -4945,17 +4945,34 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     return True
 
 
+def _start_background_skills_sync(sync_skills: Callable[[], None]) -> threading.Thread:
+    """Run optional Skills Hub maintenance without delaying gateway startup."""
+    def _run() -> None:
+        _best_effort(sync_skills, "Background Skills Hub sync failed (non-fatal): %s")
+
+    thread = threading.Thread(target=_run, name="skills-hub-sync", daemon=True)
+    thread.start()
+    return thread
+
+
 def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
-    """Sync bundled skills, set up file logging + startup security audit, and the -v/-q stderr handler."""
+    """Set up gateway logging and audits without blocking the gateway event loop on skill sync.
+
+    Skill provenance/index maintenance can walk a large user skill tree (and may encounter
+    slow or disconnected reparse points on Windows).  It is an enhancement, not a startup
+    prerequisite, so it must run after logging is configured in a daemon thread.  Keeping it
+    off the synchronous pre-run path lets the control socket and event loop become live even
+    when the optional Skills Hub scan is slow.
+    """
     def _sync_skills() -> None:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
 
-    _best_effort(_sync_skills)
-
     # Centralized logging (agent.log INFO+, errors.log WARNING+, gateway.log gateway-only); idempotent.
     from hermes_logging import setup_logging, _safe_stderr
     setup_logging(hermes_home=_hermes_home, mode="gateway")
+
+    _start_background_skills_sync(_sync_skills)
 
     def _security_audit() -> None:
         # Warn-on-load, never blocks: surfaces root / weak-SSH / unauthenticated-listener exposure.

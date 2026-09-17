@@ -2467,12 +2467,27 @@ def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode
 
 
 def _record_route_info(
-    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str]
+    route_info: Optional[Dict[str, str]], provider: Optional[str], model: Optional[str],
+    *, task_endpoint_override: bool = False,
 ) -> None:
     """Expose the concrete route selected for one auxiliary call."""
     if route_info is not None:
         route_info["provider"] = provider or "auto"
         route_info["model"] = model or "default"
+        # Do not expose endpoint URLs: custom URLs can contain embedded credentials.
+        route_info["task_endpoint_override"] = "true" if task_endpoint_override else "false"
+
+
+def _endpoint_overrides_main(selected_base_url: Any, main_base_url: Any) -> bool:
+    """Whether a selected auxiliary endpoint differs from the live main route."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    selected = str(selected_base_url or "")
+    return bool(
+        selected
+        and normalize_route_base_url(selected)
+        != normalize_route_base_url(str(main_base_url or ""))
+    )
 
 
 def _relay_auxiliary_metadata(
@@ -6922,13 +6937,13 @@ def _prepare_aux_request(
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]], async_mode: bool,
+    route_info: Optional[Dict[str, str]], async_mode: bool, bypass_task_route: bool = False,
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
     back to the resolved base_url when the client exposes none."""
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
+        None if bypass_task_route else task, provider, model, base_url, api_key)
     if api_mode:
         resolved_api_mode = api_mode
     effective_extra_body = _get_task_extra_body(task)
@@ -6950,7 +6965,17 @@ def _prepare_aux_request(
             extra_body=effective_extra_body,
         )
     _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
-    _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
+    main_base_url = base_url if base_url is not None else main_runtime.get("base_url")
+    _record_route_info(
+        route_info,
+        _fallback_provider_from_label(request_provider),
+        final_model,
+        task_endpoint_override=bool(
+            task
+            and not bypass_task_route
+            and _endpoint_overrides_main(resolved_base_url, main_base_url)
+        ),
+    )
     if async_mode:
         base_info = str(getattr(client, "base_url", "") or "")
     else:
@@ -7286,7 +7311,15 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
         # chains first (the quarantined entry is now unhealthy and skipped, so later entries get
         # their turn), then discovery where the selection policy allows it.
         for _pass in range(2):
-            _record_route_info(route.route_info, _fallback_provider_from_label(fb_label), fb_model)
+            _record_route_info(
+                route.route_info,
+                _fallback_provider_from_label(fb_label),
+                fb_model,
+                task_endpoint_override=_endpoint_overrides_main(
+                    getattr(fb_client, "base_url", ""),
+                    (route.main_runtime or {}).get("base_url"),
+                ),
+            )
             fb_resp = yield _LadderStep("fallback", (fb_client, fb_model, fb_label))
             if fb_resp is not None:
                 return fb_resp
@@ -7401,7 +7434,7 @@ def call_llm(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
-    latency_info: Optional[Dict[str, int]] = None,
+    latency_info: Optional[Dict[str, int]] = None, bypass_task_route: bool = False,
 ) -> Any:
     """Run an auxiliary LLM request, applying the configured task limit."""
     queue_started_at = time.monotonic()
@@ -7431,6 +7464,7 @@ def call_llm(
                 max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
                 reasoning_config=reasoning_config, extra_headers=extra_headers, api_mode=api_mode,
                 stream=stream, stream_options=stream_options, route_info=route_info,
+                bypass_task_route=bypass_task_route,
             )
         if stream and semaphore is not None:
             stream_semaphore = semaphore
@@ -7463,7 +7497,7 @@ def _plan_aux_call(
     messages: list, temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]],
+    route_info: Optional[Dict[str, str]], bypass_task_route: bool = False,
 ) -> Tuple[_PreparedAuxRequest, Dict[str, Any], Dict[str, Any]]:
     """Shared head of both call impls: prepare the request and bundle the kwargs the recovery
     drivers pass to ``_retry_same_provider_*`` / ``_call_fallback_candidate_*``. One immutable
@@ -7476,6 +7510,7 @@ def _plan_aux_call(
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        bypass_task_route=bypass_task_route,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
@@ -7536,6 +7571,7 @@ def _call_llm_impl(
     timeout: float = None, extra_body: dict = None, reasoning_config: Optional[dict] = None,
     extra_headers: Optional[Dict[str, str]] = None, api_mode: str = None, stream: bool = False,
     stream_options: dict = None, route_info: Optional[Dict[str, str]] = None,
+    bypass_task_route: bool = False,
 ) -> Any:
     """Centralized synchronous LLM call: resolve provider/model, auth, kwargs, fallbacks.
     task: aux task whose provider:model comes from config (ignored if provider set); api_mode
@@ -7548,6 +7584,7 @@ def _call_llm_impl(
         temperature=temperature, max_tokens=max_tokens, tools=tools, timeout=timeout,
         extra_body=extra_body, reasoning_config=reasoning_config,
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
+        bypass_task_route=bypass_task_route,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and

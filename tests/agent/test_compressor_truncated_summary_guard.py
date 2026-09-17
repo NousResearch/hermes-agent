@@ -73,10 +73,13 @@ class TestGenerateSummaryTruncationGuard:
         with patch(
             "agent.context_compressor.call_llm",
             return_value=_mock_response("partial summary that got cut o", "length"),
-        ):
+        ) as mock_call:
             result = c.compress(msgs, current_tokens=999999, force=True)
+            automatic_retry = c.compress(msgs, current_tokens=999999)
 
         assert result == msgs
+        assert automatic_retry == msgs
+        assert mock_call.call_count == 1
         assert c._last_summary_truncated_failure is True
         assert c._last_compress_aborted is True
         assert c._last_summary_fallback_used is False
@@ -104,6 +107,189 @@ class TestGenerateSummaryTruncationGuard:
         assert result is not None
         assert "full summary via main model" in result
         assert c._last_summary_truncated_failure is False
+
+    def test_configured_auxiliary_route_falls_back_to_main_model_once(self):
+        """A task-configured aux route must not be selected again for the retry."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="main-provider", base_url="https://main.example/v1",
+                api_key="main-key", api_mode="chat_completions", quiet_mode=True,
+            )
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            route_info = kwargs["route_info"]
+            if kwargs.get("provider") == "main-provider":
+                route_info.update(provider="main-provider", model="main-model")
+                return _mock_response("full summary via main model", "stop")
+            route_info.update(provider="google", model="gemini-2.5-flash-lite")
+            return _mock_response("partial configured-route summary", "length")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert "full summary via main model" in result
+        assert len(calls) == 2
+        assert calls[1]["provider"] == "main-provider"
+        assert calls[1]["model"] == "main-model"
+        assert calls[1]["base_url"] == "https://main.example/v1"
+        assert calls[1]["bypass_task_route"] is True
+
+    def test_same_model_on_different_aux_provider_still_falls_back(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="shared-model", provider="main-provider", quiet_mode=True)
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            kwargs["route_info"].update(
+                provider="main-provider" if kwargs.get("bypass_task_route") else "aux-provider",
+                model="shared-model",
+            )
+            return _mock_response(
+                "full summary" if kwargs.get("bypass_task_route") else "partial summary",
+                "stop" if kwargs.get("bypass_task_route") else "length",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert len(calls) == 2
+        assert calls[1]["provider"] == "main-provider"
+        assert calls[1]["model"] == "shared-model"
+        assert calls[1]["bypass_task_route"] is True
+
+    def test_same_provider_model_on_task_endpoint_still_falls_back(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="anthropic",
+                base_url="https://main.example/v1", quiet_mode=True,
+            )
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            bypass = kwargs.get("bypass_task_route", False)
+            kwargs["route_info"].update(
+                provider="anthropic",
+                model="main-model",
+                task_endpoint_override="false" if bypass else "true",
+            )
+            return _mock_response(
+                "full summary" if bypass else "partial summary",
+                "stop" if bypass else "length",
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert len(calls) == 2
+        assert calls[1]["base_url"] == "https://main.example/v1"
+        assert calls[1]["bypass_task_route"] is True
+
+    def test_same_provider_model_fallback_endpoint_still_falls_back(self):
+        from agent.auxiliary_client import call_llm as actual_call_llm
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="anthropic",
+                base_url="https://main.example/v1", quiet_mode=True,
+            )
+
+        primary = MagicMock(base_url="https://primary.example/v1")
+        capacity_error = Exception("payment required")
+        capacity_error.status_code = 402
+        primary.chat.completions.create.side_effect = capacity_error
+        fallback = MagicMock(base_url="https://aux.example/v1")
+        fallback.chat.completions.create.return_value = _mock_response("partial summary", "length")
+        main = MagicMock(base_url="https://main.example/v1")
+        main.chat.completions.create.return_value = _mock_response("full summary", "stop")
+
+        with (
+            patch("agent.context_compressor.call_llm", side_effect=actual_call_llm),
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                side_effect=[
+                    ("anthropic", "main-model", "https://primary.example/v1", "aux-key", None),
+                    ("anthropic", "main-model", "https://main.example/v1", "main-key", None),
+                ],
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_call_client",
+                side_effect=[
+                    (primary, "main-model", "anthropic", "anthropic"),
+                    (main, "main-model", "anthropic", "anthropic"),
+                ],
+            ),
+            patch(
+                "agent.auxiliary_client._try_configured_fallback_chain",
+                return_value=(fallback, "main-model", "anthropic"),
+            ),
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+        ):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert "full summary" in result
+        assert primary.chat.completions.create.call_count == 1
+        assert fallback.chat.completions.create.call_count == 1
+        assert main.chat.completions.create.call_count == 1
+
+    def test_same_provider_model_and_endpoint_does_not_retry(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model", provider="anthropic",
+                base_url="https://same.example/v1", quiet_mode=True,
+            )
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            kwargs["route_info"].update(
+                provider="anthropic",
+                model="main-model",
+                task_endpoint_override="false",
+            )
+            return _mock_response("partial summary", "length")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is None
+        assert len(calls) == 1
+
+    def test_auto_main_runtime_retry_bypasses_configured_auxiliary_route(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", provider="", base_url="", quiet_mode=True)
+
+        calls = []
+
+        def _call(**kwargs):
+            calls.append(kwargs)
+            bypass = kwargs.get("bypass_task_route", False)
+            kwargs["route_info"].update(
+                provider="auto-main-provider" if bypass else "aux-provider",
+                model="main-model" if bypass else "aux-model",
+            )
+            return _mock_response("full summary" if bypass else "partial summary", "stop" if bypass else "length")
+
+        with patch("agent.context_compressor.call_llm", side_effect=_call):
+            result = c._generate_summary(_msgs(2))
+
+        assert result is not None
+        assert len(calls) == 2
+        assert calls[1]["provider"] == ""
+        assert calls[1]["model"] == "main-model"
+        assert calls[1]["base_url"] == ""
+        assert calls[1]["bypass_task_route"] is True
 
     def test_stop_finish_reason_still_succeeds(self):
         """Control: a normal stop-terminated summary is accepted unchanged."""

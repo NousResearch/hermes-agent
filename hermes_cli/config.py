@@ -3220,7 +3220,32 @@ def warn_unpinned_cron_jobs_after_model_config_change(
         f"ℹ️  {affected} unpinned cron {noun} {verb} running on the {axis} it was created under "
         f"(its {axis}_snapshot), not the new global {axis}. To move it, pin it with "
         "`hermes cron edit <job_id> --provider <provider> --model <model>` or set a fleet default "
-        "with `hermes config set cron.model <model>`.")
+            "with `hermes config set cron.model <model>`.")
+
+
+def warn_stale_route_after_provider_switch(
+    key: str, value: Any, old_provider: Any, user_config: Dict[str, Any]) -> None:
+    """Warn when a provider switch leaves the previous route behind (#113719).
+
+    Warn-only: clearing ``base_url``/``api_mode`` automatically could destroy an
+    intentional custom route, so say what is stale and how to fix it.
+    """
+    if key.strip().lower() != "model.provider":
+        return
+    if not old_provider or str(value) == str(old_provider):
+        return
+    model = user_config.get("model")
+    if not isinstance(model, dict):
+        return
+    stale = [k for k in ("base_url", "api_mode") if model.get(k)]
+    if not stale:
+        return
+    print(color(
+        f"⚠ Provider switched from {old_provider} to {value}, but "
+        f"{', '.join('model.' + k for k in stale)} still point at the previous "
+        "provider's route — requests will go to the old endpoint. Update them with "
+        "`hermes config set model.base_url <url>` / `model.api_mode <mode>`.",
+        Colors.YELLOW))
 
 
 def _default_value_for_key(dotted_key: str):
@@ -3580,6 +3605,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Read the RAW user config (not merged) so defaults are never dumped back; fail-closed.
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
+    _old_model = user_config.get("model")
+    _old_provider = _old_model.get("provider") if isinstance(_old_model, dict) else None
     value = _coerce_config_set_value(key, value)
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
@@ -3616,6 +3643,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
     warn_unpinned_cron_jobs_after_model_config_change(key, value, user_config)
+    warn_stale_route_after_provider_switch(key, value, _old_provider, user_config)
 
     # Post-write unknown-key notice (#34067): value IS saved, but tell the user the runtime may never read
     # it and suggest the likely-intended path.

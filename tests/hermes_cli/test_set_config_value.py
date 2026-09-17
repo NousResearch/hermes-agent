@@ -989,3 +989,42 @@ class TestConfigGetRedaction:
         else:
             assert out == {"TERMINAL_SSH_HOST": self.SECRET, "mcp_servers.s.auth": "oauth"}.get(
                 key, "${UNSET_THING_API_KEY}")
+
+
+class TestProviderSwitchRouteWarning:
+    """Switching model.provider must flag a stale route (#113719)."""
+
+    def _seed_model(self, tmp_path, model):
+        import yaml
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump({"model": model}))
+
+    def test_provider_switch_warns_on_stale_route(self, _isolated_hermes_home, capsys):
+        tmp_path = _isolated_hermes_home
+        self._seed_model(tmp_path, {
+            "provider": "opencode-go",
+            "default": "codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        })
+        set_config_value("model.provider", "anthropic")
+        out = capsys.readouterr().out
+        assert "base_url" in out and "api_mode" in out
+        # Warn-only: values are untouched.
+        config = _read_config(tmp_path)
+        assert "https://chatgpt.com/backend-api/codex" in config
+        assert "anthropic" in config
+
+    def test_provider_switch_quiet_without_route(self, _isolated_hermes_home, capsys):
+        self._seed_model(_isolated_hermes_home, {"provider": "opencode-go"})
+        set_config_value("model.provider", "anthropic")
+        assert "base_url" not in capsys.readouterr().out
+
+    def test_same_provider_set_is_quiet(self, _isolated_hermes_home, capsys):
+        self._seed_model(_isolated_hermes_home, {
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+        })
+        set_config_value("model.provider", "anthropic")
+        assert "base_url" not in capsys.readouterr().out

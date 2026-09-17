@@ -206,6 +206,21 @@ type BotsMessages = {
     noActivityYet: string
     showActivity: string
     hideActivity: string
+    /** Activity-row verbs, given the speaker (so a locale can put the particle/word order
+     *  right after the name, e.g. memberThinking's `${name}が…`) — cancelled/settled/capped
+     *  stand alone instead (no speaker), see groupActivityLabel(). */
+    activityQueued: (who: string) => string
+    activityWorking: (who: string) => string
+    activityReplied: (who: string) => string
+    activityPassed: (who: string) => string
+    activityTimedOut: (who: string) => string
+    activityFailed: (who: string) => string
+    activityCancelled: string
+    activitySettled: string
+    activityCapped: string
+    activityDelivered: (who: string) => string
+    activityHeld: (who: string) => string
+    activityStopped: (who: string) => string
     stop: string
     stopHint: string
     allHeldStatus: (count: number) => string
@@ -463,6 +478,18 @@ const en: BotsMessages = {
     noActivityYet: 'No activity in this turn yet.',
     showActivity: 'Show room activity',
     hideActivity: 'Hide room activity',
+    activityQueued: who => `${who} sent a message`,
+    activityWorking: who => `${who} is working…`,
+    activityReplied: who => `${who} replied`,
+    activityPassed: who => `${who} passed`,
+    activityTimedOut: who => `${who} took too long`,
+    activityFailed: who => `${who} hit an error`,
+    activityCancelled: 'turn interrupted by a newer message',
+    activitySettled: 'turn settled',
+    activityCapped: 'turn stopped at the round/message cap',
+    activityDelivered: who => `${who} delivered a late reply`,
+    activityHeld: who => `${who} is held (stopped by you) — @mention it or say resume to release`,
+    activityStopped: who => `${who} stopped the room — remaining turns are held until resumed`,
     stop: 'Stop',
     stopHint: 'Stop this run — interrupts the member on turn and holds the rest',
     allHeldStatus: count => `All ${count} bots are paused`,
@@ -711,6 +738,18 @@ const ja: BotsMessages = {
     noActivityYet: 'このターンのアクティビティはまだありません。',
     showActivity: '部屋のアクティビティを表示',
     hideActivity: '部屋のアクティビティを隠す',
+    activityQueued: who => `${who}がメッセージを送信しました`,
+    activityWorking: who => `${who}が作業中です…`,
+    activityReplied: who => `${who}が返信しました`,
+    activityPassed: who => `${who}がパスしました`,
+    activityTimedOut: who => `${who}に時間がかかりすぎました`,
+    activityFailed: who => `${who}でエラーが発生しました`,
+    activityCancelled: '新しいメッセージによりターンが中断されました',
+    activitySettled: 'ターンが確定しました',
+    activityCapped: 'ラウンド/メッセージ上限でターンが停止しました',
+    activityDelivered: who => `${who}から遅れた返信が届きました`,
+    activityHeld: who => `${who}は保留中です（あなたが停止）— @メンションするか「再開」と言うと解除されます`,
+    activityStopped: who => `${who}が部屋を停止しました — 再開するまで残りのターンは保留されます`,
     stop: '停止',
     stopHint: 'この実行を停止 — ターン中のメンバーを中断し、残りを保留します',
     allHeldStatus: count => `すべてのボット（${count}体）が一時停止中`,
@@ -954,6 +993,18 @@ const zh: BotsMessages = {
     noActivityYet: '本回合还没有活动。',
     showActivity: '显示房间活动',
     hideActivity: '隐藏房间活动',
+    activityQueued: who => `${who}发送了一条消息`,
+    activityWorking: who => `${who}正在处理…`,
+    activityReplied: who => `${who}已回复`,
+    activityPassed: who => `${who}跳过了`,
+    activityTimedOut: who => `${who}耗时过长`,
+    activityFailed: who => `${who}出错了`,
+    activityCancelled: '较新的消息中断了此回合',
+    activitySettled: '回合已完成',
+    activityCapped: '回合因达到轮次/消息上限而停止',
+    activityDelivered: who => `${who}送达了一条延迟回复`,
+    activityHeld: who => `${who}已暂停（由你停止）— @提及它或说"继续"以解除`,
+    activityStopped: who => `${who}停止了房间 — 剩余回合将保持暂停直到继续`,
     stop: '停止',
     stopHint: '停止本次运行 — 中断当前回合的成员，并暂停其余成员',
     allHeldStatus: count => `全部 ${count} 个机器人已暂停`,
@@ -1197,6 +1248,18 @@ const zhHant: BotsMessages = {
     noActivityYet: '本回合還沒有活動。',
     showActivity: '顯示房間活動',
     hideActivity: '隱藏房間活動',
+    activityQueued: who => `${who}傳送了一則訊息`,
+    activityWorking: who => `${who}正在處理…`,
+    activityReplied: who => `${who}已回覆`,
+    activityPassed: who => `${who}跳過了`,
+    activityTimedOut: who => `${who}耗時過長`,
+    activityFailed: who => `${who}發生錯誤`,
+    activityCancelled: '較新的訊息中斷了此回合',
+    activitySettled: '回合已完成',
+    activityCapped: '回合因達到輪次/訊息上限而停止',
+    activityDelivered: who => `${who}送達了一則延遲回覆`,
+    activityHeld: who => `${who}已暫停（由你停止）— @提及它或說「繼續」以解除`,
+    activityStopped: who => `${who}停止了房間 — 剩餘回合將保持暫停直到繼續`,
     stop: '停止',
     stopHint: '停止本次執行 — 中斷目前回合的成員，並暫停其餘成員',
     allHeldStatus: count => `全部 ${count} 個機器人已暫停`,

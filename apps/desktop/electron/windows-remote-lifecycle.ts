@@ -246,7 +246,7 @@ async function listWindowsRemoteHermesProfiles(ssh): Promise<string[]> {
     listing = String(
       await ssh.exec(STAGED_PS_COMMAND, { stdinData: buildWindowsListProfilesScript() })
     )
-      .replace(/^﻿/, '')
+      .replace(/^\uFEFF/, '')
       .trim()
   } catch (cause) {
     const error: any = new Error('Could not list remote Hermes profiles.')
@@ -866,15 +866,15 @@ export {
   assertWindowsRemoteInstallUpdateClear,
   buildAtomicWindowsSpawnScript,
   buildUpdateMarkerScript,
-  buildWindowsListProfilesScript,
-  listWindowsRemoteHermesProfiles,
   buildWindowsInteractiveCommand,
+  buildWindowsListProfilesScript,
   buildWindowsProbeScript,
   connectWindowsRemote,
   detectRemotePlatform,
   encodedPowerShell,
   helper,
   helperCommand,
+  listWindowsRemoteHermesProfiles,
   powerShellCommand,
   probeWindowsRemote,
   psLiteral,

@@ -1,15 +1,65 @@
 # Current State
 
-Snapshot date: 2026-09-15. The latest hardening audit started from
-`main@ce5d3260c9791eee24a9c07c389e95a6e4d38c57`, equal to `origin/main` after
-an explicit fetch. Vault containment/watching, runtime-derived Chromium UA and
-Hermes Work display branding were committed as `9a9bb78051`, `8a0fab1d56` and
-`b637b3f7a4` respectively. Pre-existing compactor/test/journal work remained
-outside those commits.
+Snapshot date: 2026-09-17.
+
+The 2026-09-15 hardening snapshot below remains valid as implementation and test
+history, but a 2026-09-17 forensic audit of current `main`, persisted Workstation
+state and historical behavioral traces found a stronger cross-domain reliability
+boundary that was not exercised by the existing green suites. The active next
+milestone is therefore the
+[`CANONICAL_EXECUTION_RELIABILITY_GATE.md`](CANONICAL_EXECUTION_RELIABILITY_GATE.md),
+not further feature expansion.
 
 This file describes **observed implementation state**, not target architecture.
 When it disagrees with code on current `main`, inspect the code and update this
-file.
+file. “Implemented”, “contract layer validated” and “tests green” do not imply that
+a product-level causal invariant has been proven across Task -> Run -> operation ->
+evidence -> canonical commit -> projection.
+
+## 2026-09-17 forensic reliability audit — current boundary
+
+The audit changes the interpretation of the existing implementation without
+invalidating the many mechanisms that are already useful.
+
+### Confirmed current-code gaps
+
+- Canonical Kanban already exposes `task_runs`, `tasks.current_run_id` and
+  `complete_task(..., expected_run_id=...)`; that is the existing Run authority
+  and must be reused.
+- `workstation/kanban.py::complete_task_with_report()` currently calls canonical
+  completion **without** `expected_run_id`, so a Workstation completion path does
+  not consume the Run fencing already implemented by Kanban.
+- The same method writes `TASK_COMPLETED` to the Execution Journal after the call
+  regardless of whether the canonical completion returned `False`. Journal and
+  canonical Task lifecycle can therefore contradict each other.
+- `ExecutionEvent` and `BrowserTaskReport` carry Task/session identity but do not
+  carry first-class `run_id`.
+- `WorkPlan` / `WorkItem` persist `task_id` but do not persist an explicit
+  canonical `run_id`; the deterministic `work_<hash>` plan identity needs to be
+  treated as an `execution_key`, not as substitute Task identity.
+- Persisted audit data contained terminal/interrupted WorkPlans with live
+  descendants, proving that terminality is not yet universally enforced as a
+  tree invariant.
+
+### Existing mechanisms that must be reused, not rebuilt
+
+- TaskCompiler canary-before-fan-out, mutation verifiers, idempotency contracts,
+  dispatch checkpoints, recipe staleness/quarantine and uncertain-mutation
+  escalation;
+- canonical Kanban Task/TaskRun state and CAS transitions;
+- BrowserTask and scoped human-control leases;
+- EvidenceState, RuntimeEventBus, RuntimeSupervisor and RecoveryPlane;
+- WorkerRegistry and host capability adapters;
+- Execution Journal and artifact/reference plane;
+- Hybrid Human Card -> Agent Task delegation with separate lifecycles;
+- existing compaction, routine promotion, no-progress and evaluation machinery.
+
+### Current architectural interpretation
+
+`One Hermes State` means **one authority per domain + shared causal identity +
+explicit lineage + reconcilable projections**, not one physical SQLite database.
+The immediate work is to make TaskRun and operation identity flow through the
+existing owners and to enforce canonical commit/acceptance ordering.
 
 ## Working now
 
@@ -42,7 +92,7 @@ On `main` plus the current Workstation V3 hardening working tree:
 - Live Task Rail (`TaskRail`) with task grouping (`active`, `waiting-for-human`, `background`, `recent`),
   individual task deletion, and clearing parked tasks.
 - Responsive zoom DIP scaling ensuring Chromium viewport aligns flush with the UI window.
-- Persistent Kanban (`kanbanCardId`) and run (`runId`) identity bindings with fail-closed enforcement.
+- Persistent Kanban (`kanbanCardId`) and run (`runId`) identity bindings with fail-closed enforcement in covered paths; the 2026-09-17 audit shows Run continuity is not yet universal across Workstation completion/contracts.
 - Automatic multistep Kanban promotion, follow-up discovery with parent blocking, append-only
   Execution Journal (`ExecutionJournal`), and structured completion reports.
 - Fail-closed LAN and Tailscale controller with auth preflight and network detection.
@@ -115,18 +165,19 @@ On `main` plus the current Workstation V3 hardening working tree:
   bounded task/session/worker/browser/result/approval/evidence identifiers, and
   `workstation/benchmarks/workload_baseline.json` records deterministic structural
   counters without private databases or wall-clock thresholds.
-- Automated contract coverage: **247/247 Workstation Pytests passing** on the
-  current working tree; Desktop typecheck is clean. The focused Electron browser
-  lease tests and the full Electron/platform suite are green. The full Desktop
-  UI suite is also green with bounded concurrency.
+- Automated contract coverage on the 2026-09-15 snapshot included **247/247 Workstation Pytests passing** and clean Desktop typecheck. These remain implementation evidence, not proof that the newly identified cross-domain invariants are closed.
 
 ### BrowserSessionState — promoted V1 #1
 
 PR #11 accepted exact head `d5be442021ea0c744351622317eef5212219786d` and was merged as `e0a99ef3aba6e6d2b65c30cf3c908ee1d49c4d29`.
 The exact-head native Windows/Electron probe emitted `H010_CLASSIFICATION=VALIDATED`.
 
-## Partially implemented
+## Partially implemented / reliability-hardening required
 
+- Canonical TaskRun identity exists but is not yet propagated/fenced through every Workstation completion, event, evidence and effect boundary.
+- Terminal WorkPlan/WorkItem tree consistency is not yet proven universally.
+- External mutable-operation uncertainty/reconciliation is strong in TaskCompiler but not yet established as a universal Workstation effect invariant.
+- Exact-once terminal projection from Agent Task into every journal/UI/Hybrid view still needs cross-restart regression evidence.
 - Experimental non-Electron browser backends remain secondary fallbacks to the primary internal Chromium.
 - External browser extensions operate strictly in unbound compatibility mode.
 
@@ -167,8 +218,9 @@ The exact-head native Windows/Electron probe emitted `H010_CLASSIFICATION=VALIDA
 
 ## Known bugs / gaps
 
-See `KNOWN_ISSUES.md`.
+See `KNOWN_ISSUES.md` and the active reliability gate.
 
+- The 2026-09-17 confirmed execution-identity/completion/journal contradictions are active P0 work even though the underlying subsystem tests are green.
 - KI-003 is resolved by promoted BrowserSessionState.
 - KI-002/KI-004 (Preview duplication and host overlap/ownership composition)
   are resolved by single-host viewport transfer and Workstation preview pane.
@@ -180,8 +232,7 @@ See `KNOWN_ISSUES.md`.
 - V3 product-level clean-machine release qualification, event/resource parity
   for future client surfaces and candidate-release confirmation of the
   full-duration/production-scale Desktop/Browser profile remain evidence
-  gates; the
-  Python contract layer does not silently promote those claims. The
+  gates; the Python contract layer does not silently promote those claims. The
   Chromium/Firefox/Edge Dashboard smoke is validated when the supported Edge
   browser is present. The read-only
   `python -m workstation.release_qualification` runner now requires a clean
@@ -198,9 +249,10 @@ See `KNOWN_ISSUES.md`.
 
 ## Latest automated validation state
 
-Branch `main` plus the current Workstation V3 hardening working tree:
+The following results are retained as evidence for the implementation boundaries
+they actually exercised; they do **not** close the 2026-09-17 reliability gate.
 
-- **247/247 Pytest tests passed** across all Workstation contracts, LAN/Tailscale,
+- **247/247 Pytest tests passed** across the earlier Workstation contract snapshot, LAN/Tailscale,
   Kanban/Journal, Procedural Memory, Perception Engine, Drift Governance,
   Lightpanda Runtime, Multi-Task Scheduler, Chrome Extensions, Worker Registry,
   Host Capabilities, System Events Pipeline, Scoped Policy, Cross-Platform/Omarchy
@@ -285,8 +337,8 @@ Branch `main` plus the current Workstation V3 hardening working tree:
 
 - Implementation 4 BrowserTask: **PROMOTED / RESOLVED** through PR #9.
 - V1 #1 BrowserSessionState: **PROMOTED / RESOLVED** through PR #11.
-- V1 #1.5 sequencing + launcher: **PROMOTED** through PR #12.
+- V1 #1.5 sequencing + launcher: **PROMOTED** through PR #12 as historical implementation work.
 - Pre-1.5 Mainline Consolidation Gate: **PASS**.
-- V1 #1.5, V1.1, V2, V2.1, V2.5, and V3: **IMPLEMENTED & VERIFIED**.
-- V3.1–V3.4: **CONTRACT LAYER IMPLEMENTED & VALIDATED**; native process-boundary
-  evidence passes, while the explicit product/release/soak evidence gates remain open.
+- V1 #1.5, V1.1, V2, V2.1, V2.5, and V3: substantial implementation exists and prior scoped verification remains valid for those boundaries.
+- V3.1–V3.4: **CONTRACT LAYER IMPLEMENTED & VALIDATED** for their tested boundaries; this does not imply cross-domain causal completion correctness.
+- **Canonical Execution Reliability Gate (2026-09-17): ACTIVE / BLOCKS FURTHER FEATURE EXPANSION.**

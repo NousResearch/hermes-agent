@@ -3,7 +3,8 @@ Svix, Linear, generic), renders payloads into agent prompts, and routes response
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
-job per event; the rendered prompt is transient per-run context; exclusive with deliver_only), mirror_to_session
+job per event; the rendered prompt is transient per-run context; exclusive with deliver_only; 202
+only after the at-most-once fire claim), mirror_to_session
 (opt-in: a delivered response is also written into the target chat's transcript so follow-ups there have
 context). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
@@ -161,6 +162,12 @@ def _signature_pin_error(name: str, route: dict) -> Optional[str]:
 
 def _json_error(message: str, status: int) -> web.Response:
     return web.json_response({"error": message}, status=status)
+
+
+# Public body for cron_job admission failures. Keep generic: do not echo job
+# lookup errors, pause reasons, or per-run prompt context to the producer.
+_CRON_JOB_UNAVAILABLE = "Cron job is not available"
+_CRON_TRIGGER_RETRY_AFTER = "60"
 
 
 def check_webhook_requirements() -> bool:
@@ -379,12 +386,16 @@ class WebhookAdapter(BasePlatformAdapter):
         window.append(now)
         return True
 
+    def _delivery_id_seen(self, identity: _WebhookDeliveryIdentity, now: float) -> bool:
+        """True when ``identity`` is already inside the idempotency TTL (read-only)."""
+        seen_at = self._seen_deliveries.get(identity)
+        return seen_at is not None and now - seen_at < self._idempotency_ttl
+
     def _record_delivery_id(self, identity: _WebhookDeliveryIdentity, now: float) -> bool:
         """Return True when this route/profile-qualified delivery should be processed."""
-        if (seen_at := self._seen_deliveries.get(identity)) is not None and now - seen_at < self._idempotency_ttl:
+        if self._delivery_id_seen(identity, now):
             return False
-        if seen_at is not None:
-            self._seen_deliveries.pop(identity, None)
+        self._seen_deliveries.pop(identity, None)
         self._seen_deliveries[identity] = now
         if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
             self._prune_seen_deliveries(now)
@@ -605,33 +616,68 @@ class WebhookAdapter(BasePlatformAdapter):
                        delivery["deliver"], result.error)
         return web.json_response(failed, status=502)
 
-    def _handle_cron_trigger(self, prompt: str, route_config: dict, route_name: str, event_type: str,
-                             delivery_id: str, profile: Optional[str] = None) -> web.Response:
+    def _cron_trigger_unavailable(self) -> web.Response:
+        """Retryable public refusal: the producer must not treat this delivery as consumed."""
+        return web.json_response(
+            {"error": _CRON_JOB_UNAVAILABLE},
+            status=503,
+            headers={"Retry-After": _CRON_TRIGGER_RETRY_AFTER},
+        )
+
+    async def _handle_cron_trigger(self, prompt: str, route_config: dict, route_name: str, event_type: str,
+                                   delivery_id: str, now: float, profile: Optional[str] = None) -> web.Response:
         """cron_job: fire an EXISTING cron job on this event instead of starting a webhook agent session.
+
         The rendered prompt is transient per-run context (same rail as ``cronjob(action='run', prompt=...)``);
-        the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script/idempotency
-        pipeline as agent routes; 202 immediately, the run happens on a worker thread."""
+        the job's own prompt, skills, model and delivery apply. Same auth/rate-limit/filter/script pipeline
+        as agent routes. 202 is returned only after the at-most-once fire claim is acquired under the
+        routed profile; the delivery ID is consumed at that same moment. A later worker runs the claimed
+        snapshot without claiming again. Unknown/unrunnable/busy targets are 503 and leave the delivery
+        ID unconsumed so the producer can retry. There is no second fire queue.
+        """
         job_ref = str(route_config["cron_job"])
         event_context = (f"This run was triggered by webhook event '{event_type}' on route '{route_name}' "
                          f"(not the schedule).\n\n{prompt}")
         logger.info("[webhook] cron-trigger event=%s route=%s job=%s delivery=%s", event_type, route_name, job_ref,
                     delivery_id)
+        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
+        if self._delivery_id_seen(identity, now):
+            logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
+            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
 
-        async def _fire_cron_job() -> None:
+        try:
+            from tools.cronjob_tools import admit_job_for_event
+            # The job store belongs to the ROUTED profile, not the gateway's default home;
+            # to_thread copies contextvars so the scope follows.
+            with self._profile_scope(profile):
+                admitted = await asyncio.to_thread(admit_job_for_event, job_ref)
+        except Exception:
+            logger.exception("[webhook] cron-trigger admission failed job=%s route=%s", job_ref, route_name)
+            return self._cron_trigger_unavailable()
+        if not admitted.get("claimed"):
+            logger.warning("[webhook] cron-trigger job=%s route=%s not admitted: %s", job_ref, route_name,
+                           admitted.get("error"))
+            return self._cron_trigger_unavailable()
+
+        claimed_job = admitted["job"]
+        if not self._record_delivery_id(identity, now):
+            # Peek lost a race with another recorder for this ID. We already hold the
+            # fire claim, so dispatch the claimed run rather than stranding it.
+            logger.info("[webhook] cron-trigger delivery %s recorded concurrently after claim", delivery_id)
+
+        async def _run_admitted() -> None:
             try:
-                from tools.cronjob_tools import execute_job_for_event
-                # The job store (cron/jobs.json) and the run belong to the ROUTED profile, not the gateway's
-                # default home; to_thread copies contextvars so the scope follows. A cron job is a full agent
-                # run (minutes) — keep it off the gateway event loop.
+                from tools.cronjob_tools import _run_claimed_job
+                # A cron job is a full agent run (minutes) — keep it off the gateway event loop.
                 with self._profile_scope(profile):
-                    result = await asyncio.to_thread(execute_job_for_event, job_ref, event_context)
+                    result = await asyncio.to_thread(_run_claimed_job, claimed_job, event_context)
                 if not result.get("success"):
                     logger.warning("[webhook] cron-trigger job=%s route=%s did not complete cleanly: %s", job_ref,
                                    route_name, result.get("error"))
             except Exception:
                 logger.exception("[webhook] cron-trigger failed job=%s route=%s", job_ref, route_name)
 
-        task = asyncio.create_task(_fire_cron_job())
+        task = asyncio.create_task(_run_admitted())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return web.json_response({"status": "accepted", "route": route_name, "cron_job": job_ref, "event": event_type,
@@ -735,16 +781,18 @@ class WebhookAdapter(BasePlatformAdapter):
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         delivery_identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
         coalesce = route_config.get("coalesce")
-        # deliver_only, cron_job and coalesced events act before (or without) a durable admission, so
+        if route_config.get("cron_job"):
+            # cron_job routes consume the delivery ID only after durable fire-claim
+            # admission. Peek/record happen inside _handle_cron_trigger.
+            return await self._handle_cron_trigger(
+                prompt, route_config, route_name, event_type, delivery_id, now, profile)
+        # deliver_only and coalesced events act before (or without) a durable admission, so
         # the ledger cannot dedupe a provider retry or a replayed signed delivery; the route-scoped
         # in-memory guard is their only replay defence (main dedupes every route here).
-        non_durable = bool(route_config.get("deliver_only") or route_config.get("cron_job")
-                           or isinstance(coalesce, dict))
+        non_durable = bool(route_config.get("deliver_only") or isinstance(coalesce, dict))
         if non_durable and not self._record_delivery_id(delivery_identity, now):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
-        if route_config.get("cron_job"):
-            return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)

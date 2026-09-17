@@ -2542,3 +2542,12 @@ O milestone canônico de confiabilidade de execução fecha o ciclo causal entre
 
 6. **Auditabilidade Total no Cockpit:**
    - `task_cockpit()` projeta linhagem canônica ponta a ponta: `task_id`, `run_id`, `execution_key`, `operation_id`, `workplan_id`, `human_card_id`, `acceptance_status` e `acceptance_approved`.
+# Read-only durable bootstrap (2026-09-17)
+
+`work_execute action=discover` prepares owner-scoped evidence before a graph is
+known; `browser_extract_items mode=inspect` provides structured isolated-world
+DOM reads. Arbitrary terminal/JS remain write-capable. Compile refusals preserve
+the read dispatcher. See [the caller protocol](READONLY_DURABLE_PREFLIGHT.md).
+Successful read capability does not establish write capability. Fan-out is
+authorized by verified persistence of a representative canary, not by successful
+execution of a preparation step. No configuration switch or threshold change.

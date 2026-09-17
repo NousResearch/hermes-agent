@@ -857,6 +857,19 @@ class DurableTaskStore:
             conn.execute("UPDATE work_items SET evidence_refs=? WHERE id=?",
                          (json.dumps([{"artifact_ref": ref}]), item_id))
 
+    def mutation_records(self, task_id: str) -> List[Dict[str, Any]]:
+        records = []
+        for item in self.get_work_items(task_id):
+            by_identity = {}
+            for key, meta in item.checkpoints.items():
+                if key.endswith("_meta") and isinstance(meta, dict) and meta.get("mutation_identity"):
+                    record = meta["mutation_identity"]
+                    identity = record["operation_id"]
+                    if identity not in by_identity or record.get("persisted") is True:
+                        by_identity[identity] = {**record, "item_id": item.id}
+            records.extend(by_identity.values())
+        return records
+
     def operational_ledger(self, task_id: str) -> Dict[str, Any]:
         """Rebuild operational truth from the canonical DB, never from reasoning."""
         plan = self.get_plan(task_id)
@@ -884,6 +897,15 @@ class DurableTaskStore:
                 "finish" if completed == len(items) else "continue_plan"),
         }
         graph = plan.metadata.get("graph")
+        mutation_records = self.mutation_records(plan.id)
+        effect_summary = {}
+        for record in mutation_records:
+            effect_summary[record["effect"]] = effect_summary.get(record["effect"], 0) + 1
+        ledger["mutation_identities"] = mutation_records[:1]
+        ledger["effect_summary"] = effect_summary
+        ledger["mutation_identity_count"] = sum(effect_summary.values())
+        ledger["identities_truncated"] = len(mutation_records) > 1
+        ledger["mutation_ledger_ref"] = plan.metadata.get("mutation_ledger_ref")
         ledger["recipe"] = plan.metadata.get("recipe", {})
         if plan.metadata.get("canary_required"):
             first = next((i for i in items if i.input_payload.get("_work_phase", "fan_out") == "fan_out"), None)

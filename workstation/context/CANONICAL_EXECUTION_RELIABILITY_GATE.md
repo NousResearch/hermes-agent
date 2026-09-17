@@ -2,6 +2,13 @@
 
 Date established: 2026-09-17
 
+Read-only discovery before compilation extends this gate's existing compiler,
+effects and checkpoints; see
+[`READONLY_DURABLE_PREFLIGHT.md`](READONLY_DURABLE_PREFLIGHT.md).
+It does not weaken run fencing, canonical commit ordering, human takeover or
+canary admission. Discovery may prepare a mutation plan, but discovery may never
+become an untracked mutation channel.
+
 Status: **IMPLEMENTED & VERIFIED — branch `antigravity/canonical-execution-reliability-gate`**
 
 This gate has been fully implemented and verified with comprehensive regression suites and forensic tests. Existing V1/V1.1/V2/V2.1/V2.5/V3/V3.1–V3.5/V4 work is preserved, and the causal reliability loop is now proven across code, additive database migrations, and runtime tests.

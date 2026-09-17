@@ -76,6 +76,45 @@ def tool_effect(name, **kwargs):
     return tool_contract(name, **kwargs)[0]
 
 
+def capability_key(provider, channel, method):
+    """Read and write evidence never share an authority key."""
+    return json.dumps([provider, channel, method.upper()], separators=(",", ":"))
+
+
+def observe_capability(capabilities, name, args, raw):
+    """Owner-declared method semantics only; never infer authority from arbitrary JS."""
+    _, contract = tool_contract(name)
+    declaration = contract.get("capability")
+    if not isinstance(declaration, dict):
+        return
+    method = declaration.get("method") or args.get(declaration.get("method_field"))
+    if not isinstance(method, str) or not declaration.get("provider") or not declaration.get("channel"):
+        return
+    try:
+        result = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return
+    if not isinstance(result, dict):
+        return
+    status = result.get("status_code", result.get("http_status", result.get("status")))
+    if not isinstance(status, int):
+        return
+    key = capability_key(declaration["provider"], declaration["channel"], method)
+    if status in {401, 403, 405}:
+        capabilities[key] = {"status": "REJECTED", "http_status": status}
+    elif 200 <= status < 300 and capabilities.get(key, {}).get("status") != "REJECTED":
+        capabilities[key] = {"status": "VERIFIED", "http_status": status}
+
+
+def operation_capability(capabilities, name, args):
+    _, contract = tool_contract(name)
+    declaration = contract.get("capability") or {}
+    method = declaration.get("method") or args.get(declaration.get("method_field"))
+    if not isinstance(method, str):
+        return "UNKNOWN"
+    return capabilities.get(capability_key(declaration.get("provider"), declaration.get("channel"), method), {}).get("status", "UNKNOWN")
+
+
 def unwrap_call(call):
     name = call.function.name
     args = call.function.arguments

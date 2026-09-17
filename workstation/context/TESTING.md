@@ -4,6 +4,13 @@ A Workstation change is stable only when its **behavioral contract** is proven a
 
 ## Validation ladder
 
+The read-only bootstrap regression is documented in
+[`READONLY_DURABLE_PREFLIGHT.md`](READONLY_DURABLE_PREFLIGHT.md).
+Run `test_readonly_preflight.py` and the existing compiler/canary/hardening tests;
+then the complete Workstation suite, canonical core runner, Electron platform
+suite and Desktop typecheck. Fake providers only; historical effects are never
+replayed against Trello.
+
 Use the smallest focused gate first, then expand only after it passes:
 
 1. **Pure/unit behavior** — extracted logic, state transitions, serialization, routing decisions, host/geometry helpers.

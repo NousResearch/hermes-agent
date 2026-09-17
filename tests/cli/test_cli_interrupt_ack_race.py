@@ -90,6 +90,9 @@ class _StubAgent:
         self.model = "test/model"
         self.platform = "cli"
 
+    def _conversation_root_id(self):
+        return self.session_id
+
     def run_conversation(self, **kwargs):
         # Simulate a turn that finishes normally — it never observed the
         # interrupt flag (raced past its last check).

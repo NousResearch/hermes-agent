@@ -55,7 +55,10 @@ class _CapturingAgent:
         type(self).last_init = dict(kwargs)
         self.tools = []
 
-    def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return type(self).last_init.get("session_id")
+
+    def run_conversation(self, user_message: str, conversation_history=None, task_id=None, **kwargs):
         return {
             "final_response": "ok",
             "messages": [],
@@ -217,4 +220,3 @@ class TestLoadShowReasoningCoercion:
             tmp_path, monkeypatch,
             'display:\n  show_reasoning: true\n',
         ) is True
-

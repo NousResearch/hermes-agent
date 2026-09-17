@@ -33,6 +33,9 @@ class _SessionStore:
 
 
 class _CompressionThenFailureAgent:
+    def _conversation_root_id(self):
+        return self.session_id
+
     def __init__(self, **kwargs):
         self.session_id = kwargs["session_id"]
         self.model = kwargs["model"]
@@ -281,5 +284,4 @@ class _ProviderSwitchAgent(_CompressionThenFailureAgent):
             ],
             "api_calls": 1,
         }
-
 

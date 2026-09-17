@@ -61,7 +61,10 @@ class ClarifyThenToolAgent:
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def _conversation_root_id(self):
+        return None
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         cb = self.tool_progress_callback
         if cb is not None:
             cb(

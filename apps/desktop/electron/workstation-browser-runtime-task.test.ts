@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import vm from 'node:vm'
 
 import { afterEach, test, vi } from 'vitest'
 
@@ -201,6 +202,7 @@ vi.mock('electron', () => ({
 
 import {
   getStandardChromeUserAgent,
+  inspectItemsScript,
   normalizeWorkstationControllerError,
   WorkstationBrowserRuntime,
   workstationBrowserSessionStatePath
@@ -208,6 +210,43 @@ import {
 import { BrowserSessionStateFilePersistence } from './workstation-browser-session-state'
 
 const tempRoots: string[] = []
+
+test('structured inspection reads DOM without invoking mutation or injected code', () => {
+  const mutations: string[] = []
+  let queried = ''
+  const document = {
+    querySelectorAll: (selector: string) => {
+      queried = selector
+      return [
+        {
+          tagName: 'TEXTAREA',
+          textContent: 'persisted description',
+          getAttribute: (name: string) => (name === 'data-card-id' ? 'card-1' : null),
+          click: () => mutations.push('click'),
+          submit: () => mutations.push('submit')
+        }
+      ]
+    }
+  }
+  const selector = 'textarea.description; globalThis.injected = true; //'
+  const context = vm.createContext({ document, fetch: () => mutations.push('fetch') })
+  const result = vm.runInContext(inspectItemsScript(selector, 1, ['data-card-id']), context)
+  assert.equal(queried, selector)
+  assert.equal(result.present, true)
+  assert.equal(result.items[0].text, 'persisted description')
+  assert.equal(result.items[0].attributes['data-card-id'], 'card-1')
+  assert.equal(vm.runInContext('globalThis.injected', context), undefined)
+  assert.deepEqual(mutations, [])
+  assert.equal(
+    vm.runInContext(
+      inspectItemsScript('missing', 1, []),
+      vm.createContext({
+        document: { querySelectorAll: () => [] }
+      })
+    ).present,
+    false
+  )
+})
 afterEach(() => {
   delete process.env.HERMES_WORKSTATION_HOME
   delete process.env.HERMES_HOME

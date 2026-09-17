@@ -3243,3 +3243,27 @@ origin carrying forged operational labels. Confirming evidence is any forged
 label appearing below the authoritative Operational References heading;
 refuting evidence is complete absence for origins 1–6 with survival only from a
 runtime-authenticated structured envelope.
+# 2026-09-17 — Read-only durable bootstrap
+
+Base: origin/main `1c6953d9f18b6d48459899cf327acd1c71dda579`.
+Hypothesis: hybrid tools fail closed as MUTATION; repeated compile refusals
+halt the agent before structured discovery can repair a plan. Existing
+browser_extract_items, registry effects, compiler and checkpoints remain owners.
+Experiment: fake 12-card provider, safe structured DOM inspection, discovery
+before compilation, independent readback and process restart without replay.
+No live Trello operations. Structural verifier admission must precede dispatch.
+Observed: final fake-provider/compact-ledger focus 22 PASS; native Workstation
+465 PASS / 2 existing skips; Ubuntu canonical Workstation runner 468 PASS / 0
+failures (52 files). Later mapped-readback cases are included in the 22-test
+focus and await the final full rerun. Electron 126 files / 1783 PASS / 5 existing
+skips; UI 593 files / 5674 PASS; Desktop typecheck PASS; diff --check PASS.
+Initial native full-core collection failed on missing ACP/POSIX-only fixtures;
+Ubuntu locked CI extras and canonical per-file runner resolve that environment.
+Full core suite remains in progress; no aggregate-green claim yet. No config
+switch/threshold edits and no live provider actions. Git worktree pointer is
+relative for Windows/Ubuntu interoperability; original dirty checkout preserved.
+
+Core timing experiment: full Ubuntu runner observed one unchanged sequential
+interrupt test at 12.79s against its 10s bound under 16-worker load. Neither that
+test nor its middleware was modified. Hypothesis: scheduler/filesystem contention;
+rerun the same file in isolation without changing its bound or runtime behavior.

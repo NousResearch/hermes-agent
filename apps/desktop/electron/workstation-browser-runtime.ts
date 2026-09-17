@@ -799,6 +799,21 @@ function detectAuthWall(url: string, title: string, text: string): { detected: b
   return { detected: false }
 }
 
+export function inspectItemsScript(selector: string, limit: number, attributes: string[]): string {
+  return `(() => {
+    const selector = ${JSON.stringify(selector)};
+    const attributes = ${JSON.stringify(attributes)};
+    try {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      return { count: nodes.length, present: nodes.length > 0, selector_used: selector,
+        items: nodes.slice(0, ${limit}).map(node => ({
+          text: (node.textContent || '').slice(0, 20000),
+          tag: node.tagName, attributes: Object.fromEntries(attributes.map(name => [name, node.getAttribute(name)]))
+        })) };
+    } catch (error) { return { error: 'invalid_selector', message: String(error), items: [] }; }
+  })()`
+}
+
 function extractItemsScript(customSelector: string | null, limit: number): string {
   return `(function () {
     var limit = ${limit};
@@ -2743,7 +2758,26 @@ export class WorkstationBrowserRuntime {
     const limit =
       typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.min(100, Math.max(1, args.limit)) : 20
 
-    const result = (await wc.executeJavaScript(extractItemsScript(selector, limit), true)) as Record<string, unknown>
+    let result: Record<string, unknown>
+    if (args.mode === 'inspect') {
+      if (!selector) throw new Error('inspection_requires_selector')
+      const attributes = args.attributes ?? []
+      if (
+        !Array.isArray(attributes) ||
+        attributes.length > 16 ||
+        attributes.some(name => typeof name !== 'string' || name.length > 128)
+      ) {
+        throw new Error('invalid_inspection_attributes')
+      }
+      // Isolated world prevents page-defined JS hooks from replacing DOM readers.
+      result = (await wc.executeJavaScriptInIsolatedWorld(999, [
+        {
+          code: inspectItemsScript(selector, Math.floor(limit), attributes as string[])
+        }
+      ])) as Record<string, unknown>
+    } else {
+      result = (await wc.executeJavaScript(extractItemsScript(selector, limit), true)) as Record<string, unknown>
+    }
 
     return {
       success: true,

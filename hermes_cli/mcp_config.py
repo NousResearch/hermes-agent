@@ -881,6 +881,17 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
+        if humanized is None and "regist" in str(exc).lower():
+            # A registration 404 often follows an unreadable metadata document (#113771):
+            # lead with the discovery failure so the cause is not hidden behind the fallback.
+            try:
+                from tools.mcp_oauth import discovery_failure_summary
+                discovery_hint = discovery_failure_summary(url)
+            except Exception:
+                discovery_hint = None
+            if discovery_hint:
+                _error(f"Authentication failed: {discovery_hint}. Registration error was: {redact_mcp_probe_text(exc)}")
+                return False
         _error(f"Authentication failed: {redact_mcp_probe_text(humanized or exc)}")
         return False
 

@@ -1173,6 +1173,48 @@ def humanize_oauth_registration_error(
         "API-key / local server instead.")
 
 
+def discovery_failure_summary(server_url: str | None, *, timeout: float = 5.0, _opener=None) -> str | None:
+    """One-line summary when authorization-server metadata discovery fails everywhere.
+
+    Registration errors usually name the fallback ``/register`` URL the client guessed, hiding a
+    discovery failure that caused it (#113771). Returns a summary when *every* discovery URL
+    fails (so a lone 404 on one candidate does not cry wolf); None when any URL answers 2xx or
+    the SDK builders are unavailable. ``_opener`` injects urlopen for tests.
+    """
+    if not server_url:
+        return None
+    try:
+        from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls
+    except Exception:
+        return None
+    try:
+        urls = [str(u) for u in build_oauth_authorization_server_metadata_discovery_urls(None, server_url)]
+    except Exception:
+        return None
+    if not urls:
+        return None
+    import urllib.error
+    import urllib.request
+
+    opener = _opener or urllib.request.urlopen
+    failures: list[str] = []
+    for url in urls:
+        try:
+            with opener(url, timeout=timeout) as resp:
+                status = getattr(resp, "status", 200)
+        except urllib.error.HTTPError as exc:
+            failures.append(f"HTTP {exc.code} from {url}")
+            continue
+        except Exception as exc:
+            failures.append(f"{type(exc).__name__} from {url}")
+            continue
+        if 200 <= status < 300:
+            return None
+        failures.append(f"HTTP {status} from {url}")
+    return ("could not read authorization-server metadata "
+            f"({'; '.join(failures)}); the registration error below is likely a consequence of it")
+
+
 def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> "OAuthClientProvider | None":
     """``httpx.Auth`` OAuth handler for an MCP server; None if the SDK lacks OAuth. Legacy API — new code
     uses :func:`tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""

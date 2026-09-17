@@ -38,6 +38,11 @@ REASON_OVERSIZED = "oversized_snapshot"
 REASON_ADMISSION_FAILURE = "admission_probe_failed"
 REASON_DURABLE_BUSY = "durable_foreground_active"
 REASON_DURABLE_FAILURE = "durable_admission_failed"
+REASON_REVIEW_SLOT_BUSY = "review_slot_busy"
+# Gateway delivery outcomes: a captured candidate is dropped when the terminal delivery was
+# not confirmed, or when the turn handed the session to a queued follow-up's drain task.
+REASON_DELIVERY_UNCONFIRMED = "delivery_unconfirmed"
+REASON_PENDING_HANDOFF = "pending_followup_handoff"
 # Cancellation and idle-queue outcomes, so a review that vanished mid-flight is as greppable as
 # one that was never admitted.
 REASON_LIVE_TURN_CANCELLED = "live_turn_cancelled"
@@ -47,6 +52,11 @@ REASON_PREEMPTED_REQUEUED = "preempted_requeued"
 REASON_REQUEUE_CAP = "requeue_cap_exceeded"
 REASON_STALE_OWNER = "stale_review_owner"
 REASON_DISABLED_WHILE_QUEUED = "disabled_while_queued"
+# Liveness escalation for a fenced fork that has not published its request exit.
+REASON_CANCEL_UNACKNOWLEDGED = "review_cancel_unacknowledged"
+REASON_REVIEW_REVOKED = "review_revoked"
+# A foreground turn in another process asked the review's durable lease to yield.
+REASON_PREEMPTED_CROSS_PROCESS = "review_preempted_cross_process"
 
 # Verbatim replay ceiling for one review fork. Well above an ordinary session (so normal learning
 # keeps the warm-cache replay) and well below the ~205K incident.

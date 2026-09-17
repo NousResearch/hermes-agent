@@ -668,3 +668,33 @@ def test_turn_lease_fence_walks_continuation_that_inherited_fork_markers(tmp_pat
     ]
     db.release_session_turn_lease("delegate-continuation", delegate_holder)
     db.release_session_turn_lease("branch-continuation", branch_holder)
+
+
+def test_waiting_acquire_asks_only_a_background_review_holder_to_yield(tmp_path):
+    """The waiting (foreground) path asks a background-review holder to yield and still never
+    reclaims the held row; a one-shot try asks nothing; a foreground holder is never asked."""
+    from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+    review_holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}abc"
+    assert db.try_acquire_session_turn_lease("shared", review_holder, ttl_seconds=60)
+
+    assert not db.try_acquire_session_turn_lease(
+        "shared", f"pid={os.getpid()}:turn=probe", ttl_seconds=5
+    )
+    assert db.session_turn_lease_yield_requested("shared", review_holder) is False
+
+    assert not db.acquire_session_turn_lease(
+        "shared", f"pid={os.getpid()}:turn=fg:platform=cli", ttl_seconds=5, wait_seconds=0
+    )
+    assert db.session_turn_lease_yield_requested("shared", review_holder) is True
+    db.release_session_turn_lease("shared", review_holder)
+
+    foreground_holder = f"pid={os.getpid()}:turn=fg:platform=cli"
+    assert db.try_acquire_session_turn_lease("shared", foreground_holder, ttl_seconds=60)
+    assert not db.acquire_session_turn_lease(
+        "shared", f"pid={os.getpid()}:turn=other:platform=cli", ttl_seconds=5, wait_seconds=0
+    )
+    assert db.session_turn_lease_yield_requested("shared", foreground_holder) is False
+    db.release_session_turn_lease("shared", foreground_holder)

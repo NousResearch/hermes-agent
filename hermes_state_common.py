@@ -538,7 +538,10 @@ CREATE TABLE IF NOT EXISTS session_turn_leases (
     conversation_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL,
-    expires_at REAL NOT NULL
+    expires_at REAL NOT NULL,
+    -- Stamped by a waiting foreground turn on a background-review holder, which yields on
+    -- its next renewal tick (hermes_state_compression.py, agent/background_review.py).
+    yield_requested_at REAL
 );
 
 CREATE TABLE IF NOT EXISTS async_delegations (

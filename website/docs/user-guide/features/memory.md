@@ -396,6 +396,23 @@ is already queued for the same gateway session, the review is skipped. A live
 turn also fences or cancels a review before foreground work continues. Manual
 `/refine` remains explicit and is not subject to these automatic-review gates.
 
+Exclusion also holds across processes. A review fork holds the session's durable
+turn lease (the same row a CLI resume, the Desktop app, or another gateway takes
+for a turn), so no two processes decode the same session at once. A foreground
+turn arriving from another process asks the review to yield: the fork is
+interrupted on its next renewal tick (every few seconds), releases the lease as
+it exits, and the user's turn proceeds — the turn never waits for the review to
+finish its work. `/refine` is exempt from the replay and input bounds below but
+NOT from this exclusion: while a turn in another process owns the session, the
+requested review is skipped and a notice says so.
+
+Every skip, defer, cancel, or drop is one body-free `agent.log` line carrying a
+hashed owner tag and a stable reason (`live_turn_active`,
+`queued_followup_pending`, `oversized_snapshot`, `durable_foreground_active`,
+`review_slot_busy`, `delivery_unconfirmed`, `pending_followup_handoff`,
+`review_preempted_cross_process`, `review_cancel_unacknowledged`,
+`review_revoked`, …), never the session id or any message text.
+
 Same-model reviews replay an ordinary conversation verbatim for prompt-cache
 reuse. When the rough conversation estimate exceeds the replay ceiling, Hermes
 instead keeps the widest recent suffix that starts on a user message and fits

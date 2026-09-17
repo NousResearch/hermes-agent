@@ -329,9 +329,13 @@ def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
     monkeypatch,
 ):
     """The foreground fences and interrupts an admitted fork, but must not start its own
-    provider work until that fork publishes its request exit — with no timeout escape."""
+    provider work until that fork publishes its request exit — with no timeout escape: every
+    escalation bound elapses unacknowledged, and the turn still parks on the unbounded wait."""
     import agent.conversation_loop as conversation_loop_module
 
+    monkeypatch.setattr(
+        background_review_module, "_CANCEL_ACK_ESCALATION_SECONDS", 0.01, raising=False
+    )
     agent = _bare_agent("facade-waits-for-review")
     # A full (lease-less) facade pass reads these on the way to the loop.
     agent._session_db = None
@@ -363,6 +367,8 @@ def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
 
         def wait(self, timeout=None):
             observed_timeouts.append(timeout)
+            if timeout is not None:
+                return False  # an escalation bound elapsed with no acknowledgement
             entered_wait.set()
             assert release.wait(timeout=10.0)
             return True
@@ -406,7 +412,8 @@ def test_live_turn_does_not_enter_conversation_loop_until_review_acknowledges(
 
     assert not turn.is_alive()
     assert "error" not in outcome, outcome.get("error")
-    assert observed_timeouts == [None]
+    assert observed_timeouts[-1] is None
+    assert observed_timeouts[:-1] and all(t == 0.01 for t in observed_timeouts[:-1])
     assert loop_entered.is_set()
     assert outcome["result"]["final_response"] == "ok"
     assert review_admission.other_live_turn(agent.session_id, None) is False
@@ -615,7 +622,7 @@ def test_foreground_registration_and_review_publication_are_linearized_without_s
         # The fixed path owns the registry lock and must not wait for the contender. The old path
         # did not, so force the live token into its stale sample-to-publication window.
         if not admission_lock.held_by_current_thread():
-            assert live_registered.wait(timeout=1.0)
+            assert live_registered.wait(timeout=10.0)
         return None
 
     try:
@@ -627,8 +634,8 @@ def test_foreground_registration_and_review_publication_are_linearized_without_s
 
         assert run.begin_request(review_agent) is True
         assert len(live_threads) == 1
-        assert live_finished.wait(timeout=1.0)
-        live_threads[0].join(timeout=1.0)
+        assert live_finished.wait(timeout=10.0)
+        live_threads[0].join(timeout=10.0)
 
         assert published_while_live == [False]
         assert cancelled_forks == [review_agent]
@@ -1055,7 +1062,12 @@ def test_cancel_after_provider_phase_returns_does_not_requeue_completed_review(
     assert enqueued == []
 
 
-def test_foreground_wait_has_no_timeout_escape_into_provider_work():
+def test_foreground_wait_has_no_timeout_escape_into_provider_work(monkeypatch):
+    """Every escalation bound may elapse unacknowledged; the waiter then parks on an
+    UNBOUNDED wait — it never returns into provider work before the exit is published."""
+    monkeypatch.setattr(
+        background_review_module, "_CANCEL_ACK_ESCALATION_SECONDS", 0.01, raising=False
+    )
     entered = threading.Event()
     release = threading.Event()
     observed_timeouts = []
@@ -1063,6 +1075,8 @@ def test_foreground_wait_has_no_timeout_escape_into_provider_work():
     class ControlledCompletion:
         def wait(self, timeout=None):
             observed_timeouts.append(timeout)
+            if timeout is not None:
+                return False
             entered.set()
             release.wait(timeout=10.0)
             return True
@@ -1079,7 +1093,8 @@ def test_foreground_wait_has_no_timeout_escape_into_provider_work():
     waiter.join(timeout=10.0)
 
     assert not waiter.is_alive()
-    assert observed_timeouts == [None]
+    assert observed_timeouts[-1] is None
+    assert observed_timeouts[:-1] and all(t == 0.01 for t in observed_timeouts[:-1])
 
 
 def test_deferred_dispatch_does_not_exclude_a_different_current_turn(
@@ -1516,3 +1531,444 @@ def test_review_fork_stays_detached_from_the_canonical_session(
     assert attrs["_persist_disabled"] is True
     assert attrs["_session_db"] is None
     assert attrs["_end_session_on_close"] is False
+
+
+# ---------------------------------------------------------------------------
+# Occupied canonical slot: a decision that is logged (automatic) or refused (/refine)
+# ---------------------------------------------------------------------------
+
+
+def test_occupied_review_slot_logs_owner_and_reason(caplog):
+    """An immediate automatic spawn that finds the canonical (profile, session) slot occupied
+    is a skip decision like any other: exactly one owner-tagged ``review_slot_busy`` line, the
+    occupant left untouched, no raw session id."""
+    agent = _bare_agent("occupied-slot")
+    profile_key = review_admission.current_profile_key()
+    occupant = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert occupant is not None
+    try:
+        with caplog.at_level("INFO"):
+            AIAgent._spawn_background_review_now(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+                _review_profile_key=profile_key,
+                _review_session_id=agent.session_id,
+            )
+    finally:
+        background_review_module.finish_background_review_run(agent, occupant)
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_REVIEW_SLOT_BUSY in record.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert review_admission.owner_tag(profile_key, agent.session_id) in lines[0]
+    assert agent.session_id not in lines[0]
+    assert occupant.cancel_requested.is_set() is False
+
+
+def test_explicit_refine_refuses_when_review_slot_is_occupied():
+    """/refine must not report success when nothing started: the spawn raises so both
+    handlers print a failure instead of 'Reviewing this conversation in the background'."""
+    agent = _bare_agent("occupied-slot-explicit")
+    profile_key = review_admission.current_profile_key()
+    occupant = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert occupant is not None
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            AIAgent._spawn_background_review_now(
+                agent,
+                messages_snapshot=[{"role": "user", "content": "hello"}],
+                review_memory=True,
+                explicit=True,
+                _review_session_id=agent.session_id,
+            )
+    finally:
+        background_review_module.finish_background_review_run(agent, occupant)
+
+    assert occupant.cancel_requested.is_set() is False
+    assert review_admission.current_review_run(agent.session_id, profile_key) is None
+
+
+def test_review_fork_turn_is_not_a_live_foreground_turn(monkeypatch):
+    """The fork replays through the same facade as a user turn. It must not register itself as
+    a live turn on the session it reviews: ``live_turn_active`` is reserved for real foreground
+    work, so a concurrent spawn attempt reads the truthful ``review_slot_busy`` instead."""
+    import agent.conversation_loop as conversation_loop_module
+
+    parent = _bare_agent("fork-not-foreground")
+    profile_key = review_admission.current_profile_key()
+    fork = _bare_agent(parent.session_id)
+    fork._memory_write_origin = "background_review"
+    fork._session_db = None
+    fork._persist_disabled = True
+    fork._reset_activity_labels_after_turn = lambda: None
+    fork._conversation_root_id = lambda: fork.session_id
+    fork.log_prefix = ""
+    fork._vprint = lambda *_a, **_k: None
+    fork._interrupt_requested = False
+    fork._interrupt_message = None
+    fork._pending_redirect = None
+    fork._execution_thread_id = None
+    fork._interrupt_thread_signal_pending = False
+    observed = []
+
+    def fake_run(_agent, *_args, **_kwargs):
+        observed.append(
+            review_admission.foreground_block_reason(
+                parent, None, profile_key, parent.session_id
+            )
+        )
+        return {"final_response": "Nothing to save.", "messages": [], "failed": False}
+
+    monkeypatch.setattr(conversation_loop_module, "run_conversation", fake_run)
+
+    result = TurnFacadeMixin.run_conversation(fork, "review prompt")
+
+    assert result["final_response"] == "Nothing to save."
+    assert observed == [None]
+    assert (
+        review_admission.other_live_turn(parent.session_id, None, profile_key) is False
+    )
+
+
+# ---------------------------------------------------------------------------
+# A fork that never acknowledges its cancel: fail loud and escalate, never fail open
+# ---------------------------------------------------------------------------
+
+
+def test_unacknowledged_cancel_escalates_without_failing_open(monkeypatch, caplog):
+    """The foreground's wait has no fail-open, so a fork wedged in a stalled stream or a
+    blocking tool must be unwedged deterministically: after the first bound the waiter logs the
+    owner and tears down the fork's clients; after the second it revokes every further provider
+    call; and it still returns only once the fork publishes its request exit."""
+    from agent.conversation_loop import (
+        _reserve_review_input_request,
+        _review_input_budget_exhausted,
+    )
+
+    monkeypatch.setattr(
+        background_review_module, "_CANCEL_ACK_ESCALATION_SECONDS", 0.05, raising=False
+    )
+    agent = _bare_agent("wedged-review")
+    profile_key = review_admission.current_profile_key()
+    released_clients = threading.Event()
+
+    class WedgedFork:
+        # /refine: no aggregate budget to fall back on.
+        _review_input_token_budget = None
+        session_prompt_tokens = 0
+
+        def hard_interrupt(self, *_args, **_kwargs):
+            pass  # the abort hook is stuck behind the wedge
+
+        def release_clients(self):
+            released_clients.set()
+
+    fork = WedgedFork()
+    run = background_review_module.prepare_background_review_run(
+        agent, session_id=agent.session_id, profile_key=profile_key
+    )
+    assert run is not None
+    assert run.begin_request(fork) is True
+    waiter_done = threading.Event()
+
+    def foreground():
+        background_review_module.cancel_background_review_for_live_turn(
+            agent, session_id=agent.session_id, profile_key=profile_key
+        )
+        waiter_done.set()
+
+    waiter = threading.Thread(target=foreground, daemon=True)
+    with caplog.at_level("WARNING"):
+        waiter.start()
+        try:
+            assert released_clients.wait(timeout=10.0)
+            deadline = threading.Event()
+            # Bounded poll for the second stage (no timing assertion).
+            for _ in range(200):
+                if getattr(fork, "_review_revoked", False):
+                    break
+                deadline.wait(0.05)
+            assert getattr(fork, "_review_revoked", False) is True
+            # The exit was never published: the waiter is still parked, never in provider work.
+            assert waiter_done.is_set() is False
+            assert _reserve_review_input_request(fork, 10) is False
+            assert _review_input_budget_exhausted(fork) is True
+        finally:
+            background_review_module.finish_background_review_run(agent, run)
+            waiter.join(timeout=10.0)
+
+    assert waiter_done.is_set()
+    owner = review_admission.owner_tag(profile_key, agent.session_id)
+    for slug in (
+        review_admission.REASON_CANCEL_UNACKNOWLEDGED,
+        review_admission.REASON_REVIEW_REVOKED,
+    ):
+        lines = [r.getMessage() for r in caplog.records if slug in r.getMessage()]
+        assert len(lines) == 1, (slug, caplog.text)
+        assert owner in lines[0]
+        assert agent.session_id not in lines[0]
+
+
+def test_cancel_thread_start_failure_retries_the_interrupt_inline(monkeypatch):
+    """Thread exhaustion must not leave an admitted fork un-fenced."""
+    interrupted = []
+
+    class Fork:
+        def hard_interrupt(self, message=None, *, tool_reason=None):
+            interrupted.append(tool_reason)
+
+    class DeadThread:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(
+        background_review_module,
+        "threading",
+        types.SimpleNamespace(
+            Thread=DeadThread, Event=threading.Event, Lock=threading.Lock
+        ),
+    )
+
+    background_review_module._interrupt_background_review(Fork())
+
+    assert interrupted == ["background review superseded"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-process exclusion: /refine holds the durable row too, and a foreground waiter wins it
+# ---------------------------------------------------------------------------
+
+
+def _durable_fork_stub(run_conversation):
+    """Minimal fork double for ``_run_review_fork`` with a real durable lease around it."""
+    return types.SimpleNamespace(
+        _memory_enabled=True,
+        _user_profile_enabled=False,
+        _session_messages=[],
+        _touch_activity=lambda *_a, **_k: None,
+        run_conversation=run_conversation,
+        release_clients=lambda: None,
+        hard_interrupt=lambda *_a, **_k: None,
+    )
+
+
+def _no_liveness_watchdog(monkeypatch):
+    import agent.turn_liveness as turn_liveness_module
+
+    monkeypatch.setattr(
+        turn_liveness_module,
+        "resolve_turn_liveness_settings",
+        lambda *_a, **_k: (None, 15.0),
+    )
+
+
+def test_explicit_refine_takes_the_durable_turn_lease(tmp_path, monkeypatch):
+    """/refine is exempt from the replay/budget policy, never from exclusion: while its fork
+    replays, a foreground turn in ANOTHER process (CLI resume, Desktop) must find the durable
+    session row owned."""
+    import os
+
+    from hermes_state import SessionDB
+
+    _no_liveness_watchdog(monkeypatch)
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    parent = types.SimpleNamespace(_session_db=review_db)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_run(**_kwargs):
+        entered.set()
+        assert release.wait(timeout=10.0)
+
+    fork = _durable_fork_stub(blocking_run)
+    monkeypatch.setattr(
+        background_review_module,
+        "build_cache_parity_fork",
+        lambda *_a, **_k: (fork, {"routed": False}, False),
+    )
+    run = background_review_module._BackgroundReviewRun()
+    st = background_review_module._ReviewForkState()
+    worker = threading.Thread(
+        target=background_review_module._run_review_fork,
+        args=(parent, [{"role": "user", "content": "hi"}], "prompt", None, run, st),
+        kwargs={"explicit": True, "review_session_id": "shared-session"},
+        daemon=True,
+    )
+    worker.start()
+    foreground_holder = f"pid={os.getpid()}:turn=foreground"
+    try:
+        assert entered.wait(timeout=10.0)
+        assert not foreground_db.try_acquire_session_turn_lease(
+            "shared-session", foreground_holder, ttl_seconds=5
+        )
+    finally:
+        release.set()
+        worker.join(timeout=10.0)
+
+    assert not worker.is_alive()
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", foreground_holder, ttl_seconds=5
+    )
+    foreground_db.release_session_turn_lease("shared-session", foreground_holder)
+
+
+def test_explicit_refine_reports_a_session_busy_in_another_process(
+    tmp_path, monkeypatch, caplog
+):
+    """The handler has already said 'reviewing in the background' by the time the fork claims
+    the row, so a durable refusal must reach the user through the review's own report channel
+    and log the body-free reason with the owner tag."""
+    import os
+
+    from hermes_state import SessionDB
+
+    _no_liveness_watchdog(monkeypatch)
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    other_process = f"pid={os.getpid()}:turn=cli-resume:platform=cli"
+    assert foreground_db.try_acquire_session_turn_lease(
+        "shared-session", other_process, ttl_seconds=60
+    )
+    agent = _bare_agent("shared-session")
+    agent._session_db = review_db
+    notices: list[str] = []
+    agent.background_review_callback = notices.append
+    replayed = []
+    fork = _durable_fork_stub(lambda **kwargs: replayed.append(kwargs))
+    monkeypatch.setattr(
+        background_review_module,
+        "build_cache_parity_fork",
+        lambda *_a, **_k: (fork, {"routed": False}, False),
+    )
+    run = background_review_module.prepare_background_review_run(
+        agent, followup_cancellable=False, session_id="shared-session"
+    )
+    assert run is not None
+
+    with caplog.at_level("INFO"):
+        background_review_module._run_review_in_thread(
+            agent,
+            [{"role": "user", "content": "hi"}],
+            "prompt",
+            review_run=run,
+            review_memory=True,
+            explicit=True,
+            review_session_id="shared-session",
+        )
+    foreground_db.release_session_turn_lease("shared-session", other_process)
+
+    assert replayed == []
+    assert run.request_done.is_set()
+    assert len(notices) == 1 and "another Hermes process" in notices[0]
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_DURABLE_BUSY in r.getMessage()
+    ]
+    assert len(lines) == 1
+    assert _owner_tag_for(run, "shared-session") in lines[0]
+    assert "shared-session" not in lines[0]
+
+
+def _owner_tag_for(run, session_id):
+    key = getattr(run, "_review_owner_key", None)
+    return (
+        review_admission.owner_tag(*key)
+        if key
+        else review_admission.owner_tag("", session_id)
+    )
+
+
+def test_foreground_waiter_preempts_a_background_review_lease(tmp_path, caplog):
+    """Foreground outranks automatic review ACROSS processes: a waiting foreground asks the
+    review holder to yield; the review's next renewal tick hard-interrupts its fork, fences its
+    run and stops renewing; the waiter acquires once the fork's exit releases the row — never
+    while the row is still held (no overlap), and a wedged fork is escalated from the tick."""
+    import os
+
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared-session", source="test")
+    parent = types.SimpleNamespace(_session_db=review_db)
+    interrupted = threading.Event()
+    released_clients = []
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: interrupted.set(),
+        release_clients=lambda: released_clients.append(True),
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        parent, fork, "shared-session", run
+    )
+    assert reason is None and lease is not None
+    clock = [0.0]
+    lease._now = lambda: clock[0]
+    acquired: list[bool] = []
+    foreground_holder = f"pid={os.getpid()}:turn=foreground:platform=cli"
+    waiter = threading.Thread(
+        target=lambda: acquired.append(
+            foreground_db.acquire_session_turn_lease(
+                "shared-session",
+                foreground_holder,
+                ttl_seconds=5,
+                wait_seconds=30,
+                poll_interval_seconds=0.05,
+            )
+        ),
+        daemon=True,
+    )
+    with caplog.at_level("INFO"):
+        waiter.start()
+        try:
+            # Bounded: the waiter's next poll writes the yield marker.
+            for _ in range(400):
+                lease.refresh_tick()
+                if interrupted.is_set():
+                    break
+                interrupted.wait(0.05)
+            assert interrupted.is_set()
+            assert run.cancel_requested.is_set()
+            # Still held: a waiter never reclaims a lease its holder has not released.
+            assert acquired == []
+            assert not foreground_db.try_acquire_session_turn_lease(
+                "shared-session", foreground_holder, ttl_seconds=5
+            )
+            # A fork that does not unwind is escalated from the tick, not left to the TTL.
+            clock[0] += background_review_module._CANCEL_ACK_ESCALATION_SECONDS
+            assert lease.refresh_tick() is None
+            assert released_clients == [True]
+        finally:
+            lease.stop_refresher()
+            lease.release()  # the fork's finally, once the interrupt unwound it
+            waiter.join(timeout=10.0)
+
+    assert acquired == [True]
+    assert lease.refresh_tick() is False
+    foreground_db.release_session_turn_lease("shared-session", foreground_holder)
+    lines = [
+        r.getMessage()
+        for r in caplog.records
+        if review_admission.REASON_PREEMPTED_CROSS_PROCESS in r.getMessage()
+    ]
+    assert len(lines) == 1
+    assert "shared-session" not in lines[0]

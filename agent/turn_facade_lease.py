@@ -39,6 +39,7 @@ class DurableTurnLease:
         self.holder = holder
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
+        self.ttl_seconds = LEASE_TTL_SECONDS
         self._lock = threading.Lock()
         self.turn_active = False
         self.interrupt_message: Optional[str] = None
@@ -188,7 +189,7 @@ class DurableTurnLease:
             return False
         try:
             if self.db.refresh_session_turn_lease(
-                self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
+                self._current_session_id(), self.holder, ttl_seconds=self.ttl_seconds
             ):
                 return None
             if self.stop.is_set():

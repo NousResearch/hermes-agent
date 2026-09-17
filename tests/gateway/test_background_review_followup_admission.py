@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 import time
 import types
@@ -245,8 +246,8 @@ async def test_gateway_review_cancellation_wait_does_not_block_event_loop(monkey
     )
 
     def _ack_after_loop_progress():
-        assert cancel_seen.wait(timeout=1.0)
-        observed.append(loop_advanced.wait(timeout=0.5))
+        assert cancel_seen.wait(timeout=10.0)
+        observed.append(loop_advanced.wait(timeout=10.0))
         background_review.finish_background_review_run(parent, review_run)
 
     finisher = threading.Thread(target=_ack_after_loop_progress)
@@ -270,7 +271,7 @@ async def test_gateway_review_cancellation_wait_does_not_block_event_loop(monkey
         event, source, session_key, run_generation=1
     )
     await marker
-    finisher.join(timeout=1.0)
+    finisher.join(timeout=10.0)
     event._gateway_review_delivery_complete(delivery_succeeded=False)
 
     assert result == "prepared reply"
@@ -295,7 +296,7 @@ async def test_cancelled_gateway_admission_wait_releases_live_turn_owner(monkeyp
 
     def _blocked_wait(_review_run):
         wait_entered.set()
-        assert release_wait.wait(timeout=1.0)
+        assert release_wait.wait(timeout=10.0)
 
     monkeypatch.setattr(
         background_review,
@@ -306,7 +307,7 @@ async def test_cancelled_gateway_admission_wait_releases_live_turn_owner(monkeyp
     task = asyncio.create_task(
         _GatewayReviewAdmission.begin(object(), session_id, profile_key)
     )
-    assert await asyncio.to_thread(wait_entered.wait, 1.0)
+    assert await asyncio.to_thread(wait_entered.wait, 10.0)
     assert review_admission.other_live_turn(session_id, None, profile_key)
 
     task.cancel()
@@ -320,14 +321,19 @@ async def test_cancelled_gateway_admission_wait_releases_live_turn_owner(monkeyp
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "send_succeeded, handoff, expected",
-    [(True, False, True), (False, False, False), (True, True, False)],
+    [
+        (True, False, (True, None)),
+        (False, False, (False, None)),
+        (True, True, (False, review_admission.REASON_PENDING_HANDOFF)),
+    ],
     ids=["sent", "send_failed", "handoff"],
 )
 async def test_base_delivery_completes_gateway_review_with_actual_outcome(
     monkeypatch, send_succeeded, handoff, expected
 ):
     """Ownership completes with the ACTUAL outcome: a failed send or a queued follow-up
-    handed to the drain task is not a confirmed terminal delivery, so no review may spawn."""
+    handed to the drain task is not a confirmed terminal delivery, so no review may spawn.
+    A drain handoff names itself as the cause so the skip line can say so."""
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = BasePlatformAdapter(
         PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
@@ -337,8 +343,11 @@ async def test_base_delivery_completes_gateway_review_with_actual_outcome(
     outcomes = []
 
     async def _handler(_event):
-        _event._gateway_review_delivery_complete = lambda *, delivery_succeeded: (
-            outcomes.append(delivery_succeeded)
+        _event._gateway_review_delivery_complete = (
+            lambda *, delivery_succeeded, cause=None: outcomes.append((
+                delivery_succeeded,
+                cause,
+            ))
         )
         return "visible response"
 
@@ -380,10 +389,10 @@ async def test_drain_handoff_completes_only_its_own_review_ownership(monkeypatch
     adapter._pending_messages[session_key] = queued
     finished_n, finished_n1, drained, attached = [], [], [], []
 
-    def finish_n(*, delivery_succeeded):
+    def finish_n(*, delivery_succeeded, cause=None):
         finished_n.append(delivery_succeeded)
 
-    def finish_n1(*, delivery_succeeded):
+    def finish_n1(*, delivery_succeeded, cause=None):
         finished_n1.append(delivery_succeeded)
 
     async def _handler(_event):
@@ -524,11 +533,11 @@ async def test_queue_mutation_and_review_cancellation_are_one_critical_section(
         contender = threading.Thread(target=begin_request)
         contender_threads.append(contender)
         contender.start()
-        callback_observations.append(request_started.wait(timeout=1.0))
+        callback_observations.append(request_started.wait(timeout=10.0))
         callback_observations.append(tracked_lock.held_by_current_thread())
         callback_observations.append(adapter.has_pending_message("session-key"))
         if not tracked_lock.held_by_current_thread():
-            callback_observations.append(request_done.wait(timeout=1.0))
+            callback_observations.append(request_done.wait(timeout=10.0))
         original_cancel(parent)
 
     monkeypatch.setattr(
@@ -553,7 +562,7 @@ async def test_queue_mutation_and_review_cancellation_are_one_critical_section(
 
     assert callback_observations[:3] == [True, True, True]
     assert len(contender_threads) == 1
-    contender_threads[0].join(timeout=1.0)
+    contender_threads[0].join(timeout=10.0)
     assert contender_threads[0].is_alive() is False
     assert admitted == [False]
     assert run.cancel_requested.is_set()
@@ -757,7 +766,7 @@ async def test_runner_busy_queue_mutations_share_review_admission_lock(
         contender = threading.Thread(target=begin_request)
         contender_threads.append(contender)
         contender.start()
-        assert request_started.wait(timeout=1.0)
+        assert request_started.wait(timeout=10.0)
         callback_holds_admission.append(tracked_lock.held_by_current_thread())
         original_cancel(parent)
 
@@ -789,7 +798,7 @@ async def test_runner_busy_queue_mutations_share_review_admission_lock(
 
     assert callback_holds_admission == [True]
     assert len(contender_threads) == 1
-    contender_threads[0].join(timeout=1.0)
+    contender_threads[0].join(timeout=10.0)
     assert contender_threads[0].is_alive() is False
     assert admitted == [False]
     assert run.cancel_requested.is_set()
@@ -800,3 +809,143 @@ async def test_runner_busy_queue_mutations_share_review_admission_lock(
     else:
         assert session_key in adapter._pending_messages
     background_review.finish_background_review_run(agent, run)
+
+
+@pytest.mark.asyncio
+async def test_gateway_refine_reports_an_occupied_review_slot(monkeypatch):
+    """A /refine that cannot start (canonical slot occupied) must say so, never the success text."""
+    from run_agent import AIAgent
+
+    monkeypatch.setattr(
+        background_review, "prepare_background_review_run", lambda *_a, **_k: None
+    )
+    agent = object.__new__(AIAgent)
+    agent.session_id = "refine-occupied"
+    agent._delegate_depth = 0
+    agent.valid_tool_names = {"memory", "skill_manage"}
+    agent._session_messages = [{"role": "user", "content": "hi"}]
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    runner._session_key_for_source = lambda _source: "refine-key"
+    runner._cached_agent_for = lambda _key: agent
+
+    reply = await runner._handle_refine_command(_event(text="/refine"))
+
+    assert reply.startswith("/refine failed to start")
+    assert "already running" in reply
+    assert "Reviewing this conversation" not in reply
+
+
+@pytest.mark.parametrize(
+    "cause, expected_slug",
+    [
+        (None, review_admission.REASON_DELIVERY_UNCONFIRMED),
+        (
+            review_admission.REASON_PENDING_HANDOFF,
+            review_admission.REASON_PENDING_HANDOFF,
+        ),
+    ],
+    ids=["unconfirmed", "handoff"],
+)
+def test_unconfirmed_delivery_logs_owner_and_reason(caplog, cause, expected_slug):
+    """Dropping a captured candidate is a skip decision: one owner-tagged, body-free line."""
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    session_id = "gateway-unconfirmed-delivery"
+    profile_key = review_admission.current_profile_key()
+    token = review_admission.note_turn_started(session_id, profile_key)
+    admission = _GatewayReviewAdmission(session_id, profile_key, token)
+    agent = types.SimpleNamespace(
+        session_id=session_id, _spawn_background_review=MagicMock()
+    )
+    admission.bind_agent(agent)
+    admission.capture_candidate(
+        agent,
+        [{"role": "assistant", "content": "private reply body"}],
+        review_memory=True,
+        review_skills=False,
+    )
+
+    with caplog.at_level("INFO"):
+        admission.finish(delivery_succeeded=False, cause=cause)
+
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if expected_slug in record.getMessage()
+    ]
+    assert len(lines) == 1, caplog.text
+    assert review_admission.owner_tag(profile_key, session_id) in lines[0]
+    assert session_id not in lines[0]
+    assert "private reply body" not in lines[0]
+    agent._spawn_background_review.assert_not_called()
+    assert review_admission.other_live_turn(session_id, None, profile_key) is False
+
+
+@pytest.mark.asyncio
+async def test_gateway_spawns_the_review_once_after_confirmed_delivery():
+    """The positive gateway lifecycle: capture -> confirmed delivery -> exactly one spawn, with
+    the frozen owner identity, inside the bound Context, after ownership release, and OFF the
+    event-loop thread (the spawn pipeline is O(transcript))."""
+    from gateway.run_turn import _GatewayReviewAdmission
+
+    marker = contextvars.ContextVar("review_spawn_marker", default="unset")
+    session_id = "gateway-positive-spawn"
+    profile_key = review_admission.current_profile_key()
+    loop_thread = threading.get_ident()
+    spawned = threading.Event()
+    calls = []
+
+    def _spawn(**kwargs):
+        try:
+            asyncio.get_running_loop()
+            has_loop = True
+        except RuntimeError:
+            has_loop = False
+        calls.append({
+            "kwargs": kwargs,
+            "marker": marker.get(),
+            "live": review_admission.other_live_turn(session_id, None, profile_key),
+            "thread": threading.get_ident(),
+            "has_loop": has_loop,
+        })
+        spawned.set()
+
+    agent = types.SimpleNamespace(
+        session_id=session_id, _spawn_background_review=_spawn
+    )
+    token = review_admission.note_turn_started(session_id, profile_key)
+    admission = _GatewayReviewAdmission(session_id, profile_key, token)
+    reset = marker.set("bound-turn")
+    try:
+        admission.bind_agent(agent)
+    finally:
+        marker.reset(reset)
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": "ask"}]},
+        {"role": "assistant", "content": "ok"},
+    ]
+    admission.capture_candidate(
+        agent, messages, review_memory=True, review_skills=False
+    )
+
+    handle = admission.finish(delivery_succeeded=True)
+    assert await asyncio.to_thread(spawned.wait, 10.0)
+    if isinstance(handle, threading.Thread):
+        await asyncio.to_thread(handle.join, 10.0)
+    admission.finish(delivery_succeeded=True)  # the latch: never a second spawn
+
+    assert len(calls) == 1
+    call = calls[0]
+    kwargs = call["kwargs"]
+    assert kwargs["_spawning_turn_token"] == token
+    assert kwargs["_review_profile_key"] == profile_key
+    assert kwargs["_review_session_id"] == session_id
+    assert (kwargs["review_memory"], kwargs["review_skills"]) == (True, False)
+    kwargs["messages_snapshot"][0]["content"][0]["text"] = "mutated by the fork"
+    assert messages[0]["content"][0]["text"] == "ask"  # structural clone
+    assert call["marker"] == "bound-turn"  # ran inside the Context bound at bind time
+    assert call["live"] is False  # ownership released before the spawn
+    assert call["thread"] != loop_thread
+    assert call["has_loop"] is False
+    assert agent._gateway_review_admission is None

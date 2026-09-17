@@ -4679,9 +4679,12 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
             await self._fire_post_delivery_callback(session_key, interrupt_event)
             if callable(review_delivery_complete):
+                from agent.review_admission import REASON_PENDING_HANDOFF
+
                 with contextlib.suppress(asyncio.TimeoutError, Exception):
                     _review_result = review_delivery_complete(
-                        delivery_succeeded=bool(processing_ok and not pending_handoff)
+                        delivery_succeeded=bool(processing_ok and not pending_handoff),
+                        cause=REASON_PENDING_HANDOFF if pending_handoff else None,
                     )
                     if inspect.isawaitable(_review_result):
                         await asyncio.wait_for(

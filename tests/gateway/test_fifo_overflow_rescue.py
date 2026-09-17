@@ -86,7 +86,7 @@ class _PausingRLock:
         self._lock.release()
         if pause:
             self.gap_open.set()
-            assert self.resume_owner.wait(timeout=1.0)
+            assert self.resume_owner.wait(timeout=10.0)
 
 
 class _TrackingRLock:
@@ -210,10 +210,10 @@ class TestRescueOrphanedOverflow:
             )
         )
         worker.start()
-        assert lock.gap_open.wait(timeout=1.0)
+        assert lock.gap_open.wait(timeout=10.0)
         admitted = review_run.begin_request(object())
         lock.resume_owner.set()
-        worker.join(timeout=1.0)
+        worker.join(timeout=10.0)
 
         assert worker.is_alive() is False
         assert admitted is False

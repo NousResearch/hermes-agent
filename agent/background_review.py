@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
+from agent.turn_facade_lease import DurableTurnLease
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,7 @@ class _BackgroundReviewRun:
         self._parent_agent = None
         self._review_owner_key = None
         self._request_finished = self._cancel_dispatched = self._completed = False
+        self._escalation_stage = 0
 
     def begin_request(self, review_agent: Any) -> bool:
         """Atomically admit the first provider-capable review phase.
@@ -117,6 +120,53 @@ class _BackgroundReviewRun:
                 return None
             self._cancel_dispatched = True
             return self._review_agent
+
+    def escalate_unacknowledged_cancel(self, stage: int) -> None:
+        """Liveness escalation for a fenced run whose admitted fork has not published its exit.
+
+        Stage 1 logs the owner and releases the fork's clients, so a stalled provider stream
+        raises into the loop instead of blocking forever. Stage 2 revokes the fork — the loop's
+        request reservation refuses every further provider call (``conversation_loop``) — and
+        re-issues the hard interrupt inline. Idempotent per stage; a run that was never fenced
+        or has already exited is left alone. The waiter keeps waiting either way: escalation
+        unwedges the fork, it never authorizes the foreground to overlap it.
+        """
+        with self._lock:
+            agent = self._review_agent
+            if (
+                agent is None
+                or self._request_finished
+                or not self.cancel_requested.is_set()
+            ):
+                return
+            pending = range(self._escalation_stage + 1, stage + 1)
+            if not pending:
+                return
+            self._escalation_stage = stage
+        from agent.review_admission import REASON_CANCEL_UNACKNOWLEDGED, REASON_REVIEW_REVOKED
+
+        owner = _review_owner_tag(self, None, None)
+        for step in pending:
+            if step == 1:
+                logger.warning(
+                    "Background review cancel unacknowledged (owner=%s, reason=%s)",
+                    owner, REASON_CANCEL_UNACKNOWLEDGED,
+                )
+                with suppress(Exception):
+                    agent.release_clients()
+            else:
+                logger.warning(
+                    "Background review revoked (owner=%s, reason=%s)", owner, REASON_REVIEW_REVOKED
+                )
+                with suppress(Exception):
+                    agent._review_revoked = True
+                with suppress(Exception):
+                    from agent.interrupt_compat import request_hard_interrupt
+
+                    request_hard_interrupt(
+                        agent, "superseded by a new live turn",
+                        tool_reason="background review superseded",
+                    )
 
     def cancel_for_pending_followup(self) -> Any:
         """Fence an automatic review; explicit /refine waits for normal live-turn cancellation."""
@@ -265,7 +315,12 @@ def _interrupt_background_review(review_agent: Any) -> None:
     try:
         threading.Thread(target=_interrupt, daemon=True, name="bg-review-cancel").start()
     except Exception:
-        logger.debug("Failed to start background-review cancellation thread", exc_info=True)
+        # Thread exhaustion must not leave an admitted fork un-fenced: interrupt on this thread.
+        logger.warning(
+            "Background review cancellation thread could not start; interrupting inline",
+            exc_info=True,
+        )
+        _interrupt()
 
 
 def _cancel_background_review(
@@ -324,12 +379,26 @@ def cancel_background_review_for_pending_followup(
         _interrupt_background_review(review_agent)
 
 
+# Seconds between the liveness escalation stages of a foreground waiting on a fenced fork.
+_CANCEL_ACK_ESCALATION_SECONDS = 10.0
+
+
 def wait_for_background_review_cancellation(
     run: Optional[_BackgroundReviewRun],
 ) -> None:
-    """Wait outside admission locks for the request-phase cancellation acknowledgement."""
+    """Wait outside admission locks for the request-phase cancellation acknowledgement.
+
+    Never fails open: the waiter returns only once the fork publishes its request exit. It does
+    fail LOUD — each elapsed bound escalates (``escalate_unacknowledged_cancel``: client
+    teardown, then revocation) so a fork wedged in a stalled stream or a blocking tool cannot
+    hold the session silently, and the final wait is unbounded.
+    """
     if run is None:
         return
+    for stage in (1, 2):
+        if run.request_done.wait(_CANCEL_ACK_ESCALATION_SECONDS):
+            return
+        run.escalate_unacknowledged_cancel(stage)
     run.request_done.wait()
 
 
@@ -1396,36 +1465,109 @@ class _ReviewForkState:
     review_agent: Any = None
     review_messages: List[Dict] = field(default_factory=list)
     review_usage: Dict[str, Any] = field(default_factory=dict)
+    refusal_reason: Optional[str] = None
+
+
+# A review fork renews its durable row often and keeps it briefly: the row is what a foreground
+# waiter in another process stamps to make the review yield, and the TTL bounds a fork that died
+# mid-turn. (Foreground turns keep the longer LEASE_TTL_SECONDS / 60s cadence.)
+_REVIEW_LEASE_TTL_SECONDS = 60.0
+_REVIEW_LEASE_REFRESH_SECONDS = 3.0
+
+
+class _ReviewTurnLease(DurableTurnLease):
+    """The review fork's durable session-row lease: it YIELDS to a foreground waiter.
+
+    A foreground turn in another process (CLI resume, Desktop, a second gateway) stamps the row
+    (``SessionDB.acquire_session_turn_lease``). The next renewal tick observes the stamp, fences
+    the run, hard-interrupts the fork and stops renewing. The row is released by the fork's own
+    exit, so the waiter never decodes beside a still-running fork; the tick keeps running as the
+    escalation clock (``escalate_unacknowledged_cancel``) so a wedged fork is unwedged rather
+    than left to the TTL.
+    """
+
+    def __init__(
+        self, review_agent: Any, db: Any, session_id: str, holder: str,
+        review_run: Optional[_BackgroundReviewRun], owner: str,
+    ) -> None:
+        super().__init__(review_agent, db, session_id, holder)
+        self.refresh_interval = _REVIEW_LEASE_REFRESH_SECONDS
+        self.ttl_seconds = _REVIEW_LEASE_TTL_SECONDS
+        self._review_run = review_run
+        self._owner = owner
+        self._yielded_at: Optional[float] = None
+        self._now = time.monotonic  # test seam
+
+    def refresh_tick(self):
+        if self.stop.is_set():
+            return False
+        if self._yielded_at is not None:
+            elapsed = self._now() - self._yielded_at
+            if self._review_run is not None and elapsed >= _CANCEL_ACK_ESCALATION_SECONDS:
+                self._review_run.escalate_unacknowledged_cancel(
+                    2 if elapsed >= 2 * _CANCEL_ACK_ESCALATION_SECONDS else 1
+                )
+            return None
+        try:
+            yield_requested = self.db.session_turn_lease_yield_requested(
+                self._current_session_id(), self.holder
+            )
+        except Exception:  # noqa: BLE001 — the renewal below fails safe on a broken store
+            yield_requested = False
+        if not yield_requested:
+            return super().refresh_tick()
+        self._yielded_at = self._now()
+        from agent.review_admission import REASON_PREEMPTED_CROSS_PROCESS
+
+        logger.info(
+            "Background review preempted (owner=%s, reason=%s)",
+            self._owner, REASON_PREEMPTED_CROSS_PROCESS,
+        )
+        fork = self.agent
+        if self._review_run is not None:
+            fork = self._review_run.cancel() or fork
+        with suppress(Exception):
+            from agent.interrupt_compat import request_hard_interrupt
+
+            request_hard_interrupt(
+                fork, "superseded by a live turn in another process",
+                tool_reason="background review superseded",
+            )
+        return None
 
 
 def _try_acquire_durable_review_lease(
     parent_agent: Any,
     review_agent: Any,
     session_id: str,
-    review_run: _BackgroundReviewRun,
+    review_run: Optional[_BackgroundReviewRun],
 ) -> Tuple[Any, Optional[str]]:
-    """Claim the same durable ownership row foreground turns use, without waiting."""
+    """Claim the same durable ownership row foreground turns use, without waiting. The holder
+    carries the background-review mark so a foreground waiter can ask it to yield."""
     db = getattr(parent_agent, "_session_db", None)
     if db is None or not session_id or not callable(
         getattr(type(db), "try_acquire_session_turn_lease", None)
     ):
         return None, None
     from agent.review_admission import REASON_DURABLE_BUSY, REASON_DURABLE_FAILURE
-    from agent.turn_facade_lease import DurableTurnLease, LEASE_TTL_SECONDS
+    from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
 
-    holder = f"pid={os.getpid()}:turn=background-review:{uuid.uuid4().hex}"
+    holder = f"pid={os.getpid()}{BACKGROUND_REVIEW_LEASE_HOLDER_MARK}{uuid.uuid4().hex}"
     try:
         acquired = db.try_acquire_session_turn_lease(
-            session_id, holder, ttl_seconds=LEASE_TTL_SECONDS
+            session_id, holder, ttl_seconds=_REVIEW_LEASE_TTL_SECONDS
         )
     except Exception:  # noqa: BLE001 — uncertain durable ownership must fail safe
         logger.warning("Automatic review blocked: %s", REASON_DURABLE_FAILURE)
         return None, REASON_DURABLE_FAILURE
     if not acquired:
         return None, REASON_DURABLE_BUSY
-    lease = DurableTurnLease(review_agent, db, session_id, holder)
+    lease = _ReviewTurnLease(
+        review_agent, db, session_id, holder, review_run,
+        _review_owner_tag(review_run, None, session_id),
+    )
     review_agent._active_session_turn_lease_holder = holder
-    review_agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
+    review_agent._active_session_turn_lease_ttl_seconds = _REVIEW_LEASE_TTL_SECONDS
     return lease, None
 
 
@@ -1482,7 +1624,8 @@ def _run_review_fork(
     try:
         admitted = review_run is None or review_run.begin_request(st.review_agent)
         refusal_reason = None
-        if admitted and not explicit:
+        # /refine is exempt from the replay/budget policy, never from cross-process exclusion.
+        if admitted:
             durable_lease, refusal_reason = _try_acquire_durable_review_lease(
                 agent,
                 st.review_agent,
@@ -1513,6 +1656,7 @@ def _run_review_fork(
             # Only a GATE refusal sets a reason; a cancelled run leaves it None and is already
             # logged by whoever cancelled, so this never doubles up. Body-free slug + hashed owner
             # tag, like every other skip/defer decision (agent/review_admission.py).
+            st.refusal_reason = reason
             logger.info(
                 "Background review refused at admission (owner=%s): %s",
                 _review_owner_tag(
@@ -1541,6 +1685,20 @@ def _run_review_fork(
     st.review_messages = list(getattr(st.review_agent, "_session_messages", []))
     _release_fork_clients(st.review_agent)
     st.review_agent = None
+
+
+# User-facing text for a refused explicit /refine (its handler already reported "reviewing").
+_EXPLICIT_REFUSAL_NOTICE = (
+    "⚗ Review skipped: this session is busy in another Hermes process — "
+    "run /refine again once it is free."
+)
+
+
+def _publish_review_notice(agent: Any, text: str) -> None:
+    agent._safe_print(f"  {text}")
+    if agent.background_review_callback:
+        with suppress(Exception):
+            agent.background_review_callback(text)
 
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
@@ -1604,6 +1762,12 @@ def _run_review_in_thread(
                 explicit,
                 review_session_id,
             )
+        if st.refusal_reason is not None:
+            # Logged with the owner tag at the refusal site. A /refine was already reported as
+            # started by its handler, so the user hears the outcome on the review's own channel.
+            if explicit:
+                _publish_review_notice(agent, _EXPLICIT_REFUSAL_NOTICE)
+            return
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer
         # except would discard every action the fork DID complete), so coerce to an empty list.
         try:

@@ -54,6 +54,11 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
 
 
+# Holder mark of a background-review turn lease (``agent/background_review.py``). The WAITING
+# foreground path asks such a holder to yield; a one-shot try — and so review-vs-review — never does.
+BACKGROUND_REVIEW_LEASE_HOLDER_MARK = ":turn=background-review:"
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> Tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -524,10 +529,13 @@ class SessionCompressionMixin:
 
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
+        preempt_background_review: bool = False,
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
-        share one write transaction."""
+        share one write transaction. ``preempt_background_review`` (the waiting foreground
+        path) stamps a background-review holder to yield in that same transaction; the held
+        row itself is never reclaimed — the review releases it through its own exit."""
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
@@ -535,11 +543,28 @@ class SessionCompressionMixin:
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            return _claim_lease_row(
+            acquired = _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,
                 lambda h, e: float(e) <= now or _compression_lock_holder_process_is_dead(h),
             )[0]
+            if not acquired and preempt_background_review:
+                conn.execute(
+                    "UPDATE session_turn_leases SET yield_requested_at = COALESCE(yield_requested_at, ?) "
+                    "WHERE conversation_id = ? AND instr(holder, ?) > 0",
+                    (now, conversation_id, BACKGROUND_REVIEW_LEASE_HOLDER_MARK))
+            return acquired
         return bool(self._execute_write(_do, patience_s=patience_s))
+
+    def session_turn_lease_yield_requested(self, session_id: str, holder: str) -> bool:
+        """Whether a waiting foreground turn asked ``holder`` (a background-review lease) to yield."""
+        if not session_id or not holder:
+            return False
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT yield_requested_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                (conversation_id, holder)).fetchone()
+        return row is not None and row["yield_requested_at"] is not None
 
     def acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
@@ -548,7 +573,9 @@ class SessionCompressionMixin:
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
         best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
-        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
+        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once. Waiting is the
+        FOREGROUND's path: a background-review holder is asked to yield on every failed attempt, so
+        self-improvement in another process never outranks a user turn."""
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         wait_started = None
@@ -563,7 +590,8 @@ class SessionCompressionMixin:
                     logger.debug("session turn lease should_abort callback failed", exc_info=True)
             try:
                 if self.try_acquire_session_turn_lease(
-                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s):
+                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s,
+                    preempt_background_review=True):
                     return True
             except sqlite3.Error as exc:
                 # Long holder transactions can exhaust one write-patience budget; keep

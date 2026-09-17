@@ -941,6 +941,20 @@ class AIAgent(
             profile_key=_review_profile_key,
         )
         if review_run is None:
+            # The canonical (profile, session) slot is occupied by a live review. An explicit
+            # /refine must not be reported as started; an automatic spawn logs the decision
+            # (an idle-queue dispatch requeues instead, which logs its own line).
+            if explicit:
+                raise RuntimeError("a review is already running for this conversation")
+            if not _idle_queue_origin:
+                logger.info(
+                    "Background review skipped (owner=%s): %s",
+                    review_admission.owner_tag(
+                        *_review_queue_key(self, _review_profile_key, _review_session_id)
+                    ),
+                    review_admission.REASON_REVIEW_SLOT_BUSY,
+                )
+                return
             self._requeue_deferred_review(dict(
                 messages_snapshot=messages_snapshot,
                 review_memory=review_memory,

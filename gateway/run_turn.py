@@ -183,11 +183,20 @@ class _GatewayReviewAdmission:
             if not self._finished:
                 self._candidate = candidate
 
-    def finish(self, *, delivery_succeeded: bool) -> None:
-        """Release once; start the latest candidate only after a successful terminal delivery."""
+    def finish(
+        self, *, delivery_succeeded: bool, cause: Optional[str] = None
+    ) -> Optional[threading.Thread]:
+        """Release once; start the latest candidate only after a successful terminal delivery.
+
+        The spawn runs on its own thread: every caller sits on the gateway event loop, and the
+        spawn pipeline (config read, replay bound, structural clone, runtime resolution) is
+        O(transcript). Ownership is released HERE, before the hop, so the spawn's foreground
+        probe observes the truth. A dropped candidate logs why (``cause`` names a drain
+        handoff) so a starved review is as greppable as a refused one.
+        """
         with self._lock:
             if self._finished:
-                return
+                return None
             self._finished = True
         from agent import review_admission
 
@@ -196,13 +205,34 @@ class _GatewayReviewAdmission:
         )
         candidate = self._candidate
         self._candidate = None
-        if self.agent is not None:
-            if getattr(self.agent, "_gateway_review_admission", None) is self:
-                self.agent._gateway_review_admission = None
-        if not delivery_succeeded or not isinstance(candidate, dict):
-            return
-        if self.context is not None:
-            self.context.run(self.agent._spawn_background_review, **candidate)
+        agent = self.agent
+        if agent is not None:
+            if getattr(agent, "_gateway_review_admission", None) is self:
+                agent._gateway_review_admission = None
+        if not isinstance(candidate, dict):
+            return None
+        if not delivery_succeeded:
+            logger.info(
+                "Background review skipped (owner=%s): %s",
+                review_admission.owner_tag(
+                    self.profile_key, candidate.get("_review_session_id") or self.session_id
+                ),
+                cause or review_admission.REASON_DELIVERY_UNCONFIRMED,
+            )
+            return None
+        if self.context is None or agent is None:
+            return None
+        # The Context captured at bind time carries the turn's profile/secret scope; the loop
+        # thread's own context is the launch profile's, so it is entered explicitly here.
+        spawner = threading.Thread(
+            target=self.context.run,
+            args=(agent._spawn_background_review,),
+            kwargs=candidate,
+            daemon=True,
+            name="bg-review-spawn",
+        )
+        spawner.start()
+        return spawner
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:

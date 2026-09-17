@@ -196,9 +196,13 @@ def test_durable_resume_rebinds_foreground_review_admission(monkeypatch):
 
 def test_durable_resume_waits_for_the_rotated_sessions_review_before_the_loop(monkeypatch):
     """Resuming onto a rotated tip fences THAT session's admitted review and does not enter the
-    conversation loop until the fork publishes its exit."""
+    conversation loop until the fork publishes its exit — every escalation bound may elapse
+    unacknowledged; the turn still parks on the unbounded wait."""
     from agent import background_review, review_admission
 
+    monkeypatch.setattr(
+        background_review, "_CANCEL_ACK_ESCALATION_SECONDS", 0.01, raising=False
+    )
     db = _DB()
     agent = _agent_with_db(db)
     other = SimpleNamespace(
@@ -226,6 +230,8 @@ def test_durable_resume_waits_for_the_rotated_sessions_review_before_the_loop(mo
 
         def wait(self, timeout=None):
             observed_timeouts.append(timeout)
+            if timeout is not None:
+                return False  # an escalation bound elapsed with no acknowledgement
             entered_wait.set()
             assert release.wait(timeout=10.0)
             return True
@@ -277,7 +283,8 @@ def test_durable_resume_waits_for_the_rotated_sessions_review_before_the_loop(mo
 
     assert not turn.is_alive()
     assert "error" not in outcome, outcome.get("error")
-    assert observed_timeouts == [None]
+    assert observed_timeouts[-1] is None
+    assert observed_timeouts[:-1] and all(t == 0.01 for t in observed_timeouts[:-1])
     assert loop_entered.is_set()
     assert agent.session_id == "compressed-tip"
     assert review_admission.other_live_turn("compressed-tip", None) is False
@@ -868,3 +875,62 @@ def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
     second.release_session_turn_lease("shared", next_holder)
     first.close()
     second.close()
+
+
+def test_foreground_admission_preempts_a_cross_process_review(tmp_path):
+    """The real waiting path: a foreground turn admitted through ``admit_durable_turn_lease``
+    while another handle's automatic review holds the row is told it is waiting, the review is
+    hard-interrupted from its own renewal tick, and the turn is admitted once the fork's exit
+    releases the row — the foreground never waits for the review to finish its work."""
+    from agent import background_review
+    from agent.turn_facade_lease import admit_durable_turn_lease
+
+    path = tmp_path / "state.db"
+    review_db = SessionDB(path)
+    foreground_db = SessionDB(path)
+    review_db.create_session("shared", source="test")
+    interrupted = threading.Event()
+    fork = SimpleNamespace(hard_interrupt=lambda *_a, **_k: interrupted.set())
+    run = background_review._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review._try_acquire_durable_review_lease(
+        SimpleNamespace(_session_db=review_db), fork, "shared", run
+    )
+    assert reason is None and lease is not None
+
+    agent = _agent_with_db(foreground_db, session_id="shared", platform="cli")
+    status_events = []
+    agent.status_callback = lambda kind, text=None: status_events.append((kind, text))
+    outcome = {}
+
+    def foreground():
+        outcome["admission"] = admit_durable_turn_lease(
+            agent, session_id="shared", relay_turn_id="turn-1",
+            task_context={"platform": "cli", "session_id": "shared", "task_id": "t"},
+            conversation_history=[],
+        )
+
+    turn = threading.Thread(target=foreground, daemon=True)
+    turn.start()
+    try:
+        for _ in range(400):
+            lease.refresh_tick()
+            if interrupted.is_set():
+                break
+            interrupted.wait(0.05)
+        assert interrupted.is_set()
+        assert run.cancel_requested.is_set()
+        assert "admission" not in outcome  # the row is still the review's
+    finally:
+        lease.stop_refresher()
+        lease.release()
+        turn.join(timeout=10.0)
+
+    admission = outcome["admission"]
+    assert admission.early_result is None
+    assert admission.lease is not None
+    assert any(
+        kind == "lifecycle" and text and "waiting for it to finish" in text
+        for kind, text in status_events
+    )
+    admission.lease.release()

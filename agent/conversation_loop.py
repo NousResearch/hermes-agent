@@ -110,7 +110,10 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
     """True when a detached review fork has replayed its aggregate input budget.
 
     Only forks with an explicit ``_review_input_token_budget`` are gated (#93057). Fires
-    at the top of the NEXT iteration, so the budget-crossing request completes first."""
+    at the top of the NEXT iteration, so the budget-crossing request completes first. A fork
+    revoked by the foreground's cancel escalation is exhausted whatever its budget."""
+    if getattr(agent, "_review_revoked", False):
+        return True
     budget = getattr(agent, "_review_input_token_budget", None)
     if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
         return False
@@ -132,6 +135,8 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
 
 def _reserve_review_input_request(agent: Any, projected_tokens: Any) -> bool:
     """Reserve one provider attempt against a detached automatic review's hard budget."""
+    if getattr(agent, "_review_revoked", False):
+        return False
     budget = getattr(agent, "_review_input_token_budget", None)
     if not isinstance(budget, int) or isinstance(budget, bool) or budget <= 0:
         return True

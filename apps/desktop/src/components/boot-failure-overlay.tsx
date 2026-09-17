@@ -320,6 +320,7 @@ export function BootFailureOverlay() {
         // Masks the whole app on boot failure — must stay filled under window
         // glass. Contract: `[data-glass-opaque]` in styles.css.
         data-glass-opaque=""
+        data-testid="boot-failure-overlay"
       >
         <div className="flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
@@ -348,6 +349,7 @@ export function BootFailureOverlay() {
       // Masks the whole app on boot failure — must stay filled under window
       // glass. Contract: `[data-glass-opaque]` in styles.css.
       data-glass-opaque=""
+      data-testid="boot-failure-overlay"
     >
       <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
         <div className="flex items-start gap-3 px-5 py-4">

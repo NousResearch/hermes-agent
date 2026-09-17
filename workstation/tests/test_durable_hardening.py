@@ -22,6 +22,7 @@ def compiler(tmp_path, monkeypatch):
     for name, effect in (("trello_search_board", ToolEffect.DISCOVERY),
                          ("trello_list_columns", ToolEffect.PURE_READ),
                          ("trello_search_cards", ToolEffect.DISCOVERY),
+                         ("trello_verify_card", ToolEffect.PURE_READ),
                          ("trello_create_card", ToolEffect.MUTATION)):
         registry.register(name, "test", {"name": name}, lambda **kw: "{}", effect=effect)
     return TaskCompiler(DurableTaskStore(conn=sqlite3.connect(tmp_path / "kanban.db")), ArtifactStore())
@@ -34,7 +35,8 @@ def call(name, args, call_id="test"):
 def graph_request(n=100):
     return {"operation_key": "graph", "items": [{"id": i} for i in range(n)],
             "setup_steps": [{"id": "resolve_board", "tool": "trello_search_board", "args": {"name": "ACIRV"}}],
-            "steps": [{"id": "create", "tool": "trello_create_card", "args": {"board": "$setup.resolve_board.board_id", "id": "$item.id"}, "expect": {"ok": True}}],
+            "steps": [{"id": "create", "tool": "trello_create_card", "args": {"board": "$setup.resolve_board.board_id", "id": "$item.id"}, "expect": {"ok": True}},
+                      {"id": "verify", "tool": "trello_verify_card", "verifies": ["create"], "args": {"id": "$item.id"}, "expect": {"ok": True}}],
             "finalize_steps": [{"id": "summary", "depends_on": ["create"], "tool": "trello_search_cards", "args": {"results": "$items_ref"}}]}
 
 
@@ -71,6 +73,8 @@ def test_graph_setup_once_finalize_after_items_reference_first(compiler):
         if name == "trello_create_card":
             assert args["board"] == "B"
             return {"ok": True, "large": "x" * 10000}
+        if name == "trello_verify_card":
+            return {"ok": True}
         assert calls.count("trello_create_card") == 100
         assert args["results"].startswith("artifact://")
         return {"ok": True}
@@ -159,11 +163,13 @@ def test_dynamic_fan_out_blocks_third_and_adopts_completed(compiler):
     from workstation.task_compiler import execute_compiled_work
     agent = make_agent()
     agent.valid_tool_names.add("trello_create_card")
+    agent.valid_tool_names.add("trello_verify_card")
     writes, messages = [], []
     def handler(name, args, task, **kw):
         if name == "work_execute":
             return execute_compiled_work(args, task_id=task)
-        writes.append(args["id"])
+        if name == "trello_create_card":
+            writes.append(args["id"])
         return json.dumps({"ok": True})
     with patch("run_agent.handle_function_call", side_effect=handler):
         for i in range(3):
@@ -171,7 +177,8 @@ def test_dynamic_fan_out_blocks_third_and_adopts_completed(compiler):
         assert writes == [0, 1]
         assert json.loads(messages[-1]["content"])["code"] == "durable_compile_required"
         # Deliberately include all items: adopted verified results prevent replay.
-        req = {"operation_key": "remaining", "items": [{"id": i} for i in range(5)], "steps": [{"tool": "trello_create_card", "args": {"id": "$item.id"}, "expect": {"ok": True}}]}
+        req = {"operation_key": "remaining", "items": [{"id": i} for i in range(5)], "steps": [{"id": "create", "tool": "trello_create_card", "args": {"id": "$item.id"}, "expect": {"ok": True}},
+               {"id": "verify", "tool": "trello_verify_card", "verifies": ["create"], "args": {"id": "$item.id"}, "expect": {"ok": True}}]}
         agent._execute_tool_calls(SimpleNamespace(tool_calls=[call("work_execute", req)]), messages, "task")
     assert writes == list(range(5))
     assert json.loads(messages[-1]["content"])["completed"] == 5

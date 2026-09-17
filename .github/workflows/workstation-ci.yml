@@ -19,6 +19,9 @@ on:
       - "tools/mcp_tool.py"
       - "agent/tool_guardrails.py"
       - "agent/conversation_loop.py"
+      - "agent/context_compressor.py"
+      - "agent/conversation_compression.py"
+      - "agent/tool_result_classification.py"
       - "agent/tool_executor.py"
       - "run_agent.py"
       - "uv.lock"
@@ -42,6 +45,9 @@ on:
       - "tools/mcp_tool.py"
       - "agent/tool_guardrails.py"
       - "agent/conversation_loop.py"
+      - "agent/context_compressor.py"
+      - "agent/conversation_compression.py"
+      - "agent/tool_result_classification.py"
       - "agent/tool_executor.py"
       - "run_agent.py"
       - "uv.lock"
@@ -84,6 +90,8 @@ jobs:
           tests/agent/test_auxiliary_client.py
           tests/agent/test_tool_guardrails.py
           tests/agent/test_compaction_operational_refs.py
+      - name: Controlled canary and recipe replay
+        run: .venv/bin/python -m workstation.benchmarks.trello_regression
 
   core-patch-dry-run:
     runs-on: ubuntu-latest

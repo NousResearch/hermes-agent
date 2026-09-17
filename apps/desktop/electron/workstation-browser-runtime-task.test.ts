@@ -226,15 +226,10 @@ test('controller error contract recommends a state-changing recovery instead of 
       state_changed: true,
       recommended_action: 'BIND_OR_NAVIGATE',
       resource_ref: undefined,
-      details: {}
+      details: { compatibility_path: true }
     }
   )
-  assert.equal(
-    normalizeWorkstationControllerError(
-      new Error('Hermes Browser is under human control. Release Control before agent actions continue.')
-    ).error_code,
-    'USER_CONTROL_ACTIVE'
-  )
+  assert.equal(normalizeWorkstationControllerError(new Error('human control active')).error_code, 'USER_CONTROL_ACTIVE')
   assert.equal(normalizeWorkstationControllerError(new Error('element_unavailable')).recommended_action, 'RESNAPSHOT')
 })
 
@@ -782,7 +777,15 @@ test('human control lease blocks only its BrowserTask and leaves another task ru
       session_id: 'session-a',
       arguments: { url: 'https://session-a.test' }
     }),
-    /task-a is under human control/
+    (error: unknown) => {
+      const fault = normalizeWorkstationControllerError(error)
+      assert.match(fault.message, /task-a is under human control/)
+      assert.equal(fault.error_code, 'USER_CONTROL_ACTIVE')
+      assert.equal(fault.recommended_action, 'WAIT_FOR_RELEASE')
+      assert.deepEqual(fault.details, {}, 'typed runtime fault does not rely on compatibility prose')
+
+      return true
+    }
   )
 
   runtime.renewControl('task-a')
@@ -920,14 +923,17 @@ test('runtime restart keeps task metadata parked and recreates a page only on sh
   await second.destroy()
 })
 
-test.each(['141.0.7390.76', '155.2.3.4'])('getStandardChromeUserAgent uses embedded Chromium %s without product traces', version => {
-  const ua = getStandardChromeUserAgent(version)
-  assert.match(ua, /^Mozilla\/5\.0 /)
-  assert.match(ua, /AppleWebKit\/537\.36/)
-  assert.match(ua, new RegExp(`Chrome/${version.replaceAll('.', '\\.') } Safari/537\\.36`))
-  assert.equal(ua.includes('Electron'), false)
-  assert.equal(ua.toLowerCase().includes('hermes'), false)
-})
+test.each(['141.0.7390.76', '155.2.3.4'])(
+  'getStandardChromeUserAgent uses embedded Chromium %s without product traces',
+  version => {
+    const ua = getStandardChromeUserAgent(version)
+    assert.match(ua, /^Mozilla\/5\.0 /)
+    assert.match(ua, /AppleWebKit\/537\.36/)
+    assert.match(ua, new RegExp(`Chrome/${version.replaceAll('.', '\\.')} Safari/537\\.36`))
+    assert.equal(ua.includes('Electron'), false)
+    assert.equal(ua.toLowerCase().includes('hermes'), false)
+  }
+)
 
 test('getStandardChromeUserAgent rejects a missing or malformed Chromium version', () => {
   assert.throws(() => getStandardChromeUserAgent('Electron/40.0.0'), /valid embedded Chromium version/)

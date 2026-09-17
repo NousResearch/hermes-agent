@@ -2500,6 +2500,8 @@ def run_conversation(
         # results before sending to the API.  Runs unconditionally — not
         # gated on context_compressor — so orphans from session loading or
         # manual message manipulation are always caught.
+        from workstation.continuation import project_for_provider
+        api_messages = project_for_provider(agent, api_messages, messages)
         api_messages = agent._sanitize_api_messages(api_messages)
 
         # Drop thinking-only assistant turns (reasoning but no visible

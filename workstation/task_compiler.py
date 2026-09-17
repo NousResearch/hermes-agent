@@ -21,9 +21,10 @@ from workstation.durable_tasks import DurableTaskStore, WorkItem
 from workstation.routing import ConstraintViolation, require_allowed_route
 from workstation.reference_plane import ReadCache, blob_references, content_reference
 from workstation.tool_verbosity import VerbosityLevel, normalize_verbosity
-from tools.effects import ToolEffect, READ_EFFECTS, tool_effect, tool_contract, unwrap_call
+from tools.effects import ToolEffect, READ_EFFECTS, WRITE_EFFECTS, tool_effect, tool_contract, unwrap_call
 from workstation.execution_graph import prepare_graph
 from agent.turn_constraints import user_constraints
+from workstation.recipes import RecipeStore, recipe_fingerprint, require_browser_scope
 
 
 class WorkClass(str, Enum):
@@ -150,8 +151,11 @@ def _bind(value: Any, item: dict, bindings: dict | None = None) -> Any:
     if isinstance(value, str) and value.startswith("$") and value[1:].split(".")[0] in bindings:
         parts = value[1:].split(".")
         result: Any = bindings[parts[0]]
-        for field in parts[1:]:
-            result = result[field]
+        try:
+            for field in parts[1:]:
+                result = result[field]
+        except (KeyError, IndexError, TypeError):
+            raise ValueError(f"invalid binding: {value}") from None
         return result
     if isinstance(value, dict):
         return {k: _bind(v, item, bindings) for k, v in value.items()}
@@ -188,12 +192,27 @@ def _decode_output(raw):
 
 
 class TaskCompiler:
-    def __init__(self, store: DurableTaskStore | None = None, artifacts: ArtifactStore | None = None):
+    def __init__(self, store: DurableTaskStore | None = None, artifacts: ArtifactStore | None = None, recipes=None):
         self.store = store or DurableTaskStore()
         self.artifacts = artifacts or ArtifactStore()
+        self.recipes = recipes or RecipeStore(self.artifacts)
 
     def execute(self, request: dict, *, task_id: str, session_id: str, dispatch: Callable,
                 progress: Callable | None = None, provider_usage: dict | None = None) -> dict:
+        recipe_key = request.get("recipe_key")
+        recipe = self.recipes.get(recipe_key) if recipe_key else None
+        recipe_reused = bool(recipe and not request.get("steps"))
+        if recipe_reused:
+            if recipe["status"] != "VERIFIED":
+                raise ValueError("recipe_stale: supply a corrected explicit graph for a new canary")
+            if request.get("recipe_scope", recipe["scope"]) != recipe["scope"]:
+                raise ValueError("recipe_scope_mismatch")
+            request = {**request, "setup_steps": recipe["graph"]["setup"], "steps": recipe["graph"]["fan_out"],
+                       "finalize_steps": recipe["graph"]["finalize"], "recipe_scope": recipe["scope"],
+                       "preflight": recipe["preflight"]}
+        if recipe_key and not request.get("operation_key"):
+            from workstation.recipes import digest
+            request = {**request, "operation_key": recipe_key + "." + digest(request.get("items", request.get("items_ref")))[:16]}
         if request.get("items_ref"):
             if "items" in request:
                 raise ValueError("Use items or items_ref, not both")
@@ -217,8 +236,34 @@ class TaskCompiler:
         request = {**request, "constraints": constraints}
         steps = request["steps"]
         graph = prepare_graph(request) if any(k in request for k in ("setup_steps", "finalize_steps")) or any(
-            "depends_on" in s or "id" in s for s in steps) else None
-        all_steps = sum(graph.values(), []) if graph else steps
+            "depends_on" in s or "id" in s or "verifies" in s for s in steps) else None
+        canonical_graph = graph or prepare_graph(request)
+        scope = request.get("recipe_scope", {"route": "native_browser" if kind == WorkClass.BROWSER_TRANSACTION else "tool." + steps[0]["tool"]})
+        if not isinstance(scope, dict) or not isinstance(scope.get("route"), str):
+            raise ValueError("Invalid recipe scope")
+        require_allowed_route(scope["route"], constraints)
+        preflight = request.get("preflight", [])
+        if not isinstance(preflight, list) or len(preflight) > 8:
+            raise ValueError("Invalid bounded recipe preflight")
+        for probe in preflight:
+            if tool_effect(probe["tool"]) not in READ_EFFECTS or not probe.get("expect"):
+                raise ValueError("Recipe preflight requires read-only probes with expect")
+        if recipe_reused and scope["route"] == "native_browser":
+            if not scope.get("host") or not scope.get("path_family") or not preflight:
+                raise ValueError("Browser recipe requires scoped host/path family and read-only preflight reporting url")
+            for record in request["items"]:
+                require_browser_scope(record, scope)
+        recipe_hash = recipe_fingerprint(canonical_graph, scope, preflight)
+        if recipe_reused and recipe["fingerprint"] != recipe_hash:
+            self.recipes.invalidate(recipe_key)
+            raise ValueError("recipe_fingerprint_mismatch: recipe marked STALE; provide corrected graph")
+        mutable_batch = len(request["items"]) > 1 and any(tool_effect(s["tool"]) in WRITE_EFFECTS for s in steps)
+        if mutable_batch and graph is None:
+            graph = canonical_graph
+        # Cached procedures still verify each item. Only a matching recipe plus
+        # successful persisted preflight can skip the admission canary.
+        canary_required = mutable_batch and not (recipe_reused and preflight)
+        all_steps = (sum(graph.values(), []) if graph else steps) + preflight
         if kind == WorkClass.PROMPT_QUEUE and not any(s.get("wait") for s in steps):
             raise ValueError("Prompt queue requires a bounded completion wait before advancing")
         if not steps or len(steps) > 64 or len(request["items"]) > 10000:
@@ -246,10 +291,22 @@ class TaskCompiler:
         plan = self.store.get_plan(durable_id)
         if plan and (plan.session_id != session_id or plan.metadata.get("fingerprint") != fingerprint):
             raise ValueError("Operation identity conflicts with the persisted plan")
+        if plan:
+            pinned = plan.metadata.get("recipe", {}).get("fingerprint")
+            if pinned and pinned != recipe_hash:
+                if recipe_key:
+                    self.recipes.invalidate(recipe_key)
+                raise ValueError("recipe_fingerprint_mismatch: persisted procedure changed; review before resume")
+            if plan.metadata.get("recipe", {}).get("status") == "VERIFIED" and recipe and recipe["status"] != "VERIFIED":
+                raise ValueError("recipe_stale: persisted recipe requires review before resume")
+            canary_required = plan.metadata.get("canary_required", canary_required)
         objective = self.artifacts.store(durable_id, "objective.json", request)
         metadata = {"classification": kind.value, "constraints": constraints,
                     "objective_ref": objective.ref, "fingerprint": fingerprint,
                     "browser_task_id": task_id, "verbosity": normalize_verbosity(request.get("verbosity")).value}
+        metadata["canary_required"] = canary_required
+        metadata["recipe"] = {"recipe_id": recipe_key, "status": "VERIFIED" if recipe_reused else "UNVERIFIED",
+                              "fingerprint": recipe_hash}
         if graph:
             metadata["graph"] = graph
         if graph and any("_work_phase" in i for i in request["items"]):
@@ -264,6 +321,10 @@ class TaskCompiler:
         metrics.update({"tool_input_bytes": 0, "tool_output_bytes": 0, "latency_ms": 0,
                         "compactions": 0, "state_transitions": 0, "duplicate_calls_blocked": 0,
                         "usage_status": "unknown"})
+        metrics.update(dict.fromkeys(("canary_attempts", "canary_successes", "canary_failures",
+                                     "recipe_cache_hits", "recipe_cache_misses", "recipe_invalidations",
+                                     "failed_fanout_items", "handoff_bytes", "compaction_bytes",
+                                     "duplicate_compaction_bytes_suppressed"), 0))
         metrics_uri = f"artifact://tasks/{durable_id}/metrics.json"
         if self.artifacts.resolve_ref(metrics_uri):
             metrics.update(self.artifacts.read_json(metrics_uri))
@@ -272,6 +333,8 @@ class TaskCompiler:
             metrics.pop(usage_field, None)
         metrics["usage_status"] = "unknown"
         prior_transitions = metrics["state_transitions"]
+        if not plan and recipe_key:
+            metrics["recipe_cache_hits" if recipe_reused else "recipe_cache_misses"] += 1
         if plan:
             metrics["duplicate_calls_blocked"] += sum(
                 i.status.value == "completed" for i in self.store.get_work_items(plan.id)) * len(steps)
@@ -279,19 +342,64 @@ class TaskCompiler:
         def persist_metrics():
             self.artifacts.store(durable_id, "metrics.json", metrics)
         reads = ReadCache(self.artifacts, durable_id)
+        runtime_items = {}
+        recipe_invalidated = False
+
+        def items_for_plan(plan_id):
+            if plan_id not in runtime_items:
+                runtime_items[plan_id] = self.store.get_work_items(plan_id)
+            return runtime_items[plan_id]
 
         def worker(payload: dict, item: WorkItem) -> dict:
+            nonlocal recipe_invalidated
             results = []
             phase = payload.get("_work_phase", "fan_out") if graph else "fan_out"
             phase_steps = graph[phase] if graph else steps
             bindings = {"setup": {}, "steps": {}, "finalize": {}}
             if graph:
-                for shared in self.store.get_work_items(item.plan_id):
+                for shared in items_for_plan(item.plan_id):
                     if shared.input_payload.get("_work_phase") == "setup":
+                        shared = self.store.get_item(shared.id)
                         for idx, node in enumerate(graph["setup"]):
                             ref = shared.checkpoints.get(f"step_{idx}_meta", {}).get("result_ref")
                             if ref:
                                 bindings["setup"][node["id"]] = _decode_output(self.artifacts.read(ref))
+            fan_items = [i for i in items_for_plan(item.plan_id)
+                         if i.input_payload.get("_work_phase", "fan_out") == "fan_out"]
+            first_item = bool(fan_items and item.id == fan_items[0].id)
+            if first_item and phase == "fan_out":
+                for n, probe in enumerate(preflight):
+                    checkpoint = f"preflight_{n}"
+                    if self.store.get_item(item.id).checkpoints.get(checkpoint + "_meta", {}).get("result_ref"):
+                        continue
+                    probe_args = _bind(probe.get("args", {}), payload, bindings)
+                    require_browser_scope(probe_args, scope)
+                    output = dispatch(probe["tool"], probe_args, task_id, f"{item.id}_preflight_{n}")
+                    metrics["tool_calls"] += 1
+                    evidence = content_reference(self.artifacts, durable_id, blob_references(self.artifacts, durable_id, output))
+                    scope_valid = True
+                    if scope["route"] == "native_browser" and scope.get("host"):
+                        decoded_probe = _decode_output(output)
+                        try:
+                            if not isinstance(decoded_probe, dict) or not decoded_probe.get("url"):
+                                raise ValueError("Browser preflight must report actual url")
+                            require_browser_scope({"url": decoded_probe["url"]}, scope)
+                        except ValueError:
+                            scope_valid = False
+                    if not scope_valid or not _validate(output, _bind(probe["expect"], payload, bindings)):
+                        if recipe_key:
+                            self.recipes.invalidate(recipe_key)
+                            metrics["recipe_invalidations"] += 1
+                            recipe_invalidated = True
+                            self.store.update_plan_metadata(item.plan_id, {"recipe": {"recipe_id": recipe_key, "status": "STALE", "fingerprint": recipe_hash}})
+                        persist_metrics()
+                        return {"valid": False, "code": "recipe_stale", "results": [evidence]}
+                    self.store.update_item_checkpoint(item.id, checkpoint, metadata={"result_ref": evidence["artifact_ref"]})
+                if canary_required and not self.store.get_item(item.id).checkpoints.get("canary_started"):
+                    self.store.update_item_checkpoint(item.id, "canary_started")
+                    metrics["canary_attempts"] += 1
+                    persist_metrics()
+            if graph:
                 if phase == "finalize":
                     bindings["items_ref"] = self.artifacts.store(durable_id, "fan_out_results.json", [
                         {"item_id": i.id, "result_ref": i.normalized_output_ref} for i in self.store.get_work_items(item.plan_id)
@@ -310,6 +418,7 @@ class TaskCompiler:
                 if current.checkpoints.get(f"step_{index}_dispatch") and tool_effect(step["tool"]) not in READ_EFFECTS:
                     return {"valid": False, "code": "uncertain_mutation_requires_review", "results": results}
                 args = _bind(step.get("args", {}), payload, bindings)
+                require_browser_scope(args, scope)
                 effect, contract = tool_contract(step["tool"])
                 if effect == ToolEffect.IDEMPOTENT_WRITE and not args.get(contract["idempotency_key"]):
                     return {"valid": False, "code": "idempotency_key_required", "results": results}
@@ -368,17 +477,45 @@ class TaskCompiler:
                 results.append({"artifact_ref": ref["artifact_ref"], "verified": verified})
                 if not verified:
                     metrics["no_progress_calls"] += 1
+                    if recipe_reused and recipe_key:
+                        self.recipes.invalidate(recipe_key, "QUARANTINED")
+                        recipe_invalidated = True
+                        metrics["recipe_invalidations"] += 1
+                        self.store.update_plan_metadata(item.plan_id, {"recipe": {"recipe_id": recipe_key, "status": "QUARANTINED", "fingerprint": recipe_hash}})
                     return {"valid": False, "results": results, "code": "unexpected_state"}
                 if graph:
                     decoded = _decode_output(raw)
                     bindings["steps"][step["id"]] = decoded
                     bindings[phase if phase != "fan_out" else "steps"][step["id"]] = decoded
-                self.store.update_item_checkpoint(item.id, f"step_{index}", metadata={"result_ref": ref["artifact_ref"]})
+                self.store.update_item_checkpoint(item.id, f"step_{index}", metadata={"result_ref": ref["artifact_ref"],
+                                                  "verified_targets": step.get("verifies", [])})
                 metrics["state_transitions"] += 1
                 persist_metrics()
-                if progress is not None:
+                if progress is not None and (step.get("verifies") or step["tool"] in {"write_file", "patch"}):
                     progress()
+            if first_item and canary_required:
+                mutations = {s["id"] for s in canonical_graph["fan_out"] if tool_effect(s["tool"]) in WRITE_EFFECTS}
+                proved = {target for s in canonical_graph["fan_out"] for target in s.get("verifies", [])}
+                if mutations - proved:
+                    return {"valid": False, "code": "canary_external_verifier_required", "results": results}
+                self.store.update_item_checkpoint(item.id, "canary_verified", metadata={"fingerprint": recipe_hash})
             return {"valid": True, "results": results}
+
+        def can_start(item):
+            if recipe_invalidated:
+                return False
+            all_items = items_for_plan(item.plan_id)
+            phase = item.input_payload.get("_work_phase", "fan_out")
+            fan = [i for i in all_items if i.input_payload.get("_work_phase", "fan_out") == "fan_out"]
+            if phase == "finalize" and any(i.status.value != "completed" for i in self.store.get_work_items(item.plan_id) if i.input_payload.get("_work_phase") != "finalize"):
+                return False
+            if phase == "fan_out":
+                if any(self.store.get_item(i.id).status.value != "completed" for i in all_items if i.input_payload.get("_work_phase") == "setup"):
+                    return False
+                if fan and item.id != fan[0].id and (canary_required or preflight):
+                    first = self.store.get_item(fan[0].id)
+                    return first.status.value == "completed" and (not canary_required or first.checkpoints.get("canary_verified") == "ok")
+            return True
 
         token = _constraints.set(constraints)
         execution_token = _execution_active.set(True)
@@ -391,32 +528,66 @@ class TaskCompiler:
                     "expected_delta": "verified_step", "actual_delta": raw.get("valid") is True},
                 session_id=session_id, metadata=metadata,
                 stop_on_exception=kind in {WorkClass.BROWSER_TRANSACTION, WorkClass.PROMPT_QUEUE},
-                can_start_item=(lambda item: all(i.status.value == "completed" for i in self.store.get_work_items(item.plan_id)
-                    if (item.input_payload.get("_work_phase") == "finalize" and i.input_payload.get("_work_phase") != "finalize")
-                    or (item.input_payload.get("_work_phase") == "fan_out" and i.input_payload.get("_work_phase") == "setup"))) if graph else None)
+                can_start_item=can_start)
         finally:
             _execution_active.reset(execution_token)
             _constraints.reset(token)
         envelope = summary.to_dict()
         envelope["results_ref"] = summary.summary_artifact_ref
         envelope["ledger"] = self.store.operational_ledger(durable_id)
+        canary = envelope["ledger"].get("canary", {})
+        metrics["canary_successes"] = int(canary_required and canary.get("verified", False))
+        metrics["canary_failures"] = int(canary_required and canary.get("status") in {"failed", "uncertain"})
+        if recipe_key and canary.get("verified") and all(i.status.value == "completed" for i in self.store.get_work_items(durable_id)):
+            verifier_ids = [s["id"] for s in canonical_graph["fan_out"] if s.get("verifies")]
+            self.recipes.promote(recipe_key, canonical_graph, scope, preflight, verifier_ids, recipe_hash)
+            self.store.update_plan_metadata(durable_id, {"recipe": {"recipe_id": recipe_key, "status": "VERIFIED", "fingerprint": recipe_hash}})
+            envelope["ledger"] = self.store.operational_ledger(durable_id)
         if graph:
             envelope["completed"] = envelope["ledger"]["items"]["completed"]
             envelope["total"] = len(request["items"])
+        if canary_required and not canary.get("verified") and envelope["needs_reasoning"]:
+            from workstation.work_contract import correction
+            envelope.update({"code": "canary_failed", "message": "Canary did not prove persisted state; remaining fan-out is blocked.",
+                             "fix": {"review_exceptions": True, "add_read_verifier": True, "never_retry_uncertain_mutation": True}})
+        elif envelope["needs_reasoning"] and envelope["ledger"].get("recipe", {}).get("status") == "STALE":
+            from workstation.work_contract import correction
+            envelope.update(correction(ValueError("recipe_stale: preflight failed; provide a corrected graph and new canary")))
         metrics["work_items_completed"] = envelope["completed"]
+        fan_items = [i for i in self.store.get_work_items(durable_id) if i.input_payload.get("_work_phase", "fan_out") == "fan_out"]
+        metrics["failed_fanout_items"] = sum(i.status.value in {"blocked", "failed"} for i in fan_items[1:])
         metrics["replans"] = int(envelope["needs_reasoning"] > 0)
         metrics["tool_calls_per_state_transition"] = metrics["tool_calls"] / max(1, metrics["state_transitions"])
         metrics["artifact_bytes"] = sum(a.size_bytes for a in self.artifacts.list_artifacts(durable_id)
                                          if a.name != "metrics.json")
+        verified_transitions = len({(i.id, target) for i in self.store.get_work_items(durable_id)
+            for k, meta in i.checkpoints.items() if k.endswith("_meta") and isinstance(meta, dict) and meta.get("result_ref")
+            for target in meta.get("verified_targets", [])})
+        metrics.update({"planner_calls": int(provider_usage is not None), "executor_llm_calls": 0,
+                        "verified_state_transitions": verified_transitions, "estimated_cost": None, "cost_status": "unknown"})
         if provider_usage is not None:
             metrics.update({"usage_status": "reported", "token_usage_scope": "compile_request",
                             "input_tokens": provider_usage.get("input_tokens"),
                             "cached_input_tokens": provider_usage.get("cache_read_tokens"),
                             "output_tokens": provider_usage.get("output_tokens"),
                             "reasoning_tokens": provider_usage.get("reasoning_tokens")})
+            cached = provider_usage.get("cache_read_tokens")
+            total_input = provider_usage.get("input_tokens")
+            uncached = max(0, total_input - cached) if total_input is not None and cached is not None else None
+            metrics["uncached_input_tokens"] = uncached
+            metrics["uncached_input_tokens_per_verified_transition"] = uncached / verified_transitions if uncached is not None and verified_transitions else None
+            metrics["uncached_tokens_per_verified_transition"] = metrics["uncached_input_tokens_per_verified_transition"]
+            metrics["uncached_tokens_per_completed_item"] = uncached / envelope["completed"] if uncached is not None and envelope["completed"] else None
             transitions = metrics["state_transitions"] - prior_transitions
             if transitions and provider_usage.get("total_tokens") is not None:
                 metrics["tokens_per_successful_state_transition"] = provider_usage["total_tokens"] / transitions
+            metrics["tokens_per_verified_transition"] = provider_usage.get("total_tokens") / verified_transitions if provider_usage.get("total_tokens") is not None and verified_transitions else None
+        else:
+            for field in ("input_tokens", "uncached_input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens",
+                          "tokens_per_verified_transition", "uncached_tokens_per_verified_transition", "uncached_input_tokens_per_verified_transition", "uncached_tokens_per_completed_item"):
+                metrics[field] = None
+        metrics["llm_calls_per_completed_item"] = metrics["planner_calls"] / max(1, envelope["completed"])
+        metrics["tool_calls_per_completed_item"] = metrics["tool_calls"] / max(1, envelope["completed"])
         envelope["metrics"] = metrics
         if normalize_verbosity(request.get("verbosity")) == VerbosityLevel.FULL:
             manifest = self.artifacts.read_json(summary.summary_artifact_ref)
@@ -442,12 +613,18 @@ class TaskCompiler:
 
 
 def execute_compiled_work(args: dict, **kwargs) -> str:
+    if args.get("action") == "contract":
+        from workstation.work_contract import CONTRACT
+        return json.dumps(CONTRACT, ensure_ascii=False)
     context = _dispatch_context.get()
     if context is None:
         return json.dumps({"error": "Durable work requires the scoped agent dispatcher"})
     compiler = TaskCompiler()
     try:
         return _execute_compiled_work(compiler, context, args, kwargs)
+    except (ValueError, KeyError, TypeError, ConstraintViolation) as error:
+        from workstation.work_contract import correction
+        return json.dumps(correction(error), ensure_ascii=False)
     finally:
         compiler.store.close()
 

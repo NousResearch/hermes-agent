@@ -1,5 +1,110 @@
 # CURRENT — Workstation Engineering Journal
 
+## H-063 — Close Desktop gates before HW-022 promotion (2026-09-17)
+
+Candidate `089704eb00`, main `a977651539`; no tracked dirty work or merge conflicts.
+Windows run 35165832836 failed aggregate gate: runtime error fixture expects old
+details, secret-file symlink rejection is bypassed by Windows early return, and
+session-state test formatting fails. Experiment: align legacy error fixture with
+compatibility metadata, emit typed human-control faults, reject Windows symlinks
+without chmod, format the flagged test, then focused/typecheck and real CI.
+Acceptance: exact structured recovery codes, symlink target untouched on Windows,
+all affected Desktop gates green. Review workflow diff without relaxing guards;
+only apply ci-reviewed after its documented checklist is satisfied.
+
+Observed: four affected Electron files passed 89 tests. Strengthened runtime
+assertion verifies USER_CONTROL_ACTIVE/WAIT_FOR_RELEASE and absence of compatibility
+metadata on typed faults; follow-up two-file run passed 68 tests. Windows symlink
+branch is covered both with real filesystem and injected platform, without chmod.
+Prettier corrected the flagged session-state test; ESLint added six missing blank
+lines in the resilience test. Existing typed error normalizer and BrowserTask lease
+ownership remain canonical. Workflow review: HW-022 adds only three path filters
+and a controlled replay; no permission widening, guard removal, custom eslint fixer
+or composite action changes. Main has no branch protection (API 404); no merge
+performed while the Desktop gate is red. Final typecheck and GitHub gates follow.
+
+Windows follow-up 35175089324: corrected static/foundation/native contracts pass;
+UI 5673 passed and Electron 1782 passed, 4 skipped. Aggregate remains FAILED:
+release smoke runs the entire Python suite but times out at 300s; Dashboard
+--skip-build has no prebuilt web_dist in a clean checkout; packaged boot test
+matches unrelated shell words; load evidence invokes .venv from apps/desktop.
+API step conclusion can be success under continue-on-error despite failed outcome;
+only full workflow conclusion and the preserve-gate outcomes prove acceptance.
+
+Next experiment: bounded Windows qualification timeout 900s (local full suite
+already measured 448s), explicit canonical web workspace build, boot IPC terminal
+state plus actual overlay visibility, and evidence validation from repository root.
+No guards or test cases removed. Local cross-engine Dashboard: 3 passed; overlay
+contracts: 8 passed. Reproducing the validator from apps/desktop also confirms a
+module import failure; repository-root invocation succeeds, so changing only the
+Python relative path is insufficient. The workflow restores cwd in finally.
+
+Local packaged probe: requiring a terminal main boot state still timed out.
+Trace proves backend.spawn/progress=84/running=true while provider-free onboarding
+is visibly asking for setup; BOOT_FAKE delays progress but does not prevent backend
+spawn (the fixture comment was inaccurate). Updated hypothesis: first launch must
+reach visible setup, a recoverable failure surface, or completed boot with hidden
+connecting overlay. Match those exact UI surfaces, not arbitrary shell words.
+The separate sustained load E2E remains the proof of actual backend chat readiness.
+
+Observed final packaged rebuild: 6 E2E passed in 13.9s, including setup/recovery
+contract; E2E typecheck passes. Web workspace build produces the required dist;
+three cross-engine tests and eight UI overlay contracts pass locally. Second
+workflow review preserves all existing qualification/E2E thresholds and fail-closed
+aggregation; only timeout, asset preparation and validator cwd are corrected.
+
+## H-062 — Verified recipes, canary admission and durable planner context (2026-09-16)
+
+Starting HEAD `a977651539dd4b793e26f96c6116bce187677cc9`; only existing
+`.workstation-audit/` is untracked. No upstream comparison or general re-audit.
+Hypothesis: item-one admission plus explicit read-to-mutation verification
+prevents multiplying an invalid procedure; artifact-backed recipes and bounded
+state projections remove repeated operational learning/narrative compaction.
+Experiment: extend the existing compiler/checkpoints/ledger/registry, test A–Y,
+then replay invalid/corrected/restarted fake Trello workloads and locked CI.
+Acceptance: <=1 exposed item on invalid workflow, no confirmed mutation replay,
+no executor LLM calls, deterministic <=4 KB handoffs, secret-free recipes,
+provider-only projection and no old compaction replication.
+
+Observed: initial focused contracts 22 passed. Existing acceptance then had
+59 passes and 7 failures: mutable fixtures asserted success without an external
+read relationship; those fixtures now declare verifies and retain restart/replay
+invariants. Expanded focused contracts: 26 passed, including 1000 mutations,
+no executor model calls, confirmed-step resume, provider projection and retained
+SessionDB history. A later combined registry run exposed module-import cache
+dependence in the builtin audit (70 passed, 1 audit failure); a clean subprocess
+with isolated HERMES_HOME fixed the audit (1 passed). New scope/stale-resume/
+read-progress/uncached-telemetry cases: 4 passed. Core seams: 254 passed,
+1 unchanged Windows POSIX-0600 assertion; Linux CI remains authoritative.
+An initial combined suite was interrupted after a long silent scale test;
+separate suite with faulthandler identifies committed SQLite fsync in the
+1000-item test, not a deadlock. No persistence guarantee was weakened.
+Lock, license policy, compileall and core anchors pass. Three replay scenarios
+passed: invalid workflow exposes 1 mutation, corrected completes 12, restart
+recipe hits once; each uses 2 fake-provider calls and 0 executor model calls.
+Full local Workstation suite: 387 passed, 2 Windows skips; subsequent focused
+contracts and published-schema fake planner passed. Final experiment-identity
+correction: 9 passed, 29 deselected; graph tool identity, step multiplicity and
+verifier predicate changes now distinguish hypotheses without item-value identity.
+
+Seven controlled replay scenarios passed. Invalid workflow: 1 mutation, zero
+completed items and zero failed fan-out items (remaining items stay pending).
+Corrected workflow: 12 completed, 53 physical tools, 3 shared setup calls,
+2 fake-provider calls, zero executor LLM calls and zero replayed mutations.
+Restarted recipe hit: 12 completed, zero new canary attempts, one recipe hit.
+Stale preflight: zero mutations, one invalidation. Corrected/new-v2 repeats the
+verified path; failed-after-stale still exposes only one item.
+Corrected final provider wire: 1711 bytes, handoff 1439 bytes, duplicate compaction
+bytes suppressed 2878, artifacts 1289737 bytes. Usage/cost remain unknown/null;
+modeled baseline counters are not paid-provider evidence.
+
+GitHub acceptance for implementation `334d5823554954875675e0d835b34d124ddfd9a4`:
+[Workstation CI 35161635997](https://github.com/kevynlucasprofissional-stack/hermes-agent/actions/runs/35161635997)
+is GREEN: 393 Workstation contracts and 255 core seam tests passed on Ubuntu.
+Both contracts and core-patch-dry-run passed, including the controlled replay.
+The final documentation/experiment-identity follow-up must pass the same gate.
+PR #19 remains a draft; no automatic main merge is authorized by this stage.
+
 ## H-051 — Final durable execution hardening (2026-09-16)
 
 Audit: HEAD and fetched origin/main `17df394cfe3e913e6fce6f3130e3efc47e4592a2`;

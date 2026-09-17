@@ -181,15 +181,66 @@ function workstationControllerFault(
   message: string,
   options: Partial<Omit<WorkstationControllerError, 'error_code' | 'message'>> = {}
 ): WorkstationControllerFault {
-  const defaults: Record<WorkstationControllerError['error_code'], Omit<WorkstationControllerError, 'error_code' | 'message'>> = {
-    STALE_REF: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'RESNAPSHOT', details: {} },
-    NO_BOUND_TAB: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'BIND_OR_NAVIGATE', details: {} },
-    AUTH_REQUIRED: { retryable: false, retry_after_ms: 0, state_changed: false, recommended_action: 'REAUTHENTICATE_CONTROLLER', details: {} },
-    USER_CONTROL_ACTIVE: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'WAIT_FOR_RELEASE', details: {} },
-    CAPABILITY_MISSING: { retryable: false, retry_after_ms: 0, state_changed: false, recommended_action: 'ESCALATE', details: {} },
-    TIMEOUT: { retryable: true, retry_after_ms: 0, state_changed: false, recommended_action: 'RETRY_WITH_BACKOFF', details: {} },
-    INVALID_ARGUMENT: { retryable: false, retry_after_ms: 0, state_changed: false, recommended_action: 'CORRECT_REQUEST', details: {} },
-    CONTROLLER_DOWN: { retryable: true, retry_after_ms: 0, state_changed: true, recommended_action: 'RECONCILE_CONTROLLER', details: {} }
+  const defaults: Record<
+    WorkstationControllerError['error_code'],
+    Omit<WorkstationControllerError, 'error_code' | 'message'>
+  > = {
+    STALE_REF: {
+      retryable: true,
+      retry_after_ms: 0,
+      state_changed: true,
+      recommended_action: 'RESNAPSHOT',
+      details: {}
+    },
+    NO_BOUND_TAB: {
+      retryable: true,
+      retry_after_ms: 0,
+      state_changed: true,
+      recommended_action: 'BIND_OR_NAVIGATE',
+      details: {}
+    },
+    AUTH_REQUIRED: {
+      retryable: false,
+      retry_after_ms: 0,
+      state_changed: false,
+      recommended_action: 'REAUTHENTICATE_CONTROLLER',
+      details: {}
+    },
+    USER_CONTROL_ACTIVE: {
+      retryable: true,
+      retry_after_ms: 0,
+      state_changed: true,
+      recommended_action: 'WAIT_FOR_RELEASE',
+      details: {}
+    },
+    CAPABILITY_MISSING: {
+      retryable: false,
+      retry_after_ms: 0,
+      state_changed: false,
+      recommended_action: 'ESCALATE',
+      details: {}
+    },
+    TIMEOUT: {
+      retryable: true,
+      retry_after_ms: 0,
+      state_changed: false,
+      recommended_action: 'RETRY_WITH_BACKOFF',
+      details: {}
+    },
+    INVALID_ARGUMENT: {
+      retryable: false,
+      retry_after_ms: 0,
+      state_changed: false,
+      recommended_action: 'CORRECT_REQUEST',
+      details: {}
+    },
+    CONTROLLER_DOWN: {
+      retryable: true,
+      retry_after_ms: 0,
+      state_changed: true,
+      recommended_action: 'RECONCILE_CONTROLLER',
+      details: {}
+    }
   }
   return new WorkstationControllerFault({ error_code, message, ...defaults[error_code], ...options })
 }
@@ -203,24 +254,60 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
   const token = message.trim().toLowerCase()
   const base = { message, retry_after_ms: 0, resource_ref: resourceRef, details: { compatibility_path: true } }
   if (token === 'human control active' || token.startsWith('human control active:')) {
-    return { ...base, error_code: 'USER_CONTROL_ACTIVE', retryable: true, state_changed: true, recommended_action: 'WAIT_FOR_RELEASE' }
+    return {
+      ...base,
+      error_code: 'USER_CONTROL_ACTIVE',
+      retryable: true,
+      state_changed: true,
+      recommended_action: 'WAIT_FOR_RELEASE'
+    }
   }
   if (token.startsWith('no_bound_browser_tab:') || token === 'no active tab') {
-    return { ...base, error_code: 'NO_BOUND_TAB', retryable: true, state_changed: true, recommended_action: 'BIND_OR_NAVIGATE' }
+    return {
+      ...base,
+      error_code: 'NO_BOUND_TAB',
+      retryable: true,
+      state_changed: true,
+      recommended_action: 'BIND_OR_NAVIGATE'
+    }
   }
   if (token === 'ref_required' || token === 'element_unavailable' || token === 'browser_tab_destroyed') {
     return { ...base, error_code: 'STALE_REF', retryable: true, state_changed: true, recommended_action: 'RESNAPSHOT' }
   }
   if (token === 'timeout' || token === 'timed out') {
-    return { ...base, error_code: 'TIMEOUT', retryable: true, state_changed: false, recommended_action: 'RETRY_WITH_BACKOFF' }
+    return {
+      ...base,
+      error_code: 'TIMEOUT',
+      retryable: true,
+      state_changed: false,
+      recommended_action: 'RETRY_WITH_BACKOFF'
+    }
   }
   if (token === 'controller_unavailable' || token === 'controller_down') {
-    return { ...base, error_code: 'CONTROLLER_DOWN', retryable: true, state_changed: true, recommended_action: 'RECONCILE_CONTROLLER' }
+    return {
+      ...base,
+      error_code: 'CONTROLLER_DOWN',
+      retryable: true,
+      state_changed: true,
+      recommended_action: 'RECONCILE_CONTROLLER'
+    }
   }
   if (token === 'unsupported_action' || token === 'invalid_extension_options_request') {
-    return { ...base, error_code: 'INVALID_ARGUMENT', retryable: false, state_changed: false, recommended_action: 'CORRECT_REQUEST' }
+    return {
+      ...base,
+      error_code: 'INVALID_ARGUMENT',
+      retryable: false,
+      state_changed: false,
+      recommended_action: 'CORRECT_REQUEST'
+    }
   }
-  return { ...base, error_code: 'CAPABILITY_MISSING', retryable: false, state_changed: false, recommended_action: 'ESCALATE' }
+  return {
+    ...base,
+    error_code: 'CAPABILITY_MISSING',
+    retryable: false,
+    state_changed: false,
+    recommended_action: 'ESCALATE'
+  }
 }
 
 interface ControlHandle {
@@ -1982,7 +2069,7 @@ export class WorkstationBrowserRuntime {
 
   private resolveControlTaskId(taskId?: string): string | null {
     const explicit = typeof taskId === 'string' && taskId.trim() ? taskId.trim() : null
-    const activeTaskId = this.activeTabId ? this.entries.get(this.activeTabId)?.ownerTaskId ?? null : null
+    const activeTaskId = this.activeTabId ? (this.entries.get(this.activeTabId)?.ownerTaskId ?? null) : null
     const candidate = explicit ?? activeTaskId ?? this.preferredTaskId
     if (candidate && this.taskLifecycle().task(candidate)) {
       return candidate
@@ -2011,12 +2098,16 @@ export class WorkstationBrowserRuntime {
     }
 
     if (taskId !== 'default' && this.taskLifecycle().hasActiveHumanControl(taskId)) {
-      throw new Error(
+      throw workstationControllerFault(
+        'USER_CONTROL_ACTIVE',
         `Hermes Browser task ${taskId} is under human control. Release Control before agent actions continue.`
       )
     }
     if (taskId === 'default' && this.activeUnboundHumanControlLease()) {
-      throw new Error('Hermes Browser tab is under human control. Release Control before agent actions continue.')
+      throw workstationControllerFault(
+        'USER_CONTROL_ACTIVE',
+        'Hermes Browser tab is under human control. Release Control before agent actions continue.'
+      )
     }
   }
 

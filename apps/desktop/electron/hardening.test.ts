@@ -620,7 +620,10 @@ test('tightenSecretFileMode only touches a regular file the current user owns', 
   assert.deepEqual(chmodded, [], 'nothing was chmodded on the rejected paths')
 
   // The same fs shape, but ours and loose: now it tightens.
-  assert.equal(tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux', userId: uid }), true)
+  assert.equal(
+    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux', userId: uid }),
+    true
+  )
   assert.deepEqual(chmodded, ['/x/connection.json'])
 })
 
@@ -642,6 +645,16 @@ test('tightenSecretFileMode leaves Windows alone rather than flipping the read-o
 
   assert.equal(tightenSecretFileMode('C:\\Users\\me\\connection.json', { fs: fakeFs, platform: 'win32' }), true)
   assert.deepEqual(chmods, [], 'no chmod on win32')
+
+  assert.equal(
+    tightenSecretFileMode('C:\\Users\\me\\linked.json', {
+      fs: { ...fakeFs, lstatSync: () => ({ isSymbolicLink: () => true }) } as any,
+      platform: 'win32'
+    }),
+    false,
+    'Windows rejects symbolic links even though chmod is unavailable'
+  )
+  assert.deepEqual(chmods, [], 'a rejected Windows link never reaches chmod')
 
   // Same fs, POSIX: the chmod does happen, proving the platform gate is what
   // suppressed it above.

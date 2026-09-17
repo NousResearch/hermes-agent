@@ -1,5 +1,43 @@
 # Hermes Workstation Architecture
 
+## Verified execution admission and continuation (HW-022)
+
+For a multi-item plan containing item mutation steps, the first real WorkItem is
+the canary. Every mutation must be covered by a read/discovery step with `verifies`
+and a concrete `expect`. The compiler validates the relationship before execution;
+the remaining fan-out waits for confirmed external verification. A failed canary
+exposes at most one item and leaves the rest pending. Uncertain dispatch still
+requires review and is never automatically repeated. Shared setup/finalize retain
+their existing durable checkpoints and barriers. Single-item/read-only plans and
+the `items + steps` syntax remain supported; mutable batches require stronger proof.
+
+RecipeStore stores sanitized versioned graph artifacts and a SHA-checked reference
+index, using OS interprocess locking and atomic replacement. Recipes become VERIFIED
+only after the completed graph's external proof. Reuse checks tool schema/effect/
+route/runtime/scope fingerprints and executes bounded read-only preflight. A stale
+fingerprint or failed preflight blocks writes; unexpected verification failure
+quarantines reuse. Native browser recipes require host/path-family scope and actual
+URL evidence. Card IDs and timestamps do not define procedure identity; secrets,
+session storage and private reasoning are removed from recipes.
+
+The continuation handoff derives only persisted ledger state: phase, counts,
+constraints, recipe/canary status, bounded blockers and artifact references.
+Runtime-authenticated plan ownership is required. Normal handoffs fit 4 KB; an
+oversized constraint policy references its persisted source rather than truncating
+authority. Provider projection preserves the byte-stable system and latest real
+user message, replaces covered operational history on a copy and retains unrelated
+active tool pairs. SessionDB remains complete. Completed old plans do not shrink
+new ordinary turns. Automatic durable compaction reuses this projection and hash
+deduplication; untrusted/missing state falls back to ordinary compression.
+
+`work_execute(action="contract")` documents bindings, graph phases, verification,
+recipes and resume without dispatch. Compiler errors return bounded codes/fixes.
+Telemetry separates cached/uncached usage when supplied; absent tokens/cost remain
+null. Confirmed external verifier transitions count as progress; arbitrary read
+success does not. The controlled replay exercises invalid, corrected, restart-hit,
+stale, invalid-after-stale, corrected-v2 and known-v2 workflows with real agent/tool/
+persistence paths, fake providers/adapters and zero executor model calls.
+
 ## Durable execution routing
 
 Task Compiler (`task_compiler.py`) classifies structured work as interactive,

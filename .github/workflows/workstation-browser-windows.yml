@@ -126,6 +126,7 @@ jobs:
           & .venv\Scripts\python.exe -m workstation.release_qualification `
             --root . `
             --python .venv\Scripts\python.exe `
+            --timeout 900 `
             --clean-install-evidence "${{ steps.clean_machine_evidence.outputs.path }}" `
             --report "$env:RUNNER_TEMP\hermes-release-qualification.json"
           if ($LASTEXITCODE -ne 0) {
@@ -175,6 +176,8 @@ jobs:
       - name: Install Dashboard smoke browsers
         working-directory: apps/desktop
         run: npx playwright install chromium firefox
+      - name: Build Dashboard smoke assets
+        run: npm run build --workspace web
       - name: Dashboard cross-engine smoke
         id: dashboard_cross_engine
         continue-on-error: true
@@ -211,14 +214,19 @@ jobs:
           if (-not (Test-Path -LiteralPath $reportPath)) {
             throw "Integrated Desktop/Browser H013 evidence report was not produced."
           }
-          & .venv\Scripts\python.exe -m workstation.desktop_load_evidence `
-            --report $reportPath `
-            --min-tasks 16 `
-            --min-rounds 300 `
-            --min-duration-ms 120000 `
-            --min-chat-turns 8
-          if ($LASTEXITCODE -ne 0) {
-            throw "Integrated Desktop/Browser H013 evidence report is incomplete or under-sized."
+          Push-Location ..\..
+          try {
+            & .venv\Scripts\python.exe -m workstation.desktop_load_evidence `
+              --report $reportPath `
+              --min-tasks 16 `
+              --min-rounds 300 `
+              --min-duration-ms 120000 `
+              --min-chat-turns 8
+            if ($LASTEXITCODE -ne 0) {
+              throw "Integrated Desktop/Browser H013 evidence report is incomplete or under-sized."
+            }
+          } finally {
+            Pop-Location
           }
       - name: Upload Desktop E2E evidence
         if: always()

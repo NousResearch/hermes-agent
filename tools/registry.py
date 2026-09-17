@@ -795,6 +795,11 @@ class ToolRegistry:
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
+        if effect is None and owner is None:
+            module = self._caller_module()
+            if module.startswith("tools.") and module != "tools.mcp_tool":
+                from tools.effects import builtin_effect
+                effect = schema.get("effect") or schema.get("x-hermes-effect") or builtin_effect(name)
         if scope is None and owner is not None:
             scope = self._plugin_scope_of(owner)
         with self._lock:

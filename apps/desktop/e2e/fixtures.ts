@@ -552,7 +552,8 @@ export interface PackagedAppFixture {
 /**
  * Launch the *packaged* Electron binary (from `npm run pack` →
  * `electron-builder --dir`) with `BOOT_FAKE=1` so it simulates boot
- * progress without spawning a real Hermes backend.
+ * progress delays. Backend startup may still occur; provider-free setup is
+ * a valid first-launch outcome, and sustained-load specs prove backend readiness.
  *
  * Uses the same sandbox isolation (credential stripping, isolated
  * HERMES_HOME + userData, unique app name) as the dev-mode fixtures.
@@ -569,7 +570,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   // Build the sandbox env using the shared helpers, then add the
   // packaged-binary-specific overrides.
   const env = buildAppEnv(sandbox, {
-    // Fake boot: simulates progress steps without spawning the real backend.
+    // Fake boot adds progress delays; it does not suppress backend startup.
     HERMES_DESKTOP_BOOT_FAKE: '1',
     HERMES_DESKTOP_BOOT_FAKE_STEP_MS: '120',
     // Keep packaged boundary tests headless: Playwright can inspect the

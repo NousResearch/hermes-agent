@@ -1,5 +1,21 @@
 # Hermes Workstation foundation patch manifest
 
+## HW-022 — Verified recipes, canary gate and durable continuation
+
+Extends HW-021 in the existing compiler, phase checkpoints and operational ledger.
+Multi-item mutation workflows admit item one through explicit external read
+verification before fan-out. Verified recipe bodies reuse ArtifactStore; a locked,
+atomic JSON index holds references/status, not task state. Schema/scope fingerprints,
+read-only preflight and STALE/QUARANTINED status fail closed on reuse.
+
+`recipes.py`, `continuation.py` and `work_contract.py` implement sanitized recipe
+storage, authenticated bounded planner projections and actionable caller contracts.
+SessionDB keeps history; automatic durable compaction deduplicates a provider-only
+handoff. Registry effects and ExperimentKey extend the canonical policies.
+Contracts: `test_canary_recipe_context.py`; controlled replay:
+`python -m workstation.benchmarks.trello_regression`. Core seams are recorded in
+UPSTREAM_DELTA.md. No live Trello API, paid-token savings or automatic merge is claimed.
+
 ## HW-021 — Final durable hardening surface
 
 Extends HW-020 with canonical registry effect metadata, shared setup/finalize

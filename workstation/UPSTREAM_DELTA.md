@@ -1,5 +1,42 @@
 # Hermes Workstation upstream delta
 
+## HW-022 — Verified procedure admission and planner context (2026-09-16)
+
+Downstream base: `a977651539dd4b793e26f96c6116bce187677cc9`.
+No new upstream comparison, wholesale file replacement or upstream merge.
+
+Core adaptations: `agent/conversation_loop.py` projects authenticated durable state
+on a copy immediately before provider sanitation/cache decoration. Automatic
+`agent/conversation_compression.py` uses a deduplicated durable handoff when available;
+manual force, commit fences and ordinary compression retain their existing paths.
+`agent/context_compressor.py` is reused without modification for trusted references
+and real-user turn identification. SessionDB history and cached system text remain.
+
+`agent/tool_guardrails.py` scopes failures by structural ExperimentKey and verified
+progress generation. Item values are excluded; selectors, commands, graph tool
+identity/order/multiplicity and verifier expectations distinguish hypotheses.
+Arbitrary tool output cannot declare progress. `agent/tool_result_classification.py`
+uses canonical effect metadata instead of a second no-effect name whitelist.
+`tools/registry.py` assigns first-party effects on registration; `tools/effects.py`
+covers instructional reads and vision, with conservative unknown write capability.
+`tools/workstation_work.py` exposes the bounded contract and recipe arguments through
+the existing session-gated tool, without adding core tools or changing toolsets.
+
+Canonical compiler/store/graph extensions and the seven-case Trello replay are
+downstream-owned. TurnConstraintContext was already correctly scoped: real two-turn
+tests prove reset and auxiliary route propagation; its lifecycle was not rewritten.
+Workstation CI retains locked uv sync and adds the controlled replay and path filters
+for affected core seams. See engineering journal for exact GitHub evidence.
+
+Promotion gate follow-up extends Desktop-owned helpers: Windows secret-file mode
+checks reject symlinks before the chmod no-op, and BrowserRuntime emits typed
+human-control faults through the existing controller contract. First-launch E2E
+checks visible setup/recovery or completed boot instead of arbitrary shell text;
+stable UI selectors are additive. Windows qualification has an explicit bounded
+900s timeout for the full suite (local Windows run measured 448s), Dashboard smoke
+builds canonical web assets, and load evidence validates from repository cwd.
+No gate, scope check, permission guard or uncertain replay protection is removed.
+
 ## HW-021 — Final durable graph/effect/turn hardening (2026-09-16)
 
 Audit base: `17df394cfe3e913e6fce6f3130e3efc47e4592a2`, equal to fetched origin/main.

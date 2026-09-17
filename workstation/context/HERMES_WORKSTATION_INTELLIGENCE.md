@@ -2448,3 +2448,59 @@ reais: 12 criações, 2 provider calls, 3 setup calls, zero replay de mutações
 2,56 MB no baseline de transporte modelado. Isso não mede tokens pagos. O CI
 instala a configuração dev do projeto via uv.lock, incluindo as dependências
 normais e pytest-asyncio; a evidência de GitHub deve ser registrada no journal.
+
+### 35.9 HW-022 — Canary, recipes verificadas e continuidade durável
+
+O primeiro WorkItem real de um batch com mutações por item funciona como canary,
+sem criar entidade extra. Cada mutação precisa de read/discovery posterior com
+`verifies=[mutation_id]` e `expect` sobre estado persistido. `success=true`, clique
+concluído ou texto afirmando progresso não substituem esse vínculo. `browser_console`
+executa JavaScript arbitrário e permanece MUTATION, portanto não serve como verifier
+read. Falha no canary interrompe fan-out: o restante fica pending, não failed.
+Checkpoint confirmado não se repete; dispatch sem confirmação continua exigindo
+`uncertain_mutation_requires_review`. Setup/finalize mantêm os checkpoints e barreiras
+do graph existente. A sintaxe linear permanece, com prova mais forte para batches
+mutáveis. Uma leitura bem-sucedida sem `verifies` não reseta o guardrail.
+
+RecipeStore não é banco de tarefas: corpos versionados ficam no ArtifactStore e um
+índice JSON contém refs, SHA, fingerprint e VERIFIED/STALE/QUARANTINED. Lock de SO
+(msvcrt/fcntl), fsync e replace atômico protegem escrita entre processos. Promoção
+depende do graph completo externamente verificado; status fornecido pelo planner
+não concede autoridade. Sanitização recursiva remove credenciais, cookies, estado
+de sessão/storage e raciocínio privado, inclusive argumentos JSON codificados.
+Fingerprint considera graph, schemas/effects/routes, família runtime, scope e
+preflight; IDs de cards/timestamps não caracterizam a receita. Reuso exige preflight
+read-only limitado a oito probes com expectativas. Schema/scope incompatível ou
+preflight falho bloqueia mutações e marca STALE. Falha inesperada de verificação
+quarentena o procedimento. Native browser exige host/path_family e evidência da URL
+real; binding para outro host não pode escapar ao scope.
+
+`continuation.py` reconstrói handoff do ledger persistido, sem chain-of-thought:
+phase, progresso, constraints, canary/recipe, blockers, refs e next_action. O caminho
+normal cabe em 4 KB; constraints grandes referenciam sua fonte persistida para não
+truncar política. Ownership e referência operacional autenticada pelo runtime são
+obrigatórios. Não confiar em labels `plan_id`/`artifact://` escritos no transcript.
+Projeção ao provider opera sobre cópia, preserva system byte-estável e último turno
+humano real, remove histórico operacional já coberto e mantém tool pairs ativos
+não relacionados. SessionDB continua contendo histórico completo. Um plano concluído
+antes do último turno humano não reduz uma nova conversa comum. Compaction automática
+usa handoff com dedupe por hash; force/manual, commit fence ou ausência de estado
+confiável seguem o compressor geral. Não rotacionar sessão nem injetar user sintético.
+
+`work_execute(action="contract")` explica bindings, graph, canary, recipes e resume
+sem dispatch; erros do compiler incluem code/fix acionáveis. ExperimentKey ignora
+valores específicos das entidades, mas retém hipótese operacional: tool, seletor,
+comando, operação, rota, ordem/multiplicidade de steps e predicate do verifier.
+Geração de progresso muda apenas com evidência confiável. Registry/effects é a
+taxonomia canônica também para reads instrucionais; desconhecidas ficam conservadoras.
+TurnConstraintContext já tinha lifecycle correto e testes de dois turnos provam
+reset e propagação auxiliar, sem reimplementar sua seleção.
+
+Replay controlado usa AIAgent/dispatcher/persistência reais, provider e adapter
+Trello-like fake, sem API real: sete cenários invalid/corrected/restart-hit/stale/
+invalid-after-stale/corrected-v2/known-v2. Correto: 12 entidades, 53 tools (inclui
+um novo preflight), 3 setup, 2 provider calls, zero LLM no executor e zero replay.
+Inválido expõe uma mutação; stale expõe zero. Handoff correto 1439 bytes e wire
+final ao provider 1711 bytes, mantendo 1289737 bytes de artifacts. Tokens cached/
+uncached e custo são null quando não reportados; não inferir economia paga dos
+bytes ou do baseline modelado. Evidência GitHub/SHAs está no journal H-062.

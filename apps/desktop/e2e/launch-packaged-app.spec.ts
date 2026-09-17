@@ -3,12 +3,7 @@ import path from 'node:path'
 
 import { expect, test } from './test'
 
-import {
-  PACKAGED_BINARY_PATH,
-  type PackagedAppFixture,
-  packagedBinaryExists,
-  setupPackagedApp,
-} from './fixtures'
+import { PACKAGED_BINARY_PATH, type PackagedAppFixture, packagedBinaryExists, setupPackagedApp } from './fixtures'
 import { expectVisualSnapshot } from './visual-snapshot'
 
 /**
@@ -23,11 +18,14 @@ import { expectVisualSnapshot } from './visual-snapshot'
 
 let fixture: PackagedAppFixture | null = null
 
+interface PackagedBootWindow extends Window {
+  hermesDesktop: {
+    getBootProgress(): Promise<{ error: string | null; phase: string; progress: number; running: boolean }>
+  }
+}
+
 test.beforeAll(async () => {
-  test.skip(
-    !packagedBinaryExists(),
-    `Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'npm run pack' first.`,
-  )
+  test.skip(!packagedBinaryExists(), `Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'npm run pack' first.`)
 
   fixture = await setupPackagedApp()
 })
@@ -51,19 +49,23 @@ test('renderer loads and shows DOM content', async () => {
 
 test('Desktop IPC and the loopback controller expose the same resource and event identities', async () => {
   const page = fixture!.page
-  const ipcSnapshot = await page.evaluate(async () =>
-    (window as typeof window & {
-      hermesDesktop?: {
-        workstationBrowser?: {
-          resources: () => Promise<unknown>
+  const ipcSnapshot = (await page.evaluate(async () =>
+    (
+      window as typeof window & {
+        hermesDesktop?: {
+          workstationBrowser?: {
+            resources: () => Promise<unknown>
+          }
         }
       }
-    }).hermesDesktop?.workstationBrowser?.resources()
-  ) as {
-    schema_version: number
-    runtime: string
-    resources: Array<{ resource_id: string; resource_type: string; state: Record<string, unknown> }>
-  } | undefined
+    ).hermesDesktop?.workstationBrowser?.resources()
+  )) as
+    | {
+        schema_version: number
+        runtime: string
+        resources: Array<{ resource_id: string; resource_type: string; state: Record<string, unknown> }>
+      }
+    | undefined
 
   expect(ipcSnapshot?.schema_version).toBe(1)
   expect(ipcSnapshot?.runtime).toBe('electron-chromium')
@@ -75,7 +77,7 @@ test('Desktop IPC and the loopback controller expose the same resource and event
     headers: { Authorization: `Bearer ${control.token}` }
   })
   expect(response.ok).toBe(true)
-  const controllerSnapshot = await response.json() as {
+  const controllerSnapshot = (await response.json()) as {
     success: boolean
     schema_version: number
     runtime: string
@@ -85,23 +87,28 @@ test('Desktop IPC and the loopback controller expose the same resource and event
   expect(controllerSnapshot.success).toBe(true)
   expect(controllerSnapshot.schema_version).toBe(ipcSnapshot?.schema_version)
   expect(controllerSnapshot.runtime).toBe(ipcSnapshot?.runtime)
-  expect(controllerSnapshot.resources.map(resource => [resource.resource_type, resource.resource_id]))
-    .toEqual(ipcSnapshot?.resources.map(resource => [resource.resource_type, resource.resource_id]))
+  expect(controllerSnapshot.resources.map(resource => [resource.resource_type, resource.resource_id])).toEqual(
+    ipcSnapshot?.resources.map(resource => [resource.resource_type, resource.resource_id])
+  )
 
-  const ipcEvents = await page.evaluate(async () =>
-    (window as typeof window & {
-      hermesDesktop?: {
-        workstationBrowser?: {
-          events: (taskId?: string | null, limit?: number) => Promise<unknown>
+  const ipcEvents = (await page.evaluate(async () =>
+    (
+      window as typeof window & {
+        hermesDesktop?: {
+          workstationBrowser?: {
+            events: (taskId?: string | null, limit?: number) => Promise<unknown>
+          }
         }
       }
-    }).hermesDesktop?.workstationBrowser?.events(null, 200)
-  ) as {
-    schema_version: number
-    runtime: string
-    task_id: string | null
-    events: Array<{ event_id: string; task_id: string; session_id: string; timestamp: string }>
-  } | undefined
+    ).hermesDesktop?.workstationBrowser?.events(null, 200)
+  )) as
+    | {
+        schema_version: number
+        runtime: string
+        task_id: string | null
+        events: Array<{ event_id: string; task_id: string; session_id: string; timestamp: string }>
+      }
+    | undefined
 
   expect(ipcEvents?.schema_version).toBe(1)
   expect(ipcEvents?.runtime).toBe('electron-chromium')
@@ -110,7 +117,7 @@ test('Desktop IPC and the loopback controller expose the same resource and event
     headers: { Authorization: `Bearer ${control.token}` }
   })
   expect(eventsResponse.ok).toBe(true)
-  const controllerEvents = await eventsResponse.json() as {
+  const controllerEvents = (await eventsResponse.json()) as {
     success: boolean
     schema_version: number
     runtime: string
@@ -129,9 +136,11 @@ test('HUD composer remains fully inside the transparent window', async () => {
   const hudPagePromise = fixture!.app.waitForEvent('window')
 
   await fixture!.page.evaluate(() =>
-    (window as typeof window & {
-      hermesDesktop?: { hud?: { open: (options: { sessionId: null }) => Promise<void> } }
-    }).hermesDesktop?.hud?.open({ sessionId: null })
+    (
+      window as typeof window & {
+        hermesDesktop?: { hud?: { open: (options: { sessionId: null }) => Promise<void> } }
+      }
+    ).hermesDesktop?.hud?.open({ sessionId: null })
   )
 
   const hudPage = await hudPagePromise
@@ -164,7 +173,7 @@ test('HUD composer remains fully inside the transparent window', async () => {
       // Tailwind's standalone `translate: -50%` live and shifting the dock
       // half a window off-screen. Surface the computed value so a failure
       // says WHY the dock moved, not just that it did.
-      dockTranslate: getComputedStyle(dock).translate,
+      dockTranslate: getComputedStyle(dock).translate
     }
   })
 
@@ -198,34 +207,40 @@ test('HUD composer remains fully inside the transparent window', async () => {
   await hudPage.close()
 })
 
-test('boot progress overlay fades out or shows error state', async () => {
+test('packaged first launch reaches setup or a terminal boot state', async () => {
   const page = fixture!.page
-  await page.waitForFunction(
-    () => {
-      const root = document.getElementById('root')
+  // Match the actual boot state, not unrelated shell text such as "waiting".
+  await expect
+    .poll(
+      async () => {
+        const boot = await page.evaluate(() =>
+          (window as unknown as PackagedBootWindow).hermesDesktop.getBootProgress()
+        )
 
-      if (!root) {
-        return false
-      }
+        // Provider-free first launch can require user setup while the backend
+        // is still starting. That recovery/setup surface is a valid outcome.
+        if (await page.getByTestId('desktop-onboarding').isVisible()) {
+          return true
+        }
 
-      const text = root.textContent ?? ''
+        if (await page.getByTestId('boot-failure-overlay').isVisible()) {
+          return true
+        }
 
-      // Error path: boot failure overlay renders an error message.
-      if (text.includes('error') || text.includes('Error') || text.includes('failed')) {
-        return true
-      }
+        return !boot.running && (boot.progress >= 100 || Boolean(boot.error))
+      },
+      { timeout: 60_000 }
+    )
+    .toBe(true)
 
-      // Success path: overlay disappears and the app renders. If there's
-      // no "boot" / "starting" / "installing" text visible, boot has
-      // completed (either to the main UI or to onboarding).
-      const bootIndicators = ['starting', 'resolving', 'spawning', 'waiting', 'installing']
-      const lower = text.toLowerCase()
-
-      return !bootIndicators.some((word) => lower.includes(word))
-    },
-    undefined,
-    { timeout: 60_000 },
-  )
+  const boot = await page.evaluate(() => (window as unknown as PackagedBootWindow).hermesDesktop.getBootProgress())
+  if (await page.getByTestId('desktop-onboarding').isVisible()) {
+    await expect(page.getByTestId('desktop-onboarding')).toBeVisible()
+  } else if (boot.error || (await page.getByTestId('boot-failure-overlay').isVisible())) {
+    await expect(page.getByTestId('boot-failure-overlay')).toBeVisible()
+  } else {
+    await expect(page.getByTestId('gateway-connecting-overlay')).toBeHidden()
+  }
 })
 
 test('can capture a screenshot for the CI artifact', async () => {

@@ -83,7 +83,14 @@ def _builtin_gateway_liveness() -> Optional[bool]:
 
         heartbeat_age = get_ticker_heartbeat_age()
         stale_after = TICKER_INTERVAL_SECONDS * 3 + 20
-        return heartbeat_age is not None and heartbeat_age <= stale_after
+        # None means the file is absent or unreadable — we cannot determine
+        # whether the Desktop scheduler is running, so return None (unknown)
+        # rather than False (not running). This avoids the false "Gateway is
+        # not running" warning when the Desktop app is active but the
+        # heartbeat path differs between the Desktop backend and the CLI.
+        if heartbeat_age is None:
+            return None
+        return heartbeat_age <= stale_after
     except Exception:
         return None
 
@@ -100,8 +107,10 @@ def _warn_if_gateway_not_running() -> None:
     """
     if _builtin_gateway_liveness() is not False:
         return
-    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-    print(color("     Start it with: hermes gateway install\n"
+    print(color("  ⚠  Gateway is not running — scheduled jobs fire only while "
+                "the Desktop app is open.", Colors.YELLOW))
+    print(color("     For always-on scheduling, start the gateway:\n"
+                "                    hermes gateway install\n"
                 "                    sudo hermes gateway install --system  # Linux servers\n"
                 "     Check status:  hermes cron status", Colors.DIM))
 

@@ -174,6 +174,34 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return () => ipcRenderer.removeListener('hermes:hud:game-overlay', listener)
     }
   },
+  // macOS native screenshot gesture; captures require a main-issued request.
+  screenshot: process.platform === 'darwin' ? {
+    getSettings: () => ipcRenderer.invoke('hermes:screenshot:settings:get'),
+    setEnabled: enabled => ipcRenderer.invoke('hermes:screenshot:settings:set', enabled),
+    openPermissionSettings: kind => ipcRenderer.invoke('hermes:screenshot:permission', kind),
+    capture: requestId => ipcRenderer.invoke('hermes:screenshot:capture', requestId),
+    onStatus: callback => {
+      const listener = (_event, status) => callback(status)
+      ipcRenderer.on('hermes:screenshot:status', listener)
+
+      return () => ipcRenderer.removeListener('hermes:screenshot:status', listener)
+    },
+    onRequest: callback => {
+      const channel = 'hermes:screenshot:request'
+      const listener = (_event, requestId) => callback(requestId)
+      if (ipcRenderer.listenerCount(channel) === 0) {
+        ipcRenderer.send('hermes:screenshot:subscribe', true)
+      }
+      ipcRenderer.on(channel, listener)
+
+      return () => {
+        ipcRenderer.removeListener(channel, listener)
+        if (ipcRenderer.listenerCount(channel) === 0) {
+          ipcRenderer.send('hermes:screenshot:subscribe', false)
+        }
+      }
+    }
+  } : undefined,
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
   // shortcut + the persisted preference; the quick window only captures text
   // and hands it back, and the primary renderer submits it through the normal
@@ -394,7 +422,6 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       shipInfo: repoPath => ipcRenderer.invoke('hermes:git:review:shipInfo', repoPath),
       prList: (repoPath, branches, numbers) =>
         ipcRenderer.invoke('hermes:git:review:prList', repoPath, branches, numbers),
-      fetchPrComment: (repoPath, url) => ipcRenderer.invoke('hermes:git:review:fetchPrComment', repoPath, url),
       createPr: repoPath => ipcRenderer.invoke('hermes:git:review:createPr', repoPath)
     }
   },

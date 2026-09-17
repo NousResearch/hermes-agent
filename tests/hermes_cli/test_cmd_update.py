@@ -263,6 +263,94 @@ class TestUpdateManagedPythonEnvIsolation:
         assert uv_env.get("UV_NO_CONFIG") == "1"
 
 
+class TestRepairCurrentCheckoutRuntimeRepair:
+    """Already-up-to-date path after a managed SQLite runtime repair (#112571)."""
+
+    @staticmethod
+    def _run(monkeypatch, *, repaired: bool, lazy_refresh_ok: bool = True):
+        from hermes_cli.managed_uv import RuntimeRepairResult
+        from hermes_cli import main as hm
+
+        lazy_features = ["telegram", "hindsight", "edge-tts", "bedrock"]
+        tool_dependencies = ["browser"]
+        restored = []
+
+        monkeypatch.setattr(
+            update_cmd, "_venv_core_imports_healthy", lambda: (True, "core imports healthy")
+        )
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(
+            update_cmd, "_pip_install_prefix", lambda _uv: (["uv", "pip"], {"VIRTUAL_ENV": "venv"})
+        )
+        markers = []
+        monkeypatch.setattr(
+            update_cmd, "_write_lazy_refresh_incomplete_marker", lambda: markers.append("write")
+        )
+        monkeypatch.setattr(
+            hm, "_clear_lazy_refresh_incomplete_marker", lambda: markers.append("clear")
+        )
+
+        def refresh(prefix, *, env, features):
+            restored.append(("lazy", prefix, env, features))
+            return lazy_refresh_ok
+
+        monkeypatch.setattr(hm, "_refresh_active_lazy_features", refresh)
+        monkeypatch.setattr(
+            hm, "_restore_active_tool_dependencies",
+            lambda dependencies, prefix, *, env: restored.append(("tools", prefix, env, dependencies)),
+        )
+        monkeypatch.setattr(
+            update_cmd, "_repair_node_deps_on_current_checkout", lambda *args, **kwargs: True
+        )
+
+        def ensure(*, repair_observer, **_kwargs):
+            if repaired:
+                repair_observer(RuntimeRepairResult("repaired"))
+            return "uv"
+
+        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", ensure)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", ensure)
+
+        assert update_cmd._repair_current_checkout(
+            assume_yes=True,
+            gateway_mode=False,
+            pre_update_snapshot_id=None,
+            had_desktop_app_before_update=False,
+            active_lazy_features=lazy_features,
+            active_tool_dependencies=tool_dependencies,
+            upstream_checked=True,
+            _windows_gateway_resume=None,
+        )
+        return restored, lazy_features, tool_dependencies, markers
+
+    def test_restores_optional_dependencies_after_runtime_repair(self, monkeypatch):
+        """A SQLite venv replacement passes the core-import probe, yet the swapped-in venv was
+        built from uv.lock alone: the captured lazy backends and Hermes Tools deps must be
+        restored into it, once each, with the repaired installer prefix."""
+        restored, lazy_features, tool_dependencies, markers = self._run(monkeypatch, repaired=True)
+        assert restored == [
+            ("lazy", ["uv", "pip"], {"VIRTUAL_ENV": "venv"}, lazy_features),
+            ("tools", ["uv", "pip"], {"VIRTUAL_ENV": "venv"}, tool_dependencies),
+        ]
+        assert markers == ["write", "clear"]
+
+    def test_failed_lazy_restore_keeps_incomplete_marker(self, monkeypatch, capsys):
+        """Mirror of the pull path (update_cmd_deps): the lazy-refresh breadcrumb is written
+        before the restore and cleared only when the refresh reports success, so a failed
+        restore into the swapped-in venv is picked up by the next `hermes` run instead of
+        being hidden behind "Already up to date!"."""
+        _, _, _, markers = self._run(monkeypatch, repaired=True, lazy_refresh_ok=False)
+        assert markers == ["write"]
+        assert "Lazy-refresh recovery incomplete" in capsys.readouterr().out
+
+    def test_healthy_venv_without_runtime_repair_is_left_alone(self, monkeypatch):
+        """Control: no repair + healthy core imports = the venv was never replaced, so nothing
+        is reinstalled (the up-to-date path stays a no-op for Python deps)."""
+        restored, _, _, markers = self._run(monkeypatch, repaired=False)
+        assert restored == []
+        assert markers == []
+
+
 class TestCmdUpdateBranchFallback:
     """cmd_update falls back to main when current branch has no remote counterpart."""
 

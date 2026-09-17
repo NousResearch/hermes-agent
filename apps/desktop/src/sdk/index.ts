@@ -30,9 +30,11 @@ import {
   $narrowViewport,
   $newSessionTabAction,
   $paneVisible,
+  adoptContributedPanes,
   registerPaneCloser,
   removeTreePane,
-  revealTreePane
+  revealTreePane,
+  undismissTreePanes
 } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
@@ -356,6 +358,10 @@ export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
  *  and paint durable history. Bot Mode opts into one retry, so its effective
  *  ceiling is two bounded attempts rather than an unbounded wait. */
 export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
+/** Ceiling on the paint-first "Syncing…" badge. The profile gate it waits on is
+ *  not guaranteed to ever fire (see beginHydrationBackgroundSync), so the badge
+ *  needs a bound of its own or it outlives the wake it describes. */
+export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
@@ -395,18 +401,44 @@ export interface PluginNewChatOptions {
 // down as soon as the active-profile gate catches up. The listener clears ONLY
 // its own profile's badge: a newer wake may have replaced the badge with a
 // different profile, and the stale listener must not wipe the winner's.
+//
+// The gate is not guaranteed to fire. `.listen()` is change-only, and a wake
+// is routed here precisely because $activeGatewayProfile did not match at
+// resolve time. ensureGatewayProfile does publish the target on a
+// shared-primary connection, but when the activation did NOT land it publishes
+// the route the registry actually settled on instead — so on that path the
+// atom may never become this profile and the listener never fires. Without a
+// cap the badge would outlive the wake it describes and strand a permanent
+// "Syncing <profile>…" spinner with no user-reachable dismissal; only a full
+// app restart would clear it. Cap the wait so the badge can never outlive the
+// work.
 function beginHydrationBackgroundSync(profile: string): void {
   $hydrationSyncProfile.set(profile)
 
+  let timer: number | undefined
+
+  const clearOwnBadge = (): void => {
+    if ($hydrationSyncProfile.get() === profile) {
+      $hydrationSyncProfile.set(null)
+    }
+  }
+
   const unlisten = $activeGatewayProfile.listen(next => {
     if (normalizeProfileKey(next) === profile) {
-      if ($hydrationSyncProfile.get() === profile) {
-        $hydrationSyncProfile.set(null)
+      clearOwnBadge()
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
       }
 
       unlisten()
     }
   })
+
+  timer = window.setTimeout(() => {
+    clearOwnBadge()
+    unlisten()
+  }, HYDRATION_SYNC_BADGE_TIMEOUT_MS)
 }
 
 function waitForFocusedSessionHydration({
@@ -1302,6 +1334,24 @@ export const host = {
    *  (`typeof host.paneVisibility === 'function'`). */
   paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
 
+  /** Forget a persisted Close for a contributed pane so adoption puts it back
+   *  where its dock hint says — WITHOUT fronting it or un-collapsing its zone
+   *  (that is `revealPane`, for an explicit user action). For a pane a plugin
+   *  registers conditionally (Bot Mode's Scheduled jobs pane exists only while
+   *  Bot Mode is on screen), its re-registration is the only "show" the user
+   *  ever performs, so a remembered Close would otherwise strand the pane until
+   *  a full layout reset (#102224). Feature-detect on older desktops. */
+  undismissPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    undismissTreePanes([id])
+    adoptContributedPanes()
+  },
+
   /** Reveal a contributed pane and its zone from an explicit user action. */
   revealPane: (paneId: string): void => {
     const id = (paneId ?? '').trim()
@@ -1315,7 +1365,11 @@ export const host = {
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.
-   *  Listeners are isolated; a throw can't affect app dispatch. */
+   *  Listeners are isolated; a throw can't affect app dispatch. A subscription
+   *  made while your plugin's `register()` runs is retired with the plugin on
+   *  unload/reload/disable; one made later (a timer, a socket callback) is
+   *  yours to wire to `ctx.onDispose` — or use `ctx.onEvent`, which is
+   *  tracked wherever it is called. */
   onEvent: onGatewayEvent,
 
   /** Restart the backend gateway (progress surfaces in the core statusbar). */
@@ -1578,6 +1632,10 @@ export { SkillsView } from '@/app/skills'
  *  renders anywhere (a plugin dialog); pass a live `gateway` (see
  *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
 export { McpTab } from '@/app/skills/mcp-tab'
+/** Canonical raw message renderer: applies Desktop message transforms (including
+ * `MEDIA:` delivery directives) and the same rich Markdown/media components as
+ * core chat. Prefer this over raw Streamdown for transcript-style messages. */
+export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
@@ -1713,8 +1771,9 @@ export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
- *  dialog: it shows the warning and resends with
- *  `confirm_expensive_model: true` on Confirm (#95293). */
+ *  dialog: it asks through the app's ConfirmDialog (Switch anyway / Keep
+ *  current model) and only a confirmed answer resends with
+ *  `confirm_expensive_model: true` (#95293, #112458). */
 export {
   type GuardedModelSwitchResult,
   surfaceModelSwitchConfirm,

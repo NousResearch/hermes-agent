@@ -445,6 +445,23 @@ from cron.executions import (
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
 
+# Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
+# report that merely quotes the token cannot turn a healthy run into a failed one.
+CRON_FAILURE_MARKER = "[CRON_FAILURE]"
+
+
+def _cron_failure_marker_error(text: str) -> Optional[str]:
+    """Return failure evidence when an agent response declares a cron failure.
+
+    Only the exact, standalone first line is control text. The caller keeps the complete response
+    in the saved run output while routing this evidence through normal failure bookkeeping.
+    """
+    lines = (text or "").splitlines()
+    if not lines or lines[0].rstrip() != CRON_FAILURE_MARKER:
+        return None
+    evidence = "\n".join(lines[1:]).strip()
+    return evidence or "Cron agent reported failure."
+
 
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
@@ -1635,7 +1652,7 @@ def _raise_inactivity_timeout(agent, job_name: str, limit_s: float) -> None:
         job_name, _secs_ago, limit_s,
         _last_desc, _activity.get("api_call_count", 0), _activity.get("max_iterations", 0),
         _activity.get("current_tool") or "none")
-    request_hard_interrupt(agent, "Cron job timed out (inactivity)")
+    request_hard_interrupt(agent, "Cron job timed out (inactivity)", tool_reason="cron inactivity watchdog")
     raise TimeoutError(
         f"Cron job '{job_name}' idle for "
         f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
@@ -2550,10 +2567,12 @@ def _classify_delivery_outcome(
 
 def _compose_run_delivery(
     job: dict, *, success: bool, error, final_response: str, output_file,
+    agent_declared: bool = False,
 ) -> tuple[str, bool, bool, bool, Optional[str]]:
     """Text to deliver for a finished run. Returns ``(deliver_content, blocked_config,
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
-    says the operator was already told, deliver nothing."""
+    says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
+    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
     err = str(error) if error else ""
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
@@ -2576,6 +2595,14 @@ def _compose_run_delivery(
         )
         if incident_acked:
             deliver_content = ""
+        elif agent_declared:
+            # The agent already diagnosed the failure in prose; the summarizer's substring
+            # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
+            # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
+            from cron.scheduler_failure_copy import generic_failure_notice
+            deliver_content = generic_failure_notice(
+                job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
+            ) + _failure_streak_nudge(job)
         else:
             deliver_content = (
                 _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
@@ -2632,6 +2659,9 @@ class _RunDelivery:
     should_deliver: bool = False
     unresolved_origin: bool = False
     blocked_config: bool = False
+    # True when ``error`` is the agent's own ``[CRON_FAILURE]`` evidence rather than a runtime
+    # error string, so composition must not run it through the provider-error heuristics.
+    agent_declared: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
@@ -2667,7 +2697,7 @@ def _save_compose_deliver(
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
-        output_file=output_file)
+        output_file=output_file, agent_declared=d.agent_declared)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
@@ -2926,9 +2956,18 @@ def _run_one_job_body(
             _record_fire_ownership_lost(job["id"], fire_owner, execution_id)
             return True
 
+        # An agent can finish its own turn after a delegated child has failed. Let it explicitly
+        # declare that semantic failure so the existing failure path updates status, streaks,
+        # ledger, and notification routing instead of recording a false healthy result.
+        agent_declared = False
+        if success and not job.get("no_agent"):
+            marker_error = _cron_failure_marker_error(final_response)
+            if marker_error is not None:
+                success, error, agent_declared = False, marker_error, True
+
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error)
+        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
@@ -3101,6 +3140,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
     handoff_dir = _get_hermes_home() / "cron" / "external-workers"
     payload_path = handoff_dir / f"{execution_id}.json"
     ack_path = handoff_dir / f"{execution_id}.ready"
+    # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
+    stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
         sys.executable,
         "-m",
@@ -3190,18 +3231,23 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ):
         worker_env.pop(_presence_var, None)
     try:
-        process = subprocess.Popen(
-            dispatch.argv,
-            cwd=str(Path(__file__).resolve().parent.parent),
-            env=worker_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            creationflags=windows_hide_flags(),
-        )
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            process = subprocess.Popen(
+                dispatch.argv,
+                cwd=str(Path(__file__).resolve().parent.parent),
+                env=worker_env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_fd,
+                start_new_session=True,
+                creationflags=windows_hide_flags(),
+            )
+        finally:
+            os.close(stderr_fd)
     except BaseException:
         payload_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
         raise
 
     with _running_lock:
@@ -3226,7 +3272,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
-                    handoff_files=(payload_path,),
+                    handoff_files=(payload_path, stderr_path),
                 )
             finally:
                 ack_path.unlink(missing_ok=True)
@@ -3243,7 +3289,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     process,
                     execution_id=execution_id,
                     job_id=job_id,
-                    handoff_files=(payload_path,),
+                    handoff_files=(payload_path, stderr_path),
                 )
             logger.info(
                 "Cron job '%s' handed to restart-safe worker pid=%s execution=%s",
@@ -3257,15 +3303,19 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 process,
                 execution_id=execution_id,
                 job_id=job_id,
-                handoff_files=(payload_path,),
+                handoff_files=(payload_path, stderr_path),
             )
         returncode = process.poll()
         if returncode is not None:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(job_id)
             payload_path.unlink(missing_ok=True)
+            from cron.scheduler_diagnostics import external_worker_stderr_tail
+            stderr_tail = external_worker_stderr_tail(stderr_path)
+            stderr_path.unlink(missing_ok=True)
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
-                # systemd-run itself failed (stderr is DEVNULL): name the cause, not the exit code.
+                # systemd-run itself failed before any worker ran, so the captured stderr
+                # holds nothing useful: name the cause, not the exit code.
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "
                     f"/run/user/{os.getuid()}/bus disappeared after the gateway started. On a "  # windows-footgun: ok — scoped dispatch exists only on Linux
@@ -3274,7 +3324,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 )
             raise RuntimeError(
                 f"cron external worker exited before ownership acknowledgement "
-                f"(exit {returncode})"
+                f"(exit {returncode}){stderr_tail}"
             )
         time.sleep(0.05)
 
@@ -3292,7 +3342,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         process,
         execution_id=execution_id,
         job_id=job_id,
-        handoff_files=(payload_path, ack_path),
+        handoff_files=(payload_path, ack_path, stderr_path),
     )
 
 
@@ -3368,6 +3418,11 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
                     os.environ.pop("_HERMES_CRON_EXTERNAL_WORKER", None)
                 else:
                     os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = old_external_execution
+                # Post-ack the gateway never reads the stderr capture (it only
+                # serves the pre-ack death report) and may not outlive this run
+                # in the restart-safe topology, so the worker removes its own.
+                with contextlib.suppress(OSError):
+                    ack_path.with_suffix(".stderr").unlink(missing_ok=True)
     finally:
         reset_secret_scope(secret_token)
         set_multiplex_active(previous_multiplex)
@@ -3888,8 +3943,10 @@ if __name__ == "__main__":
         parser.add_argument("--external-worker-file", type=Path, required=True)
         parser.add_argument("--ack-file", type=Path, required=True)
         args = parser.parse_args()
-        # The gateway spawns this worker with stdout/stderr on DEVNULL; without
-        # a handler every adoption/ack failure below would be invisible.
+        # The gateway spawns this worker with stdout on DEVNULL and stderr on a
+        # capture file it only reads back if we die before the ack; without a
+        # log handler every adoption/ack failure below would otherwise be
+        # invisible to the persistent log.
         try:
             from hermes_logging import setup_logging
 

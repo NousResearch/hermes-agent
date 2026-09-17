@@ -513,13 +513,13 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     """
     if name == "default":
         return None
-    from hermes_constants import sudo_invoker_default_home
+    from hermes_constants import named_profile_is_live, sudo_invoker_default_home
 
     sudo_home = sudo_invoker_default_home()
     if sudo_home is None:
         return None
     candidate = sudo_home / "profiles" / name
-    return str(candidate) if candidate.is_dir() else None
+    return str(candidate) if named_profile_is_live(candidate) else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:
@@ -1772,6 +1772,9 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+        # Explicit flag, not a label inherited from a parent TUI/Desktop session — one-shot
+        # runs must keep it (see run_agent._session_source_for_agent).
+        os.environ["HERMES_SESSION_SOURCE_EXPLICIT"] = "1"
 
     _pin_kanban_board_env()
     _confirm_startup_expensive_model_override(args)

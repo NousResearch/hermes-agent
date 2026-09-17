@@ -2921,7 +2921,9 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "cache_scope",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3226,6 +3228,49 @@ def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
     return retry_kwargs if changed else None
 
 
+def _is_reasoning_field_rejection(exc: Exception) -> bool:
+    """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
+    ``thinking``/``think``). Chat-only models behind OpenAI-compatible relays reject the top-level
+    ``reasoning_effort: none`` a disabled ``reasoning_config`` projects on the custom profile
+    ("Unrecognized request argument supplied: reasoning_effort", #112781); the route default is
+    the right answer for such a model, so the reaction is one retry without any reasoning field."""
+    status = getattr(exc, "status_code", None)
+    if status is not None and status not in {400, 422}:
+        return False
+    if not any(_is_unsupported_parameter_error(exc, name) for name in ("reasoning", "think")):
+        return False
+    # The reasoning token must be a standalone wire-field name: not a model-id segment ("The model
+    # kimi-k2-thinking is not supported when using this account" is route gating that belongs to the
+    # provider-fallback rung) and not the adjective in "... not supported with reasoning models".
+    return _REASONING_FIELD_TOKEN.search(str(exc).lower()) is not None
+
+
+# Reasoning wire-field names (the ``_PROFILE_REASONING_KEYS`` controls minus ``verbosity``), longest first.
+_REASONING_FIELD_TOKEN = re.compile(
+    r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
+    r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+)
+
+
+def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without reasoning wire controls (top-level ``reasoning_effort``, the adapter's
+    private ``_reasoning_config`` and every ``extra_body`` reasoning key); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("reasoning_effort", None) is not None
+    changed = retry_kwargs.pop("_reasoning_config", None) is not None or changed
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict):
+        remaining = {k: v for k, v in extra_body.items() if str(k).strip().lower() not in _PROFILE_REASONING_KEYS}
+        if len(remaining) != len(extra_body):
+            if remaining:
+                retry_kwargs["extra_body"] = remaining
+            else:
+                retry_kwargs.pop("extra_body", None)
+            changed = True
+    return retry_kwargs if changed else None
+
+
 def _is_model_not_found_error(exc: Exception) -> bool:
     """"Requested model doesn't exist" (404 / invalid model) — typically a long-lived process pinned a
     since-dropped model. Excludes billing keywords, which :func:`_is_payment_error` owns."""
@@ -3297,13 +3342,20 @@ def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> boo
 
 
 def _evict_cached_clients(provider: str) -> None:
-    """Drop cached auxiliary clients for a provider so fresh creds are used."""
+    """Drop this profile's cached auxiliary clients for a provider so fresh creds are used.
+
+    Scoped to the calling profile (``hermes_home_key()`` is the first key slot): a rotation in
+    one profile must not drop another profile's client for the same provider in a multiplexing
+    gateway, since that profile's credentials did not change. Entries are popped, not closed:
+    a concurrent caller may be mid-request on the shared client (closing it raises ReadError /
+    "client has been closed" for them); the dropped client is retired by GC like the FIFO
+    overflow path in ``_get_cached_client``.
+    """
     normalized = _normalize_aux_provider(provider)
+    home = hermes_home_key()
     with _client_cache_lock:
-        for key in [key for key in _client_cache if _normalize_aux_provider(str(key[0])) == normalized]:
-            client = _client_cache.get(key, (None, None, None))[0]
-            if client is not None:
-                _close_cached_client(client)
+        for key in [key for key in _client_cache
+                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
             _client_cache.pop(key, None)
 
 
@@ -6953,7 +7005,11 @@ def _param_rung_accepts(exc: Exception) -> bool:
     """After a parameter-strip retry: fall through to the max_tokens/payment/auth
     chains with the stripped kwargs; re-raise anything those chains won't handle."""
     return (_is_payment_error(exc) or _is_connection_error(exc) or _is_auth_error(exc)
-            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc))
+            or "max_tokens" in str(exc) or "unsupported_parameter" in str(exc)
+            # Parameter rungs chain (temperature-strip retry 400s on reasoning_effort / response_format),
+            # and a route-gating 400 after a strip still reaches the provider-fallback rung.
+            or _is_reasoning_field_rejection(exc) or _is_structured_output_rejection(exc)
+            or _is_model_incompatible_error(exc))
 
 
 def _credential_rung_accepts(exc: Exception) -> bool:
@@ -6973,7 +7029,7 @@ _LadderRoute = NamedTuple("_LadderRoute", [
 def _ladder_parameter_rungs(
     first_err: Exception, route: _LadderRoute, kwargs: Dict[str, Any], max_tokens: Optional[int],
 ):
-    """Rungs 1-3: retry without temperature / structured-output format / max_tokens.
+    """Rungs 1-4: retry without temperature / structured-output format / reasoning field / max_tokens.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
     client, task, tag = route.client, route.task, route.tag
     if "temperature" in kwargs and _is_unsupported_parameter_error(first_err, "temperature"):
@@ -6991,6 +7047,19 @@ def _ladder_parameter_rungs(
             logger.info("Auxiliary %s%s: provider rejected the structured-output "
                         "format field; retrying once without it (schema "
                         "enforcement degrades to prompt compliance): %s", task or "call", tag, first_err)
+            resp, first_err = yield from _rung(
+                _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
+            if first_err is None:
+                return resp, None, retry_kwargs
+            kwargs = retry_kwargs
+    # A chat-only model on an OpenAI-compatible relay rejects the profile's thinking-off encoding
+    # (top-level ``reasoning_effort: none``); the caller only wanted "no thinking", which is what
+    # such a model does anyway, so retry once with every reasoning field omitted (#112781).
+    if _is_reasoning_field_rejection(first_err):
+        retry_kwargs = _without_reasoning_fields(kwargs)
+        if retry_kwargs is not None:
+            logger.info("Auxiliary %s%s: provider rejected the reasoning field; retrying once "
+                        "without it (route default applies): %s", task or "call", tag, first_err)
             resp, first_err = yield from _rung(
                 _LadderStep("call", (client, retry_kwargs)), _param_rung_accepts)
             if first_err is None:
@@ -7341,6 +7410,7 @@ def call_llm(
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
         with (
+            scoped_runtime_main(main_runtime),
             aux_progress_hook(
                 prior_progress_hook
                 if callable(prior_progress_hook)
@@ -7630,12 +7700,13 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
-            task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-            main_runtime=main_runtime, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-            reasoning_config=reasoning_config, route_info=route_info,
-        )
+        with scoped_runtime_main(main_runtime):
+            return await _async_call_llm_impl(
+                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                main_runtime=main_runtime, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                reasoning_config=reasoning_config, route_info=route_info,
+            )
     finally:
         if semaphore is not None:
             semaphore.release()

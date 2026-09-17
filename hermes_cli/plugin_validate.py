@@ -510,7 +510,25 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_env(report, manifest)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
+    _check_security_scan(report, plugin_dir)
     return report
+
+
+def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:
+    """Run the install-time scanner at admission, so a pin a reviewer approves is one the
+    installer will accept: ``dangerous`` fails the entry; ``caution`` findings surface as
+    warnings for the reviewer (the installer trusts them once the pin is merged)."""
+    from tools.plugin_guard import scan_plugin
+
+    result = scan_plugin(plugin_dir)
+    flagged = [f for f in result.findings if f.severity in ("critical", "high")]
+    summary = ", ".join(sorted({f"{f.pattern_id} ({Path(f.file).name}:{f.line})" for f in flagged})) or "no findings"
+    if result.verdict == "dangerous":
+        report.add("security scan", False, f"dangerous: {summary}")
+        return
+    report.add("security scan", True, result.verdict)
+    if result.verdict == "caution":
+        report.warn(f"security scan caution: {summary}")
 
 
 def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> ValidationReport:
@@ -542,4 +560,5 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    _check_security_scan(report, plugin_dir)
     return report

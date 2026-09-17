@@ -107,7 +107,8 @@ def _plan_goal_compression_recovery(
 
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
-    queued_prompt_generation: int | None) -> tuple[list[str], Any] | None:
+    queued_prompt_generation: int | None, display_kind: str | None,
+    display_metadata: dict | None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -134,7 +135,8 @@ def _admit_prompt_turn(
         # A retained failed turn (see _fail_inflight_turn) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
-            _start_inflight_turn(session, text)
+            _start_inflight_turn(
+                session, text, display_kind=display_kind, display_metadata=display_metadata)
         agent = session["agent"]
         if agent is None:
             session["running"] = False
@@ -852,7 +854,8 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
-    admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
+    admitted = _admit_prompt_turn(
+        sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:
         return False
     images, agent = admitted
@@ -918,6 +921,7 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not st.error_retained:
                     _clear_inflight_turn(session)
+                _release_hosted_room_turn_slot(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).

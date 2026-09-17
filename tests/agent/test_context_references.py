@@ -389,3 +389,31 @@ def test_format_reference_value_round_trips_through_the_parser(value):
 
     assert match is not None
     assert match.group("value").strip("`\"'") == value
+
+
+@pytest.mark.asyncio
+async def test_side_thread_expansion_guards_the_served_profile_home(tmp_path: Path, monkeypatch):
+    """Inside a running loop (the gateway / TUI turn) the sync wrapper hops to a side thread; that
+    thread must inherit the caller's profile scope so the credential guard checks the SERVED
+    profile's home, not the launch profile's (a served profile's skill-hub cache was attachable)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from agent.context_references import preprocess_context_references
+
+    launch_home = tmp_path / "launch"
+    served_home = launch_home / "profiles" / "b"
+    hub_file = served_home / "skills" / ".hub" / "injected.md"
+    hub_file.parent.mkdir(parents=True)
+    hub_file.write_text("HUB-CACHE-BODY\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    token = set_hermes_home_override(served_home)
+    try:
+        result = preprocess_context_references(
+            "read @file:profiles/b/skills/.hub/injected.md", cwd=launch_home, allowed_root=launch_home,
+            context_length=100_000)
+    finally:
+        reset_hermes_home_override(token)
+
+    assert "HUB-CACHE-BODY" not in result.message
+    assert any("internal Hermes path" in w for w in result.warnings)

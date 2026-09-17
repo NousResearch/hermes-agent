@@ -619,10 +619,13 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
         for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "image"
     )
+    # Parallel tool calls land as sibling tool_result blocks inside ONE user message
+    # (oldest first), so the inner walk must also run newest -> oldest or a batch that
+    # ends mid-message retires the newest frames instead of the oldest (#103217).
     carriers = [
         (block, sum(1 for b in block["content"] if b.get("type") == "image"))
         for msg in reversed(result)
-        for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
         if _block_type(block) == "tool_result"
         and isinstance(block.get("content"), list)
         and _has_block_type(block["content"], {"image"})

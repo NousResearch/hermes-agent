@@ -517,6 +517,31 @@ class TestAnthropicAdapterMultimodal:
         assert len(placeholders) == _SCREENSHOT_EVICTION_BATCH
         assert len(with_images) == total - _SCREENSHOT_EVICTION_BATCH
 
+    def test_parallel_batch_retires_the_oldest_siblings_first(self):
+        """Sibling tool_results in one user message are oldest-first; eviction must not
+        retire the newest of them (#103217)."""
+        from agent.anthropic_message_convert import (
+            _OUTBOUND_IMAGE_LIMIT,
+            _SCREENSHOT_EVICTION_BATCH,
+            _evict_old_screenshots,
+        )
+
+        img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
+        n = _OUTBOUND_IMAGE_LIMIT + 1
+        result = [{
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": [dict(img)]}
+                for i in range(n)
+            ],
+        }]
+        _evict_old_screenshots(result)
+        survivors = [
+            b["tool_use_id"] for b in result[0]["content"]
+            if any(x.get("type") == "image" for x in b["content"])
+        ]
+        assert survivors == [f"t{i}" for i in range(_SCREENSHOT_EVICTION_BATCH, n)]
+
     def test_eviction_frontier_holds_between_batch_advances(self):
         """Screenshot eviction must not rewrite a new block on every capture.
 

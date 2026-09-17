@@ -13263,6 +13263,43 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_truncation_signals_busy_instead_of_queueing(monkeypatch):
+    """#113942: editing a message while the turn it belongs to is still running
+
+    must not be silently absorbed as a steered correction or a plain follow-up
+    queued to run AFTER the live turn — both would drop the truncation and
+    leave the original (un-edited) turn's reply intact, which reads to the
+    user as "my edit was rejected". It must surface as the same "session busy"
+    (4009) the desktop client's edit path already retries through (interrupt,
+    then poll) until the turn actually clears.
+    """
+    agent = types.SimpleNamespace()  # no redirect/steer support -> would fall to queue+interrupt
+    server._sessions["sid"] = _session(agent=agent, running=True)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited while thinking",
+                    "truncate_before_user_ordinal": 0,
+                    "confirm_truncate": True,
+                    "confirm_empty_truncate": True,
+                },
+            }
+        )
+
+        assert resp.get("error", {}).get("code") == 4009
+        assert "session busy" in resp["error"]["message"]
+        # The edit must not have been silently accepted as a queued follow-up.
+        assert server._sessions["sid"].get("queued_prompt") is None
+        assert server._sessions["sid"]["running"] is True
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     """If replace_messages fails during edit/regenerate truncate, do not run the turn.
 

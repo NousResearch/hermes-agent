@@ -29,6 +29,19 @@ _SKIP_TABLES = frozenset({"hosted_room_driver_leases"})
 _failed_sources: set[Path] = set()
 
 
+def _copy_order(name: str) -> tuple[int, str]:
+    """Order copied tables so SQLite can validate their foreign keys immediately."""
+    priority = {
+        "hosted_rooms": 0,
+        "hosted_room_driver_admission_barriers": 1,
+        "hosted_room_driver_tasks": 1,
+        "hosted_room_driver_demotion_intents": 2,
+        "hosted_room_approval_requests": 3,
+        "hosted_room_terminal_receipts": 3,
+    }
+    return priority.get(name, 4), name
+
+
 def source_path(db_path: Path) -> Path | None:
     """The pre-isolation store for ``db_path``, or ``None`` when this database has no predecessor.
 
@@ -84,7 +97,7 @@ def _copy_rows(target: sqlite3.Connection, source: Path) -> int:
         names = [str(row[0]) for row in legacy.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'hosted_room*'")]
         # Parents first: hosted_room_events carries a foreign key into hosted_rooms.
-        for name in sorted(names, key=lambda name: (name != "hosted_rooms", name)):
+        for name in sorted(names, key=_copy_order):
             if name in _SKIP_TABLES or name == MARKER_TABLE or name.endswith(("_next", "_migrating")):
                 continue
             if not table_exists(target, name):

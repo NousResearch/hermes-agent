@@ -1153,7 +1153,7 @@ def test_update_impl_refuses_before_terminating_gateway_ancestor(
 
     assert excinfo.value.code == 2
     terminate.assert_not_called()
-    resume.assert_called_once_with(None)
+    resume.assert_called_once_with({"resume_needed": False})
     output = capsys.readouterr().out
     assert "taskkill /T" in output
     assert "`/update`" in output
@@ -1178,5 +1178,4 @@ def test_stop_service_refuses_pid_reuse_before_sc_stop(monkeypatch):
         )
 
     assert calls == []
-
 

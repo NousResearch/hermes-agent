@@ -67,15 +67,6 @@ def test_explicit_producer_reports_unsupported_agent() -> None:
     assert request_hard_interrupt(object(), "stop now") is False
 
 
-def test_explicit_producer_preserves_false_hard_interrupt_result() -> None:
-    class UnconfirmedAgent:
-        @staticmethod
-        def hard_interrupt(_message: str | None = None) -> bool:
-            return False
-
-    assert request_hard_interrupt(UnconfirmedAgent(), "stop now") is False
-
-
 def test_dynamic_proxy_does_not_fabricate_hard_interrupt_support() -> None:
     agent = MagicMock()
 

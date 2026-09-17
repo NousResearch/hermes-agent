@@ -186,7 +186,7 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
 
 /**
  * Resolve the live activity state from the dedicated activity atom, falling back
- * to the always-present `$busy` chat signal so the pet reacts out of the box.
+ * to the primary session view's turn-busy so the pet reacts out of the box.
  *
  * `awaitingInput` (a clarify/approval blocking on the user) is an explicit flag
  * on `$petActivity` — set by the controller from `$attentionSessionIds` and
@@ -208,17 +208,6 @@ function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
     celebrate: activity.celebrate
   })
 }
-
-/**
- * Turn-busy of the session the pet is watching. The active runtime's own
- * `$sessionStates` slice is authoritative; the global `$busy` mirror is an
- * RAF-batched copy that can stay false for a whole turn (reclaimed session
- * reopened after idle timeout, desktop-minted draft — #84434 / #84438) and is
- * a leftover from whichever session last published while a stored session
- * has no slice yet. Shared with the pop-out overlay push so both surfaces
- * derive the pose from the same signal.
- */
-export const $petBusy = PRIMARY_SESSION_VIEW.$busy
 
 /**
  * Opt-in: let the floating mascot wander around the window on its own while
@@ -253,8 +242,12 @@ export const $petRoamDir = atom<-1 | 0 | 1>(0)
  * on this — never on `$petState` itself, which would feed back on its own
  * `$petMotion`-driven pose and stall the wander.
  */
+// Turn-busy comes from the active runtime's own slice (`$primaryBusy` in
+// session-view.tsx explains why the global `$busy` mirror can't be trusted:
+// #84434 / #84438). The pop-out overlay push reads the same atom so both
+// surfaces derive the pose from one signal.
 export const $petAtRest = computed(
-  [$petActivity, $petBusy],
+  [$petActivity, PRIMARY_SESSION_VIEW.$busy],
   (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
 )
 
@@ -263,8 +256,11 @@ export const $petAtRest = computed(
  * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
  * reads as deliberate movement.
  */
-export const $petState = computed([$petActivity, $petBusy, $petMotion], (activity, busy, motion): PetState => {
-  const base = deriveLivePetState(activity, busy)
+export const $petState = computed(
+  [$petActivity, PRIMARY_SESSION_VIEW.$busy, $petMotion],
+  (activity, busy, motion): PetState => {
+    const base = deriveLivePetState(activity, busy)
 
-  return base === 'idle' && motion ? motion : base
-})
+    return base === 'idle' && motion ? motion : base
+  }
+)

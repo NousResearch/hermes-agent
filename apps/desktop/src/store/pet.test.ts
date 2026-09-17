@@ -160,23 +160,17 @@ describe('$petState reads the active runtime slice, not the $busy mirror (#84434
     $petActivity.set({})
   })
 
-  it('animates a running tool while the active slice is busy even though $busy reads false', () => {
+  it('follows the active slice, not the $busy mirror: runs while it is busy, idles the moment it settles', () => {
     $activeSessionId.set(runtimeId)
     publishSessionState(runtimeId, slice(true))
     $petActivity.set({ toolRunning: true })
 
     expect($petState.get()).toBe('run')
     expect($petAtRest.get()).toBe(false)
-  })
-
-  it('drops to idle the moment the slice settles, even if no event cleared the steady flag', () => {
-    $activeSessionId.set(runtimeId)
-    publishSessionState(runtimeId, slice(true))
-    $petActivity.set({ toolRunning: true })
-    expect($petState.get()).toBe('run')
 
     // An interrupted turn flips busy→false without a tool.complete / message.complete.
     publishSessionState(runtimeId, slice(false))
     expect($petState.get()).toBe('idle')
+    expect($petAtRest.get()).toBe(true)
   })
 })

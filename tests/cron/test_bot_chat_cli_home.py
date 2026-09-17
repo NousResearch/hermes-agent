@@ -34,14 +34,15 @@ def test_cli_keeps_discovered_home_when_launch_selection_changes(tmp_path, monke
         code = ('import json,sys; sys.argv=["hermes"]+json.loads(sys.argv[1]); '
                 'import hermes_cli.main; from hermes_constants import get_hermes_home; '
                 'print(json.dumps(str(get_hermes_home())))')
-        result = real_run([sys.executable, "-c", code, json.dumps(argv[1:])],
+        # Everything after the launcher (binary or ``python -m hermes_cli.main``) is the CLI argv.
+        cli_argv = argv[3:] if argv[1:3] == ["-m", "hermes_cli.main"] else argv[1:]
+        result = real_run([sys.executable, "-c", code, json.dumps(cli_argv)],
                           env=kwargs["env"], capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
         seen.append(Path(json.loads(result.stdout.strip().splitlines()[-1])))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr("tools.bot_live_delivery.find_canonical_live_owner", discover)
-    monkeypatch.setattr(delivery.shutil, "which", lambda _: "/bin/hermes")
     monkeypatch.setattr(delivery.subprocess, "run", run)
     try:
         assert delivery._deliver_to_bot_chat({"id": "job"}, "output", profile) is None

@@ -571,14 +571,14 @@ class TestKreaModelNormalization:
 
 
 class TestManagedKreaRouting:
-    """`_maybe_route_managed_krea` only fires for Krea models in managed mode."""
+    """`_maybe_route_managed_model` only fires for Krea / Portal models in managed mode."""
 
     def test_no_route_when_model_not_krea(self, image_tool, monkeypatch):
         monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: None)
         monkeypatch.setattr(
             image_tool, "_read_configured_image_model", lambda: "fal-ai/flux-2/klein/9b"
         )
-        assert image_tool._maybe_route_managed_krea("p", "square") is None
+        assert image_tool._maybe_route_managed_model("p", "square") is None
 
 
     def test_routes_native_krea_model_to_krea_plugin_in_managed_mode(
@@ -616,13 +616,47 @@ class TestManagedKreaRouting:
             "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
         )
 
-        out = image_tool._maybe_route_managed_krea("a cat", "portrait")
+        out = image_tool._maybe_route_managed_model("a cat", "portrait")
         assert out is not None
         assert _json.loads(out)["success"] is True
         kwargs = fake_provider.generate.call_args.kwargs
         assert kwargs["model"] == "krea-2-large"
         assert kwargs["prompt"] == "a cat"
         assert kwargs["aspect_ratio"] == "portrait"
+
+
+class TestManagedPortalRouting:
+    """A Portal model under the managed selection reaches the Portal plugin — never FAL."""
+
+    def _fake_registry(self, monkeypatch, fake_provider):
+        monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: fake_provider)
+        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
+
+    def test_routes_portal_model_to_nous_plugin(self, image_tool, monkeypatch):
+        import json as _json
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "nous")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "openai/gpt-5.4-image-2")
+        fake_provider = MagicMock(display_name="Nous Portal")
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        self._fake_registry(monkeypatch, fake_provider)
+
+        out = image_tool._maybe_route_managed_model("a cat", "square")
+
+        assert _json.loads(out)["success"] is True
+        assert fake_provider.generate.call_args.kwargs["model"] == "openai/gpt-5.4-image-2"
+
+    def test_portal_model_without_plugin_errors_instead_of_billing_fal(self, image_tool, monkeypatch):
+        import json as _json
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "nous")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "openai/gpt-5.4-image-2")
+        self._fake_registry(monkeypatch, None)
+
+        out = image_tool._maybe_route_managed_model("a cat", "square")
+
+        assert out is not None and _json.loads(out)["success"] is False
 
 
 class TestFalKreaCatalog:

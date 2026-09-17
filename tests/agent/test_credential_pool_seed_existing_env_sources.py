@@ -67,3 +67,28 @@ def test_unset_env_row_stays_out_of_rotation_and_on_disk(home):
     # load_pool() is a non-destructive read for env rows (#9331): the
     # reference survives for the process that does have the var.
     assert "env:DEEPSEEK_API_KEY_2" in {e.source for e in pool._entries}
+
+
+# Numbered siblings need no auth.json row at all: setting the variable is the
+# whole opt-in (#76593). Discovery stops at the first gap so a leftover _5 does
+# not silently enter rotation.
+@pytest.mark.parametrize("provider,primary", [("deepseek", "DEEPSEEK_API_KEY"), ("openrouter", "OPENROUTER_API_KEY")])
+def test_numbered_env_siblings_seed_rotation_without_config(home, provider, primary, monkeypatch):
+    from agent.credential_pool import load_pool
+
+    for n in (3, 5):
+        monkeypatch.delenv(f"{primary}_{n}", raising=False)
+    (home / ".env").write_text(
+        f"{primary}={SYN_PRIMARY}\n{primary}_2={SYN_SECONDARY}\n{primary}_3=syn-third-{'c' * 24}\n{primary}_5=syn-fifth-{'e' * 24}\n",
+        encoding="utf-8",
+    )
+    (home / "config.yaml").write_text(f"credential_pool_strategies:\n  {provider}: round_robin\n", encoding="utf-8")
+    from hermes_cli.config import invalidate_env_cache
+    invalidate_env_cache()
+
+    pool = load_pool(provider)
+    available, _ = pool._available_entries()
+    assert {e.source for e in available} == {f"env:{primary}", f"env:{primary}_2", f"env:{primary}_3"}
+    assert len({pool.select().source for _ in range(6)}) == 3
+    rows = json.loads((home / "auth.json").read_text(encoding="utf-8"))["credential_pool"][provider]
+    assert len(rows) == 3 and all("access_token" not in row for row in rows)

@@ -61,7 +61,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
-All three OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression and titles). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id and carries no personal data.
+All three OpenCode providers send an opaque, per-conversation `x-opencode-session` header on every request (main turns on every transport plus auxiliary calls such as compression, titles, approval checks, skills-hub lookups and `/btw` side questions — including the ones that run in the background after the turn has ended; headless Kanban `specify`/`decompose` and dashboard estimate calls use a per-task key). OpenCode uses it to pin a conversation to one backend so its prompt cache stays warm; the value is derived from the Hermes session id (or the Kanban task id) and carries no personal data.
 
 For the official API-key path, see the dedicated [Google Gemini guide](/guides/google-gemini).
 
@@ -425,6 +425,10 @@ The model catalog is fetched dynamically from `ollama.com/v1/models` and cached 
 :::tip Ollama Cloud vs local Ollama
 Both speak the same OpenAI-compatible API. Cloud is a first-class provider (`--provider ollama-cloud`, `OLLAMA_API_KEY`); local Ollama is reached via the Custom Endpoint flow (base URL `http://localhost:11434/v1`, no key). Use cloud for large models you can't run locally; use local for privacy or offline work.
 :::
+
+### DeepInfra
+
+DeepInfra (`--provider deepinfra`, `DEEPINFRA_API_KEY`) is discovered live from its catalog. Reasoning is controlled through DeepInfra's top-level `reasoning_effort` field, so `agent.reasoning_effort`, `/reasoning <level>`, `--reasoning` and per-model `agent.reasoning_overrides` work in **both directions**: an effort turns thinking on for models that default off (DeepSeek-V4.x), `/reasoning none` turns it off for models that default on (GLM-4.6, Qwen3-Thinking). Leaving reasoning unset keeps DeepInfra's per-model default; `xhigh` is native and `ultra` is sent as `max`.
 
 ### AWS Bedrock
 
@@ -1423,6 +1427,8 @@ model:
 ```
 
 The same key is honored on per-named-provider models (`providers.<name>.models.<id>.supports_vision`) and accepts standard YAML booleans (`true/false/yes/no/on/off/1/0`).
+
+A `model_overrides` entry that only corrects metadata (for example `context_window`) for a model the catalog does not know leaves vision and reasoning capability **unknown** — `vision_analyze`, `video_analyze` and the reasoning-effort picker stay available. Only an explicit `supports_vision: false` / `supports_reasoning: false` in the override marks the model as text-only or non-reasoning.
 
 Switch between them mid-session with the triple syntax:
 

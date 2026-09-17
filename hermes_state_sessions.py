@@ -282,7 +282,10 @@ class SessionSessionsMixin:
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
-        bare row before create_session carries the real model/prompt). chat_id/thread_id scope gateway
+        bare row before create_session carries the real model/prompt) — the one exception is the
+        token-accounting guard's placeholder ``source='unknown'``, which a later writer's real surface
+        replaces (#111999): once minted, that placeholder otherwise labelled a real session anonymous
+        for life, because this upsert is the only writer that could correct it. chat_id/thread_id scope gateway
         /resume (IDOR). Children backfill from the parent; a missing profile_name is stamped with THIS
         store's own (NULL reads as unowned).
 
@@ -320,6 +323,11 @@ class SessionSessionsMixin:
                 )
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
+                       source = CASE
+                           WHEN sessions.source = 'unknown'
+                           THEN COALESCE(excluded.source, 'unknown')
+                           ELSE sessions.source
+                       END,
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = CASE
                            WHEN excluded.model_config IS NOT NULL
@@ -1210,7 +1218,11 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
-        if not include_hidden:
+        # The archived-only view is the recovery surface for rows that dropped out of every
+        # default list: a session that is archived AND hidden (Bot Mode marks its sessions
+        # hidden) must still be reachable there, or nothing but direct DB access can bring
+        # it back (#90946).
+        if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET

@@ -1461,7 +1461,6 @@ def _force_terminate_known_gateway_pids(
     for pid, expected_start_time in pid_identities.items():
         if pid <= 0 or pid == own_pid or pid in seen:
             continue
-        seen.add(pid)
         try:
             if not _pid_exists(pid):
                 continue

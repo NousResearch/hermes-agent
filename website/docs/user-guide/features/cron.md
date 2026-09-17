@@ -649,7 +649,7 @@ cron:
 
 Behaviour is **thread-preferred**, scoped to the job's own conversation:
 
-- **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
+- **Thread-capable platforms** (Telegram topics, Discord/Slack/Matrix threads): each
   delivery opens its own dedicated thread and the brief is seeded into that
   thread's session, so a reply in-thread continues with full context. A
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
@@ -748,6 +748,24 @@ Otherwise, report the issue.
 ```
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+
+### Declaring a failed run
+
+Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself
+finishes its turn but the work did not get done — for example a delegated subagent or a script it ran failed —
+it can declare the run failed by putting `[CRON_FAILURE]` alone on the **first line** of its response, followed
+by the explanation:
+
+```text
+[CRON_FAILURE]
+The nightly export subagent exited with "disk full"; no report was produced.
+```
+
+The run is then recorded as failed (`last_status`, failure streak, `hermes cron runs` and `hermes cron incidents`
+all reflect it) and the failure notice is delivered like any other failed run. The full response is still saved
+under `~/.hermes/cron/output/` for triage. The marker is strict: mentioning or quoting `[CRON_FAILURE]` anywhere
+else in a report leaves the run successful. Script-only (`no_agent`) jobs ignore it — a script signals failure
+with a non-zero exit code.
 
 ## Script timeout
 
@@ -1112,7 +1130,9 @@ cronjob(action="create", name="weekly-news-summary",
         prompt="Summarize this week's AI news: ...")
 ```
 
-When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. If the cron-platform toolset config cannot be read at all (for example a malformed `platform_toolsets` block in `config.yaml`), the run fails with a recorded error instead of quietly running with every tool — check `hermes cron list` / `hermes cron doctor`. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+
+If the job drives a site you're logged into, the login has to be in place before the run — a scheduled tick has nobody to answer a prompt. [Scheduled and unattended runs](./browser.md#scheduled-and-unattended-runs) covers that setup.
 
 ### Skipping the agent entirely: `wakeAgent`
 

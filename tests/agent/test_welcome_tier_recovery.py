@@ -15,6 +15,7 @@ import pytest
 from agent.agent_runtime_helpers import extract_api_error_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.turn_retry_state import TurnRetryState
+from tests.hermes_cli.anon_portal import make_jwt
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"
 PAID = "https://inference-api.nousresearch.com/v1"
@@ -42,7 +43,7 @@ def _refusal(reason: str, *, retry_after: int = 0, alternates=None) -> MockAPIEr
 
 
 def _classify(err: MockAPIError, *, model: str = "nous/welcome", base_url: str = WELCOME):
-    return classify_api_error(err, provider="nous", model=model, base_url=base_url)
+    return classify_api_error(err, provider="nous", model=model, base_url=base_url, api_key=make_jwt())
 
 
 class TestDarkTier403:
@@ -76,7 +77,7 @@ class TestDarkTier403:
 def _agent(**overrides):
     lines = []
     agent = SimpleNamespace(
-        provider="nous", model="gpt-5", base_url=WELCOME, log_prefix="", _rate_limit_state=None,
+        provider="nous", api_key=make_jwt(), model="gpt-5", base_url=WELCOME, log_prefix="", _rate_limit_state=None,
         _vprint=lambda text, force=False: lines.append(text),
         _try_refresh_nous_client_credentials=lambda **kw: True,
     )
@@ -118,6 +119,19 @@ class TestOneShotRecoveries:
         assert calls == [{"force": True}]
         assert _recover_welcome_tier(agent, classified, retry) is False
 
+    def test_a_named_account_on_the_welcome_host_re_reads_the_route_once(self):
+        from agent.turn_recovery import _recover_welcome_tier
+        calls = []
+        agent = _agent(api_key=make_jwt(account_tier="free", client_id="hermes-cli"),
+                       _try_refresh_nous_client_credentials=lambda **kw: calls.append(kw) or True)
+        body = {"status": 400, "message": "This endpoint serves anonymous Hermes Agent accounts only. Use https://inference-api.nousresearch.com with your API key or signed-in account."}
+        classified = classify_api_error(_gateway_error(400, body), provider="nous", base_url=WELCOME, api_key=agent.api_key)
+        assert classified.error_context["welcome_route"] == "named_on_welcome_host"
+        retry = TurnRetryState()
+        assert _recover_welcome_tier(agent, classified, retry) is True
+        assert calls == [{"force": True}]
+        assert _recover_welcome_tier(agent, classified, retry) is False
+
     def test_a_wrong_host_refusal_whose_heal_fails_falls_through(self):
         from agent.turn_recovery import _recover_welcome_tier
         agent = _agent(_try_refresh_nous_client_credentials=lambda **kw: False)
@@ -153,9 +167,9 @@ class TestLongWaitRule:
         classified = _classify(err)
         assert _is_genuine_nous_rate_limit(_agent(), err, turn_ctx, classified) is True
         assert recorded and recorded[0]["error_context"]["reset_at"] == classified.error_context["reset_at"]
-        # The same body from the PAID host is not an allowance verdict: main's header rule stands.
+        # The same body for a named account is not an anonymous allowance verdict.
         recorded.clear()
-        assert _is_genuine_nous_rate_limit(_agent(base_url=PAID), err, turn_ctx, classified) is False
+        assert _is_genuine_nous_rate_limit(_agent(base_url=PAID, api_key=make_jwt(account_tier="paid")), err, turn_ctx, classified) is False
         assert recorded == []
         # A short one is not an exhausted allowance: nothing recorded, the turn waits it out.
         recorded.clear()
@@ -170,14 +184,16 @@ class TestOutageCopy:
     def test_a_spent_transport_failure_on_the_welcome_host_reads_as_one_sentence(self, reason):
         from agent.turn_recovery import _welcome_outage_copy
         from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY
-        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=reason)) == FREE_TIER_OUTAGE_COPY
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=reason), anonymous=True) == FREE_TIER_OUTAGE_COPY
 
     def test_other_routes_and_other_reasons_keep_the_technical_summary(self):
         from agent.turn_recovery import _welcome_outage_copy
-        assert _welcome_outage_copy(PAID, SimpleNamespace(reason=FailoverReason.timeout)) == ""
-        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit)) == ""
+        assert _welcome_outage_copy(PAID, SimpleNamespace(reason=FailoverReason.timeout), anonymous=True) == ""
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit), anonymous=True) == ""
         # ``unknown`` is the catch-all for status-less local failures, not the free model's trouble.
-        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.unknown)) == ""
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.unknown), anonymous=True) == ""
+        # A named account's outage is its provider's trouble, not the free model's.
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.timeout)) == ""
 
 
 class TestTerminalResultsCarryTheFreeTierBlock:

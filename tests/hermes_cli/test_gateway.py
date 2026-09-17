@@ -530,6 +530,99 @@ class TestWaitForGatewayExit:
 
 
 class TestStopProfileGateway:
+    def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
+        """Windows must let the marker watcher run before escalating (#112750)."""
+        import hermes_cli.gateway_windows as gateway_windows
+
+        pid = 12345
+        calls = []
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_drain_gateway_pid",
+            lambda target, timeout: calls.append(("drain", target, timeout)) or True,
+        )
+        monkeypatch.setattr(
+            gateway_windows,
+            "_force_terminate_known_gateway_pids",
+            lambda pids: calls.append(("force", pids)),
+        )
+        monkeypatch.setattr(gateway.os, "kill", lambda *_: calls.append(("kill",)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda target: False)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls == [("drain", pid, 7.0)]
+
+    def test_windows_stop_force_terminates_only_after_drain_timeout(self, monkeypatch):
+        """A wedged Windows gateway still has a bounded force-stop fallback (#112750)."""
+        import hermes_cli.gateway_windows as gateway_windows
+
+        pid = 12345
+        calls = []
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: pid)
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda target: 100)
+        monkeypatch.setattr(
+            gateway_windows,
+            "_drain_gateway_pid",
+            lambda target, timeout: calls.append(("drain", target, timeout)) or False,
+        )
+        monkeypatch.setattr(
+            gateway_windows,
+            "_force_terminate_known_gateway_pids",
+            lambda pids: calls.append(("force", pids)),
+        )
+        monkeypatch.setattr(gateway.os, "kill", lambda *_: calls.append(("kill",)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda target: False)
+        monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls == [("drain", pid, 7.0), ("force", {pid: 100})]
+
+    def test_windows_stop_force_kill_carries_pre_drain_identity(self, monkeypatch):
+        """The post-drain taskkill must be guarded by the start time captured BEFORE the <=30 s drain:
+        a PID recycled during the wait shows a different start time, so ``terminate_pid``'s mismatch
+        refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
+        self-comparison."""
+        import gateway.status as status
+        import hermes_cli.gateway_windows as gateway_windows
+
+        pid = 4242
+        calls = []
+        clock = {"now": 0.0}
+        alive = {"value": True}
+
+        monkeypatch.setattr(gateway_windows.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(
+            gateway_windows.time, "sleep", lambda _s: clock.__setitem__("now", clock["now"] + 10.0)
+        )
+        monkeypatch.setattr(gateway, "is_windows", lambda: True)
+        monkeypatch.setattr(gateway_windows, "_windows_stop_drain_timeout", lambda: 7.0)
+        monkeypatch.setattr(status, "get_running_pid", lambda: pid if alive["value"] else None)
+        monkeypatch.setattr(status, "write_planned_stop_marker", lambda target: None)
+        monkeypatch.setattr(status, "_pid_exists", lambda target: alive["value"])
+        # The original gateway (start time 100) exits during the drain and its PID is recycled (999).
+        monkeypatch.setattr(
+            status, "get_process_start_time", lambda target: 100 if clock["now"] < 7.0 else 999
+        )
+
+        def _terminate(target, force=False, expected_start_time=None):
+            calls.append((target, force, expected_start_time))
+            alive["value"] = False
+
+        monkeypatch.setattr(status, "terminate_pid", _terminate)
+        monkeypatch.setattr(status, "remove_pid_file", lambda: None)
+        monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", lambda **_: False)
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls == [(pid, True, 100)]
+
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}
 
@@ -832,16 +925,16 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         assert killed_pids == []             # it exited before force termination was needed
 
     @pytest.mark.windows_only
-    def test_windows_orphan_force_kill_follows_drain_timeout(self, monkeypatch):
-        orphan_pid = 99998
+    def test_windows_orphans_each_drain_before_force_kill(self, monkeypatch):
+        orphan_pids = [99998, 99999]
         events = []
 
         monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway, "_windows_scheduled_task_supervises", lambda _: False)
         monkeypatch.setattr(gateway, "_reaper_exclusion_pids", lambda _: set())
         monkeypatch.setattr(gateway, "_reaper_candidate_is_supervisor_owned", lambda _: False)
-        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [orphan_pid])
-        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 77)
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: orphan_pids)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: pid + 77)
         monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: events.append(("marker", pid)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
         monkeypatch.setattr("time.sleep", lambda _: None)
@@ -852,7 +945,12 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         )
 
         assert gateway._reap_unsupervised_gateway_orphans() is True
-        assert events == [("marker", orphan_pid), ("force", [orphan_pid])]
+        assert events == [
+            ("marker", orphan_pids[0]),
+            ("force", [orphan_pids[0]]),
+            ("marker", orphan_pids[1]),
+            ("force", [orphan_pids[1]]),
+        ]
 
     def test_windows_no_orphans_when_only_recorded_gateway_running(self, monkeypatch):
         """If the only gateway processes are the recorded one and its
@@ -1049,9 +1147,10 @@ class TestReaperCandidateIsSupervisorOwned:
         )
 
         killed_pids = []
+        marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
-        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
 

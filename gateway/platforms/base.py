@@ -4067,7 +4067,8 @@ class BasePlatformAdapter(ABC):
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
         """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
-        if not getattr(self.config, "typing_indicator", True):
+        # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
+        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
             return None
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):

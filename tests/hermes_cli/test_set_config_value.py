@@ -377,47 +377,6 @@ class TestListNavigation:
 # Unpinned-cron notice on a global model change (#59031, #44585)
 # ---------------------------------------------------------------------------
 
-def _write_cron_jobs(tmp_path, jobs):
-    cron_dir = tmp_path / "cron"
-    cron_dir.mkdir(parents=True, exist_ok=True)
-    (cron_dir / "jobs.json").write_text(
-        json.dumps({"jobs": jobs}),
-        encoding="utf-8",
-    )
-
-
-class TestCronModelChangeNotice:
-    """A global model change tells the operator which unpinned jobs stay on their snapshot."""
-
-    def test_notice_says_jobs_keep_running_and_names_the_user_owned_pin_path(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("model.default", "new-model")
-
-        notice = capsys.readouterr().out
-        assert "keeps running" in notice
-        assert "fail closed" not in notice
-        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in notice
-        assert "cronjob action=update" not in notice
-
-
-# ---------------------------------------------------------------------------
-# String-typed config values — regression tests for #47515
-# ---------------------------------------------------------------------------
 
 class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])

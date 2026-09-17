@@ -39,7 +39,7 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import (
-    load_config, load_config_readonly, resolve_cron_model_drift_defaults)
+    load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
@@ -1377,27 +1377,10 @@ class _CronJobConfig:
     cron_default_provider: str
 
 
-def _snapshot_pin(job: dict, axis: str, current: str, job_id: str) -> str:
-    """The creation snapshot is an unpinned axis's effective pin: return it, logging once when it
-    differs from *current* (the live global default); ``""`` for legacy jobs without one, which keep
-    following the global default. A global model/provider change must never stop a cron job; a job
-    keeps running on what it was created under until the operator pins it or sets a cron.* fleet
-    default (#44585)."""
-    snapshot = str(job.get(f"{axis}_snapshot") or "").strip()
-    if snapshot and current and snapshot.lower() != current.lower():
-        logger.info(
-            "Job '%s': running on creation-snapshot %s %r (global default is now %r); "
-            "`hermes cron resnap %s` adopts the new default (stays unpinned), "
-            "`hermes cron edit %s --%s <value>` or cron.%s in config.yaml pins it.",
-            job_id, axis, snapshot, current, job_id, job_id, axis,
-            "model" if axis == "model" else "model_provider")
-    return snapshot
-
-
 def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConfig:
-    """Load config.yaml and resolve the run's model: per-job override > cron.model (fleet default) >
-    creation snapshot > HERMES_MODEL > config ``model:``. Re-read every tick (no cache) so
-    ``hermes cron edit --model`` applies next tick."""
+    """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
+    the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
+    ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1418,9 +1401,11 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
                 if _cron_default_model:
                     model = _cron_default_model
                 else:
-                    _, _global_model = resolve_cron_model_drift_defaults(
-                        _cfg, environ={"HERMES_MODEL": cron_env_setting("HERMES_MODEL")})
-                    model = _snapshot_pin(job, "model", _global_model, job_id) or _global_model or model
+                    # The main agent model: ``model: <name>`` shorthand or ``model.default``.
+                    _main = _model_cfg if isinstance(_model_cfg, str) else (
+                        _model_cfg.get("default") or _model_cfg.get("model") or _model_cfg.get("name")
+                        if isinstance(_model_cfg, dict) else "")
+                    model = str(_main or "").strip() or model
     except Exception as e:
         logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -1530,20 +1515,14 @@ def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple
 def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[dict, str]:
     """Resolve the runtime, walking the fallback chain on auth/transient-network errors. Returns
     ``(runtime, model)``; provider+model swap atomically (never swap only the provider while keeping
-    a paid primary model). Provider precedence: per-job pin > cron.model_provider > creation
-    snapshot > persisted global config."""
+    a paid primary model). Provider precedence: per-job pin > cron.model_provider > persisted
+    global config (None lets resolve_runtime_provider read it)."""
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
-    if not requested:
-        global_provider = (
-            str(jc.model_cfg.get("provider") or "").strip() if isinstance(jc.model_cfg, dict) else "")
-        # None (not the config provider) keeps the legacy no-snapshot path resolving from persisted
-        # config exactly as before.
-        requested = _snapshot_pin(job, "provider", global_provider, job_id) or None
     try:
         # Do NOT pass HERMES_INFERENCE_PROVIDER as `requested`: it would override persisted config
         # and resurrect stale providers for unpinned jobs.

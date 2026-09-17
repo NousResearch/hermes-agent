@@ -12,7 +12,6 @@ import {
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
-import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { isSessionRemovalPending } from './session-removal'
@@ -1266,7 +1265,6 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // consumer reconciles against it. A null descriptor (reconnect blip)
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
-  syncCronModelImpactConnection($connection.get())
 
   // Null descriptor = reconnect blip; keep the last resolved mode (same
   // contract as rescopeConnectionScopedStores above).

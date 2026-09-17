@@ -2963,11 +2963,16 @@ class _StreamingCall(StreamingWaitMonitor):
                 try:
                     json.loads(arguments)
                 except json.JSONDecodeError:
-                    # Repair before flagging (GLM via Ollama); "{}" = unrepairable.
+                    # Repair before flagging (GLM via Ollama); unrepairable args get a
+                    # sentinel object — FAIL-CLOSED (RCA 2026-09-17): executing "{}" ran
+                    # tools as silent no-ops (memory/skill_manage writes lost). The sentinel
+                    # is wire-valid JSON and is dropped from execution in run_tool_round,
+                    # which appends a re-issue error result instead.
                     repaired = _repair_tool_call_arguments(arguments, tc["function"]["name"] or "?")
                     if repaired != "{}":
                         arguments = repaired
                     else:
+                        arguments = json.dumps({"__hermes_malformed_tool_arguments__": True})
                         has_truncated_tool_args = True
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this

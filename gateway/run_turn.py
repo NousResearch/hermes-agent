@@ -1589,7 +1589,7 @@ class GatewayTurnMixin:
             _show_reasoning_effective = _resolve_gateway_display_bool(
                 _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
                 default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
-                require_platform_override_for={Platform.MATTERMOST},
+                require_platform_override_for={Platform.MATTERMOST}, chat_id=source.chat_id,
             )
         except Exception:
             _show_reasoning_effective = (
@@ -2947,7 +2947,8 @@ class GatewayTurnMixin:
                 platform_only = {_gateway_platform_value(item) for item in require_platform_override_for}
                 if (
                     current_platform in platform_only
-                    and not _has_platform_display_override(user_config, platform_key, setting)
+                    and not _has_platform_display_override(
+                        user_config, platform_key, setting, chat_id=source.chat_id)
                 ):
                     return "off"
             value = resolve_display_setting(user_config, platform_key, setting, default, chat_id=source.chat_id)

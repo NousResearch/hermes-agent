@@ -842,8 +842,17 @@ def _resolve_progress_thread_id(
     return None
 
 
-def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
-    """Return True when display.platforms.<platform> explicitly sets setting."""
+def _has_platform_display_override(
+    user_config: dict, platform_key: str, setting: str, *, chat_id: Any = None,
+) -> bool:
+    """Return True when display.platforms.<platform> — or its chats.<chat_id> block —
+    explicitly sets *setting*.
+
+    A ``chats.<chat_id>`` entry is explicit operator intent for that chat, so it satisfies the
+    Mattermost-style opt-in gate on its own; without it, a chat-scoped opt-in would be shadowed
+    by the absent platform-level key. Dict hygiene mirrors ``_configured_display_value``:
+    a null chat value inherits (and does not opt in).
+    """
     display = user_config.get("display") if isinstance(user_config, dict) else None
     if not isinstance(display, dict):
         return False
@@ -851,26 +860,36 @@ def _has_platform_display_override(user_config: dict, platform_key: str, setting
     if not isinstance(platforms, dict):
         return False
     platform_cfg = platforms.get(platform_key)
-    return isinstance(platform_cfg, dict) and setting in platform_cfg
+    if not isinstance(platform_cfg, dict):
+        return False
+    if setting in platform_cfg:
+        return True
+    if chat_id is None:
+        return False
+    chat_overrides = (platform_cfg.get("chats") or {}).get(str(chat_id))
+    return isinstance(chat_overrides, dict) and chat_overrides.get(setting) is not None
 
 
 def _resolve_gateway_display_bool(
     user_config: dict, platform_key: str, setting: str, *, default: bool = False,
-    platform: Any = None, require_platform_override_for: set[Any] | None = None) -> bool:
+    platform: Any = None, require_platform_override_for: set[Any] | None = None,
+    chat_id: Any = None) -> bool:
     """Resolve a boolean display setting with optional platform-only opt-in.
 
-    Scratch-text is too noisy for threaded surfaces (Mattermost): they need an explicit per-platform override.
+    Scratch-text is too noisy for threaded surfaces (Mattermost): they need an explicit
+    per-platform — or per-chat — override.
     """
     current_platform = _gateway_platform_value(platform or platform_key)
     platform_only = {_gateway_platform_value(c) for c in (require_platform_override_for or set())}
     if (
         current_platform in platform_only
-        and not _has_platform_display_override(user_config, platform_key, setting)):
+        and not _has_platform_display_override(user_config, platform_key, setting, chat_id=chat_id)
+    ):
         return False
 
     from gateway.display_config import resolve_display_setting
 
-    value = resolve_display_setting(user_config, platform_key, setting, default)
+    value = resolve_display_setting(user_config, platform_key, setting, default, chat_id=chat_id)
     if isinstance(value, bool):
         return value
     if isinstance(value, str):

@@ -1913,7 +1913,11 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # Owning multiplex profile (None on primary); see _session_key_profile.
+        # Optional gateway callback: event -> True when its session holds a running turn.
+        # Adapters with an ingress debounce (WhatsApp) skip the debounce for messages
+        # landing on an active turn so steer/redirect/interrupt are not delayed behind
+        # the batch window.
+        self._busy_state_query: Optional[Callable[[Any], bool]] = None
         self._owner_profile: Optional[str] = None
         # Set by the runner on a secondary's port-binding adapter: serve via the default profile's
         # shared listener (/p/<profile>/...) instead of binding a port (gateway/platforms/shared_ingress.py).
@@ -2273,6 +2277,19 @@ class BasePlatformAdapter(ABC):
         ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``, ``event_ts``, ``raw_event``)
         fanned out via ``HookRegistry.emit``."""
         self._reaction_handler = handler
+
+    def set_busy_state_query(self, query: Optional[Callable[[Any], bool]]) -> None:
+        """Set an optional callback reporting whether an event lands on a busy session.
+
+        ``query(event)`` returns True when the gateway holds a running turn for the
+        session the event would be routed to. Adapters whose inbound path debounces
+        text (WhatsApp) use this to SKIP the debounce for messages that would land on
+        an active turn: the debounce is tuned for batch-coalescing a QUIET chat, but
+        holding a follow-up 5-10s while a turn is running delays the busy handshake
+        (steer/redirect/interrupt) until the turn finished — the user sees
+        "Interrupting current task" only when nothing is left to interrupt.
+        """
+        self._busy_state_query = query
 
     def set_authorization_check(
         self, callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]]) -> None:

@@ -3652,8 +3652,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only.
+        # Configured-but-unusable profiles skip the wizard: the turn's real error
+        # (benched credential, expired sign-in) is the truth, not onboarding (#113720).
         try:
-            if sys.stdin.isatty() and not self._runtime_credentials_ready():
+            if sys.stdin.isatty() and self._should_offer_first_run_setup():
                 self._offer_first_run_setup()
         except Exception:
             logger.debug("first-run setup offer failed", exc_info=True)

@@ -349,6 +349,31 @@ class CLIAgentSetupMixin:
             return bool(base_url)
         return _keyless_custom_base(base_url)
 
+    def _other_provider_configured(self) -> bool:
+        """True when anything besides the free tier is configured: a key, a config
+        pin, a sign-in, or a host credential. Reuses the setup record's own
+        inventory so the first-run judgment stays in one place. Never raises."""
+        try:
+            from hermes_cli.free_tier_bootstrap import _inventory_other_providers
+            return bool(_inventory_other_providers())
+        except Exception:
+            return False
+
+    def _should_offer_first_run_setup(self) -> bool:
+        """Whether the interactive first-run wizard applies.
+
+        Blank installs route into onboarding; a configured-but-unusable profile
+        (benched credential, expired sign-in) must reach the turn's real error
+        instead of a setup flow that claims nothing is configured (#113720).
+        Never raises: doubt means no wizard.
+        """
+        try:
+            if self._runtime_credentials_ready():
+                return False
+            return not self._other_provider_configured()
+        except Exception:
+            return False
+
     def _offer_first_run_setup(self) -> bool:
         """Offer the provider picker when no provider is configured at all (interactive
         startup, TTY). Runs the same flow as ``hermes model`` so onboarding has a single

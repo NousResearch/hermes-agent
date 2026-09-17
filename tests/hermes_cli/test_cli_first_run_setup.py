@@ -250,3 +250,42 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
     assert "fireworks" in out
     assert "OPENROUTER_API_KEY" not in out
     assert "hermes model" in out or "hermes setup" in out
+
+
+# ---------------------------------------------------------------------------
+# _should_offer_first_run_setup (#113720)
+# ---------------------------------------------------------------------------
+
+
+def test_wizard_offered_when_nothing_configured(monkeypatch):
+    cli = _import_cli()
+    shell = _make_shell(cli, monkeypatch)
+    monkeypatch.setattr(shell, "_runtime_credentials_ready", lambda: False)
+    monkeypatch.setattr(shell, "_other_provider_configured", lambda: False)
+    assert shell._should_offer_first_run_setup() is True
+
+
+def test_wizard_skipped_when_configured_but_unusable(monkeypatch):
+    """A benched credential is not a blank install: no onboarding (#113720)."""
+    cli = _import_cli()
+    shell = _make_shell(cli, monkeypatch)
+    monkeypatch.setattr(shell, "_runtime_credentials_ready", lambda: False)
+    monkeypatch.setattr(shell, "_other_provider_configured", lambda: True)
+    assert shell._should_offer_first_run_setup() is False
+
+
+def test_wizard_skipped_when_credentials_ready(monkeypatch):
+    cli = _import_cli()
+    shell = _make_shell(cli, monkeypatch)
+    monkeypatch.setattr(shell, "_runtime_credentials_ready", lambda: True)
+    assert shell._should_offer_first_run_setup() is False
+
+
+def test_other_provider_configured_never_raises(monkeypatch):
+    cli = _import_cli()
+    shell = _make_shell(cli, monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.free_tier_bootstrap._inventory_other_providers",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert shell._other_provider_configured() is False

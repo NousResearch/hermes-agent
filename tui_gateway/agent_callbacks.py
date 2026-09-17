@@ -430,11 +430,23 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         if preview or name:
             progress(str(preview) if preview else f"{event_type.replace('.', ' ')}: {name}")
 
+    _restart_status = _restart_status_factory(parent, progress)
     return {
         "tool_start_callback": tool_start, "tool_complete_callback": tool_complete,
         "tool_progress_callback": tool_progress,
         "tool_gen_callback": lambda name: progress(f"Preparing {name}"),
-        "status_callback": lambda kind, text=None: progress(text if text is not None else kind)}
+        "status_callback": _restart_status}
+
+
+def _restart_status_factory(parent: str, progress):
+    """Restart-panel status rows: automatic warnings honor the TUI policy like the main agent's sink."""
+    def _restart_status(kind, text=None):
+        from gateway.warning_notifications import is_warning_status
+        message = text if text is not None else kind
+        if is_warning_status(kind, message) and not _agent_presentation_enabled(parent, diagnostic=True):
+            return
+        progress(message)
+    return _restart_status
 
 
 def _rebuild_session_agent(sid: str, session: dict, **kwargs):

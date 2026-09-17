@@ -233,3 +233,23 @@ def test_tui_configured_model_adoption_failure_honors_policy(tmp_path, monkeypat
     ns = dict(vars(server)); ns.update({"model": "gpt-x", "sid": "s1", "session": {"agent": types.SimpleNamespace(_notification_config=None)}})
     exec(compile(block, "<adopt-block>", "exec"), ns)
     assert (len(emitted) == 1 and emitted[0][0] == "error") is _visible(setting)
+
+
+@pytest.mark.parametrize("setting", MODES)
+def test_tui_preview_restart_status_warning_honors_policy(tmp_path, monkeypatch, setting):
+    """The preview-restart progress panel's status_callback: warning rows follow the TUI policy;
+    ordinary status rows and tool progress always render."""
+    _policy(tmp_path, monkeypatch, setting)
+    from tui_gateway import server
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload: emitted.append(payload["text"]))
+    monkeypatch.setattr(server, "_session_get", lambda sid: {"agent": types.SimpleNamespace(_notification_config=None)}, raising=False)
+    from gateway.warning_notifications import DiagnosticText
+    cbs = server._preview_restart_callbacks("parent-1", "task-1")
+    cbs["status_callback"]("lifecycle", "Starting preview")
+    cbs["status_callback"]("warn", "⚠ provider fallback engaged")
+    cbs["status_callback"]("lifecycle", DiagnosticText("⚠ compression model unavailable"))
+    cbs["tool_gen_callback"]("terminal")
+    assert "Starting preview" in emitted and "Preparing terminal" in emitted
+    assert ("⚠ provider fallback engaged" in emitted) is _visible(setting)
+    assert ("⚠ compression model unavailable" in emitted) is _visible(setting)

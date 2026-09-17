@@ -246,14 +246,17 @@ def install_happy_eyeballs_socket_connect() -> None:
 
     _socket_original = socket.create_connection
 
-    def _socket_racer(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
-        effective = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+    def _socket_racer(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *, all_errors=False):
+        # Stock create_connection leaves the sentinel alone, so the socket keeps the
+        # process default from socket.setdefaulttimeout(); the racer re-applies the
+        # timeout on the winner, so it must resolve the sentinel the same way.
+        effective = socket.getdefaulttimeout() if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
         try:
             return _happy_eyeballs_create_connection(address, effective, source_address=source_address)
         except OSError:
             raise  # every candidate failed — identical semantics to the serial original
         except Exception:
-            return _socket_original(address, effective, source_address=source_address)
+            return _socket_original(address, timeout, source_address=source_address, all_errors=all_errors)
 
     socket.create_connection = _socket_racer
 
@@ -263,7 +266,7 @@ def install_happy_eyeballs_socket_connect() -> None:
         _urllib3_original = _urllib3_connection.create_connection
 
         def _urllib3_racer(address, timeout=_urllib3_sentinel, source_address=None, socket_options=None):
-            effective = None if timeout is _urllib3_sentinel else timeout
+            effective = socket.getdefaulttimeout() if timeout is _urllib3_sentinel else timeout
             try:
                 return _happy_eyeballs_create_connection(
                     address, effective, source_address=source_address,
@@ -272,7 +275,7 @@ def install_happy_eyeballs_socket_connect() -> None:
                 raise
             except Exception:
                 return _urllib3_original(
-                    address, effective, source_address=source_address, socket_options=socket_options)
+                    address, timeout, source_address=source_address, socket_options=socket_options)
 
         _urllib3_connection.create_connection = _urllib3_racer
     except Exception:

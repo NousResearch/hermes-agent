@@ -440,7 +440,7 @@ def test_installed_socket_connect_races_past_blackholed_ipv6(
     )
 
     assert winner.family == socket.AF_INET
-    assert winner.timeout is None  # sentinel → blocking socket, like the stock connect
+    assert winner.timeout is None  # sentinel resolves to the process default (None here), like stock
     assert clock[0] == process_bootstrap._HAPPY_EYEBALLS_DELAY_SECONDS
     assert sockets[0].closed is True
     assert sockets[1] is winner
@@ -468,3 +468,35 @@ def test_installed_racer_serves_http_client_and_urllib3_connects(restored_socket
         http_conn.close()
         urllib3_conn.close()
         listener.close()
+
+
+def test_installed_racer_honours_process_default_timeout_on_sentinel(restored_socket_connect):
+    # Stock create_connection leaves the sentinel alone, so the socket keeps the
+    # process default set by socket.setdefaulttimeout(); the racer re-applies the
+    # timeout on the winner and must resolve the sentinel to that same default
+    # instead of forcing a blocking socket.
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    port = listener.getsockname()[1]
+
+    process_bootstrap.install_happy_eyeballs_socket_connect()
+    socket.setdefaulttimeout(5.0)
+    try:
+        winner = socket.create_connection(("127.0.0.1", port), socket._GLOBAL_DEFAULT_TIMEOUT)
+        try:
+            assert winner.gettimeout() == 5.0
+        finally:
+            winner.close()
+    finally:
+        socket.setdefaulttimeout(None)
+        listener.close()
+
+
+def test_installed_racer_accepts_all_errors_keyword(restored_socket_connect):
+    # socket.create_connection gained the keyword-only all_errors parameter in
+    # Python 3.11 (the repo floor); forwarding it through the installed racer must
+    # not fail with a TypeError before the connect is even attempted.
+    process_bootstrap.install_happy_eyeballs_socket_connect()
+    with pytest.raises(OSError):
+        socket.create_connection(("127.0.0.1", 1), 1.0, None, all_errors=True)

@@ -4101,20 +4101,27 @@ _TRANSIENT_PROVIDER_REASONS = frozenset({
 def _single_query_exit_code(result) -> int:
     """Map a one-shot turn result onto a process exit code, for both `-q` and `-Q`.
 
+<<<<<<< HEAD
     0 only when the turn completed; 130 when it was interrupted; 1 when it failed, stopped
     partway (`partial`, `completed: False`) or never ran at all (credentials / agent init
     failed, so ``result`` is not a dict). A Kanban worker (``HERMES_KANBAN_TASK`` set) that
     failed purely on a provider rate-limit / billing wall exits ``KANBAN_RATE_LIMIT_EXIT_CODE``
     (EX_TEMPFAIL): the dispatcher books that run ``rate_limited`` and requeues the task
     WITHOUT counting a failure, so a quota window or a provider outage cannot trip the breaker.
+
+    The worker predicate is the STRIPPED ``kanban_task_id()`` (from
+    ``agent.kanban_turn_recovery``) so a whitespace-only value is not a worker here
+    either — the exit mapping and the recovery gate must agree on what a worker is.
     """
+    from agent.kanban_turn_recovery import kanban_task_id
+
     if not isinstance(result, dict):
         return 1
     if result.get("interrupted"):
         return 130
     if not (result.get("failed") or result.get("partial") or result.get("completed") is False):
         return 0
-    if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in _TRANSIENT_PROVIDER_REASONS:
+    if kanban_task_id() and result.get("failure_reason") in _TRANSIENT_PROVIDER_REASONS:
         from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
         return KANBAN_RATE_LIMIT_EXIT_CODE
     return 1
@@ -4184,6 +4191,27 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 cli._quiet_notify_linger_done = True
             if isinstance(continued, dict):
                 result = continued
+        # Kanban worker: a turn that died on a retryable provider failure is retried
+        # IN PLACE (same session, context preserved) instead of ending the run silently.
+        # Authority (typed retryable failure, no interrupt / terminal settlement) and the
+        # live run/claim proof live in agent/kanban_turn_recovery.py.
+        from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
+
+        def _quiet_recover_turn(nudge):
+            nonlocal result
+            _history = result.get("messages") if isinstance(result, dict) else None
+            result = cli.agent.run_conversation(
+                user_message=nudge,
+                conversation_history=_history or cli.conversation_history,
+                **author_kwargs,
+            )
+            _sync_cli_session_id_from_agent(cli)
+
+        _recover_turns(
+            _quiet_recover_turn,
+            lambda: result,
+            emit=lambda msg: print(msg, file=sys.stderr, flush=True),
+        )
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
@@ -4197,9 +4225,25 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     elif response:
         print(response)
 
+    # ONE exit-code decision point for this driver, shared with the non-quiet
+    # one-shot path via _single_query_exit_code: a quota/billing wall keeps the
+    # EX_TEMPFAIL sentinel so the dispatcher releases the task without counting a
+    # failure, and any other unfinished worker turn exits non-zero instead of ending
+    # as a silent rc=0 that reads as a protocol violation. Computed BEFORE goal
+    # continuation — the post-recovery disposition must be authoritative for the
+    # rest of the driver.
+    _exit_code = _single_query_exit_code(result)
+
     # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
     # done, the worker terminates it, or the turn budget runs out (sticky block).
-    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+    # ONLY a settled, authorized turn may continue: a result that remains
+    # failed/unfinished — recovery exhausted or DENIED (lease expired, claim lost,
+    # quota wall, interrupt, terminal settlement) — must reach the shared exit path
+    # below without goal continuation. goal_run_status() checks only run identity,
+    # not the claim lock or either expiry, so an unreaped expired-lease row still
+    # reports "running" and a continue verdict would re-enter the model under an
+    # authority this process can no longer prove (round-3 finding).
+    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1" and _exit_code == 0:
         try:
             _run_kanban_goal_loop_q(cli, response)
         except Exception as _goal_exc:
@@ -4208,7 +4252,6 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     if emitter is None:
         print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
-    _exit_code = _single_query_exit_code(result)
     if emitter is not None:
         _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
     sys.exit(_exit_code)
@@ -4551,6 +4594,17 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
+        # Kanban worker: a failed-silently turn used to end the run as rc=0 with no
+        # terminal kanban call, so the dispatcher booked a protocol violation and
+        # cold-restarted the task from scratch. Retry the authorised turn IN PLACE
+        # (see agent/kanban_turn_recovery.py) and exit with the shared policy code.
+        from agent.kanban_turn_recovery import recover_failed_kanban_turns
+
+        recover_failed_kanban_turns(
+            lambda nudge: cli.chat(nudge),
+            lambda: getattr(cli, "_last_turn_result", None),
+            emit=lambda msg: print(msg, file=sys.stderr, flush=True),
+        )
         cli._print_exit_summary(clear_screen=False)
         # Same exit contract as `-Q`: scripts and the Kanban dispatcher read the outcome from
         # the exit code. This path used to fall through to an implicit 0 for every outcome.

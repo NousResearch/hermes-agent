@@ -199,9 +199,11 @@ export function threadScrollTranscriptHeight(
 }
 
 /**
- * Post-settle restore RO may re-pin a frozen offset only when transcript
+ * Post-settle restore RO may re-pin a frozen target only when transcript
  * rows actually changed height. Composer clearance / viewport-box resizes
- * and no-op RO deliveries must not rewrite scrollTop.
+ * and no-op RO deliveries must not rewrite scrollTop — for a frozen offset
+ * and for a bottom-anchored restore alike (#113842): an unconditional bottom
+ * arm rewrote scrollTop on every RO delivery for the life of the effect.
  */
 export function shouldReapplyFrozenThreadScrollOffset(
   target: ThreadScrollState,
@@ -209,7 +211,7 @@ export function shouldReapplyFrozenThreadScrollOffset(
   previous: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>,
   next: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
 ): boolean {
-  if (target.kind !== 'offset' || !settled) {
+  if (!settled) {
     return false
   }
 

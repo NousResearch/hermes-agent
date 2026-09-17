@@ -35,11 +35,19 @@ describe('shouldReapplyFrozenThreadScrollOffset', () => {
     expect(threadScrollTargetTop(OFFSET, next)).toBe(5600 - 600 - 800)
   })
 
-  it('leaves kind:bottom / following restore alone', () => {
+  it('re-pins a bottom-anchored restore on real growth, but not on a no-op resize (#113842)', () => {
     const previous = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5000 }
-    const next = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5600 }
+    const grew = { clearanceHeight: 120, clientHeight: 600, scrollHeight: 5600 }
 
-    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, next)).toBe(false)
+    // Late async growth (images, highlighting) must still follow the bottom.
+    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, grew)).toBe(true)
+
+    // A composer-clearance-only resize leaves transcript height untouched: the
+    // old unconditional `target.kind === 'bottom'` arm rewrote scrollTop here.
+    const clearanceOnly = { clearanceHeight: 200, clientHeight: 520, scrollHeight: 5080 }
+
+    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, clearanceOnly)).toBe(false)
+    expect(shouldReapplyFrozenThreadScrollOffset(BOTTOM, true, previous, previous)).toBe(false)
   })
 
   it('does not re-pin while the session-switch settle loop is still running', () => {

@@ -914,8 +914,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     stopScroll()
 
+    // Our own scrollTop writes raise 'scroll' exactly like a user's do. Record
+    // what we wrote (post-clamp) so the cancel listener below can tell a
+    // reader's real scroll from the restore's own echo.
+    let selfScrollTop: null | number = null
+
+    const writeScrollTop = (node: HTMLElement) => {
+      node.scrollTop = threadScrollTargetTop(target, node)
+      selfScrollTop = node.scrollTop
+    }
+
     applyRestoreRef.current = () => {
-      el.scrollTop = threadScrollTargetTop(target, el)
+      writeScrollTop(el)
     }
 
     applyRestoreRef.current()
@@ -949,7 +959,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       stableFrames = height === lastHeight && !clamped ? stableFrames + 1 : 0
       lastHeight = height
-      node.scrollTop = threadScrollTargetTop(target, node)
+      writeScrollTop(node)
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
@@ -1009,13 +1019,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       // ResizeObserver runs before paint; waiting for the next settle rAF
       // exposes a frame at the old offset when deferred markdown grows.
-      // Reading offsets still ignore composer-only resizes once settled.
-      if (
-        !loadSettledRef.current ||
-        target.kind === 'bottom' ||
-        shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)
-      ) {
-        el.scrollTop = threadScrollTargetTop(target, el)
+      // Both target kinds ignore composer-only / no-op resizes once settled.
+      if (!loadSettledRef.current || shouldReapplyFrozenThreadScrollOffset(target, true, previous, next)) {
+        writeScrollTop(el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
     })
@@ -1059,11 +1065,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       liveScrollStateRef.current = target
 
       applyRestoreRef.current = () => {
-        el.scrollTop = threadScrollTargetTop(target, el)
+        writeScrollTop(el)
       }
 
       loadSettledRef.current = true
-      el.scrollTop = threadScrollTargetTop(target, el)
+      writeScrollTop(el)
 
       if (contentRef.current) {
         resizeObserver.observe(contentRef.current)
@@ -1072,9 +1078,42 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       void scrollToBottom('instant')
     }
 
+    // A manual scroll releases the frozen target as durably as wheel/pointer/key
+    // do: trackpad momentum, scrollbar drags and reader jumps surface only as
+    // 'scroll', so without it an escape did not survive a re-arm of this effect
+    // (#113842). Our own restore writes echo here too — ignore those.
+    //
+    // The echo is compared against our last write CLAMPED INTO THE CURRENT
+    // scroll range, not the raw value. Layout can move scrollTop with no user
+    // input: submitting clears the composer, so the clearance spacer shrinks
+    // and the clamped viewport grows, the scroll range loses that height, and
+    // the browser clamps scrollTop down to the new maximum — raising a 'scroll'
+    // indistinguishable from a reader's. Compared raw, that clamp read as an
+    // escape and cancelled the restore mid-send, so the appended turn was never
+    // re-pinned and the transcript rested a composer's height above the bottom.
+    const isSelfScroll = () => {
+      if (selfScrollTop === null) {
+        return false
+      }
+
+      return Math.abs(el.scrollTop - Math.min(selfScrollTop, Math.max(0, el.scrollHeight - el.clientHeight))) <= 1
+    }
+
+    const onScroll = () => {
+      if (isSelfScroll()) {
+        // Re-baseline: the clamped position is now what we hold the viewport at.
+        selfScrollTop = el.scrollTop
+
+        return
+      }
+
+      cancelRestore()
+    }
+
     el.addEventListener('wheel', onWheel, { passive: true })
     el.addEventListener('pointerdown', cancelRestore, { passive: true })
     el.addEventListener('keydown', cancelRestore)
+    el.addEventListener('scroll', onScroll, { passive: true })
 
     return () => {
       cancelRestoreRef.current = null
@@ -1084,6 +1123,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('pointerdown', cancelRestore)
       el.removeEventListener('keydown', cancelRestore)
+      el.removeEventListener('scroll', onScroll)
       cancelAnimationFrame(rafId)
       record()
     }

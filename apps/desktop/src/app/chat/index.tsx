@@ -313,11 +313,14 @@ export function ChatRuntimeBoundary({
 
   const currentMessages = history.page?.messages ?? windowedMessages
   const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
-  // Subscribed (not read imperatively) so the "Show earlier" affordance
-  // appears/retires as tail hydrations and backfill pages record their state.
-  const transcriptTailStates = useStore($transcriptTailBySessionId)
-  const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
-  const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
+
+  // A selector, not a whole-atom useStore: this atom is re-published by every
+  // tail hydration across every session, and the only thing this ancestor reads
+  // is one boolean for the current session. Subscribing whole re-rendered the
+  // runtime provider's subtree on each heartbeat re-read (#113842).
+  const restBackfillAvailable = useStoreSelector($transcriptTailBySessionId, () =>
+    storedId ? Boolean(transcriptTailState(storedId, tailProfile)?.possiblyTruncated) : false
+  )
 
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {

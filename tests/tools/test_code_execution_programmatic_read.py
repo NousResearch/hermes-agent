@@ -234,3 +234,58 @@ def test_programmatic_early_document_branch_matches_file_ops_path_byte_for_byte(
     expected_page = f"{extracted_line2}\n"
     # Byte-identical page content across all three construction paths.
     assert programmatic["content"] == chat["content"] == raw.content == expected_page
+
+
+def test_programmatic_read_records_write_baseline(tmp_path):
+    """A full programmatic read must satisfy the write_file baseline: the
+    sandbox saw the file's current content, so a follow-up whole-file write
+    is allowed — while the chat dedup/loop machinery stays untouched."""
+    target = tmp_path / "seen.txt"
+    target.write_text("old\ncontent\n", encoding="utf-8")
+    task_id = f"prog-baseline-{tmp_path.name}"
+
+    read = json.loads(
+        file_tools.read_file_programmatic_tool(str(target), task_id=task_id)
+    )
+    assert read["success"] is True
+
+    write = json.loads(
+        file_tools.write_file_tool(str(target), "new\ncontent\n", task_id=task_id)
+    )
+    assert "error" not in write
+    assert target.read_text(encoding="utf-8") == "new\ncontent\n"
+
+
+def test_extracted_document_page_ending_in_blank_line_keeps_gutter(tmp_path):
+    """A selected page ending on a real blank line keeps that line's gutter
+    number — one terminator per selected line, and _add_line_numbers drops
+    exactly one."""
+    notebook = {
+        "cells": [
+            {
+                "cell_type": "code",
+                "source": ["alpha\n", "\n", "beta\n"],
+                "outputs": [],
+            },
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    target = tmp_path / "blank.ipynb"
+    target.write_text(json.dumps(notebook), encoding="utf-8")
+
+    # Window 1..3 selects the header, "alpha" and the interior blank line.
+    chat = json.loads(
+        file_tools.read_file_tool(str(target), offset=1, limit=3, task_id="pin-blank")
+    )
+    assert chat.get("extracted_document") is True
+    assert chat["content"].splitlines()[-1] == "3|"
+
+    raw = json.loads(
+        file_tools.read_file_tool(
+            str(target), offset=1, limit=3, task_id="pin-blank-raw",
+            line_numbers=False,
+        )
+    )
+    assert raw["content"].endswith("alpha\n\n")

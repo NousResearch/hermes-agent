@@ -116,7 +116,7 @@ class WeComMediaMixin:
         if kind != "image":
             return await cache_document_from_bytes_async(raw, filename), doc_mime
         try:
-            return await cache_image_from_bytes_async(raw, ext), image_mime or self._mime_for_ext(ext, fallback="image/jpeg")
+            return await cache_image_from_bytes_async(raw, ext, filename), image_mime or self._mime_for_ext(ext, fallback="image/jpeg")
         except ValueError as exc:
             logger.warning("[%s] Rejected non-image bytes%s: %s", self.name, origin, exc)
             return None

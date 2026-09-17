@@ -476,7 +476,9 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     act(() => {
       lateRestore('rejected draft', [])
 
-      if (hidden) {lateFocus()}
+      if (hidden) {
+        lateFocus()
+      }
     })
 
     expect(composerPlainText(draft.editorRef.current!)).toBe('rejected draft')

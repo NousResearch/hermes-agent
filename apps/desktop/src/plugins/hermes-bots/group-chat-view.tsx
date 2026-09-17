@@ -371,7 +371,14 @@ interface GroupChatSettingsDialogProps {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onManageMembers, onRenamed }: GroupChatSettingsDialogProps) {
+function GroupChatSettingsDialog({
+  group,
+  members,
+  open,
+  onClose,
+  onManageMembers,
+  onRenamed
+}: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
@@ -768,9 +775,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     }
   }
 
-  const summaryActivity = !room.running && unresolvedFailures.size
-    ? [...unresolvedFailures.values()].at(-1)!
-    : latestActivity
+  const summaryActivity =
+    !room.running && unresolvedFailures.size ? [...unresolvedFailures.values()].at(-1)! : latestActivity
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
@@ -797,7 +803,9 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
           {summaryActivity ? (
-            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
+            <span
+              className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}
+            >{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -1269,7 +1277,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         onManageMembers={() => setMemberPickerOpen(true)}
         open={settingsOpen}
       />
-      <GroupMemberPicker group={group} members={members} onClose={() => setMemberPickerOpen(false)} open={memberPickerOpen} />
+      <GroupMemberPicker
+        group={group}
+        members={members}
+        onClose={() => setMemberPickerOpen(false)}
+        open={memberPickerOpen}
+      />
       <ConfirmDialog
         busyLabel={b.group.disbanding}
         confirmLabel={b.group.disbandAction}
@@ -1318,7 +1331,6 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   useValue($groupChats)
   const roster = useValue($lastRoster)
   const members = groupChatMemberBots(group, roster, allMeta)
-
 
   // Older SDKs have no paneVisibility: fall back to an always-visible atom so
   // the hook order stays stable and behavior matches the previous build.

@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -5,10 +6,11 @@ import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { $settingsOwner } from '@/store/settings-scope'
 import { CHAT_FONT_SUGGESTIONS, normalizeChatFontFamily, setChatFontFamilyFromConfig } from '@/themes/chat-font'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
@@ -30,7 +32,12 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord()
+  const settingsOwner = useStore($settingsOwner)
+
+  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord(
+    settingsOwner ?? undefined,
+    Boolean(settingsOwner)
+  )
   const [draft, setDraft] = useState<string | null>(null)
   // The seed effect refuses to reseed while the query still carries the
   // previous profile's stamp. A structurally-shared refetch keeps the object
@@ -90,7 +97,7 @@ export function ChatFontSetting() {
             return
           }
 
-          setHermesConfigCache(next)
+          hermesConfigCacheWriter(settingsOwner ?? undefined)(next)
         })
         .catch(error => {
           if (saveVersionRef.current !== version) {

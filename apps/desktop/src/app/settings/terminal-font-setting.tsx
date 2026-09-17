@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import {
@@ -11,9 +12,10 @@ import { Input } from '@/components/ui/input'
 import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { useProfileSwitchLatch } from '../hooks/use-profile-switch-latch'
 
@@ -29,7 +31,12 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function TerminalFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord()
+  const settingsOwner = useStore($settingsOwner)
+
+  const { data: loadedConfig, dataUpdatedAt, writeScope } = useHermesConfigRecord(
+    settingsOwner ?? undefined,
+    Boolean(settingsOwner)
+  )
   // draft === null ⇔ unseeded: nothing painted yet for this profile. The
   // profile-switch handler keeps it unseeded until a config refetch completes;
   // the timestamp is the freshness proof because React Query can reuse the
@@ -101,7 +108,7 @@ export function TerminalFontSetting() {
             return
           }
 
-          setHermesConfigCache(next)
+          hermesConfigCacheWriter(settingsOwner ?? undefined)(next)
         })
         .catch(error => {
           if (saveVersionRef.current !== version) {

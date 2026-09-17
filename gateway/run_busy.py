@@ -310,6 +310,7 @@ class GatewayBusySessionMixin:
     _SECURITY_METADATA_KEYS = (
         "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
         "gateway_session_id", "gateway_session_strict",
+        "notification_category",
     )
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:

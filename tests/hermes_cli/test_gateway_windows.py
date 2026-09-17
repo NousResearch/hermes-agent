@@ -415,6 +415,26 @@ def test_uninstall_removes_startup_staging_leftover(monkeypatch, tmp_path):
     assert not staging.exists()
 
 
+def test_write_start_attestation_discards_staging_file_when_swap_fails(monkeypatch, tmp_path):
+    """A failed attestation swap must not leave the .json.tmp staging file behind.
+
+    Same fail-clean rule as _atomic_write (#114093): the marker lands under the
+    hermes home, so a leftover gateway.start-attestation.json.tmp is debris.
+    The API is best-effort, so the OSError must be swallowed, not propagated.
+    """
+    home = tmp_path / "home"
+
+    def _denied_replace(self, dest):
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(gateway_windows.Path, "replace", _denied_replace)
+
+    gateway_windows._write_start_attestation([4242], "scheduled-task", home=home)
+
+    assert not (home / "state" / "gateway.start-attestation.json.tmp").exists()
+    assert not (home / "state" / "gateway.start-attestation.json").exists()
+
+
 
 
 

@@ -918,6 +918,13 @@ def _write_start_attestation(pids: list[int], via: str, home: Path | None = None
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
     except Exception:
+        # A failed swap must not leave the staging .json.tmp behind (same
+        # fail-clean rule as _atomic_write, #114093). Re-derive the path so
+        # failures raised before ``tmp`` was bound still clean up.
+        try:
+            _start_attestation_path(home).with_suffix(".json.tmp").unlink(missing_ok=True)
+        except Exception:
+            pass
         logger.debug("Failed to write gateway start attestation", exc_info=True)
 
 

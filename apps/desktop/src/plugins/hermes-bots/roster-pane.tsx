@@ -222,6 +222,13 @@ function useReconcileRosterOwner(
   }, [data, error, selectionHydrated, roster, sourceSnapshot, allMeta])
 }
 
+/** The Bots tab's label in the sessions strip. A live node rather than the
+ *  pane's registration-time `title`: the app language is loaded after the
+ *  contribution registers (`PaneChrome.tabTitle`). */
+export function BotsPaneTabLabel() {
+  return <>{useBots().paneTitle}</>
+}
+
 export function BotsPane() {
   const { t } = useI18n()
   const b = useBots()

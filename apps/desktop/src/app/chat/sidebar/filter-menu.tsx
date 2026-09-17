@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
 import { desktopGit } from '@/lib/desktop-git'
 import { cn } from '@/lib/utils'
 import {
@@ -67,53 +68,65 @@ import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
 import type { SessionStatusBucket } from '@/store/session-dot-state'
 import { $sessionsHaveCost } from '@/store/sidebar-archive'
 
+/** Which `sidebar.filter.option` entry labels a row. The tables below carry the
+ *  key; the menu resolves it against the active locale at render, so a language
+ *  switch relabels every row without touching the tables. */
+type FilterOptionKey = keyof Translations['sidebar']['filter']['option']
+
 interface Option<T extends string = string> {
   /** A status dot's full className, from the row's own vocabulary. */
   dot?: string
   icon?: string
   id: T
+  /** English source text — also the fallback for a not-yet-translated key. */
   label: string
+  labelKey?: FilterOptionKey
 }
 
 const GROUPINGS: Option<SidebarGrouping>[] = [
-  { icon: 'clock', id: 'date', label: 'Updated' },
-  { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
+  { icon: 'clock', id: 'date', label: 'Updated', labelKey: 'updated' },
+  { icon: 'root-folder', id: 'project', label: 'Project', labelKey: 'project' },
+  { icon: 'pulse', id: 'status', label: 'Status', labelKey: 'status' },
+  { icon: 'account', id: 'profile', label: 'Profile', labelKey: 'profile' }
 ]
 
 const ORDERINGS: Option<SidebarOrdering>[] = [
-  { icon: 'clock', id: 'updated', label: 'Updated' },
-  { icon: 'add', id: 'created', label: 'Created' },
-  { icon: 'pulse', id: 'status', label: 'Status' },
-  { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
-  { icon: 'credit-card', id: 'cost', label: 'Cost' },
-  { icon: 'list-ordered', id: 'manual', label: 'Manual' }
+  { icon: 'clock', id: 'updated', label: 'Updated', labelKey: 'updated' },
+  { icon: 'add', id: 'created', label: 'Created', labelKey: 'created' },
+  { icon: 'pulse', id: 'status', label: 'Status', labelKey: 'status' },
+  { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens', labelKey: 'tokens' },
+  { icon: 'credit-card', id: 'cost', label: 'Cost', labelKey: 'cost' },
+  { icon: 'list-ordered', id: 'manual', label: 'Manual', labelKey: 'manual' }
 ]
 
 const ROW_META: Option<SidebarRowMeta>[] = [
-  { icon: 'clock', id: 'updated', label: 'Updated' },
-  { icon: 'comment', id: 'preview', label: 'Preview' },
-  { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens' },
-  { icon: 'credit-card', id: 'cost', label: 'Cost' },
-  { icon: 'git-pull-request', id: 'pr', label: 'PR' },
-  { icon: 'account', id: 'profile', label: 'Profile' }
+  { icon: 'clock', id: 'updated', label: 'Updated', labelKey: 'updated' },
+  { icon: 'comment', id: 'preview', label: 'Preview', labelKey: 'preview' },
+  { icon: 'symbol-numeric', id: 'tokens', label: 'Tokens', labelKey: 'tokens' },
+  { icon: 'credit-card', id: 'cost', label: 'Cost', labelKey: 'cost' },
+  { icon: 'git-pull-request', id: 'pr', label: 'PR', labelKey: 'pr' },
+  { icon: 'account', id: 'profile', label: 'Profile', labelKey: 'profile' }
 ]
 
 const PR_FILTERS: Option<PullRequestBucket>[] = [
-  { icon: 'git-pull-request', id: 'open', label: 'Open' },
-  { icon: 'git-pull-request-draft', id: 'draft', label: 'Draft' },
-  { icon: 'git-merge', id: 'merged', label: 'Merged' },
-  { icon: 'git-pull-request-closed', id: 'closed', label: 'Closed' },
-  { icon: 'circle-slash', id: 'none', label: 'No PR' }
+  { icon: 'git-pull-request', id: 'open', label: 'Open', labelKey: 'open' },
+  { icon: 'git-pull-request-draft', id: 'draft', label: 'Draft', labelKey: 'draft' },
+  { icon: 'git-merge', id: 'merged', label: 'Merged', labelKey: 'merged' },
+  { icon: 'git-pull-request-closed', id: 'closed', label: 'Closed', labelKey: 'closed' },
+  { icon: 'circle-slash', id: 'none', label: 'No PR', labelKey: 'none' }
 ]
 
 const STATUS_FILTERS: Option<SessionStatusBucket>[] = [
-  { dot: sessionDotClassName('needs-input'), id: 'needs-input', label: 'Needs input' },
-  { dot: sessionDotClassName('working'), id: 'working', label: 'Working' },
-  { dot: sessionDotClassName('unread'), id: 'unread', label: 'Unread' },
-  { dot: sessionDotClassName('draft'), id: 'draft', label: 'Draft' },
-  { dot: cn(sessionDotClassName('idle'), 'bg-(--ui-text-quaternary)'), id: 'idle', label: 'Idle' }
+  { dot: sessionDotClassName('needs-input'), id: 'needs-input', label: 'Needs input', labelKey: 'needsInput' },
+  { dot: sessionDotClassName('working'), id: 'working', label: 'Working', labelKey: 'working' },
+  { dot: sessionDotClassName('unread'), id: 'unread', label: 'Unread', labelKey: 'unread' },
+  { dot: sessionDotClassName('draft'), id: 'draft', label: 'Draft', labelKey: 'draft' },
+  {
+    dot: cn(sessionDotClassName('idle'), 'bg-(--ui-text-quaternary)'),
+    id: 'idle',
+    label: 'Idle',
+    labelKey: 'idle'
+  }
 ]
 
 function OptionGlyph({ option }: { option: Option }) {
@@ -192,7 +205,13 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
   const foldCollapsed = foldIds.length > 0 && foldIds.every(id => nodeOpen[id] === false)
 
-  const groupings = GROUPINGS.map(option =>
+  const filter = t.sidebar.filter
+  /** The option tables carry keys, not sentences — resolve them here so the
+   *  whole menu follows the active locale. */
+  const localized = <T extends string>(options: Option<T>[]): Option<T>[] =>
+    options.map(option => (option.labelKey ? { ...option, label: filter.option[option.labelKey] } : option))
+
+  const groupings = localized(GROUPINGS).map(option =>
     option.id === 'profile' ? { ...option, label: t.sidebar.gatewayGroups.grouping } : option
   )
 
@@ -201,32 +220,39 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   // Two options are conditional: dragging a row is what picks manual, so it
   // only appears as a way back out once there's a hand-picked order to leave;
   // and cost is hidden until some session actually reports spend.
-  const orderings = ORDERINGS.filter(option => {
-    if (option.id === 'manual') {
-      return ordering === 'manual'
-    }
+  const orderings = localized(
+    ORDERINGS.filter(option => {
+      if (option.id === 'manual') {
+        return ordering === 'manual'
+      }
 
-    return option.id !== 'cost' || hasCost || ordering === 'cost'
-  })
+      return option.id !== 'cost' || hasCost || ordering === 'cost'
+    })
+  )
 
-  const rowMetaOptions = ROW_META.filter(option => {
-    if (option.id === 'cost') {
-      return hasCost || rowMeta.includes('cost')
-    }
+  const rowMetaOptions = localized(
+    ROW_META.filter(option => {
+      if (option.id === 'cost') {
+        return hasCost || rowMeta.includes('cost')
+      }
 
-    // Preview is a card line; the one-line row has nowhere to put it.
-    if (option.id === 'preview') {
-      return cardRows
-    }
+      // Preview is a card line; the one-line row has nowhere to put it.
+      if (option.id === 'preview') {
+        return cardRows
+      }
 
-    return option.id !== 'pr' || prAvailable
-  })
+      return option.id !== 'pr' || prAvailable
+    })
+  )
+
+  const prFilters = localized(PR_FILTERS)
+  const statusFilters = localized(STATUS_FILTERS)
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
-          aria-label="Filters"
+          aria-label={filter.aria}
           className={cn(
             className,
             'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100',
@@ -247,7 +273,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
         <DropdownMenuGroup>
           <DropdownMenuSub>
             <DropdownMenuSubTrigger hideChevron>
-              Grouping
+              {filter.grouping}
               <span className="ml-auto flex items-center gap-1 pl-4 text-(--ui-text-tertiary)">
                 {groupingLabel}
                 <Codicon name="chevron-right" size="1rem" />
@@ -266,7 +292,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           </DropdownMenuSub>
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Ordering</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{filter.ordering}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               <DropdownMenuRadioGroup
                 onValueChange={value => setSidebarOrdering(value as SidebarOrdering)}
@@ -280,7 +306,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           </DropdownMenuSub>
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Show</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{filter.show}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {rowMetaOptions.map(option => (
                 <OptionCheckbox
@@ -306,7 +332,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           <OptionCheckbox
             checked={cardRows}
             onCheck={() => setSidebarCardRows(!cardRows)}
-            option={{ icon: 'inbox', id: 'card-rows', label: 'Inbox style' }}
+            option={{ icon: 'inbox', id: 'card-rows', label: filter.inboxStyle }}
           />
 
           {/* The colored strip at the sidebar foot. Off, the statusbar grows a
@@ -322,12 +348,12 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
         <DropdownMenuSeparator />
 
         <DropdownMenuGroup>
-          <DropdownMenuLabel>Filters</DropdownMenuLabel>
+          <DropdownMenuLabel>{filter.groupLabel}</DropdownMenuLabel>
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Status</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{filter.status}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
-              {STATUS_FILTERS.map(option => (
+              {statusFilters.map(option => (
                 <OptionCheckbox
                   checked={statusFilter.includes(option.id)}
                   key={option.id}
@@ -342,9 +368,9 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
               this submenu never appears rather than filtering everything out. */}
           {prAvailable && (
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Pull request</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{filter.pullRequest}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {PR_FILTERS.map(option => (
+                {prFilters.map(option => (
                   <OptionCheckbox
                     checked={prFilter.includes(option.id)}
                     key={option.id}
@@ -357,7 +383,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           )}
 
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Profile</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{filter.profile}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
               {/* Scoped to one profile the rail is already the filter, so the
                   per-profile boxes only appear where they can narrow something.
@@ -384,7 +410,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
 
           {projects.length > 1 && (
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Project</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{filter.project}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
                 {projects.map(project => (
                   <OptionCheckbox
@@ -419,23 +445,23 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
           <OptionCheckbox
             checked={showArchived}
             onCheck={() => setSidebarShowArchived(!showArchived)}
-            option={{ id: 'archived', label: 'Archived' }}
+            option={{ id: 'archived', label: filter.archived }}
           />
 
           {/* One way back rather than two near-identical ones: this drops the
               grouping and sort too, which "clear filters" left behind. */}
-          {viewCustomized && <DropdownMenuItem onSelect={resetSidebarView}>Reset to defaults</DropdownMenuItem>}
+          {viewCustomized && <DropdownMenuItem onSelect={resetSidebarView}>{filter.reset}</DropdownMenuItem>}
         </DropdownMenuGroup>
 
         <DropdownMenuSeparator />
 
         {foldIds.length > 0 && (
           <DropdownMenuItem onSelect={() => setWorkspaceNodesOpen(foldIds, foldCollapsed)}>
-            {foldCollapsed ? 'Expand all' : 'Collapse all'}
+            {foldCollapsed ? filter.expandAll : filter.collapseAll}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem disabled={unreadIds.length === 0} onSelect={markAllSessionsRead}>
-          Mark all as read
+          {t.sidebar.markAllRead}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

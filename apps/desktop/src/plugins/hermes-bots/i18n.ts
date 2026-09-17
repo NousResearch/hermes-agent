@@ -35,6 +35,10 @@ import { useMemo } from 'react'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
+  /** The Bots pane's tab label in the sessions strip. Read at pane
+   *  registration (outside React), so it resolves once per boot through
+   *  `botsText()` — the same trade-off core makes with `translateNow`. */
+  paneTitle: string
   /** Left rail: the bot + group-chat roster. */
   roster: {
     search: string
@@ -303,6 +307,7 @@ type BotsMessages = {
 }
 
 const en: BotsMessages = {
+  paneTitle: 'Bots',
   roster: {
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
@@ -552,6 +557,7 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  paneTitle: 'ボット',
   roster: {
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
@@ -800,6 +806,7 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  paneTitle: '机器人',
   roster: {
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
@@ -1043,6 +1050,7 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  paneTitle: '機器人',
   roster: {
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',

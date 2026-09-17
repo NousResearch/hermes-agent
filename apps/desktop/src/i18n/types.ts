@@ -2406,6 +2406,43 @@ export interface Translations {
     projectLoadFailed: string
     noSessions: string
     noFilterMatches: string
+    filter: {
+      aria: string
+      grouping: string
+      ordering: string
+      show: string
+      inboxStyle: string
+      groupLabel: string
+      status: string
+      pullRequest: string
+      profile: string
+      project: string
+      archived: string
+      reset: string
+      expandAll: string
+      collapseAll: string
+      option: {
+        updated: string
+        created: string
+        project: string
+        status: string
+        profile: string
+        tokens: string
+        cost: string
+        manual: string
+        preview: string
+        pr: string
+        open: string
+        draft: string
+        merged: string
+        closed: string
+        none: string
+        needsInput: string
+        working: string
+        unread: string
+        idle: string
+      }
+    }
     projects: {
       showAllSessions: string
       sectionLabel: string

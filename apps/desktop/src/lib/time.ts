@@ -1,18 +1,99 @@
-// Canonical time/date formatting. Shared `Intl` instances (created once, not
-// per-render) + relative-time helpers. Every surface that shows a timestamp or
-// an age pulls from here so the rendered strings stay consistent app-wide.
+// Canonical time/date formatting. Shared `Intl` instances (created once per
+// language, not per-render) + relative-time helpers. Every surface that shows a
+// timestamp or an age pulls from here so the rendered strings stay consistent
+// app-wide.
+//
+// These follow the app's own `display.language`, NOT `Intl`'s default locale.
+// `undefined` resolves to the renderer's locale, which Chromium takes from the
+// OS *regional* settings — so a Chinese UI on an en-US region rendered English
+// month dividers ("AUGUST") and English ages ("in 10 hr.") next to Chinese
+// labels. `LOCALE_TAGS` maps the active app locale to a BCP-47 tag; the
+// instances behind each export are re-resolved when the language changes.
+
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
+import type { Locale } from '@/i18n/types'
 
 export const SECOND = 1000
 export const MINUTE = 60_000
 export const HOUR = 3_600_000
 export const DAY = 86_400_000
 
+const LOCALE_TAGS: Record<Locale, string> = {
+  en: 'en-US',
+  zh: 'zh-CN',
+  'zh-hant': 'zh-TW',
+  ja: 'ja-JP',
+  ar: 'ar',
+  ru: 'ru-RU'
+}
+
+/** BCP-47 tag for the language the UI is currently in. */
+export const activeLocaleTag = (): string => LOCALE_TAGS[getRuntimeI18nLocale()] ?? 'en-US'
+
+const dateTimeFormats = new Map<string, Intl.DateTimeFormat>()
+
+function dateTimeFormatFor(locale: string, options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
+  const key = `${locale}|${JSON.stringify(options)}`
+  const cached = dateTimeFormats.get(key)
+
+  if (cached) {
+    return cached
+  }
+
+  const created = new Intl.DateTimeFormat(locale, options)
+  dateTimeFormats.set(key, created)
+
+  return created
+}
+
 // ── Absolute date/time formatters ──────────────────────────────────────────
+/**
+ * A module-level `Intl.DateTimeFormat` that follows the app language.
+ *
+ * Keeps `Intl.DateTimeFormat`'s shape (its `format` is what every call site
+ * uses, and `@/sdk` re-exports some of these to plugins) while the instance
+ * behind it is chosen per active locale — so switching the language re-renders
+ * dates without a reload.
+ */
+class AppLocaleDateTimeFormat implements Intl.DateTimeFormat {
+  constructor(private readonly options: Intl.DateTimeFormatOptions) {}
+
+  private impl(): Intl.DateTimeFormat {
+    return dateTimeFormatFor(activeLocaleTag(), this.options)
+  }
+
+  // Signatures are mirrored off the lib's own members so a DOM-lib bump cannot
+  // silently drift them (bigint epoch values, range part kinds) out of shape.
+  format(...args: Parameters<Intl.DateTimeFormat['format']>): ReturnType<Intl.DateTimeFormat['format']> {
+    return this.impl().format(...args)
+  }
+
+  formatToParts(
+    ...args: Parameters<Intl.DateTimeFormat['formatToParts']>
+  ): ReturnType<Intl.DateTimeFormat['formatToParts']> {
+    return this.impl().formatToParts(...args)
+  }
+
+  formatRange(...args: Parameters<Intl.DateTimeFormat['formatRange']>): ReturnType<Intl.DateTimeFormat['formatRange']> {
+    return this.impl().formatRange(...args)
+  }
+
+  formatRangeToParts(
+    ...args: Parameters<Intl.DateTimeFormat['formatRangeToParts']>
+  ): ReturnType<Intl.DateTimeFormat['formatRangeToParts']> {
+    return this.impl().formatRangeToParts(...args)
+  }
+
+  resolvedOptions(): ReturnType<Intl.DateTimeFormat['resolvedOptions']> {
+    return this.impl().resolvedOptions()
+  }
+}
+
 // `hh:mm` clock (thread today/yesterday lines).
-export const fmtClock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+export const fmtClock: Intl.DateTimeFormat = new AppLocaleDateTimeFormat({ hour: 'numeric', minute: '2-digit' })
 
 // Compact "day + clock", no year/seconds (artifacts, thread fallback, cron runs).
-export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
+export const fmtDayTime: Intl.DateTimeFormat = new AppLocaleDateTimeFormat({
   day: 'numeric',
   hour: 'numeric',
   minute: '2-digit',
@@ -20,22 +101,44 @@ export const fmtDayTime = new Intl.DateTimeFormat(undefined, {
 })
 
 // Medium date + short time (command center session detail).
-export const fmtDateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+export const fmtDateTime: Intl.DateTimeFormat = new AppLocaleDateTimeFormat({
+  dateStyle: 'medium',
+  timeStyle: 'short'
+})
 
 // Date only, "5 Jun 2026" (starmap tooltip).
-export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+export const fmtDate: Intl.DateTimeFormat = new AppLocaleDateTimeFormat({
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric'
+})
 
 // Month name alone / with year — session-list date-bucket dividers ("September",
 // "September 2025").
-export const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'long' })
-export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
+export const fmtMonth: Intl.DateTimeFormat = new AppLocaleDateTimeFormat({ month: 'long' })
+export const fmtMonthYear: Intl.DateTimeFormat = new AppLocaleDateTimeFormat({ month: 'long', year: 'numeric' })
 
 // ── Relative time ──────────────────────────────────────────────────────────
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
+const relativeTimeFormats = new Map<string, Intl.RelativeTimeFormat>()
+
+function relativeTimeFormat(): Intl.RelativeTimeFormat {
+  const locale = activeLocaleTag()
+  const cached = relativeTimeFormats.get(locale)
+
+  if (cached) {
+    return cached
+  }
+
+  const created = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'short' })
+  relativeTimeFormats.set(locale, created)
+
+  return created
+}
 
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
 export function relativeTime(targetMs: number, nowMs = Date.now()): string {
+  const rtf = relativeTimeFormat()
   const diff = targetMs - nowMs
   const abs = Math.abs(diff)
   const sign = diff < 0 ? -1 : 1
@@ -98,7 +201,7 @@ export const nominalDayStart = (ms: number): number => startOfLocalDay(ms - DAY_
 // Intl.Locale weekInfo reports 1=Mon … 7=Sun; unsupported → Monday.
 export function localeWeekStartDay(): number {
   try {
-    const locale = new Intl.Locale(new Intl.DateTimeFormat().resolvedOptions().locale)
+    const locale = new Intl.Locale(activeLocaleTag())
     const withWeekInfo = locale as { getWeekInfo?: () => { firstDay?: number }; weekInfo?: { firstDay?: number } }
     const firstDay = (withWeekInfo.getWeekInfo?.() ?? withWeekInfo.weekInfo)?.firstDay
 

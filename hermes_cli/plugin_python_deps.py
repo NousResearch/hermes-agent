@@ -200,11 +200,14 @@ def _plugin_enabled(decl: PythonDeclaration, enabled: set[str], disabled: set[st
 
 
 def _read_home_config(home: Path) -> dict:
-    path = home / "config.yaml"
-    if not path.is_file():
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return data if isinstance(data, dict) else {}
+    """*home*'s effective config through the real loader, scoped to that home for the duration."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        return load_config_readonly()
+    finally:
+        reset_hermes_home_override(token)
 
 
 def enabled_declarations(home: Path) -> list[PythonDeclaration]:

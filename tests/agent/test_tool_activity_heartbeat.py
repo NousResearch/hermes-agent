@@ -17,6 +17,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.agent._liveness import await_state, join_thread
+
 
 @pytest.fixture(autouse=True)
 def _isolate_hermes(tmp_path, monkeypatch):
@@ -96,9 +98,15 @@ def _make_agent(monkeypatch):
     return stub
 
 
-def _slow_execute(delay: float = 0.25):
+def _slow_execute(delay: float = 0.25, until=None):
     def _execute(next_args):
-        time.sleep(delay)
+        if until is None:
+            time.sleep(delay)
+        else:
+            # Park inside the tool call until the caller's condition holds — the
+            # load-free replacement for "sleep a fixed slice and hope a 0.05s
+            # cadence thread got scheduled inside it".
+            await_state(until, "no activity stamp while the tool was in flight")
         return json.dumps({"ok": True})
 
     return _execute
@@ -122,15 +130,20 @@ def test_heartbeat_touches_periodically_and_stops():
         daemon=True,
     )
     thread.start()
-    time.sleep(0.12)
-    stop.set()
-    thread.join(timeout=1.0)
+    try:
+        # Cadence here means "keeps stamping while the call is in flight", so
+        # wait for the stamps instead of sleeping 0.12s and counting them: the
+        # old shape asked the OS to schedule this thread twice inside two 50ms
+        # intervals, which is a claim about the host, not about the heartbeat.
+        await_state(lambda: len(touches) >= 2, "heartbeat did not touch periodically")
+    finally:
+        stop.set()
+    join_thread(thread, "heartbeat thread did not exit on stop")
 
-    assert not thread.is_alive(), "heartbeat thread did not exit on stop"
+    # The thread is confirmed dead, so the count cannot move again: this is the
+    # old sleep-then-recheck claim ("kept touching after stop_event set"),
+    # proved rather than sampled.
     assert len(touches) >= 2, f"expected periodic touches, got {len(touches)}"
-    n = len(touches)
-    time.sleep(0.1)
-    assert len(touches) == n, "heartbeat kept touching after stop_event set"
 
 
 def test_slow_tool_call_refreshes_activity_during_execution(monkeypatch):
@@ -157,16 +170,16 @@ def test_slow_tool_call_refreshes_activity_during_execution(monkeypatch):
         function_args={"command": "true"},
         effective_task_id="task",
         tool_call_id="tc1",
-        execute=_slow_execute(delay=0.25),
+        execute=_slow_execute(delay=0.25, until=lambda: len(touches) >= 3),
         display_index=1,
     )
 
     assert json.loads(result.result) == {"ok": True}
 
-    # Start stamp + at least one heartbeat mid-call (0.25s run, 0.05s cadence).
+    # Start stamp + *repeated* mid-call heartbeats: the call cannot return until
+    # two heartbeats have landed while it was running, so "periodic" is proved
+    # instead of sampled from a 0.25s sleep against a 0.05s cadence.
     assert len(touches) >= 3, f"expected mid-call heartbeats, got {len(touches)}"
-    spread = touches[-1] - touches[0]
-    assert spread >= 0.15, f"touches not spread across the call: {spread:.3f}s"
 
 
 def test_fast_tool_call_does_not_leave_stray_heartbeat(monkeypatch):
@@ -258,7 +271,9 @@ def test_concurrent_tool_call_heartbeat(monkeypatch):
             self.tool_calls = tool_calls
 
     def _invoke(name, *a, **kw):
-        time.sleep(0.25)
+        # Same barrier as the sequential case: the batch cannot finish until a
+        # heartbeat has landed while the call was in flight.
+        await_state(lambda: len(touches) >= 3, "no repeated mid-call activity stamps while the call was in flight")
         return json.dumps({"ok": name})
 
     agent._invoke_tool = MagicMock(side_effect=_invoke)

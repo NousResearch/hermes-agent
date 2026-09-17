@@ -807,6 +807,8 @@ export interface Translations {
     newSession?: string;
     copyLastTooltip?: string;
     copyLast?: string;
+    copyLastShort?: string;
+    copied?: string;
     showSidePanel?: string;
     showSidePanelTitle?: string;
     collapseSidePanel?: string;

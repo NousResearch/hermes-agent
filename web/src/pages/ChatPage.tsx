@@ -26,16 +26,24 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { chatActivationStore } from "@/lib/chat-activation";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
-import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
@@ -221,9 +229,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
   // PTY alive across later tab switches (the persistence UX) — once true it
   // stays true.
-  const [hasActivated, setHasActivated] = useState(isActive);
+  // Activation latch via an external store (react-hooks/set-state-in-effect
+  // rejects both an in-effect setState and a render-phase setState here):
+  // `hasActivated` is sticky — once the chat tab has been active, the PTY
+  // stays alive across later tab switches. The effect below calls
+  // `chatActivationStore.activate()`; React re-renders from the subscription.
+  const hasActivated = useSyncExternalStore(
+    chatActivationStore.subscribe,
+    chatActivationStore.getSnapshot,
+    () => isActive,
+  );
   useEffect(() => {
-    setHasActivated((prev) => latchChatActivation(prev, isActive));
+    if (isActive) chatActivationStore.activate();
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
@@ -1156,14 +1173,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         finishResumeHydration();
       }
     };
+    // The hydration overlay for a resumed PTY is armed inside the connect
+    // continuation (post-ticket, pre-socket) rather than here in the effect
+    // body: setState may not run synchronously in an effect
+    // (react-hooks/set-state-in-effect), and a microtask defer here would
+    // re-render before the socket even starts opening. The max-duration
+    // timer still arms now — it must start before any await so a wedged
+    // ticket request cannot leave the overlay up forever.
     if (resumeParam) {
-      setResumeHydrating(true);
       resumeMaxTimer = setTimeout(
         finishResumeHydration,
         PTY_RESUME_LOADING_MAX_MS,
       );
-    } else {
-      setResumeHydrating(false);
     }
     const forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
@@ -1280,6 +1301,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (unmounting || ticketSuperseded) return;
       clearTicketTimer();
 
+      // Arm the resume-hydration overlay now: we are committed to opening
+      // the socket (post-ticket) and the replay that follows can arrive any
+      // moment. Setting it here (a promise continuation) rather than in the
+      // effect body keeps the rule happy without a microtask re-render.
+      if (resumeParam && !unmounting && !ticketSuperseded) {
+        setResumeHydrating(true);
+      }
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -1636,6 +1664,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    searchParams,
+    setSearchParams,
+    terminalTheme,
   ]);
 
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
@@ -2027,7 +2058,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />
               <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+                {copyState === "copied" ? t.chat?.copied : t.chat?.copyLastShort}
               </span>
             </span>
           </Button>

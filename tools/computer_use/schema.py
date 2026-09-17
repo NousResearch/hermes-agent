@@ -32,12 +32,33 @@ _PROPERTIES: Dict[str, Any] = {
             "list_apps",
             "list_windows",
             "focus_app",
+            "decide",
         ],
         "description": (
-            "Which action to perform. `capture` is free (no side effects). All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
-            "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "Which action to perform. `capture` and `decide` are free (no side effects). All other "
+            "actions require approval unless auto-approved. `decide` runs the typed decision lane "
+            "(rules → reranker → Jev when TYPESAFE_API_KEY is set) over the accessibility tree and "
+            "returns a suggested next step without mutating the desktop — fail-open to normal planning "
+            "when confidence is low. Use `set_value` for select/popup elements and sliders — it selects "
+            "the matching option directly without opening the native menu (no focus steal)."
+        ),
+    },
+    "goal": {
+        "type": "string",
+        "description": (
+            "For action='decide': the bounded goal to evaluate against the current screen (semantic "
+            "elements only — no screenshot is sent to Jev by default)."
+        ),
+    },
+    "goal_hint": {
+        "type": "string",
+        "description": "Alias for `goal` on action='decide'.",
+    },
+    "busy": {
+        "type": "boolean",
+        "description": (
+            "For action='decide': true when the UI appears to be loading or otherwise not ready "
+            "for input (rules stage may suggest wait)."
         ),
     },
     "mode": {
@@ -196,7 +217,8 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
         "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
-        "index; re-capture after state-changing actions (or pass capture_after=true). Image "
+        "index; or action='decide' with a `goal` for a cheap typed next-step suggestion (Jev when "
+        "configured). Re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."
     ),

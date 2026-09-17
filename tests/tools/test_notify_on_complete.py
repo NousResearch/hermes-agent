@@ -192,6 +192,19 @@ class TestTerminalSchema:
             _, kwargs = mock_tt.call_args
             assert kwargs["notify_on_complete"] is True
 
+    def test_handler_marks_only_internal_approved_recovery_as_forced(self):
+        """Durable replay bypasses the repeated prompt without changing tool args."""
+        from tools.terminal_tool import _handle_terminal
+
+        with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
+            _handle_terminal(
+                {"command": "printf safe"},
+                task_id="t1",
+                approved_recovery=True,
+            )
+
+        assert mock_tt.call_args.kwargs["force"] is True
+
 
 # =========================================================================
 # Code execution blocked params

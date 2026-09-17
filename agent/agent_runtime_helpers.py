@@ -2235,7 +2235,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                  pre_tool_block_checked: bool = False,
                  skip_tool_request_middleware: bool = False,
                  tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
-                 skip_tool_execution_middleware: bool = False) -> str:
+                 skip_tool_execution_middleware: bool = False,
+                 approved_recovery: bool = False) -> str:
     """Invoke a single tool (agent-level or registry-dispatched) and return the result string;
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
@@ -2299,6 +2300,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
+            if approved_recovery:
+                dispatch_kwargs["approved_recovery"] = True
             import model_tools
             return model_tools.handle_function_call(function_name, next_args, effective_task_id, **dispatch_kwargs)
     if skip_tool_execution_middleware:

@@ -1006,6 +1006,7 @@ class TestCapabilitiesEndpoint:
                 "retention_seconds": 86400,
                 "event_replay": True,
                 "approval_receipts": True,
+                "approval_recovery": True,
             }
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"

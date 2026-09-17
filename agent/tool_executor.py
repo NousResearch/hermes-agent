@@ -701,9 +701,14 @@ def _dispatch_authorized_once(
         agent._iters_since_skill = 0
 
     from agent.terminal_approval_batch import prepare_current_terminal
-    prepare_current_terminal(ref)
-    _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    from tools.approval_context import reset_current_tool_context, set_current_tool_context
+    tool_context_token = set_current_tool_context(ref.name, ref.call_id, ref.args)
+    try:
+        prepare_current_terminal(ref)
+        _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
+        return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    finally:
+        reset_current_tool_context(tool_context_token)
 
 
 def _run_agent_tool_execution_middleware(
@@ -738,16 +743,21 @@ def _run_agent_tool_execution_middleware(
             state.dispatched = True
             state.blocked = False
             state.args = final_args
-        return _dispatch_authorized_once(
-            agent,
-            state,
-            _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
-            execute=execute,
-            scope_block=scope_block,
-            display_index=display_index,
-            begin_execution=begin_execution,
-            authorization_gate=authorization_gate,
-        )
+        from tools.approval_context import reset_current_tool_context, set_current_tool_context
+        tool_context_token = set_current_tool_context(function_name, tool_call_id, final_args)
+        try:
+            return _dispatch_authorized_once(
+                agent,
+                state,
+                _ToolCallRef(function_name, final_args, effective_task_id, tool_call_id, trace),
+                execute=execute,
+                scope_block=scope_block,
+                display_index=display_index,
+                begin_execution=begin_execution,
+                authorization_gate=authorization_gate,
+            )
+        finally:
+            reset_current_tool_context(tool_context_token)
 
     from agent.terminal_approval_batch import bind_prepared_dispatch
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)

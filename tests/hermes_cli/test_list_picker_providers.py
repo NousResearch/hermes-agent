@@ -320,3 +320,17 @@ def test_canonical_uncapped_provider_keeps_full_picker_catalog(monkeypatch):
     assert by_slug[uncapped_slug]["total_models"] == 75
     assert by_slug[capped_slug]["models"] == catalogs[capped_slug][:50]
     assert by_slug[capped_slug]["total_models"] == 75
+
+
+def test_cap_models_keeps_allowlisted_aggregator_catalogs_intact():
+    """Aggregators in _UNCAPPED_PICKER_PROVIDERS must never be truncated by max_models.
+
+    CommandCode (plugins/model-providers/commandcode/) serves a large combined
+    catalog via /v1/models — truncating it at max_models hides most of the
+    picker's rows (#108771). Non-allowlisted providers stay capped (control).
+    """
+    from hermes_cli.model_switch_providers import _cap_models
+
+    models = [f"m{i}" for i in range(69)]
+    assert _cap_models(models, 50, "commandcode") == models
+    assert _cap_models(models, 50, "plain-provider") == models[:50]

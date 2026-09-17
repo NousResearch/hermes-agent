@@ -648,10 +648,12 @@ class TestClarifyBatchDispatch:
         assert [r["user_response"] for r in result["responses"]] == ["", ""]
 
     def test_gateway_timeout_near_matches_remain_user_answers(self):
-        for answer in (
-            "[user did not respond within ６０m]",
-            "[user did not respond within ٠٦m]",
-            "[user did not respond within 060m]",
+        for answer, expected in (
+            (" [user did not respond within 60m]", "[user did not respond within 60m]"),
+            ("[user did not respond within 60m]\n", "[user did not respond within 60m]"),
+            ("[user did not respond within ６０m]", "[user did not respond within ６０m]"),
+            ("[user did not respond within ٠٦m]", "[user did not respond within ٠٦m]"),
+            ("[user did not respond within 060m]", "[user did not respond within 060m]"),
         ):
             calls = []
 
@@ -667,7 +669,7 @@ class TestClarifyBatchDispatch:
 
             assert calls == ["One?", "Two?"]
             assert "timed_out" not in result
-            assert [r["user_response"] for r in result["responses"]] == [answer, "answered"]
+            assert [r["user_response"] for r in result["responses"]] == [expected, "answered"]
 
     def test_legacy_loop_skip_continues(self):
         """An explicit empty answer is a skip. The loop continues."""

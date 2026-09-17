@@ -1016,13 +1016,33 @@ def _canonical_model_variants(model: str) -> list[str]:
 def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> dict | None:
     """Per-model reasoning_effort override with spelling tolerance; first non-None parse wins.
 
-    Order: exact → dots↔dashes → provider stripped → aggregator stripped → known prefixes added.
+    Order: exact → dots↔dashes → provider stripped → aggregator stripped → known prefixes added →
+    reverse lookup of prefixed keys whose stripped forms match (custom provider slugs are not
+    enumerable, so a key like ``ollama-local/qwen3.6:27b`` must still match the bare
+    ``qwen3.6:27b`` model string a fallback swap feeds after stripping the prefix).
     """
     if not overrides or not isinstance(overrides, dict) or not model:
         return None
-    for variant in _canonical_model_variants(model):
+    variants = _canonical_model_variants(model)
+    for variant in variants:
         if variant in overrides:
             result = parse_reasoning_effort(overrides[variant])
+            if result is not None:
+                return result
+    # Reverse lookup: the key may carry a custom-provider prefix the model string lost
+    # (fallback entries and custom-provider resolution feed the bare slug, while the
+    # documented key spelling keeps the ``provider/model`` form). Direct and variant
+    # matches above still win, so provider-qualified keys stay most specific.
+    variant_set = set(variants)
+    for key, raw in overrides.items():
+        if not isinstance(key, str) or "/" not in key:
+            continue
+        parts = key.split("/")
+        key_forms = _canonical_model_variants(parts[-1])
+        if len(parts) >= 3:
+            key_forms += _canonical_model_variants("/".join(parts[1:]))
+        if any(form in variant_set for form in key_forms):
+            result = parse_reasoning_effort(raw)
             if result is not None:
                 return result
     return None

@@ -473,6 +473,50 @@ class TestResolvePerModelReasoningEffort:
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
 
+    # --- Reverse lookup: prefixed key vs bare model string (#114073) ---
+
+    def test_prefixed_key_matches_bare_model(self):
+        """A custom-provider prefixed key matches after the model string lost the prefix.
+
+        Fallback entries and custom-provider resolution feed the bare slug
+        (``qwen3.6:27b-q4_k_m``) while the documented key spelling keeps the
+        ``provider/model`` form — the override must still apply.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"ollama-local/qwen3.6:27b-q4_k_m": "low"}
+        result = resolve_per_model_reasoning_effort("qwen3.6:27b-q4_k_m", overrides)
+        assert result == {"enabled": True, "effort": "low"}
+
+    def test_prefixed_key_reverse_match_tolerates_dash_spelling(self):
+        """The reverse lookup reuses dots↔dashes tolerance on the key's bare tail."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"my-relay/qwen3-6:27b": "low"}
+        result = resolve_per_model_reasoning_effort("qwen3.6:27b", overrides)
+        assert result == {"enabled": True, "effort": "low"}
+
+    def test_prefixed_key_matches_provider_qualified_model(self):
+        """A three-segment aggregator key matches the provider-qualified model string."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"openrouter/qwen/qwen3": "high"}
+        result = resolve_per_model_reasoning_effort("qwen/qwen3", overrides)
+        assert result == {"enabled": True, "effort": "high"}
+
+    def test_unrelated_prefixed_key_does_not_match(self):
+        """A prefixed key for a different model never matches."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"ollama-local/qwen3.6:27b": "low"}
+        assert resolve_per_model_reasoning_effort("llama3.2:3b", overrides) is None
+
+    def test_direct_match_wins_over_reverse_lookup(self):
+        """A direct/variant key match keeps priority over a prefixed reverse match."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {
+            "qwen3.6:27b": "medium",             # direct bare key
+            "ollama-local/qwen3.6:27b": "low",   # prefixed reverse candidate
+        }
+        result = resolve_per_model_reasoning_effort("qwen3.6:27b", overrides)
+        assert result == {"enabled": True, "effort": "medium"}
+
 
 
 
@@ -527,6 +571,23 @@ class TestResolveReasoningConfig:
         from hermes_constants import resolve_reasoning_config
         cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
+
+    def test_prefixed_override_key_applies_to_bare_model(self):
+        """Fallback-swap shape: bare model string + provider-qualified key → override wins (#114073).
+
+        The fallback chain feeds ``agent.model`` as the bare slug while the
+        user's key keeps the documented ``provider/model`` spelling; without
+        the reverse lookup this silently fell back to the global effort.
+        """
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(
+            effort="high",
+            overrides={"ollama-local/qwen3.6:27b-q4_k_m": "low"},
+        )
+        assert resolve_reasoning_config(cfg, "qwen3.6:27b-q4_k_m") == {
+            "enabled": True,
+            "effort": "low",
+        }
 
 
 class TestReasoningOverridesDefaultConfig:

@@ -273,18 +273,21 @@ async def test_terminal_callbacks_survive_real_progress_delivery(monkeypatch, tm
 
 
 @pytest.mark.asyncio
-async def test_separate_progress_only_renders_each_new_activity(monkeypatch, tmp_path):
+async def test_separate_progress_still_edits_one_matrix_root(monkeypatch, tmp_path):
     runner, adapter, events, _ = _real_progress_runner(monkeypatch, tmp_path)
     runner._ctx.progress_grouping = "separate"
     state = runner._progress_edit_state(adapter)
+    assert state.can_edit
     for label in ("first tool", "second tool"):
         msg = runner._progress_absorb(state, label)
         await runner._progress_send_or_edit(state, msg)
     assert len(events) == 2
-    assert "first tool" in events[0]["formatted_body"]
-    assert "first tool" not in events[1]["formatted_body"]
-    assert "second tool" in events[1]["formatted_body"]
-    assert all(event["body"] == "🛠 Tool activity (1 update)" for event in events)
+    assert events[0]["body"] == "🛠 Tool activity (1 update)"
+    edit = events[-1]
+    assert edit["m.relates_to"] == {"rel_type": "m.replace", "event_id": "$event1"}
+    assert edit["m.new_content"]["body"] == "🛠 Tool activity (2 updates)"
+    html = edit["m.new_content"]["formatted_body"]
+    assert "first tool" in html and "second tool" in html
 
 
 @pytest.mark.asyncio

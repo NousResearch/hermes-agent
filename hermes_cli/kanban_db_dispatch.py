@@ -1444,6 +1444,12 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Explicit review/release children consume that PR. Keep this exception
+    # after recent_success so it cannot authorize duplicate review workers.
+    from hermes_cli.kanban_db_graph import is_review_child
+
+    if is_review_child(conn, task_id):
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

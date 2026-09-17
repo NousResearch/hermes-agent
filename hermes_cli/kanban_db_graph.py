@@ -5,6 +5,31 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+REVIEW_CHILD_TEMPLATE = "hermes:review_child_v1"
+REVIEW_CHILD_STEPS = ("review", "release")
+
+
+def review_child_workflow(step: Optional[str], parents: tuple[str, ...]) -> tuple[Optional[str], Optional[str]]:
+    """Explicit child classification; profile names and prose never grant it."""
+    if step is None:
+        return None, None
+    if step not in REVIEW_CHILD_STEPS:
+        raise ValueError("review_child_step must be review or release")
+    if not parents:
+        raise ValueError("review_child_step requires at least one parent")
+    return REVIEW_CHILD_TEMPLATE, step
+
+
+def is_review_child(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Fail closed if the classification or its dependency edge is absent."""
+    return conn.execute(
+        "SELECT 1 FROM tasks t WHERE t.id = ? AND t.workflow_template_id = ? "
+        "AND t.current_step_key IN (?, ?) "
+        "AND EXISTS (SELECT 1 FROM task_links l WHERE l.child_id = t.id)",
+        (task_id, REVIEW_CHILD_TEMPLATE, *REVIEW_CHILD_STEPS),
+    ).fetchone() is not None
+
+
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
     created_at: int,

@@ -316,6 +316,10 @@ class FeishuAdapterSettings:
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
+    # @_all normally counts as a mention of the bot (Feishu's @everyone placeholder). With this on,
+    # a message that only @all's is NOT treated as mentioning the bot, so group chats stop waking
+    # it on every @everyone; an explicit @bot in the same message still counts.
+    ignore_all_mention: bool = False
 
 
 @dataclass
@@ -1334,6 +1338,8 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            # config.yaml only (non-secret): platforms.feishu.extra.ignore_all_mention
+            ignore_all_mention=_to_boolean(extra.get("ignore_all_mention", False)),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3333,9 +3339,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _mentions_self(self, message: Any) -> bool:
-        # @_all is Feishu's @everyone placeholder.
+        # @_all is Feishu's @everyone placeholder. It counts as a mention of the bot unless the
+        # operator opted out (ignore_all_mention) — @everyone is not really "this bot was asked".
         raw_content = getattr(message, "content", "") or ""
-        if "@_all" in raw_content:
+        if "@_all" in raw_content and not self._ignore_all_mention:
             return True
         mentions = getattr(message, "mentions", None) or []
         if mentions and self._message_mentions_bot(mentions):

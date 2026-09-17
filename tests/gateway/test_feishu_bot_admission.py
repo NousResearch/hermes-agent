@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -39,6 +40,71 @@ def test_feishu_load_settings_require_mention(monkeypatch, env_value, extra, exp
 
     settings = FeishuAdapter._load_settings(extra=extra)
     assert settings.require_mention is expected
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [
+        ({}, False),
+        ({"ignore_all_mention": True}, True),
+        ({"ignore_all_mention": "true"}, True),
+        ({"ignore_all_mention": False}, False),
+    ],
+)
+def test_feishu_load_settings_ignore_all_mention(monkeypatch, extra, expected):
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+
+    settings = FeishuAdapter._load_settings(extra=extra)
+    assert settings.ignore_all_mention is expected
+
+
+# --- @everyone handling (ignore_all_mention) --------------------------------
+
+_AT_ALL_TEXT = '{"text":"<at user_id=\\"@_all\\">everyone</at> please read"}'
+_AT_ALL_AND_BOT_TEXT = '{"text":"<at user_id=\\"@_all\\">everyone</at> <at user_id=\\"ou_me\\">bot</at> look"}'
+
+
+def _mention(key: str, open_id: str = "", name: str = "") -> Any:
+    return SimpleNamespace(
+        key=key, id=SimpleNamespace(open_id=open_id, user_id="", union_id=""), name=name,
+    )
+
+
+AT_ALL_ONLY = [_mention("@_all")]
+AT_ALL_AND_BOT = [_mention("@_all"), _mention("@_user_1", open_id="ou_me", name="Hermes")]
+
+
+@pytest.mark.parametrize(
+    "ignore_all_mention, mentions, content, expected",
+    [
+        # Default: @everyone still counts as mentioning the bot — unchanged behavior.
+        (False, AT_ALL_ONLY, _AT_ALL_TEXT, None),
+        # Opted out: @everyone alone no longer wakes the bot in a group.
+        (True, AT_ALL_ONLY, _AT_ALL_TEXT, "group_policy_rejected"),
+        # Opted out, but the bot is *also* explicitly @mentioned → still admitted.
+        (True, AT_ALL_AND_BOT, _AT_ALL_AND_BOT_TEXT, None),
+        # Default with both mentions → admitted (no regression).
+        (False, AT_ALL_AND_BOT, _AT_ALL_AND_BOT_TEXT, None),
+    ],
+)
+def test_ignore_all_mention_gates_group_at_everyone(ignore_all_mention, mentions, content, expected):
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_me", group_policy="open", ignore_all_mention=ignore_all_mention,
+    )
+    message = SimpleNamespace(
+        message_id="om_at_all",
+        chat_id="oc_group",
+        chat_type="group",
+        message_type="text",
+        content=content,
+        mentions=mentions,
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+
+    assert adapter._admit(sender, message) == expected
 
 
 # --- Module-level helpers --------------------------------------------------

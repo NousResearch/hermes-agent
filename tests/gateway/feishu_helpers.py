@@ -36,6 +36,7 @@ def make_adapter_skeleton(
     require_mention: bool = True,
     group_policy: str = "allowlist",
     allow_all_dm: bool = False,
+    ignore_all_mention: bool = False,
 ) -> Any:
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -52,6 +53,7 @@ def make_adapter_skeleton(
     adapter._allow_bots = allow_bots
     adapter._allow_all_dm = allow_all_dm
     adapter._require_mention = require_mention
+    adapter._ignore_all_mention = ignore_all_mention
     return adapter
 
 

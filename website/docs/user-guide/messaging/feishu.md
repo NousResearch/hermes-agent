@@ -248,6 +248,22 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+### Ignoring @everyone
+
+Feishu's `@everyone` (`@_all`) counts as an @mention of the bot by default, so a group can wake
+Hermes on every all-hands ping. Set `ignore_all_mention` to keep the fan-out out of the bot's
+inbox — an explicit @mention of the bot in the same message still counts:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      ignore_all_mention: true
+```
+
+This is a `config.yaml` setting only (it is behavioral, not a credential). It applies to the
+@-mention gate in every group mode, including `open` and per-chat `group_rules`.
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:

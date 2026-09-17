@@ -1540,6 +1540,9 @@ class GatewayShutdownMixin:
             except _RestartRequesterGone:
                 # Orphaned planned stop: nobody is left to perform the restart. Clear the
                 # marker and resume serving instead of draining to a clean exit nothing revives.
+                # NOTE: import the marker-path helper, NOT the plugin-compat pointer
+                # ``clear_planned_stop_marker`` (scripts/check_compat_pointers.py forbids
+                # in-tree use of gateway.status compat names; the block is revert-scheduled).
                 with _log_suppressed(logging.WARNING, "Failed to clear orphaned planned-stop marker: %s"):
                     from gateway.status import _get_planned_stop_marker_path
                     _get_planned_stop_marker_path().unlink(missing_ok=True)

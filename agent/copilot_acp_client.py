@@ -39,6 +39,27 @@ _DEFAULT_TIMEOUT_SECONDS = 900.0
 _DEPRECATION_REQUIRED = ("gh-copilot",)
 _DEPRECATION_MARKERS = ("has been deprecated", "no commands will be executed")
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
+
+# Markers the pi-acp bridge emits as agent_thought_chunk updates for tool
+# activity executed INSIDE the delegate's own runtime. pi runs its tools
+# natively, so these are the only in-band trace of that work hermes receives.
+# Formats: "[pi-tool] name {json-args}" (start) and
+# "[pi-tool:ok|FAILED] name -> result N bytes" (end).
+# Restored additively after the release-integration repair pass dropped the
+# originals: the contract is still documented by agent/pi_rpc_client.py and
+# pinned by tests/agent/test_copilot_acp_pi_tool_markers.py.
+_PI_TOOL_MARKER_RE = re.compile(
+    r"\[pi-tool(?::(?P<status>ok|FAILED))?\]\s+(?P<name>\S+)(?:\s+(?P<rest>.+))?"
+)
+_PI_TOOL_RESULT_BYTES_RE = re.compile(r"result (\d+) bytes")
+
+# The pi-acp bridge appends a fenced JSON footer to the delegate's final
+# response text after every run. It carries the objective outcome of the
+# run: status, duration, and touched_files derived from git snapshots
+# taken before and after the pi process did its work.
+_PI_RESULT_FOOTER_RE = re.compile(
+    r"```pi-delegation-result\s*\n(\{.*?\})\s*\n```", re.DOTALL
+)
 # Probe verdicts per binary path (~50ms --help paid once per process). Only definitive
 # True/False is cached, so a CLI installed mid-session is picked up.
 _ACP_PROBE_CACHE: dict[str, bool] = {}
@@ -68,6 +89,59 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
     """True iff stderr looks like the deprecated gh-copilot extension's banner."""
     lower = stderr_text.lower()
     return any(req in lower for req in _DEPRECATION_REQUIRED) and any(m in lower for m in _DEPRECATION_MARKERS)
+
+
+def parse_pi_tool_markers(text):
+    """Parse ``[pi-tool]`` markers from a reasoning/thought string.
+
+    Start markers contribute name + raw args; end markers fill in the
+    status and result size for the oldest unmatched start of the same tool
+    name (the bridge emits start/end pairs sequentially per execution).
+    Returns a list of ``{"name", "args", "status", "result_bytes"}`` dicts
+    in occurrence order. Text without markers yields an empty list.
+    """
+    events = []
+    open_by_name = {}
+    for m in _PI_TOOL_MARKER_RE.finditer(text or ""):
+        name = m.group("name")
+        status = m.group("status")
+        rest = m.group("rest") or ""
+        if status is None:
+            entry = {"name": name, "args": rest, "status": "", "result_bytes": None}
+            events.append(entry)
+            open_by_name.setdefault(name, []).append(entry)
+        else:
+            size_m = _PI_TOOL_RESULT_BYTES_RE.search(rest)
+            size = int(size_m.group(1)) if size_m else None
+            pending = open_by_name.get(name)
+            if pending:
+                entry = pending.pop(0)
+                entry["status"] = status
+                entry["result_bytes"] = size
+            else:
+                events.append(
+                    {"name": name, "args": "", "status": status, "result_bytes": size}
+                )
+    return events
+
+
+def parse_pi_result_footer(text):
+    """Parse the last ``pi-delegation-result`` fenced JSON block.
+
+    Returns the parsed dict, or ``None`` when no well-formed footer is
+    present. When several blocks appear (multi-prompt session), the last
+    one wins — it reflects the final state of the delegate's work.
+    """
+    last_match = None
+    for match in _PI_RESULT_FOOTER_RE.finditer(text or ""):
+        last_match = match
+    if last_match is None:
+        return None
+    try:
+        payload = json.loads(last_match.group(1))
+    except (ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _read_env_var(name: str) -> str | None:

@@ -253,8 +253,15 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
-  // gpt-live branch (one full-duplex voice model delegating to Hermes).
-  'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  // gpt-live branch (one full-duplex voice model delegating to Hermes);
+  // gemini-live connects directly to Google Multimodal Live from the desktop client.
+  'voice.voice_chat_mode': ['chained', 'gpt-live', 'gemini-live'],
+  'voice.gemini_live.voice': ['Puck', 'Charon', 'Aoede', 'Kore', 'Fenrir'],
+  'voice.gemini_live.model': ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-2.5-flash'],
+  'voice.discord_live_voice': ['Puck', 'Charon', 'Aoede', 'Kore', 'Fenrir'],
+  'voice.discord_live_model': ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-2.5-flash'],
+  'discord.voice_live_voice': ['Puck', 'Charon', 'Aoede', 'Kore', 'Fenrir'],
+  'discord.voice_live_model': ['gemini-3.8-live', 'gemini-3.8-live-extended-thinking', 'gemini-2.5-flash'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -384,6 +391,10 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
 export const FREE_INPUT_KEYS = new Set([
   'tts.edge.voice',
   'voice.gpt_live.voice',
+  'voice.gemini_live.voice',
+  'voice.gemini_live.model',
+  'voice.discord_live_voice',
+  'discord.voice_live_voice',
   'tts.openai.model',
   'tts.openai.voice',
   'tts.elevenlabs.voice_id',
@@ -473,7 +484,15 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     gptLive: {
       voice: 'GPT-Live Voice',
       instructions: 'GPT-Live Persona'
-    }
+    },
+    discordLive: 'Discord Voice (Multimodal Live)',
+    discordLiveVoice: 'Discord Live Voice Persona',
+    discordLiveModel: 'Discord Live Model'
+  },
+  discord: {
+    voiceLive: 'Discord Voice (Multimodal Live)',
+    voiceLiveVoice: 'Discord Live Voice Persona',
+    voiceLiveModel: 'Discord Live Model'
   },
   stt: {
     enabled: 'Speech To Text',
@@ -655,7 +674,17 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
       voice: 'Voice for GPT-Live mode. Custom voice IDs are accepted.',
       instructions:
         'Extra sentences for the live voice persona (tone, pace, language). Hermes keeps its own system prompt.'
-    }
+    },
+    discordLive:
+      'Connect Discord voice channels directly to Google GenAI Multimodal Live WebSocket for real-time full-duplex conversations.',
+    discordLiveVoice: 'Voice persona for Discord Gemini Live (Puck, Charon, Aoede, Kore, Fenrir).',
+    discordLiveModel: 'Gemini model for live voice conversations (e.g. gemini-2.5-flash).'
+  },
+  discord: {
+    voiceLive:
+      'Connect Discord voice channels directly to Google GenAI Multimodal Live WebSocket for real-time full-duplex conversations.',
+    voiceLiveVoice: 'Voice persona for Discord Gemini Live (Puck, Charon, Aoede, Kore, Fenrir).',
+    voiceLiveModel: 'Gemini model for live voice conversations (e.g. gemini-2.5-flash).'
   },
   tts: {
     xai: {
@@ -764,8 +793,16 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Mic,
     keys: [
       'voice.voice_chat_mode',
+      'voice.gemini_live.voice',
+      'voice.gemini_live.model',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
+      'voice.discord_live',
+      'voice.discord_live_voice',
+      'voice.discord_live_model',
+      'discord.voice_live',
+      'discord.voice_live_voice',
+      'discord.voice_live_model',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',

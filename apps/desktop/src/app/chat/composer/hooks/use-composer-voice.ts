@@ -8,12 +8,18 @@ import { triggerHaptic } from '@/lib/haptics'
 import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
+import { resolveGeminiLiveApiKey } from '@/lib/gemini-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
+import {
+  $voiceLiveStatus,
+  openGeminiLiveDialog,
+  refreshVoiceLiveStatus,
+  selectedVoiceChatMode
+} from '@/store/voice-live'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
@@ -24,6 +30,7 @@ import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { useGeminiLiveConversation } from './use-gemini-live-conversation'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
@@ -91,6 +98,7 @@ export function useComposerVoice({
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
   const [liveEngineActive, setLiveEngineActive] = useState(false)
+  const [geminiEngineActive, setGeminiEngineActive] = useState(false)
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
@@ -208,7 +216,7 @@ export function useComposerVoice({
   const chainedConversation = useVoiceConversation({
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && !liveEngineActive,
+    enabled: voiceConversationActive && !liveEngineActive && !geminiEngineActive,
     onFatalError: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next
@@ -241,17 +249,48 @@ export function useComposerVoice({
     seedHistory: seedLiveHistory
   })
 
-  const conversation = liveEngineActive ? liveConversation : chainedConversation
+  const geminiConversation = useGeminiLiveConversation({
+    activeToolLabel,
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    busy,
+    consumePendingResponse,
+    enabled: voiceConversationActive && geminiEngineActive,
+    onFatalError: () => setVoiceConversationActive(false),
+    onInterrupt,
+    onStopWord: () => setVoiceConversationActive(false),
+    onSubmit: submitVoiceTurn,
+    pendingResponse: pendingTurnResponse
+  })
+
+  const conversation = geminiEngineActive
+    ? geminiConversation
+    : liveEngineActive
+      ? liveConversation
+      : chainedConversation
 
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
-   *  decided in the same state batch so the other engine never sees a frame of
-   *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
-  const activateConversation = useCallback(() => {
+   *  decided in the same state batch so the other engines never see a frame of
+   *  `enabled`. */
+  const activateConversation = useCallback(async () => {
     const status = $voiceLiveStatus.get()
+    const mode = selectedVoiceChatMode(status)
     let live = false
+    let gemini = false
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
+    if (mode === 'gemini-live') {
+      const geminiKey = await resolveGeminiLiveApiKey()
+      if (geminiKey) {
+        gemini = true
+      } else {
+        notify({
+          id: 'gemini-live-unavailable',
+          kind: 'warning',
+          message: 'Gemini Live requires a Google / Gemini API key. Opening settings...'
+        })
+        openGeminiLiveDialog()
+        return
+      }
+    } else if (mode === 'gpt-live') {
       if (status?.available) {
         live = true
       } else {
@@ -264,6 +303,7 @@ export function useComposerVoice({
     }
 
     setLiveEngineActive(live)
+    setGeminiEngineActive(gemini)
     setVoiceConversationActive(true)
   }, [t])
 
@@ -388,8 +428,8 @@ export function useComposerVoice({
   // lease, and the backend unloads resident local models once no surface holds
   // one. Fire-and-forget — the toggle never waits on or fails from this.
   useEffect(() => {
-    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive)
-  }, [liveEngineActive, voiceConversationActive])
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive && !geminiEngineActive)
+  }, [geminiEngineActive, liveEngineActive, voiceConversationActive])
 
   useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
 

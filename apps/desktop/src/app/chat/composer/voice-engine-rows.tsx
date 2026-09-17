@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 
 import {
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -8,44 +9,48 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { Settings } from '@/lib/icons'
+import { getStoredGeminiLiveApiKey } from '@/lib/gemini-live'
 import { notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, selectedVoiceChatMode, setVoiceChatMode } from '@/store/voice-live'
+import {
+  $voiceLiveStatus,
+  openGeminiLiveDialog,
+  selectedVoiceChatMode,
+  setVoiceChatMode
+} from '@/store/voice-live'
 
 /**
  * Which engine the next voice conversation mounts: the chained
- * speech-to-text → Hermes → speech loop, or GPT-Live delegating to Hermes.
+ * speech-to-text → Hermes → speech loop, GPT-Live delegating to Hermes,
+ * or client-side Gemini Live directly on the laptop.
  *
- * Radio rows, not a toggle: the user is choosing between two named things and
+ * Radio rows, not a toggle: the user is choosing between named engines and
  * the checked row tells them which one the next press starts. Rendered inside
  * whichever menu the layout has room for (the folded voice menu, or the
  * right-click menu on the start button), so the same rows appear in both.
- * Hidden while the backend has not answered or predates the mode, so we never
- * offer a switch the gateway would refuse with 4002.
  */
 export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
   const { t } = useI18n()
   const c = t.composer
   const status = useStore($voiceLiveStatus)
 
-  if (status === null) {
-    return null
-  }
-
-  const liveAvailable = status.available
+  const mode = selectedVoiceChatMode(status)
+  const liveAvailable = Boolean(status?.available)
+  const geminiKeyConfigured = Boolean(getStoredGeminiLiveApiKey())
 
   return (
     <>
       <DropdownMenuLabel>{c.voiceEngine}</DropdownMenuLabel>
       <DropdownMenuRadioGroup
         onValueChange={value => {
-          if (value !== 'chained' && value !== 'gpt-live') {
+          if (value !== 'chained' && value !== 'gpt-live' && value !== 'gemini-live') {
             return
           }
 
           triggerHaptic('open')
           setVoiceChatMode(value).catch(error => notifyError(error, c.voiceEngineChangeFailed))
         }}
-        value={selectedVoiceChatMode(status)}
+        value={mode}
       >
         <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} value="chained">
           {c.voiceEngineChained}
@@ -55,12 +60,36 @@ export function VoiceEngineRows({ disabled }: { disabled: boolean }) {
             <span>{c.voiceEngineLive}</span>
             {liveAvailable ? null : (
               <span className="text-muted-foreground truncate text-xs">
-                {status.reason ?? c.voiceEngineLiveNeedsKey}
+                {status?.reason ?? c.voiceEngineLiveNeedsKey}
+              </span>
+            )}
+          </span>
+        </DropdownMenuRadioItem>
+        <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} value="gemini-live">
+          <span className="flex min-w-0 flex-col">
+            <span className="flex items-center justify-between gap-2">
+              <span>{c.voiceEngineGeminiLive}</span>
+              <span className="text-muted-foreground text-[10px] uppercase font-mono tracking-wider">Laptop</span>
+            </span>
+            {geminiKeyConfigured ? null : (
+              <span className="text-muted-foreground truncate text-xs">
+                {c.voiceEngineGeminiLiveNeedsKey}
               </span>
             )}
           </span>
         </DropdownMenuRadioItem>
       </DropdownMenuRadioGroup>
+
+      <DropdownMenuItem
+        className={dropdownMenuRow}
+        onSelect={() => {
+          triggerHaptic('open')
+          openGeminiLiveDialog()
+        }}
+      >
+        <Settings className="size-3.5 opacity-70" />
+        <span>Configure Gemini Live...</span>
+      </DropdownMenuItem>
     </>
   )
 }
@@ -70,11 +99,12 @@ export function useVoiceEngineName(): null | string {
   const { t } = useI18n()
   const status = useStore($voiceLiveStatus)
 
-  if (status === null) {
-    return null
+  const mode = selectedVoiceChatMode(status)
+  if (mode === 'gemini-live') {
+    return t.composer.voiceEngineGeminiLiveShort
   }
-
-  return selectedVoiceChatMode(status) === 'gpt-live'
-    ? t.composer.voiceEngineLiveShort
-    : t.composer.voiceEngineChainedShort
+  if (mode === 'gpt-live') {
+    return t.composer.voiceEngineLiveShort
+  }
+  return status === null ? null : t.composer.voiceEngineChainedShort
 }

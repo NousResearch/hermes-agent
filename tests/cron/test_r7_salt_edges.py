@@ -62,7 +62,9 @@ def test_two_concurrent_old_schema_initializers(store,iteration):
             result=json.loads(stdout.strip().splitlines()[-1]);results.append(result)
             assert result['adopted'] and result['pending']==[1]
             assert result['entry'][0]['in_transaction'] is False
-            assert result['entry'][0]['journal_mode']=='wal'
+            # Journal mode is runtime policy (hermes_state_wal gates WAL by SQLite build), not the
+            # contract under test; the atomicity evidence below is what one adoption must satisfy.
+            assert result['entry'][0]['journal_mode'] in ('wal','delete')
         assert sum('COMMIT' in r['trace'] for r in results)==1
         assert sum('ROLLBACK' in r['trace'] for r in results)==1
         with sqlite3.connect(ex.EXECUTIONS_FILE) as conn:

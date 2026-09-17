@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 logger = logging.getLogger("gateway.run")
 
@@ -28,10 +29,15 @@ def _profile_has_active_heartbeat(profile_home) -> bool:
 
 
 def _watched_homes(runner, default_home) -> list:
-    """The gateway home plus every multiplexed secondary the watchers already poll."""
-    from gateway.run import _handoff_watch_scopes
+    """Every home the sweep's ``_profile_scope_for_source`` can resolve an origin to: the gateway home
+    plus, under multiplex, the whole served set INCLUDING ``default`` — a ``-p work`` multiplexer's own
+    home is not ``~/.hermes``, so dropping ``default`` here would hide its heartbeats forever."""
+    from gateway.run import _multiplex_profile_homes
 
-    return [default_home] + [home for _name, home in _handoff_watch_scopes(runner) if home is not None]
+    homes = [default_home]
+    if getattr(getattr(runner, "config", None), "multiplex_profiles", False):
+        homes += [home for _name, home in _multiplex_profile_homes(runner.config)]
+    return list(dict.fromkeys(Path(home) for home in homes))
 
 
 async def restore_heartbeat_watches(runner) -> None:

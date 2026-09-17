@@ -2846,3 +2846,112 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestSendTelegramRichMessage:
+    """Verify the Bot API 10.1 sendRichMessage fast-path in _send_telegram."""
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        return bot
+
+    def _make_rich_bot(self, rich_result=None):
+        """Bot whose do_api_request is an AsyncMock (signals rich-capable to inspect check)."""
+        bot = self._make_bot()
+        if rich_result is None:
+            rich_result = {"message_id": 42}
+        bot.do_api_request = AsyncMock(return_value=rich_result)
+        return bot
+
+    def test_rich_bot_skips_legacy_send_on_success(self, monkeypatch):
+        """A rich-capable bot + eligible content → uses sendRichMessage, not send_message."""
+        bot = self._make_rich_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "| col1 | col2 |\n|------|------|\n| a    | b    |"))
+
+        bot.do_api_request.assert_awaited_once()
+        call_kwargs = bot.do_api_request.call_args
+        assert call_kwargs.args[0] == "sendRichMessage"
+        assert "rich_message" in call_kwargs.kwargs["api_kwargs"]
+        bot.send_message.assert_not_awaited()
+        assert result.get("success") is True
+
+    def test_legacy_bot_without_async_do_api_request_uses_send_message(self, monkeypatch):
+        """A bot without an async do_api_request falls back to the legacy path unchanged."""
+        bot = self._make_bot()
+        # do_api_request not set — MagicMock auto-attribute is sync
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "Hello world"))
+
+        bot.send_message.assert_awaited_once()
+        assert result.get("success") is True
+
+    def test_crash_shape_skips_rich(self, monkeypatch):
+        """Content with math inside <details> bypasses rich (Telegram Desktop crash shape)."""
+        bot = self._make_rich_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        crash_msg = "<details><summary>Proof</summary>\n$$E = mc^2$$\n</details>"
+        asyncio.run(_send_telegram("tok", "123", crash_msg))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    def test_permanent_rich_failure_falls_back_to_legacy(self, monkeypatch):
+        """A BadRequest from sendRichMessage is permanent — falls back to legacy MarkdownV2."""
+        class BadRequest(Exception):
+            pass
+
+        bot = self._make_rich_bot()
+        bot.do_api_request = AsyncMock(side_effect=BadRequest("Bad Request: invalid rich payload"))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "| a | b |\n|---|---|\n| 1 | 2 |"))
+
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_awaited_once()
+        assert result.get("success") is True
+
+    def test_transient_rich_failure_does_not_resend(self, monkeypatch):
+        """A transient error (timeout) surfaces as an error without legacy resend."""
+        class _TimedOut(Exception):
+            pass
+
+        bot = self._make_rich_bot()
+        bot.do_api_request = AsyncMock(side_effect=_TimedOut("timed out"))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "| a | b |\n|---|---|\n| 1 | 2 |"))
+
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_not_awaited()
+        assert "error" in result
+
+    def test_html_message_skips_rich(self, monkeypatch):
+        """HTML messages always use the HTML parse-mode path, never sendRichMessage."""
+        bot = self._make_rich_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "<b>bold</b> text"))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.call_args.kwargs["parse_mode"] == "HTML"
+
+    def test_rich_payload_includes_link_preview_options_when_disabled(self, monkeypatch):
+        """disable_link_previews=True adds link_preview_options to the rich payload."""
+        bot = self._make_rich_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "| a | b |\n|---|---|\n| 1 | 2 |", disable_link_previews=True))
+
+        call_kwargs = bot.do_api_request.call_args.kwargs["api_kwargs"]
+        assert call_kwargs.get("link_preview_options") == {"is_disabled": True}

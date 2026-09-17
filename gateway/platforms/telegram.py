@@ -213,6 +213,65 @@ _TABLE_SEPARATOR_RE = re.compile(
 )
 
 
+# Module-level rich helpers — shared with standalone send paths.
+_RICH_MESSAGE_MAX_CHARS = 32768  # Bot API 10.1 char cap
+_RICH_DETAILS_RE_MOD = re.compile(r"<details\b[^>]*>.*?</details>", re.IGNORECASE | re.DOTALL)
+_RICH_MATH_IN_DETAILS_RE_MOD = re.compile(
+    r"(\$\$.*?\$\$|"
+    r"\\\[.*?\\\]|"
+    r"\\\(.*?\\\)|"
+    r"\\(?:sum|frac|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|"
+    r"int|prod|sqrt|lim|infty|begin\{(?:equation|align|matrix|cases)\}))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _rich_has_crash_shape(content: str) -> bool:
+    """True for details+math shapes that crash Telegram Desktop 6.9.1."""
+    if not content:
+        return False
+    for details_block in _RICH_DETAILS_RE_MOD.findall(content):
+        if _RICH_MATH_IN_DETAILS_RE_MOD.search(details_block):
+            return True
+    return False
+
+
+def _rich_is_capability_error(exc: Exception) -> bool:
+    """True when the rich API endpoint itself is unavailable (old PTB/server)."""
+    name = exc.__class__.__name__.lower()
+    if name in {"endpointnotfound", "invalidtoken"}:
+        return True
+    if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
+        return True
+    if getattr(exc, "error_code", None) == 404:
+        return True
+    s = str(exc).lower()
+    if ("method" in s or "endpoint" in s) and ("not found" in s or "does not exist" in s):
+        return True
+    return "no such method" in s
+
+
+def _rich_is_fallback_error(exc: Exception) -> bool:
+    """True for permanent errors where legacy-resend is safe (no duplicate risk).
+
+    Conservative: transient/unknown failures are NOT fallback-safe — the request
+    may already have reached Telegram, so a legacy resend would duplicate it.
+    """
+    name = exc.__class__.__name__.lower()
+    if name == "badrequest" or name.endswith("badrequest"):
+        return True
+    try:
+        from telegram.error import BadRequest
+        if isinstance(exc, BadRequest):
+            return True
+    except ImportError:
+        pass
+    if _rich_is_capability_error(exc):
+        return True
+    s = str(exc).lower()
+    return "unsupported" in s or "not implemented" in s
+
+
 def _is_table_row(line: str) -> bool:
     """Return True if *line* could plausibly be a table data row."""
     stripped = line.strip()
@@ -953,31 +1012,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
-    _RICH_DETAILS_RE = re.compile(r"<details\b[^>]*>.*?</details>", re.IGNORECASE | re.DOTALL)
-    _RICH_MATH_IN_DETAILS_RE = re.compile(
-        r"(\$\$.*?\$\$|"
-        r"\\\[.*?\\\]|"
-        r"\\\(.*?\\\)|"
-        r"\\(?:sum|frac|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|"
-        r"int|prod|sqrt|lim|infty|begin\{(?:equation|align|matrix|cases)\}))",
-        re.IGNORECASE | re.DOTALL,
-    )
-
     def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
-        """Return True for rich-message details+math content that crashes TDesktop.
-
-        Telegram Desktop 6.9.1 can crash while rendering Bot API 10.1 rich
-        messages containing math inside a collapsible details block
-        (telegramdesktop/tdesktop#30808). The Bot API accepts the payload, so
-        Hermes must skip rich delivery up front and use the legacy MarkdownV2
-        path until affected Desktop clients age out.
-        """
-        if not content:
-            return False
-        for details_block in self._RICH_DETAILS_RE.findall(content):
-            if self._RICH_MATH_IN_DETAILS_RE.search(details_block):
-                return True
-        return False
+        """Math inside <details> crashes Telegram Desktop 6.9.1 (tdesktop#30808)."""
+        return _rich_has_crash_shape(content)
 
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
@@ -1047,41 +1084,10 @@ class TelegramAdapter(BasePlatformAdapter):
         return payload
 
     def _is_rich_capability_error(self, exc: Exception) -> bool:
-        """True ⇒ the rich endpoint itself is unavailable (old PTB/server).
-
-        These latch rich off for the rest of the adapter's life — retrying is
-        pointless and would cost a failed roundtrip on every send. Per-message
-        rejections (BadRequest from a parser/limit issue) are NOT capability
-        errors: the next message may be fine.
-        """
-        name = exc.__class__.__name__.lower()
-        if name in {"endpointnotfound", "invalidtoken"}:
-            return True
-        if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
-            return True
-        if getattr(exc, "error_code", None) == 404:
-            return True
-        s = str(exc).lower()
-        if ("method" in s or "endpoint" in s) and (
-            "not found" in s or "does not exist" in s
-        ):
-            return True
-        return "no such method" in s
+        return _rich_is_capability_error(exc)
 
     def _is_rich_fallback_error(self, exc: Exception) -> bool:
-        """True ⇒ permanent/capability error ⇒ safe to fall back to legacy.
-
-        Conservative on purpose: only clearly-permanent failures (BadRequest,
-        capability errors, unknown/unsupported endpoint) qualify. Everything
-        else is treated as transient — the rich request may have reached
-        Telegram, so we must NOT legacy-resend and risk a duplicate.
-        """
-        if self._is_bad_request_error(exc):
-            return True
-        if self._is_rich_capability_error(exc):
-            return True
-        s = str(exc).lower()
-        return "unsupported" in s or "not implemented" in s
+        return _rich_is_fallback_error(exc)
 
     def _compute_single_send_routing(
         self,

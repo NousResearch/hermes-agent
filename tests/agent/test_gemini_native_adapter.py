@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from types import SimpleNamespace
 
@@ -787,3 +788,138 @@ def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
 
     resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
     assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+
+class _CaptureHTTP:
+    """Duck-typed httpx.Client capturing request URLs; returns a minimal 200 response."""
+
+    def __init__(self, *, stream_chunks=()):
+        self.urls = []
+        self._stream_chunks = list(stream_chunks)
+
+    def post(self, url, params=None, json=None, headers=None, timeout=None):
+        self.urls.append(url)
+        return DummyResponse(
+            payload={
+                "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
+                "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2},
+            }
+        )
+
+    def stream(self, method, url, json=None, headers=None, timeout=None):
+        self.urls.append(url)
+        response = SimpleNamespace(status_code=200, iter_text=lambda: iter(self._stream_chunks))
+        return contextlib.nullcontext(response)
+
+    def close(self):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestVertexExpressKeyRouting:
+    """Vertex AI express keys (AQ.…) must route to aiplatform's v1beta1 publishers surface (#114335)."""
+
+    # Dummy fixtures — only the shape (prefix family) is under test, never a real credential.
+    _EXPRESS = "AQ.dummy-express"
+    _STUDIO = "AIza-dummy-studio"
+
+    def test_is_vertex_express_key_matches_only_aq_prefix(self):
+        from agent.gemini_native_adapter import is_vertex_express_key
+
+        assert is_vertex_express_key(self._EXPRESS) is True
+        assert is_vertex_express_key(f"  {self._EXPRESS}\n") is True  # surrounding whitespace is trimmed
+        assert is_vertex_express_key(self._STUDIO) is False
+        assert is_vertex_express_key("AQ") is False  # bare prefix without the dot is not an express key
+        assert is_vertex_express_key("") is False
+        assert is_vertex_express_key(None) is False
+
+    def test_is_native_base_url_accepts_aiplatform_and_keeps_openai_exclusion(self):
+        from agent.gemini_native_adapter import is_native_gemini_base_url
+
+        assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1") is True
+        assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta") is True
+        assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta/openai") is False
+        assert is_native_gemini_base_url("") is False
+        assert is_native_gemini_base_url("https://example.com/v1") is False
+
+    def test_normalize_appends_v1beta1_to_aiplatform_host_root(self):
+        from agent.gemini_native_adapter import (
+            DEFAULT_GEMINI_BASE_URL,
+            VERTEX_EXPRESS_BASE_URL,
+            normalize_gemini_base_url,
+        )
+
+        assert normalize_gemini_base_url("https://aiplatform.googleapis.com") == VERTEX_EXPRESS_BASE_URL
+        assert normalize_gemini_base_url("https://aiplatform.googleapis.com/") == VERTEX_EXPRESS_BASE_URL
+        assert normalize_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/") == VERTEX_EXPRESS_BASE_URL
+        assert normalize_gemini_base_url(None) == DEFAULT_GEMINI_BASE_URL  # default path unchanged
+
+    def test_gemini_model_path_uses_publishers_form_only_on_aiplatform(self):
+        from agent.gemini_native_adapter import gemini_model_path
+
+        assert gemini_model_path("https://aiplatform.googleapis.com/v1beta1", "gemini-3.7-flash") == "publishers/google/models/gemini-3.7-flash"
+        assert gemini_model_path("https://aiplatform.googleapis.com/v1beta1", "google/gemini-3.7-flash") == "publishers/google/models/gemini-3.7-flash"
+        assert gemini_model_path("https://generativelanguage.googleapis.com/v1beta", "gemini-3.7-flash") == "models/gemini-3.7-flash"
+
+    def test_client_rewrites_default_base_url_for_express_keys(self):
+        from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL, GeminiNativeClient
+
+        client = GeminiNativeClient(api_key=self._EXPRESS, http_client=_CaptureHTTP())
+        assert client.base_url == VERTEX_EXPRESS_BASE_URL
+
+    def test_client_keeps_studio_base_for_studio_keys(self):
+        from agent.gemini_native_adapter import DEFAULT_GEMINI_BASE_URL, GeminiNativeClient
+
+        client = GeminiNativeClient(api_key=self._STUDIO, http_client=_CaptureHTTP())
+        assert client.base_url == DEFAULT_GEMINI_BASE_URL
+
+    def test_client_respects_explicit_aiplatform_base_for_studio_keys(self):
+        from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL, GeminiNativeClient
+
+        client = GeminiNativeClient(api_key=self._STUDIO, base_url="https://aiplatform.googleapis.com", http_client=_CaptureHTTP())
+        assert client.base_url == VERTEX_EXPRESS_BASE_URL
+
+    def test_client_keeps_explicit_studio_base_for_studio_keys(self):
+        from agent.gemini_native_adapter import GeminiNativeClient
+
+        client = GeminiNativeClient(
+            api_key=self._STUDIO, base_url="https://generativelanguage.googleapis.com/v1beta", http_client=_CaptureHTTP()
+        )
+        assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+    def test_express_key_generate_content_hits_aiplatform_publishers_path(self):
+        from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL, GeminiNativeClient
+
+        http = _CaptureHTTP()
+        client = GeminiNativeClient(api_key=self._EXPRESS, http_client=http)
+        client.chat.completions.create(model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}])
+        assert http.urls == [f"{VERTEX_EXPRESS_BASE_URL}/publishers/google/models/gemini-2.5-flash:generateContent"]
+
+    def test_express_key_stream_hits_aiplatform_publishers_path(self):
+        from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL, GeminiNativeClient
+
+        http = _CaptureHTTP(stream_chunks=['data: {"candidates": [1]}\n', "data: [DONE]\n"])
+        client = GeminiNativeClient(api_key=self._EXPRESS, http_client=http)
+        list(client.chat.completions.create(model="gemini-2.5-flash", stream=True, messages=[{"role": "user", "content": "hi"}]))
+        assert http.urls == [f"{VERTEX_EXPRESS_BASE_URL}/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse"]
+
+    def test_probe_gemini_tier_routes_express_keys_to_aiplatform(self, monkeypatch):
+        from agent.gemini_native_adapter import VERTEX_EXPRESS_BASE_URL, probe_gemini_tier
+
+        http = _CaptureHTTP()
+        monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+        probe_gemini_tier(self._EXPRESS)
+        assert http.urls == [f"{VERTEX_EXPRESS_BASE_URL}/publishers/google/models/gemini-3.7-flash:generateContent"]
+
+    def test_probe_gemini_tier_keeps_studio_host_for_studio_keys(self, monkeypatch):
+        from agent.gemini_native_adapter import probe_gemini_tier
+
+        http = _CaptureHTTP()
+        monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: http)
+        probe_gemini_tier(self._STUDIO)
+        assert http.urls == ["https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"]

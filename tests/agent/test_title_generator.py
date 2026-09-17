@@ -69,7 +69,48 @@ class TestGenerateTitle:
 
         assert captured_kwargs.get("reasoning_config") == {"enabled": False}
 
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            # #83903: a token cap cutting the JSON mid-value or right after the fence opener must not
+            # persist the fragment; the derived title survives instead.
+            ('{"title":"Investigate and fix the login butt', None),
+            ("```json", None),
+            ('{"title"', None),
+            # Legit titles the structural check must keep: emphasized/quoted prose, non-Latin, numeric.
+            ("*Fix the login flow*", "*Fix the login flow*"),
+            ("修复登录按钮", "修复登录按钮"),
+            ("42", "42"),
+            ('```json\n{"title": "Fix login button"', "Fix login button"),
+        ],
+    )
+    def test_truncated_structured_output_never_becomes_the_title(self, content, expected):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = content
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("login is broken") == expected
 
+    def test_json_in_reasoning_content_is_used_but_reasoning_prose_is_not(self):
+        """#82291: glm-5/minimax under json_schema return content='' with the JSON in reasoning_content /
+        reasoning. That payload titles the session; chain-of-thought prose never does."""
+        def response(content, **reasoning):
+            resp = MagicMock(spec=["choices"])
+            resp.choices = [MagicMock(spec=["message"])]
+            resp.choices[0].message = MagicMock(spec=["content", *reasoning])
+            resp.choices[0].message.content = content
+            for k, v in reasoning.items():
+                setattr(resp.choices[0].message, k, v)
+            return resp
+
+        cases = [
+            (response("", reasoning_content='{"title": "Check FFmpeg on this machine"}'), "Check FFmpeg on this machine"),
+            (response(None, reasoning='{"title": "Check FFmpeg on this machine"}'), "Check FFmpeg on this machine"),
+            (response("", reasoning_content="The user wants ffmpeg checked. A short title would be"), None),
+        ]
+        for resp, expected in cases:
+            with patch("agent.title_generator.call_llm", return_value=resp):
+                assert generate_title("check ffmpeg") == expected
 
     def test_strips_think_blocks(self):
         """Reasoning-model output wrapped in <think>...</think> must not

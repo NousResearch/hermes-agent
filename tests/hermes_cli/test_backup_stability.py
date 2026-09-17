@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import sqlite3
@@ -134,8 +135,65 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     archive = tmp_path / "automatic.zip"
     archive.write_bytes(b"previous-valid-backup")
 
-    monkeypatch.setattr("hermes_cli.backup._safe_copy_db", lambda _src, _dst: False)
+    monkeypatch.setattr(
+        "hermes_cli.backup._safe_copy_db",
+        lambda _src, _dst, **_kwargs: False,
+    )
 
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"
     assert list(tmp_path.glob(".*.partial")) == []
+
+
+@pytest.mark.parametrize("fault_site", ("open", "json.dump"))
+def test_manifest_write_failure_is_not_published_and_cleans_staging(
+    tmp_path, monkeypatch, capsys, fault_site
+) -> None:
+    from hermes_cli import backup
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+    if fault_site == "open":
+        real_open = builtins.open
+
+        def fail_manifest_open(path, mode="r", *args, **kwargs):
+            candidate = Path(path) if isinstance(path, (str, os.PathLike)) else None
+            if (
+                candidate is not None
+                and candidate.name == "manifest.json"
+                and candidate.parent.name.endswith(".partial")
+                and "w" in mode
+            ):
+                raise OSError("manifest unavailable")
+            return real_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fail_manifest_open)
+    else:
+        real_dump = json.dump
+
+        def fail_manifest_dump(obj, fp, *args, **kwargs):
+            candidate = Path(fp.name)
+            if (
+                candidate.name == "manifest.json"
+                and candidate.parent.name.endswith(".partial")
+            ):
+                raise OSError("manifest unavailable")
+            return real_dump(obj, fp, *args, **kwargs)
+
+        monkeypatch.setattr(json, "dump", fail_manifest_dump)
+
+    assert backup.create_quick_snapshot(hermes_home=home) is None
+
+    root = home / "state-snapshots"
+    published = [
+        path for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    ]
+    assert published == []
+    assert list(root.glob(".*.partial")) == []
+    assert (
+        "Snapshot FAILED: could not write manifest: OSError: manifest unavailable"
+        in capsys.readouterr().out
+    )

@@ -1328,6 +1328,16 @@ class TestSafeCopyDb:
         p.write_bytes(bytes(4096))  # all NULs
         assert is_zeroed_sqlite_file(p) is True
 
+    def test_one_line_reason_flattens_whitespace_and_bounds_length(self):
+        from hermes_cli.backup import _one_line_reason
+
+        reason = _one_line_reason(RuntimeError("first\n  second\r\n" + "x" * 400))
+
+        assert "\n" not in reason
+        assert "\r" not in reason
+        assert reason.startswith("RuntimeError: first second ")
+        assert len(reason) == 300
+
 
 # ---------------------------------------------------------------------------
 # Quick state snapshot tests
@@ -1374,7 +1384,10 @@ class TestQuickSnapshot:
         """#68474: unreadable state.db must not look like a silent success."""
         from hermes_cli import backup as backup_mod
 
-        def boom(src, dst):
+        def boom(src, dst, **kwargs):
+            failure = kwargs.get("failure")
+            if failure is not None:
+                failure["reason"] = "RuntimeError: refused copy"
             return False
 
         monkeypatch.setattr(backup_mod, "_safe_copy_db", boom)
@@ -1389,6 +1402,7 @@ class TestQuickSnapshot:
             data = json.loads(manifest.read_text(encoding="utf-8"))
             assert "state.db" not in data.get("files", {})
             assert "state.db" in data.get("failed_dbs", [])
+            assert data["failed"]["state.db"] == "RuntimeError: refused copy"
 
     def test_restore_refused_db_is_not_counted(self, hermes_home, monkeypatch):
         """A refused live-safe restore (holder detected, backup leg failed) must
@@ -1569,6 +1583,150 @@ class TestQuickSnapshot:
         out = capsys.readouterr().out
         assert "skipping state.db" in out.lower() or "skipping snapshot prune" in out.lower()
 
+    def test_non_db_failure_is_recorded_and_preserves_previous_snapshot(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        from hermes_cli import backup as backup_mod
+
+        first_id = backup_mod.create_quick_snapshot(label="complete", hermes_home=hermes_home)
+        assert first_id is not None
+        _advance_backup_clock()
+
+        real_copy2 = backup_mod.shutil.copy2
+
+        def fail_env(src, dst, *args, **kwargs):
+            if Path(src).name == ".env":
+                raise PermissionError("denied\nby policy")
+            return real_copy2(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(backup_mod.shutil, "copy2", fail_env)
+        second_id = backup_mod.create_quick_snapshot(
+            label="incomplete", hermes_home=hermes_home, keep=1
+        )
+
+        assert second_id is not None
+        root = hermes_home / "state-snapshots"
+        meta = json.loads((root / second_id / "manifest.json").read_text(encoding="utf-8"))
+        assert meta["failed"][".env"] == "PermissionError: denied by policy"
+        assert ".env" not in meta["failed_dbs"]
+        assert (root / first_id).is_dir()
+
+        out = capsys.readouterr().out
+        assert "Snapshot: could not copy .env: PermissionError: denied by policy" in out
+        assert "Snapshot INCOMPLETE: 1 file(s) could not be captured: .env" in out
+
+    def test_candidate_mkdir_failure_is_recorded_and_walk_continues(
+        self, hermes_home, monkeypatch
+    ):
+        from hermes_cli import backup as backup_mod
+
+        real_mkdir = Path.mkdir
+
+        def fail_cron_parent(path, *args, **kwargs):
+            if path.name == "cron" and path.parent.name.endswith(".partial"):
+                raise PermissionError("mkdir denied")
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fail_cron_parent)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        meta = json.loads(
+            (
+                hermes_home / "state-snapshots" / snap_id / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert meta["failed"]["cron/jobs.json"] == "PermissionError: mkdir denied"
+        assert "channel_aliases.json" in meta["files"]
+
+    def test_destination_stat_failure_is_recorded(self, hermes_home, monkeypatch):
+        from hermes_cli import backup as backup_mod
+
+        real_stat = Path.stat
+
+        def fail_copied_config(path, *args, **kwargs):
+            if (
+                path.name == "config.yaml"
+                and path.parent.name.endswith(".partial")
+            ):
+                raise PermissionError("destination stat denied")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", fail_copied_config)
+        snap_id = backup_mod.create_quick_snapshot(hermes_home=hermes_home)
+
+        assert snap_id is not None
+        meta = json.loads(
+            (
+                hermes_home / "state-snapshots" / snap_id / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert meta["failed"]["config.yaml"] == "PermissionError: destination stat denied"
+        assert "config.yaml" not in meta["files"]
+        assert "auth.json" in meta["files"]
+
+    def test_oversized_non_db_is_recorded_and_suppresses_pruning(self, hermes_home):
+        from hermes_cli import backup as backup_mod
+
+        first_id = backup_mod.create_quick_snapshot(label="complete", hermes_home=hermes_home)
+        assert first_id is not None
+        _advance_backup_clock()
+
+        size = 300_000
+        limit = 200_000
+        (hermes_home / "channel_aliases.json").write_bytes(b"x" * size)
+        second_id = backup_mod.create_quick_snapshot(
+            label="size-skip",
+            hermes_home=hermes_home,
+            max_file_size=limit,
+            keep=1,
+        )
+
+        assert second_id is not None
+        root = hermes_home / "state-snapshots"
+        meta = json.loads((root / second_id / "manifest.json").read_text(encoding="utf-8"))
+        assert meta["size_skipped"]["channel_aliases.json"] == (
+            f"{size} bytes exceeds {limit} byte limit"
+        )
+        assert meta["oversized_skipped"] == []
+        assert (root / first_id).is_dir()
+
+    def test_all_non_db_failures_abort_with_reason(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli import backup as backup_mod
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+
+        def fail_copy(*_args, **_kwargs):
+            raise PermissionError("copy denied")
+
+        monkeypatch.setattr(backup_mod.shutil, "copy2", fail_copy)
+
+        assert backup_mod.create_quick_snapshot(hermes_home=home) is None
+        out = capsys.readouterr().out
+        assert "Snapshot: could not copy config.yaml: PermissionError: copy denied" in out
+        assert "Snapshot aborted: no files captured (1 failed)" in out
+
+    def test_complete_snapshot_still_prunes_and_has_empty_residual_maps(
+        self, hermes_home
+    ):
+        from hermes_cli.backup import create_quick_snapshot
+
+        first_id = create_quick_snapshot(label="a", hermes_home=hermes_home, keep=1)
+        second_id = create_quick_snapshot(label="b", hermes_home=hermes_home, keep=1)
+
+        assert first_id is not None
+        assert second_id is not None
+        root = hermes_home / "state-snapshots"
+        assert not (root / first_id).exists()
+        assert (root / second_id).is_dir()
+        meta = json.loads((root / second_id / "manifest.json").read_text(encoding="utf-8"))
+        assert meta["failed"] == {}
+        assert meta["size_skipped"] == {}
+
 
 class TestQuickSnapshotProjectsKanban:
     """Regression for #52889: projects.db / kanban.db must survive an upgrade.
@@ -1653,9 +1811,9 @@ class TestQuickSnapshotProjectsKanban:
         called = {"db": []}
         real = bk._safe_copy_db
 
-        def _spy(src, dst):
+        def _spy(src, dst, **kwargs):
             called["db"].append(str(src))
-            return real(src, dst)
+            return real(src, dst, **kwargs)
 
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
@@ -1829,6 +1987,62 @@ class TestRunPreUpdateBackup:
         assert "Pre-update snapshot" in out
         assert "Creating pre-update backup" in out
         assert len(self._zips(hermes_home)) == 1
+
+    def test_snapshot_exception_is_reported_and_update_continues(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        from hermes_cli import update_cmd_maint as maint
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        def fail_snapshot():
+            raise RuntimeError("create\nfailed")
+
+        monkeypatch.setattr(maint, "_run_quick_snapshots", fail_snapshot)
+
+        assert _run_pre_update_backup(Namespace(no_backup=False, backup=False)) is None
+        assert (
+            "Could not confirm a usable pre-update quick snapshot for this profile "
+            "(RuntimeError: create failed); the update will continue."
+            in capsys.readouterr().out
+        )
+
+    def test_none_snapshot_is_reported(self, hermes_home, monkeypatch, capsys):
+        from hermes_cli import update_cmd_maint as maint
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        monkeypatch.setattr(maint, "_run_quick_snapshots", lambda: None)
+
+        assert _run_pre_update_backup(Namespace(no_backup=False, backup=False)) is None
+        assert (
+            "Could not confirm a usable pre-update quick snapshot for this profile; "
+            "the update will continue."
+            in capsys.readouterr().out
+        )
+
+    def test_full_mode_still_runs_zip_after_snapshot_failure(
+        self, hermes_home, monkeypatch, capsys
+    ):
+        from hermes_cli import update_cmd_maint as maint
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        self._set_mode(hermes_home, "full")
+        full_calls = []
+
+        def fail_snapshot():
+            raise RuntimeError("snapshot failed")
+
+        monkeypatch.setattr(maint, "_run_quick_snapshots", fail_snapshot)
+        monkeypatch.setattr(maint, "_run_full_backup", lambda: full_calls.append(True))
+
+        assert _run_pre_update_backup(Namespace(no_backup=False, backup=False)) is None
+        assert full_calls == [True]
+        assert "the update will continue" in capsys.readouterr().out
+
+    def test_no_backup_notice_is_unchanged(self, hermes_home, capsys):
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        assert _run_pre_update_backup(Namespace(no_backup=True, backup=False)) is None
+        assert capsys.readouterr().out == "◆ Pre-update backup: skipped (--no-backup)\n\n"
 
 
 

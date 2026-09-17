@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 from hermes_constants import venv_python_path
 
+from hermes_cli.backup import _one_line_reason
 from hermes_cli.update_cmd_common import _best_effort
 
 # Log-record parity with the origin module.
@@ -900,6 +901,7 @@ def _run_full_backup() -> None:
 def _run_pre_update_backup(args) -> Optional[str]:
     """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
 
+    A returned id confirms publication, not completeness; the manifest carries any per-file omissions.
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
     ``state-snapshots/``, files over 1 GiB skipped so a bloated state.db can't stall the update.
     ``full`` — quick snapshot PLUS a zip of HERMES_HOME under ``backups/`` (``hermes import``).
@@ -916,8 +918,16 @@ def _run_pre_update_backup(args) -> Optional[str]:
         return None
 
     snapshot_id = None
-    with _best_effort('Pre-update snapshot failed: %s'):
+    snapshot_error: Optional[str] = None
+    try:
         snapshot_id = _run_quick_snapshots()
+    except Exception as exc:
+        snapshot_error = _one_line_reason(exc)
+        logger.warning("Pre-update snapshot failed: %s", snapshot_error)
+    if not snapshot_id:
+        detail = f" ({snapshot_error})" if snapshot_error else ""
+        print(f"  ⚠ Could not confirm a usable pre-update quick snapshot for this profile"
+              f"{detail}; the update will continue.")
 
     if mode != "full":
         if snapshot_id:

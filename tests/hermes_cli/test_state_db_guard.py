@@ -142,3 +142,30 @@ class TestPreUpdateBackupIntegrityGuard:
         assert snap_id is not None
         assert "integrity check FAILED" in out
         assert "Snapshot copy is valid" in out
+
+    def test_verify_exception_after_publish_is_reported_and_update_continues(
+        self, hermes_home, capsys, monkeypatch
+    ):
+        from argparse import Namespace
+
+        from hermes_cli import update_cmd_maint as maint
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        def fail_verify(snapshot_id):
+            assert (hermes_home / "state-snapshots" / snapshot_id).is_dir()
+            raise RuntimeError("verify\nfailed")
+
+        monkeypatch.setattr(maint, "_verify_state_db_after_snapshot", fail_verify)
+
+        assert _run_pre_update_backup(Namespace(no_backup=False, backup=False)) is None
+        published = [
+            path
+            for path in (hermes_home / "state-snapshots").iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        ]
+        assert len(published) == 1
+        assert (
+            "Could not confirm a usable pre-update quick snapshot for this profile "
+            "(RuntimeError: verify failed); the update will continue."
+            in capsys.readouterr().out
+        )

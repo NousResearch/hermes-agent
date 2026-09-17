@@ -28,6 +28,11 @@ def _seed(provider: str, token: str, *, model_cooldown: str | None = None) -> No
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # HERMES_HOME does not isolate the borrowed Claude Code file/Keychain.
+    # An ambient entry would remain selectable while our seeded row cools down.
+    monkeypatch.setattr(
+        "agent.anthropic_credentials.read_claude_code_credentials", lambda: None,
+    )
     monkeypatch.setattr(aux, "_client_cache", {})
     return tmp_path / "hermes"
 

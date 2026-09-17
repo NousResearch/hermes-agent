@@ -46,7 +46,7 @@ def test_clean_skill_has_no_findings():
 
 
 def test_description_too_long_is_warning():
-    long_desc = "x" * 80
+    long_desc = "x" * 200  # above the prompt budget (default 60) so the warning fires
     content = CLEAN.replace(
         "Search arXiv papers by keyword, author, or ID.", long_desc
     )

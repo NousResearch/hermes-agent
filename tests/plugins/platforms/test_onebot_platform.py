@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import SendResult
 from plugins.platforms.onebot.adapter import (
     MAX_MESSAGE_LENGTH,
     OneBotAdapter,
@@ -2529,3 +2530,139 @@ def test_ffmpeg_check_silent_when_present(monkeypatch, caplog) -> None:
         for r in caplog.records
         if r.levelno >= logging.WARNING and "ffmpeg" in r.getMessage()
     ]
+
+
+# ---------------------------------------------------------------------------
+# 戳一戳（poke）notice 事件
+# ---------------------------------------------------------------------------
+
+
+def _poke_notice(**over) -> dict:
+    """NapCat notify/poke notice 帧样例（群聊，bot 自身被戳）。"""
+    data = {
+        "post_type": "notice",
+        "notice_type": "notify",
+        "sub_type": "poke",
+        "self_id": 10000,
+        "user_id": 12345,
+        "target_id": 10000,
+        "group_id": 777,
+    }
+    data.update(over)
+    return data
+
+
+async def _dispatch_notice_and_collect(adapter: OneBotAdapter, data: dict) -> list:
+    """经 _handle_frame 完整链路派发 notice，捕获出站 send() 调用。"""
+    sent = []
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        sent.append((chat_id, content))
+        return SendResult(success=True)
+
+    adapter.send = fake_send
+    adapter._handle_frame(data)
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending)
+    return sent
+
+
+def test_poke_bot_triggers_reply() -> None:
+    """群聊中 bot 自己被戳（target==self）→ 走现有 send 路径发轻提示。"""
+    adapter = _make_adapter(poke_reply=True)
+    sent = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice()))
+    assert len(sent) == 1
+    chat_id, content = sent[0]
+    assert chat_id == "group:777"
+    # 轻提示文案：提示 @bot 或 /help 用法，不触发 agent
+    assert "/help" in content or "@我" in content
+
+
+def test_poke_private_chat_replies_to_poker() -> None:
+    """私聊（好友戳 bot，无 group_id）→ 回复会话指向戳人者。"""
+    adapter = _make_adapter(poke_reply=True)
+    sent = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice(group_id=None)))
+    assert len(sent) == 1
+    assert sent[0][0] == "private:12345"
+
+
+def test_poke_between_members_ignored() -> None:
+    """成员互戳（target != self_id）→ 完全静默。"""
+    adapter = _make_adapter(poke_reply=True)
+    sent = asyncio.run(
+        _dispatch_notice_and_collect(adapter, _poke_notice(user_id=12345, target_id=99999))
+    )
+    assert sent == []
+
+
+def test_poke_cooldown_suppresses_repeat() -> None:
+    """per-chat 60s 冷却：冷却期内的第二次戳静默。"""
+    adapter = _make_adapter(poke_reply=True)
+    sent = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice()))
+    assert len(sent) == 1
+    # 紧接着再戳一次（未过冷却）→ 不再发送
+    sent2 = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice()))
+    assert sent2 == []
+
+
+def test_poke_disabled_by_default_silent() -> None:
+    """默认 poke_reply=False：bot 被戳也完全静默。"""
+    adapter = _make_adapter()  # 未配置 poke_reply → 默认关闭
+    sent = asyncio.run(_dispatch_notice_and_collect(adapter, _poke_notice()))
+    assert sent == []
+
+
+def test_non_poke_notice_types_safely_ignored() -> None:
+    """非 poke notice（如 group_upload / friend_request）安全忽略，不抛错。"""
+    adapter = _make_adapter(poke_reply=True)
+    sent = asyncio.run(
+        _dispatch_notice_and_collect(
+            adapter,
+            {
+                "post_type": "notice",
+                "notice_type": "group_upload",
+                "self_id": 10000,
+                "group_id": 777,
+                "user_id": 12345,
+                "file": {"name": "a.txt", "size": 1},
+            },
+        )
+    )
+    assert sent == []
+    sent2 = asyncio.run(
+        _dispatch_notice_and_collect(
+            adapter,
+            {
+                "post_type": "notice",
+                "notice_type": "friend_request",
+                "self_id": 10000,
+                "user_id": 12345,
+                "comment": "加个好友",
+                "flag": "abc",
+            },
+        )
+    )
+    assert sent2 == []
+
+
+def test_poke_notice_parse_pure_function() -> None:
+    """parse_poke_notice 纯函数：仅"戳 bot 自己"返回会话信息。"""
+    from plugins.platforms.onebot.onebot_utils import parse_poke_notice
+
+    assert parse_poke_notice(_poke_notice(), "10000") == {
+        "user_id": "12345",
+        "chat_id": "group:777",
+    }
+    # 成员互戳
+    assert parse_poke_notice(_poke_notice(target_id=99999), "10000") is None
+    # self_id 未知（无法判定被戳者）
+    assert parse_poke_notice(_poke_notice(), "") is None
+    # 非 poke / 非 notify
+    assert parse_poke_notice(_poke_notice(sub_type="lucky_king"), "10000") is None
+    assert parse_poke_notice(_poke_notice(notice_type="group_increase"), "10000") is None
+    # 私聊无 group_id → 会话指向戳人者
+    assert parse_poke_notice(_poke_notice(group_id=None), "10000") == {
+        "user_id": "12345",
+        "chat_id": "private:12345",
+    }

@@ -290,6 +290,9 @@ class OneBotAdapter(BasePlatformAdapter):
         self._group_policy = str(extra.get("group_policy", "open")).strip().lower()
         self._allow_from = {str(v) for v in (extra.get("allow_from") or [])}
         self._group_allow_from = {str(v) for v in (extra.get("group_allow_from") or [])}
+        # 戳一戳轻提示（notify/poke）：默认关闭；仅 bot 自己被戳时回复，
+        # per-chat 60s 冷却防抖（POKE_COOLDOWN_SECONDS，见 onebot_utils）
+        self._poke_reply = bool(extra.get("poke_reply", False))
 
         # 权限分级：管理员集合（extra.admin_users 显式 > 回退 ONEBOT_ALLOWED_USERS）
         self._admin_users = {str(v) for v in (extra.get("admin_users") or [])}
@@ -314,6 +317,8 @@ class OneBotAdapter(BasePlatformAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_event_ts = 0.0
+        # 戳一戳回复冷却：chat_id -> 上次回复时间戳（time.time 秒）
+        self._poke_last_reply: Dict[str, float] = {}
         # 一次回复周期内的中间消息缓冲: chat_id -> [(message_id, text), ...]
         # 收到最终回复（t2i 图片等）时合并为一条 QQ 转发并撤回原消息。
         self._loop_buffer: Dict[str, List[Tuple[str, str]]] = {}
@@ -836,7 +841,54 @@ class OneBotAdapter(BasePlatformAdapter):
             return
         if post_type == "message":
             asyncio.create_task(self._process_message(data))
-        # notice / request events are intentionally ignored for now.
+            return
+        if post_type == "notice":
+            asyncio.create_task(self._process_notice(data))
+            return
+        # request events are intentionally ignored for now (T5: friend/group
+        # request approval will hook in at this dispatch point).
+
+    # notice 事件分发表：(notice_type, sub_type) -> 处理方法名；sub_type
+    # 用 "*" 通配（精确匹配优先）。骨架供 T5 好友申请/群邀请审批扩展。
+    _NOTICE_HANDLERS = {
+        ("notify", "poke"): "_handle_poke_notice",
+    }
+
+    async def _process_notice(self, data: dict) -> None:
+        """notice 事件分发骨架：异常完全隔离，绝不影响主消息流。"""
+        try:
+            self._learn_self_id(data.get("self_id"))
+            notice_type = str(data.get("notice_type", "") or "")
+            sub_type = str(data.get("sub_type", "") or "")
+            handler_name = self._NOTICE_HANDLERS.get((notice_type, sub_type))
+            if handler_name is None:
+                handler_name = self._NOTICE_HANDLERS.get((notice_type, "*"))
+            if handler_name is None:
+                logger.debug(
+                    "[onebot] notice ignored: notice_type=%s sub_type=%s",
+                    notice_type, sub_type,
+                )
+                return
+            await getattr(self, handler_name)(data)
+        except Exception as e:
+            logger.warning("[onebot] notice handling failed: %s", e)
+
+    async def _handle_poke_notice(self, data: dict) -> None:
+        """戳一戳：仅响应"戳 bot 自己"；per-chat 冷却防抖，轻提示不走 agent。"""
+        if not self._poke_reply:
+            return
+        u = _load_onebot_utils()
+        info = u.parse_poke_notice(data, self._self_id or self._bot_qq)
+        if info is None:
+            return  # 成员互戳 / 字段缺失
+        chat_id = info["chat_id"]
+        now = time.time()
+        if not u.poke_cooldown_ok(self._poke_last_reply.get(chat_id, 0.0), now):
+            logger.debug("[onebot] poke reply suppressed (cooldown): %s", chat_id)
+            return
+        self._poke_last_reply[chat_id] = now
+        # 出站走现有 send 路径（segment 数组），绝不拼 CQ 字符串
+        await self.send(chat_id, u.poke_reply_text())
 
     def _learn_self_id(self, self_id) -> None:
         if self_id is None:

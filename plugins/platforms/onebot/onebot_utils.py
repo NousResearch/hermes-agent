@@ -321,3 +321,49 @@ def scan_sensitive(text: str) -> Optional[str]:
         if m:
             return m.group(0)
     return None
+
+
+# ── 戳一戳（poke）notice 事件 ──────────────────────────────────────────
+# per-chat 冷却秒数：bot 被戳后同一会话内的回复防抖窗口
+POKE_COOLDOWN_SECONDS = 60.0
+
+
+def parse_poke_notice(data: dict, self_id: Any) -> Optional[dict]:
+    """判定 notice 帧是否为"戳 bot 自己"的戳一戳事件。
+
+    NapCat 语义：post_type=notice, notice_type=notify, sub_type=poke；
+    ``user_id`` = 戳人者，``target_id`` = 被戳者。仅当 target_id ==
+    self_id（bot 自己被戳）时返回 ``{"user_id", "chat_id"}``；成员互戳、
+    字段缺失或 self_id 未知（无法判定被戳者）一律返回 None。
+    群聊会话 chat_id 取 group_id；私聊（好友戳）取戳人者 user_id。
+    """
+    self_id = str(self_id or "").strip()
+    if not self_id:
+        return None
+    if str(data.get("notice_type", "") or "") != "notify":
+        return None
+    if str(data.get("sub_type", "") or "") != "poke":
+        return None
+    user = str(data.get("user_id", "") or "").strip()
+    target = str(data.get("target_id", "") or "").strip()
+    if not user or target != self_id:
+        return None
+    group_id = str(data.get("group_id", "") or "").strip()
+    if group_id:
+        return {"user_id": user, "chat_id": f"group:{group_id}"}
+    return {"user_id": user, "chat_id": f"private:{user}"}
+
+
+def poke_cooldown_ok(
+    last_ts: float, now: float, cooldown_seconds: float = POKE_COOLDOWN_SECONDS
+) -> bool:
+    """per-chat 冷却判断：``last_ts <= 0`` 视为从未回复过，直接放行。"""
+    if last_ts <= 0.0:
+        return True
+    return (now - last_ts) >= cooldown_seconds
+
+
+def poke_reply_text() -> str:
+    """戳一戳的轻提示回复文案（纯提示，不做 agent 触发）。"""
+    return "戳我干嘛～ 有事请 @我，或发送 /help 查看用法。"
+

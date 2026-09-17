@@ -16,7 +16,7 @@ Hermes 通过 **OneBot 11 协议**接入 QQ，兼容 [NapCat](https://napneko.gi
 | 类别 | 能力 |
 |---|---|
 | 连接 | 反向 WS（NapCat ws-reverse 拨入，默认端口 8643）或正向 WS（拨出，默认 `ws://127.0.0.1:3001`）；断线自动重连 |
-| 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed）、**图片四路解析（url/base64/file/hash 经 `get_image`）** + 大图压缩、file/voice/video/face/json/poke 段类型、引用自动取原文（`get_msg`）、**文件段双通道接收（CDN 直链 `get_private_file_url` + `get_file` base64/url 回退）** |
+| 入站 | 私聊/群聊、段数组优先解析（CQ 字符串回退）、CQ 反转义、@/回复触发检测（fail-closed）、**图片四路解析（url/base64/file/hash 经 `get_image`）** + 大图压缩、file/voice/video/face/json/poke 段类型、引用自动取原文（`get_msg`）、**文件段双通道接收（CDN 直链 `get_private_file_url` + `get_file` base64/url 回退）**、bot 自身被戳的 poke notice 轻提示回复（可选，`poke_reply`） |
 | 语音 | ffmpeg 转 16 kHz 单声道 WAV → Hermes STT 管线；无 URL 语音先经 `get_record`（base64）取；失败降级 `[语音]` |
 | 文字图 | AstrBot 风格 t2i 卡片渲染器：标题/粗体/斜体/删除线/引用/列表/代码块/**表格**/行内 code 胶囊/彩色 emoji/中文标点禁则；800px 宽 |
 | 出站 | 按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**、Markdown 剥离为 QQ 纯文本、`[[qq_forward]]` 合并转发（群/私聊）、**loop 中间消息合并+撤回**（回合末 **“本轮进展”小结卡**、撤回限速 60ms）、正在输入提示（仅私聊） |
@@ -58,6 +58,7 @@ gateway:
         split_length: 100          # 长回复分段字符数
         text_image_threshold: 150  # 更长回复渲染文字图
         image_max_size: 2048       # 入站图片压缩（0 = 保持原样）
+        poke_reply: false          # bot 自己被戳时轻提示回复
 ```
 
 ### 扩展键（全部可选）
@@ -81,6 +82,7 @@ gateway:
 | `max_inbound_file_bytes` | `20971520`（20 MB） | 入站文件大小上限；超限降级为 `[文件:name]` 标记 |
 | `interim_recall_seconds` | `90` | 未结算 interim 消息的自动撤回超时（`0` 关闭） |
 | `hot_reload` | `false` | 仅开发用：`onebot_utils.py` / `t2i_render.py` 按 mtime 变化自动 reload（调样式免重启；生产建议关闭，升级时原地写入可能加载半截模块） |
+| `poke_reply` | `false` | bot 自己被戳（`notify/poke` notice）时回复轻提示（`@我` / `/help`）；成员互戳不响应；per-chat 60s 冷却 |
 
 环境变量：`ONEBOT_ALLOWED_USERS`（逗号分隔的管理员 id）、`ONEBOT_ALLOW_ALL_USERS=true`（仅开发），以及全局的 `GATEWAY_ALLOW_ALL_USERS`。
 

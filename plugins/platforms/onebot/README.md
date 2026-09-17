@@ -18,7 +18,7 @@ User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
 | Area | Capability |
 |---|---|
 | Connection | reverse WS (NapCat ws-reverse dials in, default port 8643) or forward WS (dial out, default `ws://127.0.0.1:3001`); auto-reconnect |
-| Inbound | private/group chats, segment-array parsing first (CQ-string fallback), CQ unescaping, @/reply trigger detection (fail-closed), **image resolution (url/base64/file/hash via `get_image`)** + downscale, file/voice/video/face/json/poke segment types, quote original message (`get_msg`), **file dual-channel receive (CDN direct `get_private_file_url` + `get_file` base64/url fallback)** |
+| Inbound | private/group chats, segment-array parsing first (CQ-string fallback), CQ unescaping, @/reply trigger detection (fail-closed), **image resolution (url/base64/file/hash via `get_image`)** + downscale, file/voice/video/face/json/poke segment types, quote original message (`get_msg`), **file dual-channel receive (CDN direct `get_private_file_url` + `get_file` base64/url fallback)**, poke-notice reply when the bot itself is poked (opt-in, `poke_reply`) |
 | Voice | ffmpeg → 16 kHz mono WAV → Hermes STT pipeline; voice without a URL fetched via `get_record` (base64); failure degrades to `[语音]` |
 | Text image | AstrBot-style t2i card renderer: headings / bold / italic / strikethrough / quote / list / code block / **table** / inline-code pill / color emoji / CJK punctuation rules; 800 px wide |
 | Outbound | sentence-boundary split (default ≤100 chars), **>150 chars rendered as a t2i card**, markdown stripped to plain text, `[[qq_forward]]` merged forwarding, **loop interim merge + recall** (turn-end **"本轮进展" summary card**, 60 ms recall spacing), typing indicator (private chats) |
@@ -60,6 +60,7 @@ gateway:
         split_length: 100          # long replies split at this many chars
         text_image_threshold: 150  # longer replies render as a text image
         image_max_size: 2048       # downscale inbound images (0 = keep as-is)
+        poke_reply: false          # light reply when the bot itself gets poked
 ```
 
 ### Extra keys (all optional)
@@ -83,6 +84,7 @@ gateway:
 | `max_inbound_file_bytes` | `20971520` (20 MB) | inbound file size cap; larger files degrade to a `[文件:name]` marker |
 | `interim_recall_seconds` | `90` | auto-recall timeout for unsettled interim messages (`0` disables) |
 | `hot_reload` | `false` | dev only: reload `onebot_utils.py` / `t2i_render.py` on mtime change (saves a gateway restart while iterating styles; keep off in production, an in-place write during upgrade can reload a half-written module) |
+| `poke_reply` | `false` | reply with a light hint (`@我` / `/help`) when the bot itself is poked (`notify/poke` notice); member-to-member pokes are ignored; per-chat 60s cooldown |
 
 Environment variables: `ONEBOT_ALLOWED_USERS` (comma-separated admin ids), `ONEBOT_ALLOW_ALL_USERS=true` (dev only), and the global `GATEWAY_ALLOW_ALL_USERS`.
 

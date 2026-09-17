@@ -20,7 +20,7 @@ Hermes 通过 **OneBot 11 协议**接入 QQ，兼容 [NapCat](https://napneko.gi
 | 语音 | ffmpeg 转 16 kHz 单声道 WAV → Hermes STT 管线；无 URL 语音先经 `get_record`（base64）取；失败降级 `[语音]` |
 | 文字图 | AstrBot 风格 t2i 卡片渲染器：标题/粗体/斜体/删除线/引用/列表/代码块/**表格**/行内 code 胶囊/彩色 emoji/中文标点禁则；800px 宽 |
 | 出站 | 按句号分段（默认 ≤100 字/条）、**>150 字渲染 t2i 文字图卡片**、Markdown 剥离为 QQ 纯文本、`[[qq_forward]]` 合并转发（群/私聊）、**loop 中间消息合并+撤回**（回合末 **“本轮进展”小结卡**、撤回限速 60ms）、正在输入提示（仅私聊） |
-| 命令 | 管理员本地斜杠命令：`/ocr` / `/mode` / `/id` / `/ver`；其余斜杠照常流转网关核心 |
+| 命令 | 管理员本地斜杠命令：`/ocr` / `/mode` / `/id` / `/ver` / `/approve` / `/reject`；其余斜杠照常流转网关核心 |
 | 工具 | `qq_send_image`（≤9 张，路径或 URL）、`qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`、`qq_napcat_api`（15 个白名单 action）、`qq_group_history`；HTTP `/api/napcat` + `/api/send_media`；`provides_tools` 让 CLI/TUI 也可用 |
 | 权限 | 管理员白名单（`ONEBOT_ALLOWED_USERS`）、dm/group 策略（open/allowlist/disabled）、群聊 @ 门控、受限成员 `[受限用户:仅问答]` 软限制、出站敏感意图审计 |
 | 运维 | 热加载 `onebot_utils.py` / `t2i_render.py`（`extra.hot_reload`，免网关重启）、临时媒体 TTL 清理、启动时 t2i 墨源自检（字体链自测） |
@@ -197,8 +197,20 @@ base64 内嵌上报的大于 4 MiB 的帧会被拒收。生产传图以 URL（Na
 | `/mode interim\|instant` | 按聊天设置 loop 合并模式（`interim` = 中间评论合并转发，`instant` = 原样直发）；仅内存态，重启恢复默认 |
 | `/id` | 打印当前 chat id |
 | `/ver` | 打印插件版本 |
+| `/approve <序号\|flag>` | 同意待处理的好友申请/群邀请（OneBot `set_friend_add_request` / `set_group_add_request`）；引用 admin 私聊通知里的 `#序号` 或完整 flag |
+| `/reject <序号\|flag>` | 拒绝待处理的好友申请/群邀请（同上 API，`approve=false`） |
 
 `/ocr` 要求图片还在临时媒体目录里（6 小时 TTL 清理会删）。
+
+### 好友申请/群邀请审批
+
+入站 OneBot `request` 事件（`request_type=friend`，或 `request_type=group` 且
+`sub_type=add` / `invite`）会被解析、记录到 `<HERMES_HOME>/onebot_requests.json`
+（0600——含申请者 QQ 号与验证消息，属敏感数据），并给每个配置的 admin 私聊推送
+通知（含序号、申请人、验证消息摘要与 flag）。admin 在私聊里回复 `/approve 1` /
+`/reject 1`（或用完整 flag）即可审批。审批幂等（已处理的 flag 不会二次调 API）、
+台账落盘重启后仍可用、未知引用明确报错。request 接收与 admin 通知均与主消息流
+异常隔离。
 
 ## 群 @ 触发
 

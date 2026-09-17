@@ -331,6 +331,11 @@ class OneBotAdapter(BasePlatformAdapter):
         self._last_image_path: Dict[str, str] = {}
         # ffmpeg 启动探测只做一次（_check_ffmpeg 的实例级防重复 WARNING flag）
         self._ffmpeg_checked = False
+        # T5：好友申请/群邀请审批台账（request 事件；flag -> record）。
+        # 落盘保证重启后 /approve 仍可用；文件含申请者 QQ 与验证消息——敏感。
+        self._requests: Dict[str, Dict[str, Any]] = {}
+        self._request_seq = 0
+        self._load_requests()
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -845,8 +850,11 @@ class OneBotAdapter(BasePlatformAdapter):
         if post_type == "notice":
             asyncio.create_task(self._process_notice(data))
             return
-        # request events are intentionally ignored for now (T5: friend/group
-        # request approval will hook in at this dispatch point).
+        if post_type == "request":
+            # T5：好友申请/群邀请审批流；异常隔离在 _process_request 内部，
+            # 绝不影响主消息流。
+            asyncio.create_task(self._process_request(data))
+            return
 
     # notice 事件分发表：(notice_type, sub_type) -> 处理方法名；sub_type
     # 用 "*" 通配（精确匹配优先）。骨架供 T5 好友申请/群邀请审批扩展。
@@ -890,6 +898,99 @@ class OneBotAdapter(BasePlatformAdapter):
         # 出站走现有 send 路径（segment 数组），绝不拼 CQ 字符串
         await self.send(chat_id, u.poke_reply_text())
 
+    # -- 好友申请/群邀请审批（request 事件；T5） ------------------------
+
+    async def _process_request(self, data: dict) -> None:
+        """request 事件分发：解析 → 台账记录+落盘 → admin 私聊通知。
+
+        异常完全隔离（与 _process_notice 同口径），绝不影响主消息流。
+        同一 flag 待处理期间重复推送幂等跳过，不重复通知。
+        """
+        try:
+            self._learn_self_id(data.get("self_id"))
+            req = _load_onebot_utils().parse_request_event(data)
+            if req is None:
+                logger.debug(
+                    "[onebot] request ignored: request_type=%s sub_type=%s",
+                    data.get("request_type"), data.get("sub_type"),
+                )
+                return
+            flag = req["flag"]
+            pending = self._requests.get(flag)
+            if pending is not None and pending.get("status") == "pending":
+                return  # 幂等：同一 flag 的重复事件不重复通知
+            self._request_seq += 1
+            record = dict(req)
+            record["seq"] = self._request_seq
+            record["status"] = "pending"
+            record["ts"] = time.time()
+            self._requests[flag] = record
+            self._persist_requests()
+            text = _load_onebot_utils().request_notification_text(
+                record["seq"], record
+            )
+            await self._notify_admins(text)
+        except Exception as e:
+            logger.warning("[onebot] request handling failed: %s", e)
+
+    async def _notify_admins(self, text: str) -> None:
+        """给所有配置的 admin 私聊发通知（send 走 segment 数组路径）。"""
+        for admin in sorted(self._admin_users):
+            try:
+                await self.send(f"private:{admin}", text)
+            except Exception as e:
+                logger.warning("[onebot] admin notify to %s failed: %s", admin, e)
+
+    async def _handle_request_decision(self, action: str, arg: str) -> str:
+        """/approve /reject 共享实现：解析引用 → 幂等/未知检查 → 调 API。
+
+        同一 flag 已处理过 → 幂等回复，不重复调 API；API 失败不改台账
+        状态（可重试）。序号引用沿"最近一次通知列表"语义（seq 见通知）。
+        """
+        u = _load_onebot_utils()
+        approve = action == "approve"
+        ref = str(arg or "").strip()
+        if not ref:
+            return f"用法：/{action} <flag或序号>"
+        record = u.resolve_request_ref(ref, list(self._requests.values()))
+        if record is None:
+            return f"❌ 未找到待处理的申请：{ref}（可用通知里的序号或完整 flag）"
+        flag = record["flag"]
+        verdict = "同意" if approve else "拒绝"
+        if record.get("status") == "processed":
+            prev_verdict = "同意" if record.get("decision") else "拒绝"
+            return f"该申请已处理过（{prev_verdict}），无需重复操作。"
+        if record.get("kind") == "group":
+            # OneBot 11：群申请/邀请审批（sub_type 区分 add=入群/invite=邀请）
+            act = "set_group_add_request"
+            params: Dict[str, Any] = {
+                "flag": flag,
+                "sub_type": str(record.get("sub_type") or "add"),
+                "approve": approve,
+            }
+        else:
+            # OneBot 11：好友申请审批
+            act = "set_friend_add_request"
+            params = {"flag": flag, "approve": approve}
+        try:
+            await self._call_action(act, params, timeout=ACTION_TIMEOUT)
+        except Exception as e:
+            logger.warning(
+                "[onebot] request decision %s flag=%s failed: %s", action, flag, e
+            )
+            return f"❌ {verdict}失败：{e}"
+        done = dict(record)
+        done["status"] = "processed"
+        done["decision"] = approve
+        done["decided_ts"] = time.time()
+        self._requests[flag] = done
+        self._persist_requests()
+        kind_label = "群邀请/入群申请" if record.get("kind") == "group" else "好友申请"
+        return (
+            f"✅ 已{verdict}{kind_label}"
+            f"（#{record.get('seq')}，申请人 {record.get('user_id', '?')}）"
+        )
+
     def _learn_self_id(self, self_id) -> None:
         if self_id is None:
             return
@@ -924,6 +1025,55 @@ class OneBotAdapter(BasePlatformAdapter):
             os.replace(tmp, path)
         except Exception as e:
             logger.debug("[onebot] persist nicknames failed: %s", e)
+
+    def _requests_file(self) -> str:
+        # Runtime state lives under HERMES_HOME, not the plugin package dir
+        # (read-only pip installs / profile isolation).
+        from hermes_constants import get_hermes_home
+
+        return str(get_hermes_home() / "onebot_requests.json")
+
+    def _load_requests(self) -> None:
+        """恢复审批台账（flag -> record）；seq 计数器取历史最大值续增。
+
+        敏感：文件含申请者 QQ 号与验证消息原文，仅本机留存（0600）。
+        """
+        try:
+            with open(self._requests_file(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+        self._requests = {}
+        self._request_seq = 0
+        if not isinstance(data, dict) or not isinstance(data.get("requests"), list):
+            return
+        for rec in data["requests"]:
+            if not isinstance(rec, dict):
+                continue
+            flag = str(rec.get("flag", "") or "")
+            if not flag:
+                continue
+            self._requests[flag] = rec
+            try:
+                self._request_seq = max(self._request_seq, int(rec.get("seq", 0)))
+            except (TypeError, ValueError):
+                pass
+
+    def _persist_requests(self) -> None:
+        try:
+            path = self._requests_file()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"requests": list(self._requests.values())},
+                    f,
+                    ensure_ascii=False,
+                    indent=1,
+                )
+            os.chmod(tmp, 0o600)  # 敏感：申请者 QQ + 验证消息，仅本机可读
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.debug("[onebot] persist requests failed: %s", e)
 
     # ------------------------------------------------------------------
     # Inbound messages
@@ -1038,7 +1188,9 @@ class OneBotAdapter(BasePlatformAdapter):
                 _probe = re.sub(r"^@\d+\s*", "", text.lstrip())
                 if _probe.startswith("/"):
                     cmd = _probe.split(maxsplit=1)[0][1:].lower()
-                    if cmd and "/" not in cmd and cmd in ("ocr", "mode", "id", "ver"):
+                    if cmd and "/" not in cmd and cmd in (
+                        "ocr", "mode", "id", "ver", "approve", "reject"
+                    ):
                         try:
                             reply = await self._handle_local_command(
                                 chat_id, chat_type, user_id, _probe
@@ -1198,7 +1350,7 @@ class OneBotAdapter(BasePlatformAdapter):
         return False
 
     async def _handle_local_command(self, chat_id: str, chat_type: str, user_id: str, text: str) -> Optional[str]:
-        """#6 回移：admin 本地斜杠命令（/ocr /mode /id /ver）。
+        """#6 回移：admin 本地斜杠命令（/ocr /mode /id /ver /approve /reject）。
 
         返回要发送的回复文本；不认识的命令返回 None（交给网关斜杠分发）。
         """
@@ -1207,6 +1359,11 @@ class OneBotAdapter(BasePlatformAdapter):
             return None
         cmd = m.group(1).lower()
         arg = (m.group(2) or "").strip()
+        if cmd in ("approve", "reject"):
+            # 入口在 _process_message 的 admin 门之后；此处兜底防非 admin 直调
+            if user_id not in self._admin_users:
+                return "❌ 仅管理员可执行审批命令。"
+            return await self._handle_request_decision(cmd, arg)
         if cmd == "id":
             return f"chat_id: {chat_id}\nuser_id: {user_id}"
         if cmd == "ver":

@@ -367,3 +367,95 @@ def poke_reply_text() -> str:
     """戳一戳的轻提示回复文案（纯提示，不做 agent 触发）。"""
     return "戳我干嘛～ 有事请 @我，或发送 /help 查看用法。"
 
+
+# ── 好友申请/群邀请审批（request 事件）─────────────────────────────────
+# 群 request 事件合法 sub_type：add=入群申请，invite=bot 被邀请入群
+REQUEST_GROUP_SUB_TYPES = ("add", "invite")
+# admin 通知里验证消息的最长摘要长度（防超长刷屏）
+REQUEST_COMMENT_SUMMARY_MAX = 80
+
+
+def parse_request_event(data: dict) -> Optional[dict]:
+    """解析 request 事件帧（post_type=request）为审批记录初值。
+
+    request_type=friend → 好友申请；request_type=group 且 sub_type ∈
+    (add, invite) → 入群申请/群邀请。flag 或 user_id 缺失、类型不支持
+    返回 None（调用方安全忽略）。返回字段均字符串化：
+    ``{kind, sub_type, user_id, comment, flag, group_id}``。
+    """
+    if str(data.get("post_type", "") or "") != "request":
+        return None
+    request_type = str(data.get("request_type", "") or "")
+    flag = str(data.get("flag", "") or "").strip()
+    user_id = str(data.get("user_id", "") or "").strip()
+    if not flag or not user_id:
+        return None
+    comment = str(data.get("comment", "") or "")
+    if request_type == "friend":
+        return {
+            "kind": "friend",
+            "sub_type": "",
+            "user_id": user_id,
+            "comment": comment,
+            "flag": flag,
+            "group_id": "",
+        }
+    if request_type == "group":
+        sub_type = str(data.get("sub_type", "") or "").strip().lower()
+        if sub_type not in REQUEST_GROUP_SUB_TYPES:
+            return None
+        return {
+            "kind": "group",
+            "sub_type": sub_type,
+            "user_id": user_id,
+            "comment": comment,
+            "flag": flag,
+            "group_id": str(data.get("group_id", "") or "").strip(),
+        }
+    return None
+
+
+def request_notification_text(seq: int, record: dict) -> str:
+    """admin 私聊通知文案：含序号/flag、申请人、验证消息摘要。"""
+    if record.get("kind") == "group":
+        title = "群邀请" if record.get("sub_type") == "invite" else "入群申请"
+        lines = [f"📨 收到{title}（#{seq}）"]
+        if record.get("group_id"):
+            lines.append(f"群号：{record['group_id']}")
+    else:
+        lines = [f"📨 收到好友申请（#{seq}）"]
+    lines.append(f"申请人：{record.get('user_id', '?')}")
+    comment = str(record.get("comment", "") or "").strip()
+    if comment:
+        summary = comment[:REQUEST_COMMENT_SUMMARY_MAX]
+        if len(comment) > REQUEST_COMMENT_SUMMARY_MAX:
+            summary += "…"
+        lines.append(f"验证消息：{summary}")
+    lines.append(f"flag：{record.get('flag', '')}")
+    lines.append(f"回复 /approve {seq} 同意，/reject {seq} 拒绝")
+    return "\n".join(lines)
+
+
+def resolve_request_ref(ref: str, records: List[dict]) -> Optional[dict]:
+    """解析 /approve /reject 的参数（序号或 flag）为对应审批记录。
+
+    纯数字优先按序号（seq，来自 admin 通知列表）匹配；未命中再按完整
+    flag 匹配（兼容碰巧全数字的 flag）。非数字一律按 flag 精确匹配。
+    查找范围含已处理记录——便于上层给出"已处理过"的幂等回复，而不是
+    误报未找到。无匹配返回 None（调用方报未知 flag/序号）。
+    """
+    ref = str(ref or "").strip()
+    if not ref:
+        return None
+    if ref.isdigit():
+        seq = int(ref)
+        for rec in records:
+            try:
+                if int(rec.get("seq", -1)) == seq:
+                    return rec
+            except (TypeError, ValueError):
+                continue
+    for rec in records:
+        if str(rec.get("flag", "") or "") == ref:
+            return rec
+    return None

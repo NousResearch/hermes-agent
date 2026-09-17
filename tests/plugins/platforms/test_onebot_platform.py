@@ -2666,3 +2666,221 @@ def test_poke_notice_parse_pure_function() -> None:
         "user_id": "12345",
         "chat_id": "private:12345",
     }
+
+
+# ---------------------------------------------------------------------------
+# 好友申请/群邀请审批（request 事件；T5）
+# ---------------------------------------------------------------------------
+
+
+def _friend_request_frame(**over) -> dict:
+    """NapCat request 帧样例：好友申请（request_type=friend）。"""
+    data = {
+        "post_type": "request",
+        "request_type": "friend",
+        "self_id": 10000,
+        "user_id": 12345,
+        "comment": "加个好友",
+        "flag": "friend_flag_1",
+    }
+    data.update(over)
+    return data
+
+
+def _group_invite_frame(**over) -> dict:
+    """NapCat request 帧样例：群邀请（request_type=group, sub_type=invite）。"""
+    data = {
+        "post_type": "request",
+        "request_type": "group",
+        "sub_type": "invite",
+        "self_id": 10000,
+        "user_id": 12345,
+        "group_id": 777,
+        "comment": "",
+        "flag": "group_flag_1",
+    }
+    data.update(over)
+    return data
+
+
+def _make_request_adapter(monkeypatch, tmp_path: Path, **extra) -> OneBotAdapter:
+    """HERMES_HOME 隔离到 tmp（台账落盘不污染真实 HOME）；admin=888。"""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return _make_adapter(admin_users=["888"], **extra)
+
+
+async def _dispatch_request_and_collect(adapter: OneBotAdapter, data: dict):
+    """经 _handle_frame 完整链路派发 request，捕获 admin 通知与 OneBot API。"""
+    sent = []
+    actions = []
+
+    async def fake_send(chat_id, content, reply_to=None, metadata=None):
+        sent.append((chat_id, content))
+        return SendResult(success=True)
+
+    async def fake_call_action(action, params, timeout=30.0):
+        actions.append((action, params))
+        return {"status": "ok"}
+
+    adapter.send = fake_send
+    adapter._call_action = fake_call_action
+    adapter._handle_frame(data)
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending)
+    return sent, actions
+
+
+def test_friend_request_notifies_admin(monkeypatch, tmp_path) -> None:
+    """好友申请 → 台账记录 + admin 私聊通知（含序号/申请人/验证消息/flag）。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    sent, actions = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    assert actions == []  # 收到申请本身不调任何 OneBot API
+    assert len(sent) == 1
+    chat_id, content = sent[0]
+    assert chat_id == "private:888"
+    assert "#1" in content
+    assert "12345" in content
+    assert "加个好友" in content
+    assert "friend_flag_1" in content
+    rec = adapter._requests["friend_flag_1"]
+    assert rec["status"] == "pending" and rec["seq"] == 1
+    assert rec["kind"] == "friend"
+
+
+def test_approve_friend_request_calls_set_friend_add_request(monkeypatch, tmp_path) -> None:
+    """/approve <序号> → set_friend_add_request(flag, approve=True)。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    _, actions = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    assert actions == []
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve 1")
+    )
+    assert reply is not None and "✅" in reply
+    assert len(actions) == 1
+    action, params = actions[0]
+    assert action == "set_friend_add_request"
+    assert params == {"flag": "friend_flag_1", "approve": True}
+
+
+def test_reject_group_invite_calls_set_group_add_request(monkeypatch, tmp_path) -> None:
+    """/reject <序号> → set_group_add_request(flag, sub_type=invite, approve=False)。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    _, actions = asyncio.run(
+        _dispatch_request_and_collect(adapter, _group_invite_frame())
+    )
+    assert actions == []  # 收到邀请本身不调任何 OneBot API
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/reject 1")
+    )
+    assert reply is not None and "✅" in reply
+    assert len(actions) == 1
+    action, params = actions[0]
+    assert action == "set_group_add_request"
+    assert params == {"flag": "group_flag_1", "sub_type": "invite", "approve": False}
+    rec = adapter._requests["group_flag_1"]
+    assert rec["status"] == "processed" and rec["decision"] is False
+
+
+def test_approve_unknown_ref_errors(monkeypatch, tmp_path) -> None:
+    """未知 flag/序号 → 明确报错，不调 API。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    actions = []
+
+    async def fake_call_action(action, params, timeout=30.0):
+        actions.append((action, params))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve 999")
+    )
+    assert "未找到" in reply
+    assert actions == []
+
+
+def test_repeat_approve_idempotent_no_second_api_call(monkeypatch, tmp_path) -> None:
+    """同一 flag 重复审批 → 幂等回复，不二次调 API。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    _, actions = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    first = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve 1")
+    )
+    assert "✅" in first
+    assert len(actions) == 1
+    second = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve 1")
+    )
+    assert "已处理过" in second
+    assert len(actions) == 1  # 未二次调 API
+
+
+def test_non_admin_approve_rejected(monkeypatch, tmp_path) -> None:
+    """非 admin 调用 /approve → 拒绝且不调 API。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    asyncio.run(_dispatch_request_and_collect(adapter, _friend_request_frame()))
+    actions = []
+
+    async def fake_call_action(action, params, timeout=30.0):
+        actions.append((action, params))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    reply = asyncio.run(
+        adapter._handle_local_command("private:666", "dm", "666", "/approve 1")
+    )
+    assert "仅管理员" in reply
+    assert actions == []
+
+
+def test_requests_persist_across_restart(monkeypatch, tmp_path) -> None:
+    """台账落盘：重启（新实例）后 /approve 仍可用，seq 续增。"""
+    adapter1 = _make_request_adapter(monkeypatch, tmp_path)
+    asyncio.run(_dispatch_request_and_collect(adapter1, _friend_request_frame()))
+    persist_path = tmp_path / "onebot_requests.json"
+    assert persist_path.exists()
+    # 敏感文件权限：仅属主可读写
+    assert (persist_path.stat().st_mode & 0o777) == 0o600
+
+    adapter2 = _make_request_adapter(monkeypatch, tmp_path)
+    rec = adapter2._requests["friend_flag_1"]
+    assert rec["status"] == "pending" and rec["seq"] == 1
+    assert adapter2._request_seq == 1
+
+    actions = []
+
+    async def fake_call_action(action, params, timeout=30.0):
+        actions.append((action, params))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(adapter2, "_call_action", fake_call_action)
+    reply = asyncio.run(
+        adapter2._handle_local_command("private:888", "dm", "888", "/approve friend_flag_1")
+    )
+    assert "✅" in reply
+    assert actions == [("set_friend_add_request", {"flag": "friend_flag_1", "approve": True})]
+
+    # 重启后 seq 取历史最大值续增：新事件编号不回退
+    _, _ = asyncio.run(
+        _dispatch_request_and_collect(adapter2, _friend_request_frame(flag="friend_flag_2"))
+    )
+    assert adapter2._requests["friend_flag_2"]["seq"] == 2
+
+
+def test_duplicate_request_event_not_notified_twice(monkeypatch, tmp_path) -> None:
+    """同一 flag 待处理期间重复推送 → 幂等跳过，不重复通知。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    sent1, _ = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    sent2, _ = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    assert len(sent1) == 1
+    assert sent2 == []

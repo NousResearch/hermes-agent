@@ -22,7 +22,7 @@ User (QQ) ←→ NapCat ←→ Hermes onebot adapter ←→ Hermes agent
 | Voice | ffmpeg → 16 kHz mono WAV → Hermes STT pipeline; voice without a URL fetched via `get_record` (base64); failure degrades to `[语音]` |
 | Text image | AstrBot-style t2i card renderer: headings / bold / italic / strikethrough / quote / list / code block / **table** / inline-code pill / color emoji / CJK punctuation rules; 800 px wide |
 | Outbound | sentence-boundary split (default ≤100 chars), **>150 chars rendered as a t2i card**, markdown stripped to plain text, `[[qq_forward]]` merged forwarding, **loop interim merge + recall** (turn-end **"本轮进展" summary card**, 60 ms recall spacing), typing indicator (private chats) |
-| Commands | admin-only local slash commands: `/ocr` / `/mode` / `/id` / `/ver`; other slashes keep flowing to the gateway core |
+| Commands | admin-only local slash commands: `/ocr` / `/mode` / `/id` / `/ver` / `/approve` / `/reject`; other slashes keep flowing to the gateway core |
 | Tools | `qq_send_image` (≤9, path or URL), `qq_send_voice` / `qq_send_video` / `qq_send_file` / `qq_send_forward`, `qq_napcat_api` (15-action whitelist), `qq_group_history`; HTTP `/api/napcat` + `/api/send_media`; available in CLI/TUI too via `provides_tools` |
 | Permissions | admin allowlist (`ONEBOT_ALLOWED_USERS`), dm/group policy (open/allowlist/disabled), group mention gating, restricted-member `[受限用户:仅问答]` soft limits, outbound sensitive-intent audit |
 | Ops | hot reload for `onebot_utils.py` / `t2i_render.py` (`extra.hot_reload`, no gateway restart), temp-media TTL cleanup, startup t2i ink check (font chain self-test) |
@@ -217,8 +217,22 @@ Admins get a few local slash commands handled inside the adapter (anything else 
 | `/mode interim\|instant` | per-chat loop-merge mode override (`interim` = merge commentary into forwards, `instant` = send as-is); in-memory only, resets on restart |
 | `/id` | print the current chat id |
 | `/ver` | print the plugin version |
+| `/approve <seq\|flag>` | accept a pending friend request / group invite (OneBot `set_friend_add_request` / `set_group_add_request`); references use the `#seq` from the admin DM notification or the full flag |
+| `/reject <seq\|flag>` | decline a pending friend request / group invite (same APIs with `approve=false`) |
 
 `/ocr` needs the image to still exist in the temp media dir (6-hour TTL cleanup applies).
+
+### Friend request / group invite approval
+
+Incoming OneBot `request` events (`request_type=friend`, or `request_type=group` with
+`sub_type=add` / `invite`) are parsed, recorded to `<HERMES_HOME>/onebot_requests.json`
+(0600 — contains applicant QQ ids and verification messages, treat as sensitive), and
+every configured admin gets a private DM with the sequence number, applicant, verification
+message summary and flag. Reply `/approve 1` / `/reject 1` (or use the full flag) in the
+admin DM to decide. Approvals are idempotent (an already-processed flag never triggers a
+second API call), survive restarts via the persisted ledger, and unknown references are
+reported explicitly. Receiving requests and the admin notification are isolated from the
+main message flow.
 
 ## Group mentions
 

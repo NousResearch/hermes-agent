@@ -30,7 +30,7 @@ export interface McpOwnerScope {
   /** Stable cache/status/snooze identity for (connection, profile). */
   key: string
   /** Request scope matching capabilityScoped() semantics. */
-  request: { connectionId?: string; profile?: string }
+  request: { connectionId?: string; priority?: 'foreground'; profile?: string }
 }
 
 /** Resolve the one owner identity shared by the MCP page and health sweep.
@@ -82,7 +82,11 @@ export function resolveMcpOwner(
   }
 
   if (connectionId) {
-    const request = { connectionId, ...(requestProfile ? { profile: requestProfile } : {}) }
+    const request = {
+      connectionId,
+      ...(requestProfile ? { profile: requestProfile } : {}),
+      ...(explicitScope || typeof scope === 'string' ? { priority: 'foreground' as const } : {})
+    }
 
     return { exact: true, key: `${connectionId}::${profileKey}`, request }
   }
@@ -96,7 +100,10 @@ export function resolveMcpOwner(
   return {
     exact: false,
     key: `${connectionKey}::${profileKey}`,
-    request: requestProfile ? { profile: requestProfile } : {}
+    request: {
+      ...(requestProfile ? { profile: requestProfile } : {}),
+      ...(typeof scope === 'string' ? { priority: 'foreground' as const } : {})
+    }
   }
 }
 

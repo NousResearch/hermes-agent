@@ -792,10 +792,11 @@ export function useRoster() {
            * snapshot rather than clearing it. */
           const previous: RosterRow[] = $lastRoster.get().filter(row => !row?.ghost)
           const merged = mergeMultiSourceRoster(local, null, activeConnectionId, previous)
+          const routed = annotateLocalRosterRoutes(merged?.profiles, profileRoutes, activeConnectionId)
 
           return {
             ...merged,
-            profiles: (merged?.profiles || []).map(row =>
+            profiles: routed.map(row =>
               row?.remoteSource ? { ...row, sourceReachable: false } : row
             ),
             fetchedAt: issuedAt

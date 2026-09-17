@@ -328,12 +328,14 @@ def _post_oauth_token(
                 return json.loads(resp.read().decode())
         except urllib.error.HTTPError as exc:
             last_error = _oauth_http_error(exc, what=what)
-            logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, last_error)
+            logger.debug("Anthropic token %s failed at %s: %s (HTTP %s, relogin_required=%s)",
+                         what, endpoint, type(last_error).__name__, last_error.status,
+                         last_error.relogin_required)
             if last_error.relogin_required:
                 break  # a dead grant is dead at every endpoint; do not replay it
         except Exception as exc:
             last_error = exc
-            logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, exc)
+            logger.debug("Anthropic token %s failed at %s: %s", what, endpoint, type(exc).__name__)
     raise last_error or ValueError(f"Anthropic token {what} failed")
 
 

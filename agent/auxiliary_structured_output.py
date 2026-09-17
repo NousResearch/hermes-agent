@@ -103,9 +103,12 @@ def without_unsupported_response_format(
     )
     if not known_unsupported:
         return extra_body
+    # Keep the capability-cache identity intact, but never log URL userinfo.
+    endpoint = urlparse(base_url or "").netloc
+    route_label = endpoint.rsplit("@", 1)[-1].lower() if endpoint else _route_key(provider, base_url)
     logger.info(
         "Auxiliary %s: %s (%s) does not accept response_format %s; sending without it "
         "(schema enforcement degrades to prompt compliance)",
-        task or "call", _route_key(provider, base_url) or "provider", model or "model", format_type,
+        task or "call", route_label or "provider", model or "model", format_type,
     )
     return {k: v for k, v in extra_body.items() if k != "response_format"}

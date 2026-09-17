@@ -449,7 +449,9 @@ describe('selectConnection', () => {
           expect.objectContaining({ connectionId: 'homelab', profile: 'scout', path: '/api/profiles' })
         )
       )
-      expect(openGatewayAgent.mock.calls).toEqual(Array.from({ length: 3 }, () => ['homelab', 'scout']))
+      expect(openGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual(
+        Array.from({ length: 3 }, () => ['homelab', 'scout'])
+      )
       expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
       expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
       expect(api.mock.invocationCallOrder[2]).toBeLessThan(beginGatewaySwitch.mock.invocationCallOrder[0])
@@ -984,7 +986,7 @@ describe('selectConnection', () => {
 
     await selectConnection('local')
 
-    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac')
+    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
     expect($newChatProfile.get()).toBe('mac')
   })

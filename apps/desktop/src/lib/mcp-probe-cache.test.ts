@@ -102,7 +102,7 @@ describe('resolveMcpOwner', () => {
     expect(resolveMcpOwner({ connectionId: 'local', profile: 'default' }, 'other', 'remote', null)).toEqual({
       exact: true,
       key: 'local::default',
-      request: { connectionId: 'local', profile: 'default' }
+      request: { connectionId: 'local', profile: 'default', priority: 'foreground' }
     })
     expect(
       resolveMcpOwner({ profile: 'primary' }, 'primary', 'remote', {

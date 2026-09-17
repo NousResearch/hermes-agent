@@ -566,7 +566,11 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
       expect($connection.get()?.mode).toBe('remote')
       expect(getSessionOwnerHint(mintedStoredId)).toBeUndefined()
     } else {
-      expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+      expect(desktop.getConnectionFor).toHaveBeenCalledWith({
+        connectionId: 'local',
+        priority: 'foreground',
+        profile: 'omar'
+      })
       expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
       expect(getSessionOwnerHint(mintedStoredId)).toEqual({ connectionId, profile: 'omar' })
     }

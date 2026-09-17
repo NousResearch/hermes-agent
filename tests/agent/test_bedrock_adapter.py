@@ -1067,7 +1067,71 @@ class TestBedrockContextLength:
             mock_probe.assert_not_called()
 
 
-class TestBedrockContextProbe:
+class TestInferenceProfileContextLength:
+    """Test context-window sizing for application-inference-profile ARNs (#114476): the ARN itself
+    names no model, so the window must come from the wrapped foundation model."""
+
+    ARN = "arn:aws:bedrock:us-west-2:123456789012:application-inference-profile/abcdef123456"
+
+    def setup_method(self):
+        from agent import bedrock_adapter
+        bedrock_adapter._inference_profile_model_cache.clear()
+
+    def _control_client(self, profile_response):
+        client = MagicMock()
+        client.get_inference_profile.return_value = profile_response
+        return client
+
+    def test_arn_resolves_wrapped_model_window(self):
+        # Sonnet 4.6 (1M) wrapped by the profile: the static table must match on the
+        # foundation-model id recovered from GetInferenceProfile, not on the ARN.
+        from agent.bedrock_adapter import get_bedrock_context_length
+        response = {"models": [
+            {"modelArn": "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6-v1:0"}]}
+        with patch("agent.bedrock_adapter._get_bedrock_control_client",
+                   return_value=self._control_client(response)):
+            assert get_bedrock_context_length(self.ARN, region="us-west-2", probe=False) == 1_000_000
+
+    def test_nested_profile_resolves_to_foundation_model(self):
+        # A profile wrapping another profile ARN must recurse to the foundation model.
+        from agent.bedrock_adapter import get_bedrock_context_length
+        inner_arn = "arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6-v1:0"
+        responses = [
+            {"models": [{"modelArn": inner_arn}]},
+            {"models": [{"modelArn": "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6-v1:0"}]},
+        ]
+        with patch("agent.bedrock_adapter._get_bedrock_control_client",
+                   side_effect=[self._control_client(r) for r in responses]):
+            assert get_bedrock_context_length(self.ARN, region="us-west-2", probe=False) == 1_000_000
+
+    def test_resolution_denied_falls_back_to_default_with_warning(self):
+        # Without bedrock:GetInferenceProfile the call raises; the default window applies and the
+        # silence is broken with a WARNING naming the profile and the explicit-config escape hatch.
+        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+        client = MagicMock()
+        client.get_inference_profile.side_effect = Exception("AccessDeniedException")
+        with patch("agent.bedrock_adapter._get_bedrock_control_client", return_value=client), \
+                patch("agent.bedrock_adapter.logger") as mock_logger:
+            assert get_bedrock_context_length(
+                self.ARN, region="us-west-2", probe=False) == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert mock_logger.warning.called
+
+    def test_resolved_arn_is_cached_per_process(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        response = {"models": [
+            {"modelArn": "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6-v1:0"}]}
+        with patch("agent.bedrock_adapter._get_bedrock_control_client",
+                   return_value=self._control_client(response)) as mock_client_factory:
+            assert get_bedrock_context_length(self.ARN, region="us-west-2", probe=False) == 1_000_000
+            assert get_bedrock_context_length(self.ARN, region="us-west-2", probe=False) == 1_000_000
+            assert mock_client_factory.call_count == 1
+
+    def test_no_region_skips_profile_resolution(self):
+        # The no-region path must stay offline like the probe does (display/offline callers).
+        from agent.bedrock_adapter import get_bedrock_context_length, BEDROCK_DEFAULT_CONTEXT_LENGTH
+        with patch("agent.bedrock_adapter._resolve_inference_profile_model_id") as mock_resolve:
+            assert get_bedrock_context_length(self.ARN) == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            mock_resolve.assert_not_called()
     """Test the live context-window probe that reads the real window from
     Bedrock's 'prompt is too long' validation error."""
 

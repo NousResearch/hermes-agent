@@ -99,6 +99,15 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
+class _StreamExpiredError(Exception):
+    """slack_sdk.SlackApiError's shape (``exc.response["error"]``) without importing the SDK,
+    which CI stubs as a bare module. The adapter only reads the response mapping."""
+
+    def __init__(self, message, response):
+        super().__init__(message)
+        self.response = response
+
+
 @pytest.fixture(autouse=True)
 def _pin_legacy_assistant_threads_api():
     """Pin the SDK capability probe to the legacy assistant.threads API.
@@ -5250,8 +5259,6 @@ class TestNativeTaskCardProgress:
         The lane must not degrade to text: seal the dead stream, start a fresh
         card in the same thread carrying the whole current task projection, and
         report success so later updates continue on the new card."""
-        from slack_sdk.errors import SlackApiError
-
         client = adapter._app.client
         starts = 0
 
@@ -5261,7 +5268,7 @@ class TestNativeTaskCardProgress:
                 starts += 1
                 return {"ts": f"stream-{starts}"}
             if method == "chat.appendStream" and json["ts"] == "stream-1" and starts == 1 and json["chunks"][1]["status"] == "complete":
-                raise SlackApiError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+                raise _StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
             return {"ok": True}
 
         client.api_call.side_effect = api_call
@@ -5303,14 +5310,12 @@ class TestNativeTaskCardProgress:
     async def test_expired_stream_reopen_gives_up_after_one_retry(self, adapter):
         """A reopened card that is itself rejected as not-streaming is a real
         failure, not a loop: one reopen per update, then the failure surfaces."""
-        from slack_sdk.errors import SlackApiError
-
         client = adapter._app.client
 
         async def api_call(method, *, json):
             if method == "chat.startStream":
                 return {"ts": "stream-x"}
-            raise SlackApiError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
+            raise _StreamExpiredError("expired", {"ok": False, "error": "message_not_in_streaming_state"})
 
         client.api_call.side_effect = api_call
         result = await adapter.send_native_task_card_progress(

@@ -59,6 +59,9 @@ class _FakeSessionDB:
             )
         ][:limit]
 
+    def search_sessions_by_title(self, *args, **kwargs):
+        return []
+
     def search_messages(
         self,
         query,
@@ -118,6 +121,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
     # ID match surfaces first; the content hit on the SAME session is deduped
     # by lineage root (not double-listed); the unrelated content hit follows.
     assert response == {
+        "has_more": False,
+        "next_offset": None,
         "results": [
             {
                 "id": "20260603_090200_exact",

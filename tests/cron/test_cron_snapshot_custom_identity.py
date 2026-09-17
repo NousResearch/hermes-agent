@@ -115,6 +115,42 @@ def test_providers_only_named_entry_heals(providers_only_config, monkeypatch):
     ``_find_custom_identity`` scans ``providers:`` first, so the snapshot still heals."""
     provider_snapshot, _ = _snapshot(
         monkeypatch,
-        {"provider": "custom", "base_url": PROVIDERS_BASE_URL, "requested_provider": "custom"},
+        {
+            "provider": "custom",
+            "base_url": PROVIDERS_BASE_URL,
+            "requested_provider": "custom",
+        },
     )
     assert provider_snapshot == PROVIDERS_CANONICAL
+
+
+BARE_NAME_KEY = "gx10-8888"
+BARE_NAME_BASE_URL = "http://gx10:8888/v1"
+
+
+def test_bare_name_provider_spelling_heals(monkeypatch):
+    """A bare-name ``model.provider`` spelling (no ``custom:`` prefix), as independently
+    reproduced on #109765: the resolve layer still reports tag ``custom`` with the bare
+    name as ``requested_provider`` — the endpoint match must heal it regardless."""
+    config = {
+        "model": {"default": "qwen3.8-flash-next", "provider": BARE_NAME_KEY},
+        "providers": {
+            BARE_NAME_KEY: {
+                "base_url": BARE_NAME_BASE_URL,
+                "model": "qwen3.8-flash-next",
+                "key_env": "HERMES_CUSTOM_GX10_8888_API_KEY",
+            },
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: config["model"])
+    provider_snapshot, _ = _snapshot(
+        monkeypatch,
+        {
+            "provider": "custom",
+            "base_url": BARE_NAME_BASE_URL,
+            "requested_provider": BARE_NAME_KEY,
+        },
+    )
+    assert provider_snapshot == f"custom:{BARE_NAME_KEY}"

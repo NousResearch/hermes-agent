@@ -176,10 +176,16 @@ _PAYLOAD_TOO_LARGE_PATTERNS = (
 # tile-patch budget (ceil(w/32)×ceil(h/32)) exceeds its 30000-patch ceiling
 # with wording that names no image-size vocabulary — without this pattern it
 # fell to format_error (non-retryable), bypassing the shrink recovery (#106337).
+# Byte caps enforced with a 400 instead of a 413 (#112473): NVIDIA NIM caps the whole
+# payload ("Please make sure your payload is below 26214400 bytes in size"); Alibaba
+# DashScope caps the base64 image string via Jackson ("String value length (N) exceeds the
+# maximum allowed (M, from `StreamReadConstraints.getMaxStringLength()`)"). Only an inline
+# image reaches those sizes, so shrinking is the recovery; the method-scoped Jackson token
+# is used because the bare class name also appears when Jackson caps a *token* length.
 _IMAGE_TOO_LARGE_PATTERNS = (
     "image exceeds", "image too large", "image_too_large", "image size exceeds", "image dimensions exceed",
     "dimensions exceed max allowed size", "max allowed size: 8000", "media exceeds", "media too large",
-    "patches after processing",
+    "patches after processing", "make sure your payload is below", "streamreadconstraints.getmaxstringlength",
 )
 
 # Undecodable image bytes → strip-and-retry, never shrink. xAI wordings
@@ -520,6 +526,7 @@ class _Ctx:
     context_length: int
     num_messages: int
     base_url: str = ""  # the route the call went to; "" when the caller did not say
+    anonymous: bool = False
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
@@ -576,6 +583,14 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     from hermes_cli.anon_auth import (
         WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
     status = c.status_code
+    if not c.anonymous:
+        # A named credential's fairshare 429 is an ordinary rate limit, whatever its body says. The
+        # one welcome refusal it does receive is the gateway's mirror 400 on the welcome host; its
+        # reconnect copy stands, only the sign-in card is withheld (``_welcome_surface_kind``).
+        if c.provider == "nous" and status == 400 and welcome_route_refusal(status, c.msg) == "named_on_welcome_host":
+            return _v(_R.format_error, retryable=False, should_fallback=True,
+                      error_context={"welcome_route": "named_on_welcome_host"})
+        return None
     if status == 429:
         refusal = parse_welcome_refusal(c.body)
         if refusal is None:
@@ -588,7 +603,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
     # The route-keyed dark-tier 403 applies only to a 403 that says nothing else: a safety refusal
     # or a billing wall on the welcome host keeps its own classification (and its own recovery).
-    plain_403 = c.provider == "nous" and not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
+    plain_403 = not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
     kind = welcome_route_refusal(status, c.msg, c.base_url if plain_403 else None)
     if kind is None:
         return None
@@ -726,11 +741,15 @@ def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
     base_url: str = "",
+    api_key: Any = None,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
 
     ``base_url`` (optional) is the route the call went to; the Nous welcome tier keys its
-    dark-tier 403 on it because that refusal carries no distinguishing message."""
+    dark-tier 403 on it because that refusal carries no distinguishing message.
+    ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
+    The credential is never included in the returned context."""
+    from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
@@ -739,6 +758,7 @@ def classify_api_error(
     c = _Ctx(
         error, status_code, body, _build_error_msg(error, body), provider, model,
         approx_tokens, context_length, num_messages, str(base_url or ""),
+        anonymous=is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}
@@ -809,9 +829,49 @@ def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
     return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
 
 
+def _has_large_inline_image(content: Any) -> bool:
+    """True when a rejected ``content`` list carries a ``data:image/`` part the shrink pass would rewrite
+    (over ``conversation_compression._IMAGE_SHRINK_TARGET_BYTES``; below it a shrink retry is a no-op)."""
+    from agent.conversation_compression import _IMAGE_SHRINK_TARGET_BYTES
+
+    for part in content if isinstance(content, list) else ():
+        image = part.get("image_url") if isinstance(part, dict) else None
+        url = image.get("url") if isinstance(image, dict) else image
+        if isinstance(url, str) and url.startswith("data:image/") and len(url) > _IMAGE_SHRINK_TARGET_BYTES:
+            return True
+    return False
+
+
+def _oversized_message_content_rejection(body: Any) -> bool:
+    """400 rejecting a *message* ``content`` field whose rejected value carries a large inline image.
+
+    Nebius Token Factory caps a single image at 10 MiB and reports the violation through the field that
+    failed to coerce — pydantic ``{"type": "string_type", "loc": ["body","messages",N,"content","str"],
+    "msg": "Input should be a valid string", "input": [...]}`` — naming no size vocabulary, so the
+    keyword multimodal *tool*-content rule (#104731) claimed it and spent its retry stripping tool images
+    that were never there (#112473). The same list-shaped content with a small image succeeds, so the
+    image bytes are the trigger. Tool-scoped locs (``messages.N.tool.content.str``) stay with #104731.
+    """
+    details = body.get("detail") if isinstance(body, dict) else None
+    for detail in details if isinstance(details, list) else ():
+        loc = detail.get("loc") if isinstance(detail, dict) else None
+        if detail.get("type") != "string_type" or not isinstance(loc, list) or len(loc) < 2:
+            continue
+        parts = [str(x).lower() for x in loc]
+        if parts[:2] == ["body", "messages"] and parts[-2:] == ["content", "str"] and not any(
+            x.startswith("tool") for x in parts
+        ) and _has_large_inline_image(detail.get("input")):
+            return True
+    return False
+
+
 def _classify_400(c: _Ctx) -> Verdict:
     """400 Bad Request — image/tool shapes, request-shape rejections, overflow, or generic."""
     msg, code = c.msg, c.code
+    # A size cap reported *through* a message content field must beat the keyword
+    # multimodal rule, which would otherwise claim "input should be a valid string".
+    if _oversized_message_content_rejection(c.body):
+        return _V_IMAGE_TOO_LARGE
     verdict = _first_match(msg, _IMAGE_TOOL_RULES)
     if verdict is not None:
         return verdict
@@ -870,6 +930,13 @@ def _classify_400(c: _Ctx) -> Verdict:
     return _V_FORMAT_ERROR
 
 
+def _classify_image_tool_422(c: _Ctx) -> Verdict:
+    """422: pydantic relays report the same content-field shapes as 400 (#104731, #112473)."""
+    if _oversized_message_content_rejection(c.body):
+        return _V_IMAGE_TOO_LARGE
+    return _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR
+
+
 # 401 not retryable on its own: rotation/refresh run before the retryability
 # check, then the client-error abort path (fallback first) is correct. 408 is
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
@@ -877,7 +944,7 @@ def _classify_400(c: _Ctx) -> Verdict:
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
-    422: lambda c: _first_match(c.msg, _IMAGE_TOOL_RULES) or _V_FORMAT_ERROR,
+    422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
     529: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,

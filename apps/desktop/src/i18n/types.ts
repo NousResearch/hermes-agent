@@ -60,6 +60,8 @@ interface AuxTaskCopy {
 
 export interface Translations {
   catalog: {
+    listView: string
+    cardView: string
     installTitle: (name: string) => string
     installDescription: string
     installTo: string
@@ -868,6 +870,26 @@ export interface Translations {
       attachmentSizeLabel: string
       showOptions: string
     }
+    screenshot: {
+      enabledTitle: string
+      enabledDesc: string
+      statusTitle: string
+      checking: string
+      disabled: string
+      starting: string
+      ready: string
+      inputPermission: string
+      screenPermission: string
+      openSettings: string
+      retry: string
+      unavailable: string
+      errorTitle: string
+      loadFailed: string
+      saveFailed: string
+      permissionFailed: string
+      captureFailed: string
+      contextChanged: string
+    }
     quickEntry: {
       enabledTitle: string
       enabledDesc: string
@@ -1230,7 +1252,10 @@ export interface Translations {
       notInCatalog: string
       moaTitle: string
       moaPreset: string
+      moaDescription: string
       moaAggregator: string
+      moaAggregatorBilled: string
+      moaReferenceHint: string
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
@@ -2110,6 +2135,12 @@ export interface Translations {
     actions: string
     color: string
     colorFor: string
+    openInNewWindow: string
+    setAsDefault: string
+    defaultProfile: string
+    defaultSet: (name: string) => string
+    defaultDescription: string
+    failedSetDefault: string
     setColor: (color: string) => string
     autoColor: string
     noProfiles: string
@@ -2446,6 +2477,7 @@ export interface Translations {
       enter: (label: string) => string
       reorder: (label: string) => string
       toggle: (label: string, open: boolean) => string
+      showAllCount: (count: number) => string
       back: string
     }
     newSessionIn: (label: string) => string
@@ -3785,7 +3817,13 @@ export interface Translations {
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string
+    modelSwitchConfirmBody: string
+    modelSwitchConfirmLabel: string
+    modelSwitchConfirmTitle: (model: string) => string
+    modelSwitchConfirmTitleFallback: string
     modelSwitchFailed: string
+    modelSwitchKeepLabel: string
+    modelSwitchStaleNotice: string
     hydrationSyncing: (profile: string) => string
     sessionExported: string
     sessionExportFailed: string

@@ -25,6 +25,10 @@ interface CatalogPlugin {
   platforms?: string[];
   capabilities?: PluginCapabilities;
   docsUrl?: string;
+  /** Human label for the pin ("1.4.0"); cosmetic, shown beside the sha. */
+  version?: string;
+  /** Card banner image (GitHub-hosted https URL enforced by the extractor). */
+  image?: string;
   installCommand: string;
   /** GitHub stargazers at the last daily probe; null when the repo is not on GitHub or unprobed. */
   stars?: number | null;
@@ -197,6 +201,18 @@ function PluginCard({
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
 
+      {plugin.image && (
+        <img
+          className={styles.cardImage}
+          src={plugin.image}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+        />
+      )}
+
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
@@ -212,6 +228,11 @@ function PluginCard({
             >
               {tier.icon} {tier.label}
             </span>
+            {plugin.version && (
+              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+                v{plugin.version.replace(/^v/i, "")}
+              </span>
+            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -316,7 +337,7 @@ function PluginCard({
                   className={styles.shaLink}
                   title={plugin.sha}
                 >
-                  <code>{plugin.shaShort}</code> ↗
+                  <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
               </span>
             </div>

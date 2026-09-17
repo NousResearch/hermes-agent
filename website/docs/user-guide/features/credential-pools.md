@@ -178,6 +178,11 @@ Provider-supplied `reset_at` timestamps override these default cooldowns.
 
 The `has_retried_429` flag resets on every successful API call, so a single transient 429 doesn't trigger rotation.
 
+**Anthropic 429s are per model.** Anthropic enforces its rate limits per model, so a generic 429 for
+one Claude model cools that credential down for *that model only* — the same key keeps serving every
+other Claude model, and `ANTHROPIC_API_KEY` / borrowed Claude Code tokens honour the same per-model
+cooldown. Billing (`402`, usage-limit) and auth (`401`) failures still bench the whole credential.
+
 ## Custom Endpoint Pools
 
 Custom OpenAI-compatible endpoints (Together.ai, RunPod, local servers) get their own pools, keyed by the endpoint name from the `providers:` dict in config.yaml (or the legacy `custom_providers` list, which is auto-migrated).
@@ -255,7 +260,7 @@ For the full data flow diagram, see [`docs/credential-pool-flow.excalidraw`](htt
 
 The credential pool integrates at the provider resolution layer:
 
-1. **`agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns; **`agent/credential_pool_admin.py`** owns locked target resolution, reset, add, removal, and priority mutations
+1. **`agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns; **`agent/credential_pool_admin.py`** owns locked target resolution, reset, add, removal, and priority mutations; **`agent/credential_pool_model_cooldowns.py`** owns the per-model Anthropic 429 cooldowns
 2. **`hermes_cli/auth_commands.py`** — CLI commands and interactive wizard
 3. **`hermes_cli/runtime_provider.py`** — Pool-aware credential resolution
 4. **`agent/turn_api_error.py`** — Error recovery: 429/402/401 → pool rotation → fallback

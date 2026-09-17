@@ -11,6 +11,7 @@ import type * as HubActions from '@/store/hub-actions'
 
 import { parseCatalog } from './catalog-data'
 import { SkillCatalog } from './skill-catalog'
+import { $catalogCardView } from './store'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -98,6 +99,8 @@ async function renderSkills() {
 }
 
 beforeEach(() => {
+  // Scope/install cases exercise the retained list layout; cards have dedicated coverage.
+  $catalogCardView.set(false)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })

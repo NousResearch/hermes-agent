@@ -2,6 +2,7 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
+import { motion, useReducedMotion } from 'motion/react'
 import {
   Children,
   createContext,
@@ -964,20 +965,24 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
   const representedByApproval = !!approval && currentTurn && approvalActivity
   const expanded = count < 2 || (persistedOpen ?? rowOpen)
+  const collapsed = representedByApproval && !rowOpen && !persistedOpen
+  const reduced = useReducedMotion()
 
-  // Pending command activity is summarized by the persistent approval host.
-  // An explicit result disclosure still uses the original tool runtime.
-  if (representedByApproval && !rowOpen && !persistedOpen) {
-    return null
-  }
-
+  // The original runtime stays mounted while its summary owns the activity.
+  // Reveal its footprint gradually when the last approval clears, instead of
+  // inserting all represented rows in the outgoing card's first exit frame.
   return (
     <ToolRunDisclosureContext.Provider value={disclosureId}>
-      <div
+      <motion.div
+        animate={{ height: collapsed ? 0 : 'auto' }}
+        aria-hidden={collapsed || undefined}
         className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden"
         data-slot="tool-block"
         data-tool-group=""
+        inert={collapsed}
+        initial={currentTurn && approvalActivity && messageRunning && !reduced ? { height: 0 } : false}
         ref={enterRef}
+        transition={{ duration: reduced ? 0 : 0.22, ease: 'easeInOut' }}
       >
         {count > 1 && !representedByApproval && (
           <ToolRunHeader
@@ -991,7 +996,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
         )}
         {count > 1 && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
         {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
-      </div>
+      </motion.div>
     </ToolRunDisclosureContext.Provider>
   )
 }

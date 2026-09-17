@@ -9,14 +9,30 @@ import json
 import logging
 import os
 import re
+import threading
+import time
+import weakref
 from contextlib import suppress
 from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
 
 logger = logging.getLogger(__name__)
+
+# In-flight stage-2 upgrade threads. They bill their aux usage to the session from a daemon thread,
+# so a process that reads the ledger right before exit (``-z --usage-file``) must be able to join
+# them (bounded) instead of racing the write (#112848).
+_UPGRADE_THREADS: "weakref.WeakSet[threading.Thread]" = weakref.WeakSet()
+
+
+def wait_for_title_upgrades(timeout: float = 10.0) -> None:
+    """Bounded join of the auto-title threads still running; never raises."""
+    deadline = time.monotonic() + timeout
+    for thread in list(_UPGRADE_THREADS):
+        thread.join(max(0.0, deadline - time.monotonic()))
 
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
@@ -467,9 +483,10 @@ def _session_is_untitled(session_db, session_id: str) -> bool:
 
 
 def _kanban_task_title() -> Optional[str]:
-    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere."""
+    """Kanban worker: the card's title, or ``Kanban task <id>`` when the board can't be read; None elsewhere
+    (including delegate_task children of the worker, which inherit the env var but are not the card)."""
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
-    if not task_id:
+    if not task_id or not is_dispatcher_owned_worker_context():
         return None
     try:
         from hermes_cli import kanban_db, kanban_db_connect
@@ -526,9 +543,11 @@ def maybe_auto_title(
     # profile whose turn this is: a bare Thread starts with an empty context and lands on the launch
     # profile under multiplex, titling X's session with the default profile's model and billing its key.
     from agent.memory_provider import spawn_context_thread
-    spawn_context_thread(
+    upgrade = spawn_context_thread(
         auto_title_session, name="auto-title",
         args=(session_db, session_id, user_message),
         kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback,
                     runtime_validator=runtime_validator),
-    ).start()
+    )
+    _UPGRADE_THREADS.add(upgrade)
+    upgrade.start()

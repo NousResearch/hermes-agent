@@ -464,6 +464,15 @@
   opacity: 1;
 }
 
+.cardImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+  object-fit: cover;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+}
+
 .cardInner {
   padding: 1rem 1rem 0.85rem 1.15rem;
 }
@@ -511,6 +520,20 @@
   padding: 0.15rem 0.45rem;
   border-radius: 4px;
   border: 1px solid;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+
+.versionPill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+  color: rgba(96, 165, 250, 0.95);
   white-space: nowrap;
   flex-shrink: 0;
   margin-top: 0.1rem;

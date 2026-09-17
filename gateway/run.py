@@ -1192,6 +1192,20 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> bool:
+    """True for an assistant row whose reply lives only in the ``api_content`` sidecar.
+
+    A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
+    (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
+    next gateway turn lost the assistant's answer and replayed user->user."""
+    return (
+        role == "assistant"
+        and not content
+        and isinstance(msg.get("api_content"), str)
+        and bool(msg.get("api_content"))
+    )
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]], *, channel_prompt: Optional[str] = None,
     inject_timestamps: bool = False) -> tuple[List[Dict[str, Any]], Optional[str]]:
@@ -1226,7 +1240,7 @@ def _build_gateway_agent_history(
         if "tool_calls" in msg or "tool_call_id" in msg or role == "tool":
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
-        elif content:
+        elif content or _has_replayable_sidecar(role, content, msg):
             replay_timestamp = msg.get("timestamp")
             # Clean before rendering: a timestamp prefix hides recovery notes
             # from the startswith-based stripper. Retain an embedded original time.
@@ -2564,7 +2578,12 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+# ``tool_reason`` for the inactivity timeout: attributes the stop to the gateway watchdog (#112647).
+_INTERRUPT_TOOL_REASON_TIMEOUT = "gateway inactivity watchdog"
 _INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
+# ``tool_reason`` for eviction / shutdown: these stops are system-issued, not user stops (#112647).
+_INTERRUPT_TOOL_REASON_EVICTED = "session evicted"
+_INTERRUPT_TOOL_REASON_GATEWAY_SHUTDOWN = "gateway shutdown"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -2659,7 +2678,7 @@ def _abandon_timed_out_gateway_turn(
     agent = agent_holder[0] if agent_holder else None
     if agent is not None:
         try:
-            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT)
+            request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT, tool_reason=_INTERRUPT_TOOL_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
 
@@ -5031,7 +5050,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
                 logger.warning("Shutdown context: %s", format_context_for_log(_shutdown_ctx))
 
             def _diagnostic() -> None:
-                # Heavyweight (ps auxf, pstree, dmesg), detached so it finishes even if our cgroup is torn
+                # Heavyweight (comm-only ps, pstree, dmesg), detached so it finishes even if our cgroup is torn
                 # down; bounded by an internal timeout, never blocks.
                 from gateway.shutdown_forensics import spawn_async_diagnostic
                 spawn_async_diagnostic(
@@ -5079,7 +5098,7 @@ async def _start_gateway_start_control_socket(runner):
         # failure only means consumers fall back to the process-scan/state-file layer, exactly as before
         # this feature. See #92091.
         from gateway.control_socket import GatewayControlServer
-        from gateway.run_profile_reconcile import migrate_profile_identity_verb
+        from gateway.run_profile_reconcile import migrate_profile_identity_verb, purge_profile_identity_verb
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5128,7 +5147,8 @@ async def _start_gateway_start_control_socket(runner):
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
-                           "migrate-profile-identity": migrate_profile_identity_verb(runner)})
+                           "migrate-profile-identity": migrate_profile_identity_verb(runner),
+                           "purge-profile-identity": purge_profile_identity_verb(runner)})
         if not await _control_server.start():
             _control_server = None
         else:

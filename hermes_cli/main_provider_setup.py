@@ -665,7 +665,7 @@ def _main_model_reasoning_efforts(model: str, provider: str) -> Optional[list[st
         meta = get_model_capabilities(slug, model)
     except Exception:
         meta = None
-    if meta is not None and not meta.supports_reasoning:
+    if meta is not None and meta.supports_reasoning is False:
         return None
     return list(VALID_REASONING_EFFORTS)
 

@@ -2385,6 +2385,10 @@ export interface Translations {
     }
     profileRail: string
     nav: Record<string, string>
+    /** Header of the nav block, which doubles as its collapse toggle. */
+    navMenu: string
+    navHide: string
+    navShow: string
     searchAria: string
     searchPlaceholder: string
     clearSearch: string

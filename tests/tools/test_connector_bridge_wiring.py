@@ -115,11 +115,61 @@ def test_resolve_legacy_connector_single_shape_routes_to_sentinel():
         ({"calls": [{"name": "tool_search"}]}, "itself a bridge tool"),
         ({"calls": [{"name": "x", "arguments": "not json {"}]}, "not valid JSON"),
         ({"calls": [{"name": "x", "arguments": 42}]}, "must be an object"),
-        ({"calls": "nope"}, "non-empty array"),
+        ({"calls": "nope"}, "not valid JSON"),
     ],
 )
 def test_normalize_rejects_malformed_batches(bad, expected_fragment):
     entries, err = normalize_tool_call_entries(bad)
+    assert entries == []
+    assert expected_fragment in (err or "")
+
+
+@pytest.mark.parametrize(
+    "calls_value",
+    [
+        [{"name": "session_search", "arguments": {"query": "x"}}],
+        [
+            {
+                "name": "session_search",
+                "arguments": {"query": "x", "meta": {"deep": [1, 2]}},
+            }
+        ],
+    ],
+)
+def test_normalize_accepts_batch_envelope_as_json_string(calls_value):
+    payload = {"calls": json.dumps(calls_value)}
+    entries, err = normalize_tool_call_entries(payload)
+    assert err is None
+    assert entries == calls_value
+
+
+def test_normalize_accepts_single_object_envelope_as_json_string():
+    payload = {
+        "calls": json.dumps({"name": "session_search", "arguments": {"query": "x"}})
+    }
+    entries, err = normalize_tool_call_entries(payload)
+    assert err is None
+    assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
+
+
+def test_normalize_parses_nested_arguments_string_inside_string_envelope():
+    inner = [{"name": "session_search", "arguments": json.dumps({"query": "x"})}]
+    payload = {"calls": json.dumps(inner)}
+    entries, err = normalize_tool_call_entries(payload)
+    assert err is None
+    assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
+
+
+@pytest.mark.parametrize(
+    "calls_value,expected_fragment",
+    [
+        (json.dumps(42), "non-empty array"),
+        (json.dumps([]), "non-empty array"),
+        (json.dumps({"query": "x"}), "requires a 'name'"),
+    ],
+)
+def test_normalize_rejects_non_envelope_json_string(calls_value, expected_fragment):
+    entries, err = normalize_tool_call_entries({"calls": calls_value})
     assert entries == []
     assert expected_fragment in (err or "")
 

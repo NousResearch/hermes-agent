@@ -133,8 +133,10 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
-    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"), "custom": ("ollama",),
-    "local": ("vllm", "llamacpp", "llama.cpp", "llama-cpp"),
+    "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
+    # Local OpenAI-compatible servers route through the generic "custom" provider,
+    # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
+    "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
 ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
 

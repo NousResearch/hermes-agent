@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -76,6 +77,25 @@ async def test_reconnect_self_schedules_on_start_polling_failure():
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+@pytest.mark.asyncio
+async def test_connect_timeout_rebuilds_adapter_instead_of_reusing_application():
+    """A TCP connect timeout after a route change must hand off to a fresh adapter."""
+    adapter = _make_adapter()
+    adapter._notify_fatal_error = AsyncMock()
+    adapter._app = MagicMock()
+    adapter._app.updater.start_polling = AsyncMock()
+
+    wrapped = RuntimeError("Telegram request timed out")
+    wrapped.__cause__ = httpx.ConnectTimeout("connection attempt timed out")
+
+    await adapter._handle_polling_network_error(wrapped)
+
+    assert adapter.fatal_error_code == "telegram_network_error"
+    assert adapter.fatal_error_retryable is True
+    adapter._notify_fatal_error.assert_awaited_once()
+    adapter._app.updater.start_polling.assert_not_awaited()
 
 
 @pytest.mark.asyncio

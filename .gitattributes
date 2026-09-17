@@ -32,3 +32,9 @@ docker/entrypoint.sh text eol=lf
 *.html  text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
+
+
+# Contributor email files are named after email addresses. A trailing ".ru"
+# (Russian domain) makes Linguist misdetect them as Ruby, which makes CodeQL
+# default setup add a Ruby analysis that then fails with "No Ruby code found".
+contributors/emails/** linguist-detectable=false

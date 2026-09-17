@@ -104,15 +104,17 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
     if any(t in _EXCLUDED_AUTOCOMPLETE for t in autocomplete_tokens):
         return None
 
-    for token in LOGIN_AUTOFILL_TOKENS:
-        if token in autocomplete_tokens:
-            return ClassifiedLoginControl(control, 100, token)
-
     searchable = _normalize_text(
         " ".join(part for part in (control.name, control.label) if part)
     )
-    if _RE_EXCLUDED_PASSWORD.search(searchable):
+    if _RE_EXCLUDED_PASSWORD.search(searchable) or classify_otp_controls([control]):
         return None
+
+    for token in LOGIN_AUTOFILL_TOKENS:
+        if token in autocomplete_tokens:
+            if token == "current-password" and control.type != "password":
+                return None
+            return ClassifiedLoginControl(control, 100, token)
     if control.type == "password":
         return ClassifiedLoginControl(control, 90, "current-password")
     if control.type == "email":
@@ -251,7 +253,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const forms = Array.from(document.forms);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
-    if (element.disabled || element.readOnly) return [];
+    if (element.matches(":disabled") || element.readOnly) return [];
     if (["hidden", "submit", "button", "reset", "file", "image", "checkbox", "radio"].includes(element.type)) return [];
     const style = getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden" || element.getClientRects().length === 0) return [];
@@ -262,7 +264,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
       .join(" ");
     const resolvedFormIndex = element.form ? forms.indexOf(element.form) : -1;
     return [{
-      autocomplete: element.autocomplete || "",
+      autocomplete: element.getAttribute("autocomplete") || "",
       formIndex: resolvedFormIndex >= 0 ? resolvedFormIndex : null,
       index,
       maxLength: element.maxLength > 0 ? element.maxLength : null,
@@ -297,7 +299,10 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
     return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+            .replace("__NONCE__", json.dumps(nonce))
+            .replace("__EXCLUDED_PASSWORD__", json.dumps(_RE_EXCLUDED_PASSWORD.pattern))
+            .replace("__OTP_PATTERN__", json.dumps(_RE_OTP.pattern))
+            .replace("__FILLS__", payload))
 
 
 _FILL_JS_TEMPLATE = """(() => {
@@ -320,6 +325,20 @@ _FILL_JS_TEMPLATE = """(() => {
         continue;
       }
       el.focus();
+      if (f.token === "current-password") {
+        const tokens = String(el.getAttribute("autocomplete") || "").toLowerCase().split(/\\s+/);
+        const labels = Array.from(el.labels || []).map((l) => l.textContent).join(" ");
+        const ariaText = (el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean)
+          .map((id) => { const n = document.getElementById(id); return n ? n.textContent : ""; }).join(" ");
+        const purpose = [el.name, el.id, labels, el.getAttribute("aria-label"), ariaText, el.placeholder, el.title]
+          .filter(Boolean).join(" ").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        const style = getComputedStyle(el);
+        if (window.location.origin !== expectedOrigin || !el.isConnected || el.type !== "password" ||
+            el.matches(":disabled") || el.readOnly || style.display === "none" || style.visibility === "hidden" ||
+            el.getClientRects().length === 0 ||
+            tokens.some((t) => ["username", "email", "tel", "new-password", "one-time-code"].includes(t)) ||
+            new RegExp(__EXCLUDED_PASSWORD__).test(purpose) || new RegExp(__OTP_PATTERN__).test(purpose)) continue;
+      }
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
       // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }

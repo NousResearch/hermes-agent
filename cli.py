@@ -4152,6 +4152,13 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
+        # Shadow is strictly post-completion observation; it never changes the result or display.
+        try:
+            from agent.shadow_observer import observe_completed_response
+            cli._last_shadow_observation = observe_completed_response(result, cli.config)
+        except Exception:
+            cli._last_shadow_observation = {"status": "inconclusive", "invoked": False,
+                                            "persisted": False, "reason_code": "observer_error"}
         if isinstance(result, dict) and not result.get("failed"):
             history = result.get("messages") or cli.conversation_history
 

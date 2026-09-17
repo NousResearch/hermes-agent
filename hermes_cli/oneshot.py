@@ -582,6 +582,12 @@ def _run_agent(
 
         aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        # The observer is post-completion and opt-in; the returned answer remains unchanged.
+        try:
+            from agent.shadow_observer import observe_completed_response
+            observe_completed_response(result, cfg)
+        except Exception:
+            pass
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)

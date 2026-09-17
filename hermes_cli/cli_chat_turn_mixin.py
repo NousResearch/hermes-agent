@@ -468,6 +468,13 @@ class CLIChatTurnMixin:
         time.sleep(0.15)
         if turn.result:
             self.conversation_history = turn.result.get("messages", self.conversation_history)
+            # Shadow is strictly post-completion observation; it never changes the result or display.
+            try:
+                from agent.shadow_observer import observe_completed_response
+                self._last_shadow_observation = observe_completed_response(turn.result, getattr(self, "config", {}))
+            except Exception:
+                self._last_shadow_observation = {"status": "inconclusive", "invoked": False,
+                                                 "persisted": False, "reason_code": "observer_error"}
         # Mid-turn auto-compression continues in a child session: sync so /status, /resume,
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)

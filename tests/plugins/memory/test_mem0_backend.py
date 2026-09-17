@@ -382,6 +382,17 @@ class TestOSSBackend:
         backend._memory = memory
         return backend, memory
 
+    def test_search_forwards_rerank(self):
+        """OSS runs in-process, so Memory.search takes the flag directly."""
+        backend, memory = self._make()
+        backend.search("q", filters={"user_id": "u1"}, top_k=5, rerank=True)
+        assert memory.calls[0][2]["rerank"] is True
+
+    def test_search_passes_rerank_off_by_default(self):
+        backend, memory = self._make()
+        backend.search("q", filters={"user_id": "u1"}, top_k=5)
+        assert memory.calls[0][2]["rerank"] is False
+
 
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
         state, Memory, factory = _install_fake_mem0(monkeypatch)
@@ -667,6 +678,21 @@ class TestSelfHostedBackend:
 
 
     # --- search ----------------------------------------------------------
+
+    def test_search_forwards_rerank(self):
+        """The rerank flag must reach the wire: the self-hosted /search accepts it."""
+        s = _StubServer()
+        _backend(s).search("q", filters={"user_id": "u1"}, top_k=5, rerank=True)
+        payload = json.loads(s.requests[0].content)
+        assert payload["rerank"] is True
+
+    def test_search_omits_rerank_when_not_requested(self):
+        """Absent, not False — a server with no reranker must see an unchanged request."""
+        s = _StubServer()
+        _backend(s).search("q", filters={"user_id": "u1"}, top_k=5)
+        payload = json.loads(s.requests[0].content)
+        assert "rerank" not in payload
+        assert payload == {"query": "q", "top_k": 5, "filters": {"user_id": "u1"}}
 
 
     # --- add / update / delete ------------------------------------------

@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useTranslations } from '../i18n/index.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -32,6 +33,7 @@ interface Gallery {
  * no restart. This is the interactive sibling of the text `/pet <slug>` path.
  */
 export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
+  const copy = useTranslations()
   const [gallery, setGallery] = useState<Gallery | null>(null)
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
@@ -120,14 +122,17 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading pets…</Text>
+    return <Text color={t.color.muted}>{copy.pet.loading}</Text>
   }
 
   if (err && !gallery) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc cancel</OverlayHint>
+        <Text color={t.color.label}>
+          {copy.panels.error}
+          {err}
+        </Text>
+        <OverlayHint t={t}>{copy.pet.cancel}</OverlayHint>
       </Box>
     )
   }
@@ -137,23 +142,23 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Pets
+        {copy.pet.title}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {query ? `filter: ${query}` : 'type to filter'} · {view.length} pet{view.length === 1 ? '' : 's'}
+        {query ? copy.pet.filter(query) : copy.pet.filterHint} · {copy.pet.count(view.length)}
       </Text>
 
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{copy.panels.moreAbove(offset)}</Text>}
 
       {view.length === 0 ? (
-        <Text color={t.color.muted}>{query ? `no pets match "${query}"` : 'no pets available'}</Text>
+        <Text color={t.color.muted}>{query ? copy.pet.noMatch(query) : copy.pet.none}</Text>
       ) : (
         items.map((pet, i) => {
           const at = offset + i === idx
           const isActive = enabled && pet.slug === active
           const mark = isActive ? '●' : pet.installed ? '✓' : ' '
-          const tag = pet.installed ? '' : pet.curated ? ' · official' : ''
+          const tag = pet.installed ? '' : pet.curated ? copy.pet.official : ''
 
           return (
             <Text color={t.color.muted} {...chipRowProps(t, at)} key={pet.slug} wrap="truncate-end">
@@ -169,12 +174,19 @@ export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
         })
       )}
 
-      {offset + VISIBLE < view.length && <Text color={t.color.muted}> ↓ {view.length - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < view.length && (
+        <Text color={t.color.muted}>{copy.panels.moreBelow(view.length - offset - VISIBLE)}</Text>
+      )}
 
-      {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>adopting…</Text> : null}
+      {err ? (
+        <Text color={t.color.label}>
+          {copy.panels.error}
+          {err}
+        </Text>
+      ) : null}
+      {busy ? <Text color={t.color.accent}>{copy.pet.adopting}</Text> : null}
 
-      <OverlayHint t={t}>↑/↓ select · Enter adopt · type to filter · Esc cancel</OverlayHint>
+      <OverlayHint t={t}>{copy.pet.hint}</OverlayHint>
     </Box>
   )
 }

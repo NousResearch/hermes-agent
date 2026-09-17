@@ -195,12 +195,18 @@ def _cfg_get_mtime(params):
     return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
 
 
+def _cfg_get_full(params):
+    from agent.i18n import get_language
+
+    return {"config": _load_cfg(), "ui_language": get_language()}
+
+
 # key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
     "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
     "project": _cfg_get_project,
-    "full": lambda params: {"config": _load_cfg()},
+    "full": _cfg_get_full,
     "prompt": lambda params: {"prompt": _load_cfg().get("custom_prompt", "")},
     "skin": lambda params: {"value": _display_raw().get("skin", "default")},
     # Normalised like the TUI renders it (frontend falls back to the default for the same inputs).

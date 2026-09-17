@@ -349,3 +349,23 @@ describe('I18nProvider', () => {
     vi.useRealTimers()
   })
 })
+
+it('forwards the rendered locale to this window’s native dialog bridge', async () => {
+  const previous = window.hermesDesktop
+  const setUiLocale = vi.fn()
+  window.hermesDesktop = { ...previous, setUiLocale } as typeof window.hermesDesktop
+
+  try {
+    render(
+      <I18nProvider configClient={null} initialLocale="sv-SE">
+        <LanguageProbe target="en" />
+      </I18nProvider>
+    )
+    expect(setUiLocale).toHaveBeenLastCalledWith('sv')
+    fireEvent.click(screen.getByRole('button', { name: 'switch' }))
+    await waitFor(() => expect(setUiLocale).toHaveBeenLastCalledWith('en'))
+  } finally {
+    cleanup()
+    window.hermesDesktop = previous
+  }
+})

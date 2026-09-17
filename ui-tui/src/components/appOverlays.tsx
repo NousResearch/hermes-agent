@@ -6,6 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
+import { useTranslations } from '../i18n/index.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
@@ -73,6 +74,7 @@ export function PromptZone({
   | 'onSudoSubmit'
   | 'onVaultUnlockSubmit'
 >) {
+  const copy = useTranslations()
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
 
@@ -151,7 +153,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        <MaskedPrompt cols={cols} icon="🔐" label={copy.secrets.sudo} onSubmit={onSudoSubmit} t={theme} />
       </PromptCell>
     )
   }
@@ -164,7 +166,7 @@ export function PromptZone({
           icon="🔑"
           label={overlay.secret.prompt}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          sub={copy.secrets.forVariable(overlay.secret.envVar)}
           t={theme}
         />
       </PromptCell>
@@ -177,9 +179,9 @@ export function PromptZone({
         <MaskedPrompt
           cols={cols}
           icon="🔐"
-          label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
+          label={copy.secrets.unlock(overlay.vaultUnlock.displayName)}
           onSubmit={onVaultUnlockSubmit}
-          sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
+          sub={copy.secrets.hint}
           t={theme}
         />
       </PromptCell>

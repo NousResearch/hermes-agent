@@ -256,8 +256,9 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
-    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
-        # A replaced/quarantined handle will not take this batch again — keep it on disk.
+    if isinstance(e, (StateDbReplacedError, StateDbCorruptError)) or agent._last_persistence_error_cause == "deleted_wal":
+        # A replaced/quarantined handle, or a retired WAL generation (raw SQLITE_CANTOPEN whose
+        # -wal/-shm sidecars a clean close unlinked), will not take this batch again — keep it on disk.
         try:
             divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
         except Exception:

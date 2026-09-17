@@ -4280,16 +4280,73 @@ def launchd_stop():
     print("✓ Service stopped")
 
 
-def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.0) -> bool:
-    """Wait up to ``timeout`` s for the gateway (by gateway.pid, not launchd labels, so multiple
-    HERMES_HOMEs work) to exit; SIGKILL it after ``force_after`` s of graceful waiting."""
-    from gateway.status import get_process_start_time, get_running_pid
+def _wait_for_gateway_exit(
+    timeout: float = 10.0, force_after: float | None = 5.0
+) -> bool:
+    """Wait for the gateway process (by saved PID) to exit.
+
+    Uses the PID from the gateway.pid file — not launchd labels — so this
+    works correctly when multiple gateway instances run under separate
+    HERMES_HOME directories.
+
+    "Exited" means the OS process is gone — NOT merely that the PID file
+    disappeared.  The gateway unlinks ``gateway.pid`` and drops the runtime
+    lock partway through shutdown (``remove_pid_file()`` /
+    ``release_gateway_runtime_lock()``, right after the SessionDB-close phase
+    in ``gateway/run.py``) while it is still tearing down and still owns its
+    listening sockets.  Treating that as "exited cleanly" made
+    ``launchd_restart`` fire ``launchctl kickstart -k`` ~0.3s later, sending a
+    second SIGTERM into a live, mid-shutdown process and starting the
+    replacement inside the outgoing api_server's TIME_WAIT window on its port
+    (observed 2026-08-21 09:27:47 — pid file gone at +6.32s, SIGTERM #2 at
+    +6.65s).  Track the last known PID and keep waiting until the process
+    itself is really gone.
+
+    The tracked PID is validated by process start time before it is trusted,
+    so a recycled PID never keeps us waiting — or, worse, attracts the
+    force-kill below — on an unrelated process.
+
+    Args:
+        timeout: Total seconds to wait before giving up.
+        force_after: Seconds of graceful waiting before escalating to force-kill.
+    """
+    import time
+    from gateway.status import (
+        get_process_start_time,
+        _get_process_start_time,
+        _pid_exists,
+        get_running_pid,
+    )
+
+    tracked_pid: int | None = None
+    tracked_start = None
+
+    def _track(pid_value: int) -> None:
+        nonlocal tracked_pid, tracked_start
+        if pid_value != tracked_pid:
+            tracked_pid = pid_value
+            tracked_start = _get_process_start_time(pid_value)
+
+    def _still_running() -> int | None:
+        """Return a live gateway PID, looking past an already-removed PID file."""
+        pid_value = get_running_pid()
+        if pid_value is not None:
+            _track(pid_value)
+            return pid_value
+        if tracked_pid is None or not _pid_exists(tracked_pid):
+            return None
+        if tracked_start is not None:
+            current_start = _get_process_start_time(tracked_pid)
+            if current_start is not None and current_start != tracked_start:
+                return None  # PID recycled onto an unrelated process.
+        return tracked_pid
+
     deadline = time.monotonic() + timeout
     force_deadline = (time.monotonic() + force_after) if force_after is not None else None
     force_sent = False
 
     while time.monotonic() < deadline:
-        pid = get_running_pid()
+        pid = _still_running()
         if pid is None:
             return True  # Process exited cleanly.
 
@@ -4305,7 +4362,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.
         time.sleep(0.3)
 
     # Timed out even after force-kill.
-    remaining_pid = get_running_pid()
+    remaining_pid = _still_running()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
         return False

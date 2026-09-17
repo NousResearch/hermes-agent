@@ -199,6 +199,53 @@ def _hermes_version() -> str:
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
+
+# Hosts for which a listening socket cannot be shadowed by a wildcard bind,
+# so SO_REUSEADDR is safe even under BSD semantics (see connect()).
+_LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "127.0.0.1."})
+# Bounded rebind window for a restart handoff. Must stay comfortably below
+# _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT (30s) in gateway/run.py, which caps
+# the startup connect this runs inside.
+_BIND_RETRY_WINDOW_SECS = 20
+_BIND_RETRY_INTERVAL_SECS = 1.0
+
+_WILDCARD_BIND_HOSTS = frozenset({"", "0.0.0.0", "::", "*"})
+
+
+async def _port_has_live_listener(host: str, port: int) -> bool:
+    """Is something actually accepting connections on ``host:port`` right now?
+
+    Called only after ``bind()`` has already failed with EADDRINUSE, to tell
+    the two causes apart:
+
+    * a live listener (another gateway, another service, a duplicate profile
+      on the same port) — a genuine configuration conflict that will not clear
+      on its own, so fail fast exactly as before;
+    * no listener, yet the address is still unavailable — a restart handoff:
+      the outgoing instance's sockets are in TIME_WAIT or its listener is
+      mid-close. That clears within seconds and is worth retrying.
+
+    This is deliberately *not* a pre-bind probe: the old pre-probe raced the
+    real bind and misreported TIME_WAIT as "in use" (#10297). Here bind() has
+    already given its authoritative answer; this only classifies the failure.
+    """
+    connect_host = host
+    if str(host).strip().lower() in _WILDCARD_BIND_HOSTS:
+        connect_host = "127.0.0.1"
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(connect_host, port), timeout=1.0
+        )
+    except (OSError, asyncio.TimeoutError):
+        return False
+    except Exception:  # pragma: no cover - defensive
+        return False
+    try:
+        writer.close()
+        await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
+    except (OSError, asyncio.TimeoutError):
+        pass
+    return True
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 # Send a comment before remote API clients' common 20-second idle deadline.
@@ -3991,43 +4038,115 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(self._app)
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            # Bind directly (a pre-probe raced the bind, misreporting TIME_WAIT as "in use").
-            # SO_REUSEADDR off on macOS (BSD can split traffic between two listeners).
-            # Bind directly instead of probing 127.0.0.1 first — the old single-family pre-probe raced the
-            # real bind and reported a TIME_WAIT socket as "in use" (#10297), failing gateway restarts for
-            # up to ~60s. SO_REUSEADDR is platform-dependent (same rationale as the webhook adapter,
-            # #65482): - macOS (BSD semantics): two sockets with SO_REUSEADDR can silently split traffic
-            # while both report success — disable. - Linux: SO_REUSEADDR only permits rebinding past
-            # TIME_WAIT (a second live listener needs SO_REUSEPORT, never set), so keep the default
-            # (enabled) for instant restart rebinds.
-            self._site = web.TCPSite(
-                self._runner, self._host, self._port, reuse_address=False if sys.platform == "darwin" else None)
-            try:
-                await self._site.start()
-            except OSError as exc:
-                await self._runner.cleanup()
-                self._runner = None
-                self._site = None
-                if getattr(exc, "errno", None) == errno.EADDRINUSE:
-                    # Config error: non-retryable, or the reconnect watcher leaks fds forever.
-                    self._set_fatal_error(
-                        # A port conflict is a configuration error, not a transient blip — another process
-                        # holds the port for its lifetime. A bare ``return False`` makes the reconnect
-                        # watcher in gateway.run treat it as retryable and loop forever at the backoff cap
-                        # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting to
-                        # the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
-                        # fds each retry. Non-retryable drops it from the reconnect queue; the operator
-                        # recovers with ``/platform resume api_server`` after changing the port.
-                        "api_server_port_in_use",
-                        f"Port {self._port} already in use. Set "
-                        f"platforms.api_server.port in config.yaml to a "
-                        f"different value, then `/platform resume api_server`.",
-                        retryable=False)
-                logger.error(
-                    "[%s] Could not bind %s:%d: %s. Set a different port in "
-                    "config.yaml: platforms.api_server.port",
-                    self.name, self._host, self._port, exc)
-                return False
+            # Bind directly instead of probing 127.0.0.1 first — the old
+            # single-family pre-probe raced the real bind and reported a
+            # TIME_WAIT socket as "in use" (#10297), failing gateway
+            # restarts for up to ~60s.
+            #
+            # SO_REUSEADDR is platform-dependent (same rationale as the
+            # webhook adapter, #65482):
+            #   - macOS (BSD semantics): two sockets with SO_REUSEADDR can
+            #     silently split traffic while both report success — disable.
+            #   - Linux: SO_REUSEADDR only permits rebinding past TIME_WAIT
+            #     (a second live listener needs SO_REUSEPORT, never set), so
+            #     keep the default (enabled) for instant restart rebinds.
+            # SO_REUSEADDR on macOS, continued: the BSD traffic-split hazard
+            # needs a wildcard bind and a concrete-address bind to coexist. A
+            # loopback-only listener cannot be shadowed that way (and is not
+            # network-reachable at all), so keeping SO_REUSEADDR off there
+            # bought no safety and cost every restart: the outgoing
+            # api_server's connections hold this port in TIME_WAIT for 2*MSL
+            # (30s on macOS; net.inet.tcp.msl=15000) and launchd brings the
+            # replacement up ~11-18s later, so the bind below failed with
+            # EADDRINUSE *deterministically* on every restart of a healthy
+            # gateway — and, being non-retryable below, left the dashboard
+            # dead until a second restart. Observed 14 times between
+            # 2026-08-09 and 2026-08-21. Wildcard/public binds keep the
+            # conservative behaviour.
+            if sys.platform == "darwin":
+                reuse_address = (
+                    str(self._host).strip().lower() in _LOOPBACK_BIND_HOSTS
+                )
+            else:
+                reuse_address = None
+
+            # SO_REUSEADDR clears TIME_WAIT, but a handoff can still find the
+            # outgoing process holding the listening socket outright (it drops
+            # its PID file before it finishes exiting). Retry within a bounded
+            # window before declaring the port taken: a genuine config
+            # conflict still fails after the window and stays non-retryable,
+            # so the endless reconnect loop of #52132 does not come back.
+            bind_deadline = time.monotonic() + _BIND_RETRY_WINDOW_SECS
+            bind_attempts = 0
+            while True:
+                self._site = web.TCPSite(
+                    self._runner,
+                    self._host,
+                    self._port,
+                    reuse_address=reuse_address,
+                )
+                try:
+                    await self._site.start()
+                    break
+                except OSError as exc:
+                    if (
+                        getattr(exc, "errno", None) == errno.EADDRINUSE
+                        and time.monotonic() < bind_deadline
+                        and not await _port_has_live_listener(
+                            self._host, self._port
+                        )
+                    ):
+                        bind_attempts += 1
+                        if bind_attempts == 1:
+                            logger.warning(
+                                "[%s] %s:%d is busy — likely a restart handoff. "
+                                "Retrying for up to %ds before giving up.",
+                                self.name, self._host, self._port,
+                                _BIND_RETRY_WINDOW_SECS,
+                            )
+                        await asyncio.sleep(_BIND_RETRY_INTERVAL_SECS)
+                        continue
+                    await self._runner.cleanup()
+                    self._runner = None
+                    self._site = None
+                    if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                        # The retry window above is exhausted, so this is no
+                        # longer a restart handoff. A port conflict that
+                        # survives it is a configuration error, not a
+                        # transient blip — another process holds the port for
+                        # its lifetime. A bare ``return False`` makes the
+                        # reconnect watcher in gateway.run treat it as
+                        # retryable and loop forever at the backoff cap
+                        # (observed: 1568+ retries over 5 days across
+                        # multi-profile setups all defaulting to the same
+                        # port, #52132), filling errors.log and leaking the
+                        # adapter's ResponseStore fds each retry.
+                        # Non-retryable drops it from the reconnect queue; the
+                        # operator recovers with ``/platform resume
+                        # api_server`` after changing the port.
+                        self._set_fatal_error(
+                            "api_server_port_in_use",
+                            f"Port {self._port} already in use. Set "
+                            f"platforms.api_server.port in config.yaml to a "
+                            f"different value, then `/platform resume api_server`.",
+                            retryable=False,
+                        )
+                    logger.error(
+                        "[%s] Could not bind %s:%d after %ds: %s. Set a "
+                        "different port in config.yaml: "
+                        "platforms.api_server.port",
+                        self.name, self._host, self._port,
+                        _BIND_RETRY_WINDOW_SECS, exc,
+                    )
+                    return False
+
+            if bind_attempts:
+                logger.info(
+                    "[%s] Bound %s:%d after %d retry attempt(s) — the previous "
+                    "listener had not released the port yet.",
+                    self.name, self._host, self._port, bind_attempts,
+                )
+
             from gateway.platforms.shared_ingress import listener_base_url
             self._mark_connected(listener_base=listener_base_url(self._host, self._port))
             logger.info(

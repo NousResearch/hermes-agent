@@ -172,6 +172,45 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertNotIn(task_id, rt._read_tracker)
         self.assertNotIn(task_id, rt._patch_failure_tracker)
 
+    def test_forget_task_clears_last_writer_claims(self):
+        """Regression test for issue #114446: forget_task must prune _last_writer
+        entries owned by the ended task so sequential runs don't false-positive as
+        concurrent sibling conflicts."""
+        p = self._mk()
+        file_state.note_write("cron:JOB:run1", p)
+        registry = file_state.get_registry()
+        self.assertIn(p, registry._last_writer)
+        self.assertEqual(registry._last_writer[p][0], "cron:JOB:run1")
+
+        # Now task lifecycle ends
+        file_state.forget_task("cron:JOB:run1")
+
+        # The writer claim must be gone
+        self.assertNotIn(p, registry._last_writer)
+
+        # Next sequential run touching the file should not trigger a sibling warning
+        warn = file_state.check_stale("cron:JOB:run2", p)
+        self.assertIsNone(warn)
+
+    def test_clear_file_ops_cache_clears_last_writer_claims(self):
+        """Ensure file_tools.clear_file_ops_cache propagates forget_task to _last_writer."""
+        p = self._mk()
+        file_state.note_write("worker-1", p)
+        clear_file_ops_cache("worker-1")
+        warn = file_state.check_stale("worker-2", p)
+        self.assertIsNone(warn)
+
+    def test_last_writer_ttl_expiration(self):
+        """Entries older than TTL must not report stale conflicts for long-lived processes."""
+        p = self._mk()
+        # Simulate a write from 2 hours ago
+        old_time = time.time() - 7200
+        with file_state.get_registry()._state_lock:
+            file_state.get_registry()._last_writer[p] = ("old-task", old_time)
+
+        warn = file_state.check_stale("new-task", p)
+        self.assertIsNone(warn)
+        self.assertNotIn(p, file_state.get_registry()._last_writer)
 
     def test_kill_switch_env_var(self):
         p = self._mk()

@@ -63,6 +63,8 @@ def _make_manager(
     file_mapping: list[tuple[str, str]] | None = None,
     bulk_download_fn=None,
     seed_pushed_state: bool = True,
+    max_back_bytes: int | None = None,
+    back_stale_seconds: int | None = None,
 ) -> FileSyncManager:
     """Create a FileSyncManager wired for testing.
 
@@ -74,11 +76,17 @@ def _make_manager(
     previously pushed" guard. Set False to test the noop path.
     """
     mapping = file_mapping or []
+    kwargs: dict = {}
+    if max_back_bytes is not None:
+        kwargs["max_back_bytes"] = max_back_bytes
+    if back_stale_seconds is not None:
+        kwargs["back_stale_seconds"] = back_stale_seconds
     mgr = FileSyncManager(
         get_files_fn=lambda: mapping,
         upload_fn=MagicMock(),
         delete_fn=MagicMock(),
         bulk_download_fn=bulk_download_fn,
+        **kwargs,
     )
     if seed_pushed_state:
         # Seed _pushed_hashes so sync_back's "nothing previously pushed"
@@ -149,6 +157,18 @@ class TestStaleSyncBackTempCleanup:
 
 class TestSyncBackNoop:
     """sync_back() is a no-op when there is no download function."""
+
+    def test_oversized_tar_accepted_with_raised_cap(self, tmp_path):
+        """#114437: hosts whose tree legitimately exceeds the cap can raise it."""
+        host_file = tmp_path / "a.txt"
+        host_file.write_bytes(b"old")
+        mgr = _make_manager(
+            tmp_path, [(str(host_file), "a.txt")],
+            bulk_download_fn=_make_download_fn({"a.txt": b"new"}),
+            max_back_bytes=2 * 1024 * 1024 * 1024,
+        )
+        mgr.sync_back()
+        assert host_file.read_bytes() == b"new"
 
     def test_sync_back_noop_without_download_fn(self, tmp_path):
         mgr = _make_manager(tmp_path, bulk_download_fn=None)
@@ -483,12 +503,12 @@ class TestSyncBackSizeCap:
             tmp_path,
             file_mapping=[(skill_host, "/root/.hermes/skill.md")],
             bulk_download_fn=download_fn,
+            # Cap at 1 byte so any non-empty tar exceeds it
+            max_back_bytes=1,
         )
 
-        # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
-            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
-                mgr.sync_back(hermes_home=tmp_path / ".hermes")
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Host file should be untouched because extraction was skipped
         assert Path(skill_host).read_bytes() == b"original"

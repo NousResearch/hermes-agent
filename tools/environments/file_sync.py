@@ -51,11 +51,15 @@ _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract lar
 _SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
 # A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
 # a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs), so anything older than
-# this is safe to reclaim; a live transfer is hours younger than the cutoff.
-_SYNC_BACK_STALE_SECONDS = 6 * 60 * 60
+# this is safe to reclaim. The download itself is bounded by a 120 s subprocess timeout, so a
+# live transfer is minutes old at most; the old 6 h cutoff let a crash loop accumulate tens of
+# GB before anything was reclaimed (#114437).
+_SYNC_BACK_STALE_SECONDS = 30 * 60
 
 
-def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
+def _cleanup_stale_sync_back_temp(
+    temp_dir: Path | None = None, *, stale_seconds: int = _SYNC_BACK_STALE_SECONDS,
+) -> int:
     """Remove sync-back tars and staging dirs left behind by a hard-killed process.
 
     Only entries carrying this module's prefix and older than ``_SYNC_BACK_STALE_SECONDS``
@@ -63,7 +67,7 @@ def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
     another sync-back must not prevent the current one.
     """
     directory = temp_dir or Path(tempfile.gettempdir())
-    cutoff = time.time() - _SYNC_BACK_STALE_SECONDS
+    cutoff = time.time() - stale_seconds
     removed = 0
     try:
         candidates = list(directory.glob(f"{_SYNC_BACK_TEMP_PREFIX}*"))
@@ -157,11 +161,15 @@ class FileSyncManager:
         delete_fn: DeleteFn,
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
-        bulk_download_fn: BulkDownloadFn | None = None):
+        bulk_download_fn: BulkDownloadFn | None = None,
+        max_back_bytes: int = _SYNC_BACK_MAX_BYTES,
+        back_stale_seconds: int = _SYNC_BACK_STALE_SECONDS):
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
         self._bulk_download_fn = bulk_download_fn
+        self._max_back_bytes = max_back_bytes
+        self._back_stale_seconds = back_stale_seconds
         self._delete_fn = delete_fn
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
@@ -348,7 +356,7 @@ class FileSyncManager:
 
         # A hard kill bypasses the finally below. Reclaim only old entries carrying our
         # prefix before allocating another full-tree download.
-        _cleanup_stale_sync_back_temp()
+        _cleanup_stale_sync_back_temp(stale_seconds=self._back_stale_seconds)
 
         # mkstemp + close: NamedTemporaryFile keeps an exclusive handle on Windows, so the
         # backend's open(dest, "wb") / write_bytes on the same path raised PermissionError.
@@ -362,10 +370,10 @@ class FileSyncManager:
                 tar_size = os.path.getsize(tar_path)
             except OSError:
                 tar_size = 0
-            if tar_size > _SYNC_BACK_MAX_BYTES:
+            if tar_size > self._max_back_bytes:
                 logger.warning(
                     "sync_back: remote tar is %d bytes (cap %d) — skipping extraction",
-                    tar_size, _SYNC_BACK_MAX_BYTES)
+                    tar_size, self._max_back_bytes)
                 return
 
             with tempfile.TemporaryDirectory(prefix=_SYNC_BACK_TEMP_PREFIX) as staging:

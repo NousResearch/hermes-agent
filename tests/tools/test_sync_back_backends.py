@@ -121,6 +121,36 @@ class TestSSHBulkDownload:
         assert "testuser@example.com" in cmd_str
 
 
+    def test_ssh_bulk_download_excludes_sockets(self, ssh_mock_env, tmp_path):
+        """#114437: live gateway.sock must not fail the tar (rc 2 loop)."""
+        dest = tmp_path / "backup.tar"
+
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+            ssh_mock_env._ssh_bulk_download(dest)
+
+        cmd_str = " ".join(mock_run.call_args[0][0])
+        assert "--exclude='*.sock'" in cmd_str
+
+    def test_ssh_bulk_download_tolerates_tar_rc1(self, ssh_mock_env, tmp_path):
+        """#114437: rc 1 (live tree changed mid-read) still yields a usable archive."""
+        dest = tmp_path / "backup.tar"
+
+        with patch.object(
+            subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 1, stderr=b"file changed as we read it"),
+        ):
+            ssh_mock_env._ssh_bulk_download(dest)  # must not raise
+
+    def test_ssh_bulk_download_still_fails_on_rc2(self, ssh_mock_env, tmp_path):
+        """#114437: rc 2 remains a real failure."""
+        dest = tmp_path / "backup.tar"
+
+        with patch.object(
+            subprocess, "run",
+            return_value=subprocess.CompletedProcess([], 2, stderr=b"tar: socket ignored"),
+        ), pytest.raises(Exception):
+            ssh_mock_env._ssh_bulk_download(dest)
+
     def test_ssh_bulk_download_uses_120s_timeout(self, ssh_mock_env, tmp_path):
         """The subprocess.run call should use a 120s timeout."""
         dest = tmp_path / "backup.tar"

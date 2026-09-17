@@ -244,10 +244,18 @@ class SSHEnvironment(BaseEnvironment):
         # Tar from / with the full path so archive entries keep absolute paths
         # (home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
-        ssh_cmd = self._build_ssh_command() + [f"tar cf - -C / {shlex.quote(rel_base)}"]
+        # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar
+        # prints "socket ignored" and exits 2, which used to fail every sync-back and burn
+        # a full re-download on each of the 3 retries (#114437).
+        ssh_cmd = self._build_ssh_command() + [
+            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120)
-        if result.returncode != 0:
+        if result.returncode == 1:
+            # Files changed under a live tree mid-read; the archive is still usable.
+            logger.debug("SSH bulk download: tar rc=1 (%s)",
+                         result.stderr.decode(errors="replace").strip())
+        elif result.returncode != 0:
             raise _sync_error(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}",
                               f"File sync from {self.host}")
 

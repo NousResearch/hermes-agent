@@ -1716,16 +1716,19 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
 
 def _stop_guarded_run(agent, messages: list, tool_calls, just_executed_1based: int, run_end: int,
-                      reason: str, effective_task_id: str, *, flush_stage: str) -> bool:
+                      reason: str, effective_task_id: str, *, flush_stage: str,
+                      timings: Optional["RunTimings"] = None) -> bool:
     """Skip the unstarted tail of a stopped guarded run; False when the caller must stop the batch."""
     remaining = tool_calls[just_executed_1based:run_end]
+    timing_line = f" {timings.summary()}" if timings is not None else ""
     agent._vprint(
         f"{agent.log_prefix}🛑 Guarded desktop run stopped ({reason}); "
-        f"skipping {len(remaining)} call(s)", force=True)
+        f"skipping {len(remaining)} call(s){timing_line}", force=True)
     return _append_skipped_tool_results(
         agent, messages, remaining, effective_task_id,
         content=f"[Guarded desktop run stopped: {reason}. "
-                "{name} was not executed — re-observe before retrying.]",
+                "{name} was not executed — re-observe before retrying."
+                f"{timing_line}]",
         flush_stage=flush_stage,
     )
 
@@ -1737,6 +1740,8 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
     _guarded_skip_until = 0  # 0-based index: calls below it were skipped as a guarded run's tail
+    from agent.guarded_run_timing import RunTimings
+    _run_timings = RunTimings()  # per-step timing metadata for guarded runs
 
     for i, tool_call in enumerate(tool_calls, 1):
         if (i - 1) < _guarded_skip_until:
@@ -1783,7 +1788,8 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
         if _guarded_stop is not None:
             _run_end, _stop_reason = _guarded_stop
             if not _stop_guarded_run(agent, messages, tool_calls, i, _run_end, _stop_reason,
-                                     effective_task_id, flush_stage="guarded-run skipped tool result"):
+                                     effective_task_id, flush_stage="guarded-run skipped tool result",
+                                     timings=_run_timings):
                 return
             _guarded_skip_until = _run_end
         else:
@@ -1800,12 +1806,17 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if run_step_needs_confirmation(tool_calls, i - 1):
                 _cu_backend = backend_for_session(agent.session_id or "")
                 if _cu_backend is not None:
-                    _readiness_stop = guarded_run_readiness_stop(tool_calls, i - 1, _cu_backend)
+                    _readiness_stop = guarded_run_readiness_stop(
+                        tool_calls, i - 1, _cu_backend,
+                        timings=_run_timings,
+                        tool_duration_ms=tool_duration * 1000.0,
+                    )
                     if _readiness_stop is not None:
                         _run_end, _stop_reason = _readiness_stop
                         if not _stop_guarded_run(agent, messages, tool_calls, i, _run_end, _stop_reason,
                                                  effective_task_id,
-                                                 flush_stage="guarded-run readiness skipped tool result"):
+                                                 flush_stage="guarded-run readiness skipped tool result",
+                                                 timings=_run_timings):
                             return
                         _guarded_skip_until = _run_end
 

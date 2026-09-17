@@ -24,9 +24,11 @@ proceeds on verdicts alone. Fail open, never fail closed, on missing signal.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.guarded_desktop_runs import _tool_args, find_guarded_desktop_runs
+from agent.guarded_run_timing import RunTimings
 from tools.computer_use import readiness_predicates
 
 logger = logging.getLogger(__name__)
@@ -223,24 +225,42 @@ def guarded_run_readiness_stop(
     *,
     timeout_ms: int = GUARDED_RUN_READINESS_TIMEOUT_MS,
     som_labels: Optional[SomLabels] = None,
+    timings: Optional[RunTimings] = None,
+    tool_duration_ms: Optional[float] = None,
 ) -> Optional[Tuple[int, str]]:
     """``(run_end, reason)`` when the readiness check stops the run after this step.
 
     ``just_executed_index`` is the 0-based index of the call that just ran.
     ``som_labels`` threads in the target labels from the capture snapshot the
-    run's ``element`` indices are bound to. Returns None when the call is not a
-    mid-run input, when no check applies, or when the driver reports
-    ``satisfied``/``unknown``.
+    run's ``element`` indices are bound to. When ``timings`` is given, the
+    step's confirmation duration and verdict are recorded (one record per
+    executed step, even when no check applies or the run continues). Returns
+    None when the call is not a mid-run input, when no check applies, or when
+    the driver reports ``satisfied``/``unknown``.
     """
     for start, end in find_guarded_desktop_runs(tool_calls):
         if not start <= just_executed_index < end - 1:
             continue
+        confirm_started = time.perf_counter()
         result = confirm_run_step(
             backend,
             timeout_ms=timeout_ms,
             tool_call=tool_calls[just_executed_index],
             som_labels=som_labels,
         )
+        confirm_ms = (time.perf_counter() - confirm_started) * 1000.0
+        stopped = result is not None and result.status not in ("satisfied", "unknown")
+        if timings is not None:
+            args = _tool_args(tool_calls[just_executed_index]) or {}
+            action = args.get("action")
+            timings.record_step(
+                just_executed_index,
+                action if isinstance(action, str) else "unknown",
+                tool_duration_ms=tool_duration_ms,
+                confirm_duration_ms=confirm_ms,
+                confirm_status=result.status if result is not None else "no_check",
+                verdict="stopped" if stopped else "continue",
+            )
         if result is None:
             return None  # no check applies: verdict-only behavior
         if result.status in ("satisfied", "unknown"):

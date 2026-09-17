@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import codecs
 import io
+import itertools
 import logging
 import os
 import sys
 import threading
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv.main import DotEnv
+from dotenv.variables import parse_variables
 from utils import atomic_replace, fast_safe_load
 
 logger = logging.getLogger(__name__)
@@ -35,6 +37,18 @@ _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
+
+# What THIS process has published from dotenv files, per variable: (value before our first publish, or
+# None if absent; last value we published; load pass that published it). Reloads run per gateway turn and
+# per cron fire, and a line like ``PATH=/x:${PATH}`` interpolated against an environ that already holds the
+# previous reload's output grows by ``/x:`` every time until child spawns fail with E2BIG (#109902). A new
+# pass resolves against the baseline instead — but only where the environ still holds exactly what we
+# published, so a value the shell, config bridge, or an external secret source changed since is not frozen.
+# One process-wide record (not per home/project scope): the environ is process-wide, so alternating
+# callers (gateway with a project .env, cron without; home A then B) must peel each other's output too.
+_DOTENV_PUBLISHED: dict[str, tuple[str | None, str, int]] = {}
+_DOTENV_PASSES = itertools.count()
+_DOTENV_LOCK = threading.RLock()
 
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
@@ -234,16 +248,50 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
-def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+def _load_dotenv_with_fallback(path: Path, *, override: bool, load_pass: int | None = None) -> None:
+    """Load one dotenv file into ``os.environ`` like ``dotenv.load_dotenv`` — same parser, same
+    ``${VAR}`` / ``${VAR:-default}`` / precedence rules — except that ``${VAR}`` resolves against the value
+    VAR had before this process's earlier passes published it (see ``_DOTENV_PUBLISHED``).
+
+    ``load_pass`` groups the layered files of one ``load_hermes_dotenv`` call: within a pass a later layer
+    (project, managed) still sees the earlier layer's output, as it always did; only OTHER passes' output
+    is peeled. A bare call (``hermes send``'s direct reload) is its own pass."""
+    raw = path.read_bytes()
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
         # first key name and silently drop it from os.environ under its canonical name.
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        raw = path.read_bytes()  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
-        if raw.startswith(codecs.BOM_UTF8):
+        if raw.startswith(codecs.BOM_UTF8):  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
             raw = raw[len(codecs.BOM_UTF8) :]
-        load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
+        text = raw.decode("latin-1")
+    assignments = list(DotEnv(dotenv_path=None, stream=io.StringIO(text), interpolate=False).parse())
+
+    with _DOTENV_LOCK:
+        if load_pass is None:
+            load_pass = next(_DOTENV_PASSES)
+        lookup_env: dict[str, str | None] = dict(os.environ)
+        for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
+            if published_pass != load_pass and lookup_env.get(name) == published:
+                if baseline is None:
+                    del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
+                else:
+                    lookup_env[name] = baseline
+        resolved: dict[str, str | None] = {}
+        for name, value in assignments:
+            if value is not None:  # mirrors dotenv.main.resolve_variables, minus the live os.environ
+                lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
+                value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
+            resolved[name] = value
+        for name, value in resolved.items():
+            if value is None or (not override and name in os.environ):
+                continue
+            current = os.environ.get(name)
+            record = _DOTENV_PUBLISHED.get(name)
+            # Ours and untouched since → keep the original baseline; anything else is a newer outside value.
+            baseline = record[0] if record is not None and current == record[1] else current
+            os.environ[name] = value
+            _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
@@ -353,6 +401,7 @@ def load_hermes_dotenv(
     loaded: list[Path] = []
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
+    load_pass = next(_DOTENV_PASSES)  # one pass: later layers below see the earlier layers' output
 
     if user_env.exists():  # normalize formatting / strip NULs before parsing
         _sanitize_env_file_if_needed(user_env)
@@ -360,7 +409,7 @@ def load_hermes_dotenv(
         _sanitize_env_file_if_needed(project_env_path)
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        _load_dotenv_with_fallback(user_env, override=True, load_pass=load_pass)
         loaded.append(user_env)
         _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
 
@@ -369,10 +418,10 @@ def load_hermes_dotenv(
     # the committed .env. override=False lets a systemd `EnvironmentFile=-…/.op.env` token win.
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
-        _load_dotenv_with_fallback(op_env, override=False)
+        _load_dotenv_with_fallback(op_env, override=False, load_pass=load_pass)
 
     if project_env_path and project_env_path.exists():
-        _load_dotenv_with_fallback(project_env_path, override=not loaded)
+        _load_dotenv_with_fallback(project_env_path, override=not loaded, load_pass=load_pass)
         loaded.append(project_env_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
@@ -390,7 +439,7 @@ def load_hermes_dotenv(
     # managed env still load in both cases; only external source resolution is unnecessary for the updater.
     if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
         _apply_external_secret_sources(home_path)
-    _apply_managed_env()
+    _apply_managed_env(load_pass=load_pass)
 
     # config.yaml owns terminal.*, but the override=True loads above let a stale TERMINAL_ENV=docker in
     # ~/.hermes/.env win on every reload and flip the backend mid-session in long-lived processes.
@@ -420,7 +469,7 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
         pass
 
 
-def _apply_managed_env() -> None:
+def _apply_managed_env(*, load_pass: int | None = None) -> None:
     """Apply the managed-scope .env last, with override, so it beats user/shell. Does NOT stop the agent
     from later mutating os.environ (v1 relies on filesystem permissions). Fail-open: never blocks startup."""
     try:
@@ -435,7 +484,7 @@ def _apply_managed_env() -> None:
     if not managed_env.exists():
         return
     _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True)
+    _load_dotenv_with_fallback(managed_env, override=True, load_pass=load_pass)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

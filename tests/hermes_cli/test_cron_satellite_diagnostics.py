@@ -17,8 +17,6 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE", "probe")
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: root)
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: root / "profiles")
     monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron/jobs.json")
     monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron/output")

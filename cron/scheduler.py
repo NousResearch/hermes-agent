@@ -3006,17 +3006,13 @@ def _run_one_job_body(
 
         if _fire_claim_ownership_lost():
             # #105861: the claim check is one sample; a miss AFTER a completed delivery must not
-            # overwrite the ok status — fall through to _finish_completed_run, whose owner-fenced
-            # mark_job_run is authoritative. An explicit transport cancel stays fail-closed.
+            # overwrite the delivered run's terminal status — ok, or a failure whose notice already
+            # left with its real error — so fall through to _finish_completed_run, whose owner-fenced
+            # mark_job_run is authoritative either way. An explicit transport cancel stays fail-closed.
             transport_cancelled = fence.transport_cancelled()
-            if (
-                d.success
-                and d.delivery_attempted
-                and not d.delivery_error
-                and not transport_cancelled
-            ):
+            if d.delivery_attempted and not d.delivery_error and not transport_cancelled:
                 logger.warning(
-                    "Job '%s': fire claim ownership lost after successful delivery; "
+                    "Job '%s': fire claim ownership lost after completed delivery; "
                     "recording the delivered run's terminal status",
                     job["id"])
             elif transport_cancelled:

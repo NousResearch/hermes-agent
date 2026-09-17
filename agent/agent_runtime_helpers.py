@@ -39,7 +39,7 @@ _REASONING_BLOCK_PATTERNS = tuple(
     re.compile(rf"<{name}>.*?</{name}>", re.DOTALL | re.IGNORECASE) for name in THINK_TAG_NAMES
 )
 _TOOL_CALL_BLOCK_PATTERNS = tuple(
-    re.compile(rf"<{name}\b[^>]*>.*?</{name}>", re.DOTALL | re.IGNORECASE)
+    re.compile(rf"<(?:[\w.-]+:)?{name}\b[^>]*>.*?</(?:[\w.-]+:)?{name}>", re.DOTALL | re.IGNORECASE)
     for name in _TOOL_CALL_TAG_NAMES
 )
 
@@ -56,7 +56,7 @@ _ORPHAN_REASONING_TAG_PATTERN = re.compile(
     rf'</?(?:{"|".join(THINK_TAG_NAMES)})>\s*', re.IGNORECASE
 )
 _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
-    rf'</(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function)>\s*', re.IGNORECASE
+    rf'</(?:(?:[\w.-]+:)?(?:{"|".join(_TOOL_CALL_TAG_NAMES)}|function))>\s*', re.IGNORECASE
 )
 
 # A tool-call opener with no closer, or GLM-style argument markup
@@ -65,7 +65,7 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
 # can't be recovered; strip from the block-boundary opener (or the line
 # holding the first stray argument tag) to the end of the text.
 _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
-    rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
+    rf'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
     r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
     re.DOTALL | re.IGNORECASE,
 )

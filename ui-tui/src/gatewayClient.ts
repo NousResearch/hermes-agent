@@ -135,6 +135,8 @@ export class GatewayClient extends EventEmitter {
   private readonly channel = new JsonRpcRequestChannel({
     onEvent: ev => this.publish(ev as AnyGatewayEvent),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
+    onRequestHandlerError: (error, req) =>
+      this.pushLog(`[protocol] server request handler crashed: ${req.method} (${error.message})`),
     onUnhandledRequest: req => this.pushLog(`[protocol] unhandled server request: ${req.method}`),
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     unrefTimers: true
@@ -170,9 +172,15 @@ export class GatewayClient extends EventEmitter {
     })
   }
 
+  get attached(): boolean {
+    return this.attachUrl !== null
+  }
+
   private publish(ev: AnyGatewayEvent) {
     if (ev.type === 'gateway.ready') {
       this.ready = true
+      this.clearReconnect()
+      this.reconnectAttempts = 0
 
       if (this.readyTimer) {
         clearTimeout(this.readyTimer)
@@ -276,8 +284,6 @@ export class GatewayClient extends EventEmitter {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-
-    this.reconnectAttempts = 0
   }
 
   private resetStartupState() {
@@ -288,7 +294,9 @@ export class GatewayClient extends EventEmitter {
     // attached to a discarded child / socket.
     this.channel.detach(new Error('gateway restarting'))
     this.ready = false
-    this.subscribed = false
+    // `subscribed` is NOT reset here: the renderer drain()s once on mount, so a
+    // reset would strand every post-reconnect event (gateway.ready included) in
+    // the buffer forever (#111594).
     // Invalidate any pending deferred drain() flush from a prior transport so
     // its queued microtask becomes a no-op (it captured the old generation).
     this.drainGeneration += 1
@@ -325,6 +333,7 @@ export class GatewayClient extends EventEmitter {
 
   private handleTransportExit(code: null | number, reason?: string) {
     this.clearReadyTimer()
+    this.ready = false
     this.closeSidecarSocket()
     this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
     this.channel.detach(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
@@ -332,9 +341,10 @@ export class GatewayClient extends EventEmitter {
     // Self-heal: a dropped transport (real close OR silent drop caught by the
     // heartbeat) should reconnect instead of stranding the UI on a dead socket
     // (issue #32997). Intentional shutdown sets `disposed` and skips this.
-    // Schedule before the synchronous 'exit' emission: useMainApp's existing
+    // Schedule before the synchronous 'exit' emission: in spawn mode useMainApp's
     // recovery subscriber may call start() immediately, and start() cancels this
-    // timer so there is only one recovery owner.
+    // timer so there is only one recovery owner; the attempt counter survives
+    // until gateway.ready so backoff keeps growing across failed restarts.
     this.scheduleReconnect()
 
     if (this.subscribed) {
@@ -534,12 +544,15 @@ export class GatewayClient extends EventEmitter {
         ws.addEventListener(
           'open',
           () => {
+            if (this.ws !== ws) {
+              return
+            }
+
             if (!settled) {
               settled = true
               resolve()
             }
 
-            this.clearReconnect()
             this.connectSidecarMirror()
           },
           { once: true }
@@ -577,7 +590,11 @@ export class GatewayClient extends EventEmitter {
       connectPromise.catch(() => {})
       this.wsConnectPromise = connectPromise
 
-      ws.addEventListener('message', ev => this.handleWebSocketFrame(ev.data))
+      ws.addEventListener('message', ev => {
+        if (this.ws === ws) {
+          this.handleWebSocketFrame(ev.data)
+        }
+      })
       ws.addEventListener('close', ev => {
         // Skip close events from sockets that have already been
         // replaced — start() / closeGatewaySocket() can swap `this.ws`
@@ -618,7 +635,6 @@ export class GatewayClient extends EventEmitter {
     this.attachUrl = attachUrl
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
-    this.clearReconnect()
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
       this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
@@ -767,6 +783,7 @@ export class GatewayClient extends EventEmitter {
   kill(reason = 'requested') {
     this.disposed = true
     this.clearReconnect()
+    this.reconnectAttempts = 0
     const proc = this.proc
     const killed = proc?.kill()
 

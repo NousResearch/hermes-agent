@@ -26,6 +26,8 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
     import gateway.status as status
 
     (tmp_path / "profiles" / "beta").mkdir(parents=True)
+    # A profile dir needs an identity marker to be listed/served (bare dirs are side-effect shells).
+    (tmp_path / "profiles" / "beta" / "config.yaml").write_text("{}\n")
     (tmp_path / "config.yaml").write_text(
         f"gateway:\n  multiplex_profiles: {'true' if multiplex else 'false'}\n"
     )

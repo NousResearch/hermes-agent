@@ -1,4 +1,5 @@
 """Only never-started cron delivery may wait for a CLI owner's release."""
+import importlib.util
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -57,10 +58,11 @@ def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, mon
     original_is_dir = Path.is_dir
     armed = False
 
-    def resolve_cli(_):
+    def resolve_cli(name, *args, **kwargs):
+        # Delivery resolves the CLI (the running install's ``hermes_cli``) right after discovery.
         nonlocal armed
         armed = True
-        return "/bin/hermes"
+        return object()
 
     def is_dir(self):
         if armed and self == blocked_home:
@@ -71,7 +73,7 @@ def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, mon
         calls.append(kwargs["env"]["HERMES_HOME"])
         return subprocess.CompletedProcess([], 0, "", "")
 
-    monkeypatch.setattr(delivery.shutil, "which", resolve_cli)
+    monkeypatch.setattr(importlib.util, "find_spec", resolve_cli)
     monkeypatch.setattr(delivery.subprocess, "run", run)
     monkeypatch.setattr(Path, "is_dir", is_dir)
     queue.drain()
@@ -102,3 +104,24 @@ def test_pending_queue_uses_admission_order_and_keeps_claims(tmp_path, monkeypat
     queue.drain()
     queue.drain()
     assert seen == ["older", "newer"]
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "geteuid") or __import__("os").geteuid() == 0,
+                    reason="needs POSIX file permissions for an unreadable receipt")
+def test_unreadable_deferred_receipt_does_not_block_siblings(tmp_path, monkeypatch, caplog):
+    """One permission-denied receipt beside healthy queued work must degrade to a logged skip,
+    not abort the drain (same class as the live-owner mailbox wedge, #109820)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    queue.defer("a" * 64, {"id": "job"}, "healthy", "", tmp_path)
+    bad = queue._root() / f"{'e' * 64}.json"
+    bad.write_text('{"status": "queued"}', encoding="utf-8")
+    bad.chmod(0)
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    with caplog.at_level("ERROR", logger=queue.logger.name):
+        queue.drain()
+        queue.drain()  # every scheduler tick drains; the same bad receipt must not re-log
+    assert seen == ["healthy"]
+    assert [r for r in caplog.records
+            if "Unreadable deferred Bot Chat receipt" in r.message and "Permission denied" in r.message] and \
+        sum("Unreadable deferred Bot Chat receipt" in r.message for r in caplog.records) == 1

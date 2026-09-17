@@ -240,7 +240,12 @@ def _make_redirect_header_stripper(original_url, *, strict: bool = False,
 # stream and its keepalives have no cumulative limit. Violations raise the SDK httpx's ReadError and
 # flow through the ordinary transport teardown/reconnect path (#66092).
 _MCP_HTTP_MAX_BODY_BYTES = 10 * 1024 * 1024
-_SSE_EVENT_BOUNDARIES = (b"\n\n", b"\r\n\r\n")
+# An SSE event ends at a blank line: two consecutive line terminators. The spec allows CR,
+# LF, or CRLF terminators and permits mixing them, so the boundary is any of \n\n, \r\r,
+# \n\r, \r\n\r\n, \r\n\n, \r\n\r, \n\r\n, \r\r\n. "\r\n" alone is ONE terminator, not two:
+# the lookahead keeps a plain CRLF line ending from backtracking into a \r + \n boundary.
+_SSE_BOUNDARY_RE = re.compile(rb"(?:\r\n|\r(?!\n)|\n){2}")
+_SSE_BOUNDARY_CARRY = 3  # longest boundary ("\r\n\r\n") minus one byte
 
 
 def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_HTTP_MAX_BODY_BYTES):
@@ -256,18 +261,24 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
 
         async def __aiter__(self):
             counted = 0
+            tail = b""  # last _SSE_BOUNDARY_CARRY stream bytes; a boundary can straddle chunks
             async for chunk in self._inner:
                 if self._is_sse:
-                    # Bytes up to the last completed event boundary belong to finished events (they must
-                    # still fit the per-event cap together with the carried prefix); the remainder starts
-                    # the next event's budget.
-                    boundary_end = max(chunk.rfind(sep) + len(sep) if sep in chunk else -1 for sep in _SSE_EVENT_BOUNDARIES)
-                    if boundary_end != -1:
-                        if counted + boundary_end > limit:
+                    # Charge each completed event once: the carried prefix plus bytes up to its
+                    # boundary must fit the cap, then the next event starts after it. Scan the
+                    # carried suffix plus this chunk so a boundary split across chunks is still
+                    # seen; bytes before len(tail) were already counted into `counted`.
+                    window = tail + chunk
+                    pos = 0
+                    for match in _SSE_BOUNDARY_RE.finditer(window):
+                        end = match.end()
+                        if end <= len(tail):
+                            continue  # boundary completed inside the carried suffix: already counted
+                        if counted + end - max(pos, len(tail)) > limit:
                             raise self._reject("SSE event")
-                        counted = len(chunk) - boundary_end
-                    else:
-                        counted += len(chunk)
+                        counted, pos = 0, end
+                    counted += len(window) - max(pos, len(tail))
+                    tail = window[-_SSE_BOUNDARY_CARRY:]
                 else:
                     counted += len(chunk)
                 if counted > limit:
@@ -299,31 +310,66 @@ def _make_mcp_body_cap_transport(httpx_mod, inner_transport, limit: int = _MCP_H
     return _BodyCapTransport(inner_transport)
 
 
+# Node budget for ``_iter_exception_nodes`` (the visited set breaks cycles; this bounds acyclic blow-ups).
+# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
+_EXC_TRAVERSAL_MAX_NODES = 10_000
+
+
 def _exc_children(exc: BaseException) -> List[BaseException]:
-    """Sub-exceptions of a group, else ``__cause__``/``__context__`` when they are exceptions."""
-    nested = getattr(exc, "exceptions", None)
-    return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
+    """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
+    group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
+    skipped."""
+    nested = getattr(exc, "exceptions", None) or ()
+    return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
+
+
+def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:
+    """Pre-order, left-to-right walk of an exception tree/chain, each node once. ``__cause__``/``__context__``
+    can point back at an ancestor (a raised-and-caught pair does this routinely, e.g. the same OAuth error
+    raised on the Streamable-HTTP attempt and again on the SSE fallback), so a naive recursive walk dies with
+    RecursionError and hides the real connect error; the visited set breaks cycles, the budget bounds acyclic
+    blow-ups."""
+    stack = [exc]
+    seen: set[int] = set()
+    ordered: List[BaseException] = []
+    while stack and len(ordered) < _EXC_TRAVERSAL_MAX_NODES:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        ordered.append(current)
+        stack.extend(reversed(_exc_children(current)))
+    return ordered
 
 
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
-            if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
-            if match:
-                return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
+    nodes = _iter_exception_nodes(exc)
 
-    def _flatten_messages(current: BaseException) -> List[str]:
-        # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+    def _find_missing() -> Optional[str]:
+        for current in nodes:
+            if isinstance(current, FileNotFoundError):
+                if getattr(current, "filename", None):
+                    return str(current.filename)
+                match = re.search(r"No such file or directory: '([^']+)'", str(current))
+                if match:
+                    return match.group(1)
+        return None
+
+    def _flatten_messages() -> List[str]:
+        messages: List[str] = []
+        for current in nodes:
+            # A group's own str() is opaque — only its children speak; a message-less leaf still names its type.
+            text = "" if getattr(current, "exceptions", None) else str(current).strip()
+            if text:
+                messages.append(text)
+            elif not _exc_children(current):
+                messages.append(current.__class__.__name__)
+        return messages or [exc.__class__.__name__]
+
+    missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "
@@ -378,34 +424,20 @@ _SESSION_EXPIRED_MARKERS: tuple = (
     "unknown session", "session terminated", "closedresourceerror", "closed resource",
     "transport is closed", "connection closed", "broken pipe", "end of file")
 
-# Node budget for ``_is_session_expired_error`` (the visited set breaks cycles; this bounds acyclic blow-ups).
-# Well above ``sys.getrecursionlimit()`` so deep task-group nesting is fully scanned.
-_EXC_TRAVERSAL_MAX_NODES = 10_000
-
 
 def _is_session_expired_error(exc: BaseException) -> bool:
     """True if ``exc`` looks like a transport session expiry (Streamable-HTTP servers GC session state on idle TTL /
     restart / pod rotation while the OAuth token stays valid) — the fix is a transport reconnect, not an OAuth
-    refresh. Iterative walk over ``exceptions`` / ``__cause__`` / ``__context__`` with a visited set AND a node
-    budget; every reachable node is inspected so an InterruptedError anywhere overrides transport markers, and the
-    chain walk matters because SDK wrappers raise a generic RuntimeError *from* a message-less ClosedResourceError."""
+    refresh. Every node ``_iter_exception_nodes`` reaches is inspected so an InterruptedError anywhere overrides
+    transport markers; the chain walk matters because SDK wrappers raise a generic RuntimeError *from* a
+    message-less ClosedResourceError."""
     # AnyIO stream exceptions are often message-less, so type checks complement marker matching.
     transport_error_types = tuple(_optional_types("anyio", "BrokenResourceError", "ClosedResourceError", "EndOfStream"))
-    stack: "list[BaseException | None]" = [exc]
-    seen: set[int] = set()
     found = False
-    budget = _EXC_TRAVERSAL_MAX_NODES
-    while stack and budget > 0:
-        current = stack.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        budget -= 1
+    for current in _iter_exception_nodes(exc):
         if isinstance(current, InterruptedError):
             return False
         # Messages vary across SDK versions/servers: a narrow allow-list of stable substrings avoids false positives.
         msg = str(current).lower()
         found = found or isinstance(current, transport_error_types) or any(m in msg for m in _SESSION_EXPIRED_MARKERS)
-        stack.extend((*getattr(current, "exceptions", ()), getattr(current, "__cause__", None),
-                      getattr(current, "__context__", None)))
     return found

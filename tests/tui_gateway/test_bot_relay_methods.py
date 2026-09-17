@@ -25,6 +25,7 @@ from tools import bot_relay
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -96,10 +97,12 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
     assert calls["argv"][1:3] == ["-p", "default"]
 
-    # unknown profile refuses without spawning
+    # unknown profile refuses without spawning; so does a bare infra dir under profiles/ (#99392)
     calls.clear()
-    err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
-    assert "error" in err and "ghost" in err["error"]["message"]
+    (home / "profiles" / "sessions" / "cron").mkdir(parents=True)
+    for target in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](3, {"profile": target, "message": "x"})
+        assert "error" in err and target in err["error"]["message"]
     assert not calls
 
 
@@ -167,6 +170,52 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
 
     out = _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
     assert out["reply"] == "pong" and spawned and not submitted
+
+
+def test_deliver_hands_off_to_a_bot_chat_owned_by_another_process(home, monkeypatch):
+    """#113753: the relay RPC lands in whichever backend the Desktop routes the target CONNECTION
+    to, while the Desktop-opened Bot Chat can be live in a sibling process for that profile
+    (per-(connection, profile) pool, per-profile SSH dashboards). That owner's lease refuses the
+    subprocess transport with SESSION_NOT_OWNED, so the handler must hand the DM to the owner
+    through the durable mailbox local DMs use, and never spawn the CLI.
+    """
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_state import SessionDB
+    from tools import bot_live_delivery as mailbox
+
+    ops_home = home / "profiles" / "ops"
+    db = SessionDB(db_path=ops_home / "state.db")
+    db.create_session(session_id="chat", source="desktop")
+    db.set_session_title("chat", "Bot Chat")
+    db.close()
+    # The sibling process's lease: a mailbox-capable live owner registered in the target's home.
+    lease, refusal = try_acquire_active_session(
+        session_id="chat", surface="desktop", config={}, registry_home=ops_home,
+        metadata={"live_session_id": "live-in-other-process", "bot_live_delivery_consumer": True})
+    assert refusal is None
+    spawned = []
+
+    def _fake_run(argv, *a, **k):
+        if argv and argv[0] != "git":
+            spawned.append(argv)
+        raise AssertionError("the CLI transport collides with the live owner")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr(srv, "_profile_home", lambda name: ops_home)
+    monkeypatch.setattr(srv, "_sessions", {})  # THIS process hosts nothing for ops
+    try:
+        out = _result(srv._methods["bot_relay.deliver"](1, {
+            "profile": "ops", "message": "ping", "from_profile": "cody", "from_handle": "cody",
+            "from_connection": "conn-a"}))
+        assert not spawned and "open Bot Chat" in out["reply"]
+        (queued,) = [
+            r for p in (ops_home / "runtime" / mailbox.DELIVERY_DIR_NAME).glob("*.json")
+            if (r := json.loads(p.read_text(encoding="utf-8")))]
+        assert queued["status"] == "queued" and queued["message"] == "ping"
+        assert queued["owner"]["lease_id"] == lease.lease_id
+        assert queued["author"]["name"] == "cody" and queued["author"]["is_bot"] is True
+    finally:
+        lease.release()
 
 
 def test_reply_roundtrip_and_id_validation(home):

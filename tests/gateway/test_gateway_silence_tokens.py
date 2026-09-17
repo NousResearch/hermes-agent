@@ -145,6 +145,26 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
+async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_path):
+    """A poller-stamped heartbeat turn may end on a bare marker (#113031); the event stays
+    non-internal so authorization and the emergency stop still apply to it."""
+    runner = _runner(monkeypatch, tmp_path)
+    entry = runner.session_store.get_or_create_session.return_value
+    entry.suspended = False
+    runner.session_store.lookup_by_session_key.return_value = entry
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "NO_REPLY",
+        "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+    event = _event()
+    event._heartbeat_session_id = entry.session_id
+
+    assert await runner._handle_message_with_agent(event, _source(), entry.session_key, 1) == ""
+    assert not event.internal
+
+
+@pytest.mark.asyncio
 async def test_queued_human_turn_also_gets_the_visible_fallback():
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner._deliver_queued_first_response = AsyncMock()

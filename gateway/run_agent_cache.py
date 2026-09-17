@@ -17,6 +17,7 @@ from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.run_shutdown import _log_suppressed
 from hermes_cli.config import cfg_get
+from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -166,7 +167,9 @@ class GatewayAgentCacheMixin:
                     override[k] = runtime.get(k)
                 override["request_overrides"] = dict(runtime.get("request_overrides") or {})
                 override["capabilities"] = dict(runtime.get("capabilities") or {})
-                if not override.get("base_url"):
+                if not override.get("base_url") or provider.strip().lower() in LLAMACPP_ALIASES:
+                    # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
+                    # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
             except Exception:
                 logger.debug(

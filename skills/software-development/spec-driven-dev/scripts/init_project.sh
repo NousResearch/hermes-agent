@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Bootstrap a project with GitHub Spec Kit (constitution -> specify -> plan
 # -> tasks -> implement -> converge), installed as real Claude-Code-compatible
-# skills, then layer this skill's worldview/constitution/EARS additions on
-# top. Idempotent: safe to re-run against an already-initialized project.
+# skills, translated into Hermes-native skills automatically, then layered
+# with this skill's worldview/constitution/EARS additions. One call does the
+# whole setup -- idempotent: safe to re-run against an already-initialized
+# project (translation re-runs too, so upgrading specify-cli and re-running
+# this script re-syncs the Hermes-format skill copies).
 #
 # Usage: init_project.sh <project-name> [--here]
 #   <project-name>  Directory to create (or --here to init in cwd).
@@ -84,6 +87,9 @@ cp "$SKILL_DIR/references/ears-syntax.md" "$TARGET_DIR/docs/spec-driven/ears-syn
 cp "$SKILL_DIR/references/ears-schema.json" "$TARGET_DIR/docs/spec-driven/ears-schema.json"
 
 cp "$SKILL_DIR/references/contract-testing.md" "$TARGET_DIR/docs/spec-driven/contract-testing.md"
+
+echo "== Translating speckit-* skills into Hermes frontmatter =="
+python3 "$SKILL_DIR/scripts/translate_speckit_skills.py" "$TARGET_DIR"
 
 echo ""
 echo "Done. Next steps in Claude Code, one at a time:"

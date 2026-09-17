@@ -89,6 +89,25 @@ def provider_verdict(conn, task_id: str, pid: int):
     return evidence
 
 
+def closed_retry_runs(conn, task_id: str, limit: int):
+    """Closed attempts after the last explicit unblock, ordered newest first.
+
+    Event IDs establish the boundary even when a block, unblock and new claim
+    all happen in one second. No run/event is rewritten to open a new window.
+    """
+    cutoff = conn.execute(
+        "SELECT max(id) AS id FROM task_events WHERE task_id=? AND kind='unblocked'",
+        (task_id,),
+    ).fetchone()["id"]
+    return conn.execute(
+        """SELECT r.* FROM task_runs r WHERE r.task_id=? AND r.ended_at IS NOT NULL
+           AND (? IS NULL OR (
+               SELECT min(e.id) FROM task_events e WHERE e.task_id=r.task_id AND e.run_id=r.id)>?)
+           ORDER BY r.id DESC LIMIT ?""",
+        (task_id, cutoff, cutoff, limit),
+    ).fetchall()
+
+
 def transient_budget_exhausted(conn, task_id: str) -> bool:
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_dispatch import DEFAULT_FAILURE_LIMIT
@@ -101,11 +120,7 @@ def transient_budget_exhausted(conn, task_id: str) -> bool:
     )
     # Count this failing attempt plus the immediately preceding provider failures.
     streak = 1
-    for run in conn.execute(
-        """SELECT metadata FROM task_runs WHERE task_id=? AND ended_at IS NOT NULL
-            ORDER BY id DESC LIMIT ?""",
-        (task_id, max(0, limit)),
-    ):
+    for run in closed_retry_runs(conn, task_id, max(0, limit)):
         evidence = kb._json_dict(run["metadata"]).get("provider_failure", {})
         if evidence.get("transient") is not True:
             break

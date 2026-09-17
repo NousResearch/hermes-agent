@@ -874,12 +874,8 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     for runs recorded before the marker existed.
     """
     streak = 0
-    rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
-    ).fetchall()
+    from hermes_cli.kanban_worker_failure import closed_retry_runs
+    rows = closed_retry_runs(conn, task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT)
     for row in rows:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
@@ -1074,9 +1070,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             else:
                 dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
-            dead.event_payload["retry_status"] = retry_status
             if dead.provider_blocked:
                 retry_status = "blocked"
+            dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "

@@ -17,6 +17,8 @@ def board(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "admission")
     monkeypatch.setattr(kb, "_resolve_crash_grace_seconds", lambda: 0)
     monkeypatch.setattr(dispatch, "_worker_alive", lambda *args: False)
+    # Recovery boundaries must work even when all native timestamps tie.
+    monkeypatch.setattr(kb.time, "time", lambda: 1700000000)
     kbc.init_db()
     with kbc.connect() as conn:
         yield conn
@@ -125,6 +127,12 @@ def test_provider_failure_survives_clean_exit_without_spending_model_retries(
         cli._single_query_exit_code(result)
         dispatch._record_worker_exit(os.getpid(), 0)
         dispatch.detect_crashed_workers(board)
+    blocked = [e for e in kb.list_events(board, task) if e.kind == "blocked"]
+    assert blocked[-1].payload["retry_status"] == "blocked"
+    terminal = board.execute(
+        "SELECT metadata FROM task_runs WHERE id=?", (blocked[-1].run_id,)
+    ).fetchone()
+    assert json.loads(terminal["metadata"])["retry_status"] == "blocked"
     for _ in range(3):
         kb.recompute_ready(board)
         assert kb.get_task(board, task).status == "blocked"
@@ -133,6 +141,32 @@ def test_provider_failure_survives_clean_exit_without_spending_model_retries(
         == preserved
     )
     assert kb.get_task(board, task).consecutive_failures == 0
+    if transient:
+        terminal_history = [
+            dict(row) for row in board.execute("SELECT * FROM task_runs ORDER BY id")
+        ]
+        assert kb.unblock_task(board, task)
+        # A late comment on a historical run is not a new execution attempt.
+        with kb.write_txn(board):
+            kb._append_event(
+                board,
+                task,
+                "comment",
+                {"note": "Prior-run audit"},
+                run_id=terminal_history[-1]["id"],
+            )
+        for expected in ("ready", "blocked"):
+            launch(board, task, monkeypatch)
+            cli._single_query_exit_code(result)
+            dispatch._record_worker_exit(os.getpid(), 0)
+            dispatch.detect_crashed_workers(board)
+            assert kb.get_task(board, task).status == expected
+        assert [
+            dict(row) for row in board.execute("SELECT * FROM task_runs ORDER BY id")
+        ][: len(terminal_history)] == terminal_history
+        assert [e for e in kb.list_events(board, task) if e.kind == "blocked"][
+            -1
+        ].payload["retry_status"] == "blocked"
 
 
 @pytest.mark.parametrize("limit", [None, 1, 3])
@@ -162,3 +196,19 @@ def test_protocol_breaker_cannot_be_repromoted_by_unified_counter(
         dict(r)
         for r in board.execute("SELECT * FROM task_runs WHERE task_id=?", (task,))
     ] == before
+
+    assert kb.unblock_task(board, task)
+    for attempt in range(bound):
+        launch(board, task, monkeypatch)
+        dispatch._record_worker_exit(os.getpid(), 0)
+        dispatch.detect_crashed_workers(board)
+        expected = "blocked" if attempt == bound - 1 else "ready"
+        assert kb.get_task(board, task).status == expected
+        kb.recompute_ready(board)
+        assert kb.get_task(board, task).status == expected
+    assert [
+        dict(r)
+        for r in board.execute(
+            "SELECT * FROM task_runs WHERE task_id=? ORDER BY id", (task,)
+        )
+    ][: len(before)] == before

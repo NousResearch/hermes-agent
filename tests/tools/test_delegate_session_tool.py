@@ -278,6 +278,44 @@ def test_start_on_live_session_with_goal_dispatches_followup_turn():
     assert any("phase two goal" in m for m in client.messages), client.messages
 
 
+def test_start_with_goal_on_dead_client_reopens_and_dispatches():
+    """R69 (2026-09-17): the spool server drives follow-up phase turns with
+    action=start + session_id + goal. When the pi client behind that handle
+    has died (is_closed — e.g. the RPC process crashed mid-run), the start
+    must REOPEN the session on a fresh client and dispatch the goal there —
+    never dispatch into the closed client, which raises "pi rpc client is
+    closed" on every retry and strands the phase permanently."""
+    parent = Parent()
+    started = payload(ds.delegate_session(action="start", parent_agent=parent))
+    sid = started["session_id"]
+    dead_client = FakePiClient.instances[-1]
+    wait_for_status(parent, sid, "idle")
+
+    # Simulate the RPC process dying: client closed but the session record
+    # still live in the registry (exactly the spool server's view after a
+    # crashed turn).
+    dead_client.close()
+
+    result = payload(
+        ds.delegate_session(
+            action="start",
+            session_id=sid,
+            goal="reland goal",
+            parent_agent=parent,
+        )
+    )
+
+    assert result["success"] is True
+    fresh_client = FakePiClient.instances[-1]
+    assert fresh_client is not dead_client
+    assert fresh_client.is_closed is False
+    # The goal is dispatched on the REOPENED client, and the dead client
+    # never saw it.
+    wait_for_status(parent, sid, "idle")
+    assert any("reland goal" in m for m in fresh_client.messages), fresh_client.messages
+    assert not any("reland goal" in m for m in dead_client.messages)
+
+
 def test_steer_on_idle_session_degrades_to_send_instead_of_erroring():
     parent = Parent()
     started = payload(ds.delegate_session(action="start", parent_agent=parent))

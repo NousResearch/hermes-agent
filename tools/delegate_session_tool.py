@@ -846,11 +846,16 @@ def delegate_session(
                 is_dead = getattr(client_obj, "is_dead", None)
                 if callable(is_dead) and is_dead():
                     process_dead = True
-                reopen = normalized == "resume" and (
-                    existing.get("status") in {"closed", "error"}
-                    or getattr(client_obj, "is_closed", False)
-                    or process_dead
-                )
+                # R69 (2026-09-17): a dead client must reopen for ANY
+                # lifecycle action, not only resume. The spool server drives
+                # phases with action=start + session_id + goal (follow-up
+                # turns); with reopen gated on resume only, a start-with-goal
+                # on a dead pi client dispatched the turn into the CLOSED
+                # client ("pi rpc client is closed") and every retry hit the
+                # same dead handle — the phase could never recover without a
+                # brand-new session id. Dead is dead: reopen, then dispatch.
+                client_closed = bool(getattr(client_obj, "is_closed", False))
+                reopen = existing.get("status") in {"closed", "error"} or client_closed or process_dead
                 if not reopen:
                     if goal and goal.strip():
                         # Re-start on a live session is a FOLLOW-UP, not a

@@ -1020,6 +1020,14 @@ export function useGatewayBoot({
     let lastForcedWakeReconnectAt = 0
 
     const forceReconnectNow = () => {
+      // reconnectNow no-ops while boot is incomplete or a gateway switch is in
+      // flight; stamping the holdoff then would burn the window and drop the
+      // next 'online' (often the one with the network actually back), leaving
+      // recovery to the backoff loops. Stamp only when it will proceed.
+      if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
+        return
+      }
+
       const now = Date.now()
 
       if (now - lastForcedWakeReconnectAt < WAKE_RECONNECT_HOLDOFF_MS) {

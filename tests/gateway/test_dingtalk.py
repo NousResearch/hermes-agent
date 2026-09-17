@@ -695,6 +695,32 @@ class TestCardLifecycle:
         )
         assert "chat-1" in fired
 
+    @pytest.fixture
+    def adapter_without_card(self):
+        """Adapter with NO card_template_id / card SDK — the default for most installs."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        a = DingTalkAdapter(PlatformConfig(enabled=True, extra={}))
+        a._card_sdk = None
+        a._http_client = AsyncMock()
+        a._get_access_token = AsyncMock(return_value="token")
+        return a
+
+    @pytest.mark.asyncio
+    async def test_edit_message_without_card_config_does_not_touch_card_sdk(self, adapter_without_card):
+        """Cards disabled ⇒ an edit is a declared no-op, never a None-dereference.
+
+        Regression: ``send()`` guards on ``self._card_template_id and self._card_sdk`` but
+        ``edit_message()`` did not, so on an install without AI Cards every streaming edit
+        (heartbeat / tool progress) hit ``self._card_sdk.streaming_update_with_options_async``
+        on None → AttributeError swallowed into a per-edit WARNING.
+        """
+        a = adapter_without_card
+        result = await a.edit_message(
+            chat_id="chat-1", message_id="track-X", content="progress", finalize=True,
+        )
+        assert result.success is False
+        assert "not configured" in (result.error or "")
+
 
 # ---------------------------------------------------------------------------
 # AI Card Tests

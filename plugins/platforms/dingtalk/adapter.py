@@ -480,6 +480,12 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Stream updated content to an AI Card; ``message_id`` is the creating ``send()``'s out_track_id (callers track their own ids so parallel flows on one chat don't interfere)."""
+        # AI Cards not configured (no card_template_id / card SDK) ⇒ nothing this adapter ever sent is
+        # an editable card, so every streaming edit is a guaranteed no-op. Declare it instead of
+        # dereferencing ``self._card_sdk`` (None) — that raised AttributeError and logged a WARNING
+        # per edit (heartbeat / tool-progress noise) on installs without cards. Mirrors the guard in send().
+        if not (self._card_template_id and self._card_sdk):
+            return SendResult(success=False, error="AI Cards not configured")
         token = await self._get_access_token() if message_id else None
         if not token:
             return SendResult(success=False, error="message_id required" if not message_id else "No access token")

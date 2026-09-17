@@ -25,6 +25,7 @@ import time
 import pytest
 
 from agent.tool_executor import _ConcurrentToolAuthorizationGate
+from tests.agent._liveness import await_state, join_thread
 from tools import approval as approval_mod
 from tools import approval_context
 from tools import approval_human_wait
@@ -287,15 +288,20 @@ class TestApprovalPathsRecordHumanWait:
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
-        assert notified.wait(timeout=5)
-        time.sleep(0.1)
         try:
-            assert approval_human_wait.human_wait_seconds(SESSION) > 0.0
+            # Liveness, not a budget: assert the *state* this test is about (the
+            # poll loop marked itself as human wait) instead of timing a peer
+            # thread's start-up. Budget-shaped waits here assert the OS
+            # scheduler; see tests/agent/_liveness.py.
+            await_state(
+                lambda: approval_human_wait.human_wait_seconds(SESSION) > 0.0,
+                "the gateway approval poll never opened a human-wait window",
+            )
+            assert notified.is_set(), "the approval prompt was never shown to the user"
         finally:
             # Resolve the pending entry via the real production path.
             approval_mod.resolve_gateway_approval(SESSION, "deny", resolve_all=True)
-            t.join(timeout=5)
-        assert not t.is_alive()
+            join_thread(t, "the approval wait never returned after the decision")
         # Window closed once the wait resolved.
         assert approval_human_wait._human_wait_states[SESSION].pending == 0
 

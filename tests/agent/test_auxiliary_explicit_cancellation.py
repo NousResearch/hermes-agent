@@ -11,6 +11,13 @@ from typing import Any, Callable
 import pytest
 
 from agent import auxiliary_client as aux
+from tests.agent._liveness import PEER_THREAD_LIVENESS_S, join_thread, wait_event
+
+# The doubles below bound their own transport wait. A cancellation that only
+# landed when that bound lapsed *is* the bug these tests pin out, so the
+# latency assertions are stated relative to it instead of as free-floating
+# numbers that quietly encode how fast the host happened to be.
+_TRANSPORT_BOUND_S = 5.0
 
 
 class _BlockingStream:
@@ -20,7 +27,7 @@ class _BlockingStream:
 
     def __iter__(self):
         self.started.set()
-        self.closed.wait(timeout=5)
+        self.closed.wait(timeout=_TRANSPORT_BOUND_S)
         raise RuntimeError("transport closed")
 
     def close(self) -> None:
@@ -28,7 +35,7 @@ class _BlockingStream:
 
     def get_final_message(self) -> Any:
         self.started.set()
-        self.closed.wait(timeout=5)
+        self.closed.wait(timeout=_TRANSPORT_BOUND_S)
         raise RuntimeError("transport closed")
 
 
@@ -110,7 +117,7 @@ class _BedrockRuntimeClient:
 
     def converse(self, **_kwargs: Any) -> dict[str, Any]:
         self.started.set()
-        self.release.wait(timeout=5)
+        self.release.wait(timeout=_TRANSPORT_BOUND_S)
         return {
             "output": {
                 "message": {
@@ -143,13 +150,13 @@ def _cancel_silent_request(
 
     worker = threading.Thread(target=_worker, daemon=True)
     worker.start()
-    # Thread start-up on a loaded CI runner can exceed 1 s; the bound is only "eventually entered the transport".
-    assert started.wait(timeout=5), "request never entered its silent transport"
+    # Liveness, not a budget: how long a peer thread takes to start says nothing
+    # about the code under test on a loaded box — see tests/agent/_liveness.py.
+    wait_event(started, "request never entered its silent transport")
     cancelled_at = time.monotonic()
     cancel_event.set()
-    worker.join(timeout=5)
+    join_thread(worker, "explicit cancellation did not wake the silent request")
     elapsed = time.monotonic() - cancelled_at
-    assert not worker.is_alive(), "explicit cancellation did not wake the silent request"
     return result["exc"], elapsed
 
 
@@ -173,7 +180,10 @@ def test_protected_silent_provider_is_isolated_and_raises_frozen_explicit_cancel
     assert isinstance(exc, aux.AuxiliaryExplicitCancellation)
     assert exc.cause == "explicit_host_cancel"
     assert not client.closed.is_set()
-    assert elapsed < 0.75
+    assert elapsed < _TRANSPORT_BOUND_S, (
+        f"explicit cancellation took {elapsed:.2f}s — it waited out the "
+        f"transport's own {_TRANSPORT_BOUND_S:.0f}s bound instead of waking the request"
+    )
     stream.close()  # release the bounded daemon provider worker
 
 
@@ -187,7 +197,10 @@ def test_codex_silent_stream_is_isolated_without_closing_shared_client() -> None
 
     assert isinstance(exc, aux.AuxiliaryExplicitCancellation)
     assert not real_client.closed.is_set()
-    assert elapsed < 0.75
+    assert elapsed < _TRANSPORT_BOUND_S, (
+        f"explicit cancellation took {elapsed:.2f}s — it waited out the "
+        f"transport's own {_TRANSPORT_BOUND_S:.0f}s bound instead of waking the request"
+    )
     stream.close()
 
 
@@ -274,10 +287,9 @@ def test_cancelled_codex_orphan_timeout_preserves_cached_shared_client() -> None
     owner = threading.Thread(target=_run_owner, daemon=True)
     try:
         owner.start()
-        assert owner_started.wait(timeout=1)
+        wait_event(owner_started, "the owner request never entered its silent stream")
         cancel_event.set()
-        owner.join(timeout=1)
-        assert not owner.is_alive()
+        join_thread(owner, "the cancelled owner request never unwound")
         assert isinstance(owner_outcome["exc"], aux.AuxiliaryExplicitCancellation)
         # A real frontend clears the reusable host Event when the next turn
         # starts. The orphan must retain a frozen per-attempt cancellation cause.
@@ -285,7 +297,13 @@ def test_cancelled_codex_orphan_timeout_preserves_cached_shared_client() -> None
 
         # A second user can use the shared client while the cancelled provider
         # worker is still orphaned and its total-timeout timer is still armed.
-        assert not owner_stream.closed.is_set()
+        # Assert on the *shared* state only: this attempt's stream is not an
+        # invariant here — the orphan's own timer closing it IS the designed
+        # wake-up (asserted below), so pinning its pre-timer state would just be
+        # a race against the 0.12s timer.
+        assert not real_client.closed.is_set()
+        with aux._client_cache_lock:
+            assert aux._client_cache[cache_key][0] is wrapper
         concurrent = aux._relay_sync_completion(
             wrapper,
             {"model": "concurrent", "messages": [], "timeout": 1},
@@ -294,7 +312,9 @@ def test_cancelled_codex_orphan_timeout_preserves_cached_shared_client() -> None
 
         # Let the orphan's real adapter timer fire. It may close the attempt's
         # event stream to wake that worker, but never the process-shared client.
-        assert owner_stream.closed.wait(timeout=1)
+        assert owner_stream.closed.wait(timeout=PEER_THREAD_LIVENESS_S), (
+            "the orphan's armed total-timeout timer never closed its attempt stream"
+        )
         time.sleep(0.03)
         assert not real_client.closed.is_set()
         with aux._client_cache_lock:
@@ -330,7 +350,9 @@ def test_codex_timeout_and_explicit_cancel_have_one_linearized_outcome(
                 # where the historical implementation could race owner polling.
                 was_set = request_cancelled.is_set()
                 timer_read_started.set()
-                assert allow_timer_read_return.wait(timeout=1)
+                # Liveness only: the ordering this pins (snapshot taken before
+                # the cancel lands) is already fixed by the two lines above.
+                assert allow_timer_read_return.wait(timeout=PEER_THREAD_LIVENESS_S)
                 return was_set
             return request_cancelled.is_set()
 
@@ -375,23 +397,24 @@ def test_codex_timeout_and_explicit_cancel_have_one_linearized_outcome(
 
     owner = threading.Thread(target=_run_owner, name="race-owner", daemon=True)
     owner.start()
-    assert stream_started.wait(timeout=1)
+    wait_event(stream_started, "the racing owner never entered its silent stream")
     if winner == "timeout":
-        assert timer_read_started.wait(timeout=1)
+        wait_event(timer_read_started, "the watchdog timer never read the cancel state")
         request_cancelled.set()
         allow_timer_read_return.set()
     else:
         request_cancelled.set()
-    owner.join(timeout=1)
+    join_thread(owner, "the racing owner never unwound")
 
-    assert not owner.is_alive()
     if winner == "timeout":
         assert real_client.closed.is_set()
         assert isinstance(owner_outcome["exc"], TimeoutError)
         assert not isinstance(owner_outcome["exc"], aux.AuxiliaryExplicitCancellation)
     else:
         assert isinstance(owner_outcome["exc"], aux.AuxiliaryExplicitCancellation)
-        assert stream.closed.wait(timeout=1), "cancelled timer did not wake its stream"
+        assert stream.closed.wait(timeout=PEER_THREAD_LIVENESS_S), (
+            "cancelled timer did not wake its stream"
+        )
         assert not real_client.closed.is_set()
 
 
@@ -410,7 +433,10 @@ def test_anthropic_silent_stream_is_isolated_without_closing_shared_client() -> 
 
     assert isinstance(exc, aux.AuxiliaryExplicitCancellation)
     assert not real_client.closed.is_set()
-    assert elapsed < 0.75
+    assert elapsed < _TRANSPORT_BOUND_S, (
+        f"explicit cancellation took {elapsed:.2f}s — it waited out the "
+        f"transport's own {_TRANSPORT_BOUND_S:.0f}s bound instead of waking the request"
+    )
     stream.close()
 
 
@@ -469,18 +495,16 @@ def test_cancelled_attempt_does_not_close_or_fail_concurrent_shared_client_call(
     b_thread = threading.Thread(target=_session_b, daemon=True)
     a_thread.start()
     b_thread.start()
-    assert a_started.wait(timeout=1)
-    assert b_started.wait(timeout=1)
+    wait_event(a_started, "session-a never entered the shared transport")
+    wait_event(b_started, "session-b never entered the shared transport")
     cancel_event.set()
-    a_thread.join(timeout=1)
+    join_thread(a_thread, "the cancelled session-a call never unwound")
     try:
-        assert not a_thread.is_alive()
         assert isinstance(outcomes["a"], aux.AuxiliaryExplicitCancellation)
         assert not closed.is_set()
         assert evictions == []
         b_release.set()
-        b_thread.join(timeout=1)
-        assert not b_thread.is_alive()
+        join_thread(b_thread, "the concurrent session-b call never completed")
         assert not isinstance(outcomes["b"], BaseException)
         assert outcomes["b"].choices[0].message.content == "ok"
     finally:
@@ -505,7 +529,10 @@ def test_bedrock_silent_nonstream_request_is_isolated_without_close_wakeup() -> 
 
     assert isinstance(exc, aux.AuxiliaryExplicitCancellation)
     assert not runtime_client.closed.is_set()
-    assert elapsed < 0.75
+    assert elapsed < _TRANSPORT_BOUND_S, (
+        f"explicit cancellation took {elapsed:.2f}s — it waited out the "
+        f"transport's own {_TRANSPORT_BOUND_S:.0f}s bound instead of waking the request"
+    )
 
 
 def test_unprotected_sync_completion_stays_on_calling_thread() -> None:

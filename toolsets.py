@@ -37,6 +37,7 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
     # Service-gated connector account status and authorization links.
     "manage_connections",
+    "handoff",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.
@@ -124,6 +125,11 @@ TOOLSETS = {
     ),
     "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
     "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
+    "handoff": _ts(
+        "Prepares a handoff document for manual session continuation. Does not "
+        "automatically reset sessions or inject content into future turns.",
+        ["handoff"],
+    ),
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),

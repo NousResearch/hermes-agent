@@ -269,7 +269,7 @@ function PackageRow({
                 size="xs"
                 variant="outline"
               >
-                {p.updateToPin(agent.catalog_sha?.slice(0, 8) ?? '')}
+                {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
               </Button>
             )}
             {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}

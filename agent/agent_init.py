@@ -725,7 +725,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # must use their own key or Anthropic credentials leak to third-party endpoints.
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
-    effective_key = api_key or (resolve_anthropic_token() if _is_native_anthropic else None) or ""
+    effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
@@ -759,9 +759,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
 def _init_moa_client(agent, api_key):
     """provider == "moa": virtual Mixture-of-Agents facade, no real HTTP client."""
-    from agent.moa_loop import build_moa_facade
-    agent.api_mode = "chat_completions"
-
+    from agent.moa_loop import bind_moa_runtime
     # build_moa_facade relays "moa.*" events through tool_progress_callback so every surface
     # shows each reference's answer before the aggregator acts. Display-only; shared with
     # fallback-restore so a restored facade keeps emitting.
@@ -771,10 +769,7 @@ def _init_moa_client(agent, api_key):
     # facade emits "moa.reference", "moa.progress", "moa.phase", and "moa.aggregating" events, forwarded
     # through the same callback the tool lifecycle uses. Best-effort and cache-safe — display-only events,
     # they never touch the message history. See #53802.
-    agent.client = build_moa_facade(agent, agent.model)
-    agent._client_kwargs = {}
-    agent.api_key = api_key or "moa-virtual-provider"
-    agent.base_url = "moa://local"
+    bind_moa_runtime(agent, agent.model, api_key)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
 
@@ -822,11 +817,12 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     return client_kwargs
 
 
-def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str, Any]:
+def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
     Falls through to the init-time fallback chain, then raises with the missing-key /
-    no-provider diagnostic.
+    no-provider diagnostic. ``None`` when the chain landed on a MoA preset: the facade is
+    already bound and there is no OpenAI client to construct.
     """
     from agent.auxiliary_client import resolve_provider_client
     _routed_client, _ = resolve_provider_client(
@@ -856,9 +852,16 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
             continue
         if _fb_client is not None:
+            agent._fallback_activated = True
+            if str(_fb["provider"]).strip().lower() == "moa":
+                # The chokepoint handed back the preset's aggregator client, which only proves the
+                # preset resolves and its aggregator has credentials. A MoA entry means the preset
+                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+                from agent.moa_loop import bind_moa_runtime
+                bind_moa_runtime(agent, _fb["model"])
+                return None
             agent.provider = _fb["provider"]
             agent.model = _fb_model or _fb["model"]
-            agent._fallback_activated = True
             return _client_kwargs_from_routed(_fb_client, _provider_timeout)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
@@ -874,9 +877,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
             f"was found. Set the {_env_hint} environment "
             f"variable, or switch to a different provider with `hermes model`."
         )
+    from hermes_constants import profile_cli_selector
+    _sel = profile_cli_selector()
     raise RuntimeError(
-        "No LLM provider configured. Run `hermes model` to "
-        "select a provider, or run `hermes setup` for first-time "
+        f"No LLM provider configured. Run `hermes {_sel}model` to "
+        f"select a provider, or run `hermes {_sel}setup` for first-time "
         "configuration."
     )
 
@@ -919,6 +924,10 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         client_kwargs = _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout)
     else:
         client_kwargs = _routed_client_kwargs(agent, fallback_model, _provider_timeout)
+        if client_kwargs is None:  # init-time fallback bound the MoA facade
+            if not agent.quiet_mode:
+                print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
+            return
     from hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"
@@ -1068,10 +1077,13 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
+    # expose kanban_show interactively, and children/cron runs inherit the env var, without
+    # owning a task.
+    from agent.delegation_context import owned_kanban_task
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE if owned_kanban_task() and "kanban_show" in agent.valid_tool_names else ""
     )
     if agent.quiet_mode:
         return

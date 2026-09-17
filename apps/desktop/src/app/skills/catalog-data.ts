@@ -26,6 +26,8 @@ export interface CatalogEntry {
   hooks: string[]
   sourceUrl: string | null
   docsUrl: string | null
+  /** GitHub-hosted banner for plugin entries; the only third-party fetch the browser makes. */
+  imageUrl: string | null
   stars: number | null
   search: string
 }
@@ -36,6 +38,20 @@ const DOCS_ORIGIN = 'https://hermes-agent.nousresearch.com'
 const CATALOG_BASE = 'https://nousresearch.github.io/hermes-agent/docs/api'
 const text = (value: unknown): string => typeof value === 'string' ? value : ''
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter(v => typeof v === 'string') : []
+
+const IMAGE_HOSTS = new Set(['raw.githubusercontent.com', 'github.com'])
+
+/** Mirrors scripts/validate_plugin_catalog.py: https on a GitHub host, else no image. */
+export function catalogImageUrl(value: unknown): string | null {
+  try {
+    const url = new URL(text(value))
+    const host = url.hostname.toLowerCase()
+
+    return url.protocol === 'https:' && (IMAGE_HOSTS.has(host) || host.endsWith('.githubusercontent.com')) ? url.href : null
+  } catch {
+    return null
+  }
+}
 
 function webUrl(value: unknown): string | null {
   try {
@@ -98,6 +114,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
       docsUrl: webUrl(row.docsUrl) || (text(row.docsPath)
         ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}`
         : null),
+      imageUrl: kind === 'plugins' ? catalogImageUrl(row.image) : null,
       stars: typeof row.stars === 'number' && Number.isFinite(row.stars) ? row.stars : null,
       search: [name, description, author, category, row.categoryLabel, source, ...tags, ...tools, ...hooks]
         .filter(Boolean).join(' ').toLowerCase()

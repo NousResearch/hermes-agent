@@ -490,7 +490,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
-    # Wedged client (deadline blown, watchdog tripped, OAuth refresh died, subprocess exited): retire it.
+    # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
+    # silence alone no longer retires — it only logs a warning (#112928).
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
         _close_codex_session(agent)

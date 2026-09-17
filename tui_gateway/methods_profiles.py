@@ -91,6 +91,12 @@ def _read_profile_yaml(profile_dir) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def _yaml_scalar_to_json(value):
+    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
 def _clean_revisions(raw: dict) -> dict:
     """Normalise a ``_ui_meta_revisions`` map: str keys, non-bool ints clamped at 0."""
     return {str(k): max(0, int(v)) for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
@@ -232,7 +238,9 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
     row["ui_meta_revisions"] = _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}
     if isinstance(ui_meta, dict) and ui_meta:
-        row["ui_meta"] = ui_meta
+        # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
+        # coerce YAML-only scalars to their ISO string at the boundary (#92506).
+        row["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
@@ -306,20 +314,31 @@ def _inherit_launch_model(path) -> bool:
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):
         return False
-    model_cfg = (load_config_readonly() or {}).get("model") or {}
+    launch_cfg = load_config_readonly() or {}
+    model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
+    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
+    # rejects a provider it has not been told about ("Unknown provider").
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    if custom:
+        from hermes_cli.config import load_config, save_config
+        with _hermes_home_scope(path):
+            cfg = load_config()
+            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
+            save_config(cfg)
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
     return True
 
 
 def _mirror_launch_credentials(path, params: dict) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
-    ``share_auth`` reports ``auth: "shared"`` and skips the auth copy; ``mirror_credentials``
-    false skips everything. ``model_inherited`` is filled in by the caller."""
-    share_auth = is_truthy_value(params.get("share_auth", False))
-    mirrored = {"env": False, "auth": "shared" if share_auth else False, "model_inherited": False,
-                "voice": False}
+    ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
+
+    ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
+    profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
+    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
     if not is_truthy_value(params.get("mirror_credentials", True)):
         return mirrored
     launch_home = get_hermes_home()
@@ -330,13 +349,12 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
         # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
         # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
         _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
-    if not share_auth:  # a copy forks token state: the first refresh in either store strands the other
-        mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
-                                                       lambda src, dst: not dst.exists()), False)
-        if mirrored["auth"]:
-            # Drop single-use OAuth grants (first refresh strands every sibling); they read from the
-            # root grant via the pool fallback. API keys stay.
-            _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+    mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
+                                                   lambda src, dst: not dst.exists()), False)
+    if mirrored["auth"]:
+        # Drop single-use OAuth grants (a copy forks token state: the first refresh in either store
+        # strands the other); the new profile signs into those providers itself. API keys stay.
+        _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
     mirrored["voice"] = _mirror_voice_sections(path)
     return mirrored
 
@@ -346,8 +364,9 @@ def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
-    ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
-    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
+    ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (default true: a bare
+    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless);
+    ``share_auth`` is accepted from older clients and ignored."""
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")

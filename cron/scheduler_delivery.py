@@ -210,6 +210,13 @@ def _maybe_mirror_cron_delivery(
         )
 
 
+# chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
+# key the shared "thread" lane; Slack, Matrix and Telegram (forum topics: ``_build_message_event``
+# types every supergroup "group") keep the parent channel/room's "group" — a seed on the wrong slot
+# is a row no reply ever resolves to (#111896, #112918).
+_THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "group"}
+
+
 def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
     """Open a thread for a continuable cron job via ``adapter.create_handoff_thread``. Returns the
     thread_id, or ``None`` (no thread primitive / failed) = caller falls back to the DM mirror."""
@@ -282,14 +289,17 @@ def _seed_cron_thread_session(
     """Seed the freshly-opened cron thread's session with the brief (never raises), else the
     user's in-thread reply resolves to a transcript without it. Threads are participant-shared
     (no real user_id); a DM thread must seed ``chat_type="dm"`` — DM-thread replies route through
-    the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits."""
+    the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits.
+    Non-DM threads seed the slot the platform's adapter puts on an in-thread reply
+    (``_THREAD_REPLY_CHAT_TYPE``)."""
     text = (mirror_text or "").strip()
     if not text:
         return
     try:
         ok = _seed_cron_session(
             job, adapter, platform_name, chat_id, text,
-            thread_id=str(thread_id), chat_type="dm" if is_dm else "thread",
+            thread_id=str(thread_id),
+            chat_type="dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
             user_id="system:cron", user_name="Cron", chat_name=chat_name, scope_id=scope_id,
             discord_keys_on_thread=True)
         if ok:
@@ -653,6 +663,40 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+_BOT_CHAT_STDERR_TAIL = 500
+# stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
+_BOT_CHAT_STDOUT_TAIL = 200
+_BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
+
+
+def _format_failure_streams(result) -> str:
+    """Exit code plus labeled, redacted stderr/stdout tails for a failed delivery turn.
+
+    ``-Q`` reports the resume banner and ``session_id:`` while the response
+    rides stdout, so ``stderr or stdout`` discarded half the signal — and when
+    stderr is empty and stdout holds only the banner, the recorded error
+    carried zero diagnostics (#104056). The banner lines are dropped from the
+    stdout tail so what remains is the reason; the exit code is always named.
+    The text lands in ``last_delivery_error`` on disk, so it is scrubbed like
+    ``cron.incidents`` / ``cron.delivery_queue`` scrub their persisted errors.
+    """
+    from agent.redact import redact_sensitive_text
+
+    err = (getattr(result, "stderr", None) or "").strip()
+    out = (getattr(result, "stdout", None) or "").strip()
+    parts = [f"exit code {getattr(result, 'returncode', '?')}"]
+    if err:
+        parts.append(f"stderr: {err[-_BOT_CHAT_STDERR_TAIL:]}")
+    if out:
+        kept = "\n".join(
+            line for line in out.splitlines()
+            if line.strip() and not line.strip().lstrip("↻ ").startswith(_BOT_CHAT_BANNER_PREFIXES))
+        parts.append(
+            f"stdout: {kept[-_BOT_CHAT_STDOUT_TAIL:]}" if kept
+            else "stdout was only the resume banner")
+    return redact_sensitive_text(" | ".join(parts), force=True, redact_url_credentials=True)
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -784,14 +828,14 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
             creationflags=windows_hide_flags())
         if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
+            tail = _format_failure_streams(result)
             logger.warning(
-                "Job '%s': bot-chat delivery to profile '%s' failed (exit %s) at %s%s",
-                job_id, profile_label, result.returncode, home, f": {tail}" if tail else "")
+                "Job '%s': bot-chat delivery to profile '%s' failed at %s: %s",
+                job_id, profile_label, home, tail)
             return (
                 f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
                 "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening"
-                + (f". Details: {tail[-200:]}" if tail else ""))
+                f". Details: {tail}")
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:

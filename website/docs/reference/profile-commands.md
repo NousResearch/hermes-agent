@@ -245,7 +245,10 @@ hermes profile rename mybot assistant
 The rename also migrates the profile's persisted session/routing identity — session keys
 (`agent:<old>:*`), `sessions.profile_name`, heartbeats, and routing/delivery rows — to the new
 name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
-when it is running the CLI delegates to it.
+when it is running the CLI delegates to it. Checkpoint (`/rollback`) history of workspaces that
+live inside the profile directory is rekeyed to their new path as well, so it stays reachable
+after the rename; `hermes profile migrate-identity` retries that step too if it was reported as
+failed.
 
 ## `hermes profile migrate-identity`
 
@@ -274,6 +277,40 @@ hermes profile rename mybot assistant
 
 hermes profile migrate-identity mybot assistant
 # ✓ Session/routing identity migrated: mybot → assistant
+```
+
+## `hermes profile purge-identity`
+
+```bash
+hermes profile purge-identity <name>
+```
+
+Retries the identity purge of a delete that already completed. Run it if `hermes profile delete`
+reported that its session/routing identity settlement is still pending: restart the gateway (it
+reloads the routing index from the database, so the purge lands), or stop it — with no gateway
+holding the store the command performs the durable delete itself.
+
+The purge keys off `<name>` alone, so the profile directory does not have to exist — but a profile
+that is live again under that name is refused: identity is settled by name, so purging it would take
+the new profile's routing with it. Routing keys (`agent:<name>:*`), heartbeat rows and the profile's
+Telegram topic bindings/mode rows are deleted; `delivery_obligations` rows are marked `abandoned`
+rather than dropped, so pending delivery state is not lost silently. Session rows are not deleted by
+the purge itself — it settles identity, not history; whether a conversation record outlives a delete
+is decided by `hermes profile delete`, which removes the profile's own `profiles/<name>/`, its
+`state.db` included. Idempotent — re-running a completed purge succeeds with nothing left to purge.
+Exits non-zero when the name is a live profile again, when a live gateway refuses the purge, or when
+a database rejects the delete (a lock, or a partial failure).
+
+**Example:**
+
+```bash
+hermes profile delete mybot
+# ⚠ Profile was deleted, but the live gateway could not purge its session identity (…).
+#   Restart the gateway, then run:
+#     hermes profile purge-identity mybot
+
+hermes profile purge-identity mybot
+# ✓ Session/routing identity purged: mybot
 ```
 
 ## `hermes profile export`

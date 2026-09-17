@@ -653,6 +653,69 @@ class SessionGatewayMixin:
         self._execute_write(_do)
         return counts
 
+    def purge_profile_state(self, profile: str) -> Dict[str, int]:
+        """Delete exact profile identity from this state database (#111926, delete side).
+
+        The mirror of :meth:`rekey_profile_state`: a rename must rekey a profile's identity, a
+        delete must purge it. ``agent:<name>:*`` routing keys, ``gateway_heartbeats.profile``,
+        ``delivery_obligations`` and the telegram topic tables are bookkeeping for a profile that
+        no longer exists — left behind, every inbound event on a chat keyed to the deleted name
+        enters the routing index, resolves a profile whose directory is gone, and logs
+        ``Profile '<name>' does not exist`` on each event for the life of the store.
+
+        What each store gets, and why:
+
+        * Routing keys and heartbeat rows are hard-deleted — pure bookkeeping for a dead name.
+        * ``delivery_obligations`` rows are **terminalized** (``state='abandoned'``), not deleted:
+          a pending obligation is delivery state that should not vanish silently, and the ledger's
+          own retention prunes abandoned rows. Delivered history is left as it was.
+        * ``sessions`` rows are not deleted here: this helper settles identity, not history, and it
+          does not decide what a delete leaves of a profile's conversation record — ``delete_profile``
+          removes the profile's own home, ``state.db`` included, with the directory. Rows in a shared
+          store keep whatever ownership they had; re-binding or archiving them belongs to the flow
+          that recreates the name, not to this purge.
+
+        Idempotent.
+        """
+        name = (profile or "").strip()
+        counts: Dict[str, int] = {}
+        if not name:
+            return counts
+        ns, ns_len = f"agent:{name}:", len(f"agent:{name}:")
+
+        def _do(conn):
+            existing = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "gateway_routing" in existing:
+                counts["gateway_routing"] = conn.execute(
+                    "DELETE FROM gateway_routing WHERE substr(session_key, 1, ?) = ?",
+                    (ns_len, ns)).rowcount
+            if "gateway_heartbeats" in existing:
+                counts["gateway_heartbeats"] = conn.execute(
+                    "DELETE FROM gateway_heartbeats WHERE profile = ?", (name,)).rowcount
+            if "delivery_obligations" in existing:
+                # Terminalize, never hard-delete: a pending obligation is delivery state someone may
+                # still care about, and the ledger's own retention prunes abandoned rows. Only
+                # non-terminal rows are touched — delivered history is left exactly as it was.
+                counts["delivery_obligations"] = conn.execute(
+                    "UPDATE delivery_obligations SET state='abandoned', updated_at=? "
+                    "WHERE (adapter_profile = ? OR substr(session_key, 1, ?) = ?) "
+                    "AND state NOT IN ('delivered', 'abandoned')",
+                    (time.time(), name, ns_len, ns)).rowcount
+            if "telegram_dm_topic_mode" in existing:
+                counts["telegram_dm_topic_mode"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_mode WHERE profile_name = ?", (name,)).rowcount
+            if "telegram_dm_topic_bindings" in existing:
+                # A rename rewrites a binding's session_key namespace as well as its profile_name
+                # (:meth:`rekey_profile_state`), so matching on one alone leaves the other behind.
+                counts["telegram_dm_topic_bindings"] = conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings "
+                    "WHERE profile_name = ? OR substr(session_key, 1, ?) = ?",
+                    (name, ns_len, ns)).rowcount
+
+        self._execute_write(_do)
+        return counts
+
     @staticmethod
     def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as

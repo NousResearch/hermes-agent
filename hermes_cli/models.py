@@ -2255,14 +2255,14 @@ def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen) and MiniMax (Go) use /v1/messages, as do Qwen models on both
-# relays; everything else falls through to /v1/chat/completions.
+# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
+# everything else falls through to /v1/chat/completions.
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen"), "anthropic_messages")),
+        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
-        (("claude-",), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
+        (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}
 
 
@@ -2279,24 +2279,34 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     return "chat_completions"
 
 
+# Relay path per OpenCode family on opencode.ai hosts. The free tier is served by the Zen relay.
+_OPENCODE_FAMILY_PATHS = {"opencode-zen": "/zen", "opencode-free": "/zen", "opencode-go": "/zen/go"}
+
+
 def normalize_opencode_base_url(
     provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
     """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
     stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
     and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone."""
+    ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
+    the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
+    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported")."""
     url = str(base_url or "").strip().rstrip("/")
-    if not url or opencode_provider_family(provider_id) is None:
+    family = opencode_provider_family(provider_id)
+    if not url or family is None:
         return url
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        parsed = None
+    official = parsed is not None and (parsed.netloc.lower() == "opencode.ai" or parsed.netloc.lower().endswith(".opencode.ai"))
+    if official and re.fullmatch(r"/zen(/go)?(/v1)?", parsed.path):
+        url = f"{parsed.scheme}://{parsed.netloc}{_OPENCODE_FAMILY_PATHS[family]}{'/v1' if parsed.path.endswith('/v1') else ''}"
     if api_mode == "anthropic_messages":
         return re.sub(r"/v1$", "", url)
     if url.endswith("/v1"):
         return url
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower()
-    except Exception:
-        host = ""
-    return url + "/v1" if host == "opencode.ai" or host.endswith(".opencode.ai") else url
+    return url + "/v1" if official else url
 
 
 def github_model_reasoning_efforts(
@@ -2641,13 +2651,17 @@ def cached_fetch_api_models(
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
-    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True)
+    native_row = isinstance(entry, dict) and entry.get("native_catalog") is True
+    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=native_row)
 
     if valid:
         age = now - entry["at"]
         if age < ttl_seconds:
             return _catalog(entry)
-        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        # An empty native catalog is authoritative only inside the TTL (as in
+        # cached_provider_model_ids): never stale-serve it, or an Ollama that was model-less at
+        # first open keeps an empty row for the whole stale window after models are pulled.
+        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
             # opens (GUI pickers that must not block on a stopped local server) take the same
             # non-blocking refresh: without it a locally loaded model stayed invisible for the
@@ -2667,8 +2681,9 @@ def cached_fetch_api_models(
         stored = _entry(live, now)
         _store_cache_entry(cache_key, stored, cache)
         return _catalog(stored)
-    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it.
-    if _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True):
+    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
+    # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
+    if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return live
 

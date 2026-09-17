@@ -10,6 +10,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.image_eviction_policy import outbound_image_retire_count
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
     _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
@@ -592,19 +593,36 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
 
 
 def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
-    """Keep only the 3 most recent computer-use screenshots (~1,465 tokens each); older images
-    become a placeholder text block. Mutates ``result`` in place."""
-    image_count = 0
-    for msg in reversed(result):
-        content = msg.get("content")
-        for block in content if isinstance(content, list) else []:
-            inner = block.get("content") if _block_type(block) == "tool_result" else None
-            if not isinstance(inner, list) or not _has_block_type(inner, {"image"}):
-                continue
-            image_count += 1
-            if image_count > 3:
-                placeholder = _text_block("[screenshot removed to save context]")
-                block["content"] = [placeholder if b.get("type") == "image" else b for b in inner]
+    """Retire screenshot payloads once the request would cross the API's per-request image limit.
+
+    Mutates ``result`` in place. This wire pass has no byte sizes, so it enforces the block
+    ceiling only; the auxiliary Anthropic client (``agent.auxiliary_client`` via
+    ``anthropic_adapter.build_anthropic_kwargs``) reaches it without the compressor's
+    send-path pass, so it must hold the invariant alone. Policy: :mod:`agent.image_eviction_policy`.
+    """
+    reserved = sum(
+        1
+        for msg in result
+        for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        if _block_type(block) == "image"
+    )
+    # Parallel tool calls land as sibling tool_result blocks inside ONE user message
+    # (oldest first), so the inner walk must also run newest -> oldest or a batch that
+    # ends mid-message retires the newest frames instead of the oldest (#103217).
+    carriers = [
+        (block, sum(1 for b in block["content"] if _block_type(b) == "image"))
+        for msg in reversed(result)
+        for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
+        if _block_type(block) == "tool_result"
+        and isinstance(block.get("content"), list)
+        and _has_block_type(block["content"], {"image"})
+    ]
+    retire = outbound_image_retire_count([n for _, n in carriers], reserved)
+    for block, _ in carriers[len(carriers) - retire:]:
+        placeholder = _text_block("[screenshot removed to save context]")
+        block["content"] = [
+            placeholder if _block_type(b) == "image" else b for b in block["content"]
+        ]
 
 
 def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:

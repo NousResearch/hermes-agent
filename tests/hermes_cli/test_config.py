@@ -1932,7 +1932,7 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is True
     assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
     assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)

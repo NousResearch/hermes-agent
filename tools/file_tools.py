@@ -1291,8 +1291,13 @@ def _handle_search_files(args, **kw):
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
+    # The schema documents path='.'; a present-but-blank (or JSON null) value
+    # is not a missing key for dict.get, so apply the default here (#112424).
+    path = args.get("path", ".")
+    if path is None or (isinstance(path, str) and not path.strip()):
+        path = "."
     return search_tool(
-        pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
+        pattern=args.get("pattern", ""), target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
         order=args.get("order", "discovery"), task_id=tid)

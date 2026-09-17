@@ -23,6 +23,7 @@ _OPENROUTER_DESCRIPTIONS = {
     "openai/gpt-6-astra-flex": "0.5x price, flex tier",
     "openai/gpt-6-astra-pro-fast": "2x price, priority tier",
     "openai/gpt-6-astra-pro-flex": "0.5x price, flex tier",
+    "stealth/union-alpha": "free, stealth model",
 }
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     (mid, _OPENROUTER_DESCRIPTIONS.get(mid, "free" if mid.endswith(":free") else ""))
@@ -43,14 +44,16 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openrouter/pareto-code", "thinkingmachines/inkling:free", "thinkingmachines/inkling-small:free",
         "minimax/minimax-m3:free", "z-ai/glm-5.2:free", "poolside/laguna-s-2.1:free", "poolside/laguna-xs-2.1:free",
         "nvidia/nemotron-3-super-120b-a12b:free", "nvidia/nemotron-3-ultra-550b-a55b:free",
-        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3.5-lightning:free", "stealth/union-alpha",
     )
 ]
 
-# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier).
+# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier —
+# ``stealth/union-alpha`` is a $0 stealth SKU without the ``:free`` suffix).
 _OPENROUTER_ONLY = {
     "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
     "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
+    "stealth/union-alpha",
 }
 
 

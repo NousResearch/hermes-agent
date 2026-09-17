@@ -69,9 +69,15 @@ def _google_error_body(
 class TestIsStandardKeyAuthError:
 
 
-    def test_rejects_non_401_status(self):
+    def test_oauth_message_requires_401(self):
         assert not is_standard_key_auth_error(400, GOOGLE_AUTH_MESSAGE)
         assert not is_standard_key_auth_error(403, GOOGLE_AUTH_MESSAGE)
+        # The 400 path stays narrowed to API_KEY_INVALID: a generic 400 on an AIza-shaped key
+        # (malformed payload, unknown model) must not claim the key TYPE was rejected.
+        assert not is_standard_key_auth_error(
+            400, "Invalid JSON payload received. Unknown name \"x\".", "INVALID_ARGUMENT",
+            api_key=_AIZA_STANDARD_KEY,
+        )
 
 
     def test_empty_message_is_safe(self):

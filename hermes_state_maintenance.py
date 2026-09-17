@@ -209,7 +209,7 @@ class SessionMaintenanceMixin:
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
                               **filters) -> List[Dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
-        = inactivity threshold: latest message, else ``started_at``)."""
+        = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
         where, params = self._prune_where(older_than_days, source, filters)
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
@@ -253,7 +253,7 @@ class SessionMaintenanceMixin:
               AND COALESCE(s.end_reason, '') <> 'compression'
               {pin_clause}
               AND NOT (COALESCE(s.hidden, 0) <> 0 AND COALESCE(s.title, '') = ?)
-              AND {_sql_session_last_active("s")} < ?
+              AND {_LAST_ACTIVE_SQL} < ?
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:

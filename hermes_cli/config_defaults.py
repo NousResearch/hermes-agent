@@ -2085,15 +2085,15 @@ DEFAULT_CONFIG = {
     # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # Prune ENDED sessions inactive for retention_days (activity = latest message, else
-        # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
+        # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
+        # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
         # are never deleted; stale automation sessions whose process died are *closed*, then get a
         # full retention window before removal.
         "auto_prune": True,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the latest message timestamp, falling back to creation
-        # time for empty sessions. Sessions that are still open, pinned, or mid-turn are never deleted — the
+        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
+        # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
         # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
         # whose process died without closing them; those are *closed*, not deleted, and get a further full
         # retention window before removal. Default true since #54189: without it state.db grows without

@@ -10,7 +10,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { $diskPluginsScanPending } from '@/contrib/runtime-loader'
-import { _resetLegacyDiscardForTests, getRememberedRoute, setRememberedRoute, setRememberedSessionId } from '@/store/session'
+import {
+  _resetLegacyDiscardForTests,
+  getRememberedRoute,
+  setRememberedRoute,
+  setRememberedSessionId
+} from '@/store/session'
 
 import { makeSessionInfo } from '../../../test/session-info'
 
@@ -76,7 +81,12 @@ it('restores a remembered plugin page whose route registers after the session li
   expect(navigate).not.toHaveBeenCalled()
   expect(getRememberedRoute('default')).toBe('/html-gallery')
 
-  const dispose = registry.register({ area: 'routes', id: 'gallery:page', data: { path: '/html-gallery' }, render: () => null })
+  const dispose = registry.register({
+    area: 'routes',
+    id: 'gallery:page',
+    data: { path: '/html-gallery' },
+    render: () => null
+  })
   act(() => $diskPluginsScanPending.set(false))
 
   expect(navigate).toHaveBeenCalledWith('/html-gallery', { replace: true })

@@ -23,6 +23,7 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
   }
 
   const profile = windowProfileOverride()
+
   const saved = profile
     ? { connectionId: new URLSearchParams(window.location.search).get('connectionId') || null, profile }
     : $defaultProfileRoute.get()

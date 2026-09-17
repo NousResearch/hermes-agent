@@ -1,8 +1,8 @@
 """Clipboard image extraction and text write for macOS, Windows, Linux, and WSL2.
 
-No Python deps — only OS-level CLI tools: macOS osascript (always present) / pngpaste (optional);
-Windows and WSL2 PowerShell via WinForms, Get-Clipboard, then a file-drop fallback; Linux
-wl-paste (Wayland), xclip (X11).
+No Python deps — only OS-level CLI tools: macOS osascript (always present) / pngpaste (optional)
+plus a file-url fallback for Finder copies; Windows and WSL2 PowerShell via WinForms,
+Get-Clipboard, then a file-drop fallback; Linux wl-paste (Wayland), xclip (X11).
 """
 
 import base64
@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace')
 _PS_FLAGS = ("-NoProfile", "-NonInteractive")
+_FILE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
 
 def _nonempty(path: Path) -> bool:
@@ -57,8 +58,8 @@ def save_clipboard_image(dest: Path) -> bool:
     """Save the clipboard image to *dest* as PNG; True when an image was found and written."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
-        # pngpaste first (fast, handles more formats); osascript is the always-present fallback.
-        return _macos_pngpaste(dest) or _macos_osascript(dest)
+        # pngpaste first (fast, handles more formats); osascript bitmap, then Finder file-url.
+        return _macos_pngpaste(dest) or _macos_osascript(dest) or _macos_save_file_image(dest)
     return (_windows_save if sys.platform == "win32" else _linux_save)(dest)
 
 
@@ -117,9 +118,61 @@ def write_clipboard_text(text: str) -> bool:
 
 # ── macOS ────────────────────────────────────────────────────────────────
 
+def _macos_clipboard_info() -> str:
+    try:
+        r = subprocess.run(["osascript", "-e", "clipboard info"], timeout=3, **_TEXT)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _macos_has_bitmap(info: str | None = None) -> bool:
+    text = _macos_clipboard_info() if info is None else info
+    return "«class PNGf»" in text or "«class TIFF»" in text
+
+
+def _macos_clipboard_file_image() -> Path | None:
+    """Local image path when the clipboard holds a Finder file-url, not bitmap data."""
+    try:
+        r = subprocess.run(
+            ["osascript", "-e", 'POSIX path of (the clipboard as «class furl»)'],
+            timeout=3, **_TEXT)
+    except Exception as e:
+        logger.debug("osascript clipboard file-url probe failed: %s", e)
+        return None
+    if r.returncode != 0:
+        return None
+    raw = r.stdout.strip().strip('"')
+    if not raw:
+        return None
+    path = Path(raw)
+    try:
+        if path.suffix.lower() in _FILE_IMAGE_EXTS and path.is_file():
+            return path
+    except OSError:
+        return None
+    return None
+
+
 def _macos_has_image() -> bool:
-    return _probe(["osascript", "-e", "clipboard info"], 3,
-                  lambda r: "«class PNGf»" in r.stdout or "«class TIFF»" in r.stdout)
+    info = _macos_clipboard_info()
+    if _macos_has_bitmap(info):
+        return True
+    return "«class furl»" in info and _macos_clipboard_file_image() is not None
+
+
+def _macos_save_file_image(dest: Path) -> bool:
+    src = _macos_clipboard_file_image()
+    if src is None:
+        return False
+    try:
+        dest.write_bytes(src.read_bytes())
+        if _is_png_file(dest) or (_convert_to_png(dest) and _is_png_file(dest)):
+            return True
+    except OSError as e:
+        logger.debug("clipboard file-url extract failed: %s", e)
+    dest.unlink(missing_ok=True)
+    return False
 
 
 def _macos_pngpaste(dest: Path) -> bool:
@@ -136,7 +189,7 @@ def _macos_pngpaste(dest: Path) -> bool:
 
 def _macos_osascript(dest: Path) -> bool:
     """osascript PNG extraction (always available)."""
-    if not _macos_has_image():
+    if not _macos_has_bitmap():
         return False
     script = f'''try
   set imgData to the clipboard as «class PNGf»

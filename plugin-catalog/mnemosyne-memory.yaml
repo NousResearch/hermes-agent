@@ -1,6 +1,6 @@
 name: mnemosyne-memory
 repo: https://github.com/mnemosyne-oss/mnemosyne
-sha: 5161d684490a633987ad6ff8c089cc9353e44d78
+sha: 88d4e951f3c334adc61539c11ce5c3e3fcb2b8c4
 subdir: integrations/hermes
 description: Local-first memory layer for Hermes Agent — SQLite with vector + FTS5 hybrid recall, episodic consolidation, temporal knowledge graph. Zero cloud.
 maintainer: mnemosyne-oss

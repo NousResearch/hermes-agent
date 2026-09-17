@@ -1425,8 +1425,6 @@ class RelayAdapter(BasePlatformAdapter):
         if seal is not None:
             return seal
         if explicit_platform:
-            if _interim:
-                send_metadata["_interim_send"] = True
             return await self.send_for_platform(
                 explicit_platform, chat_id, content, reply_to=reply_to, metadata=send_metadata or None
             )

@@ -891,12 +891,9 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        metadata = ctx._status_thread_metadata
-        if is_warning_status(event_type, message):
-            metadata = {**(metadata or {}), "_interim_send": True}
         def present():
             fut = self._schedule(
-                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, metadata),
+                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
                 f"status_callback ({event_type}) scheduling error",
             )
             if fut is not None and ctx._cleanup_progress:

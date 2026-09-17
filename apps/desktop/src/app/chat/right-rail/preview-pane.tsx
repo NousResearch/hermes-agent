@@ -70,6 +70,7 @@ import { type PreviewInputEvent, registerPreviewInput } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
+import { registerPreviewCamera } from './preview-shot'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
 type PreviewWebview = HTMLElement & {
@@ -770,6 +771,32 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       }
     })
   }, [isWebPreview, tabId])
+
+  // Publish the CAMERA for this tab (desktop_preview action=screenshot): the
+  // main process photographs this guest's webContents — the same target annotate
+  // uses — and writes the PNG, so only its path comes back.
+  useEffect(() => {
+    if (!isWebPreview || !tabId) {
+      return
+    }
+
+    return registerPreviewCamera(tabId, async () => {
+      const webview = webviewRef.current
+      const webContentsId = webview?.getWebContentsId?.()
+
+      if (typeof webContentsId !== 'number') {
+        throw new Error('preview webview is not ready')
+      }
+
+      const shot = await window.hermesDesktop.capturePreviewToFile?.({ webContentsId })
+
+      if (!shot?.path) {
+        throw new Error('preview capture is unavailable')
+      }
+
+      return { ...shot, ...guestPage(webview, target.url) }
+    })
+  }, [isWebPreview, tabId, target.url])
 
   // Publish the SCRIPT runner for this tab: the one channel into the guest
   // page, shared by the tour tool (injected driver.js walkthroughs) and the

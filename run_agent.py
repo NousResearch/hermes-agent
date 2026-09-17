@@ -267,6 +267,7 @@ class AIAgent(
         tool_complete_callback: callable = None, thinking_callback: callable = None,
         reasoning_callback: callable = None, clarify_callback: callable = None,
         read_terminal_callback: callable = None, read_preview_callback: callable = None,
+        screenshot_preview_callback: callable = None,
         drive_preview_callback: callable = None, read_window_below_callback: callable = None,
         connection_callback: callable = None, tour_callback: callable = None, step_callback: callable = None,
         stream_delta_callback: callable = None, interim_assistant_callback: callable = None,

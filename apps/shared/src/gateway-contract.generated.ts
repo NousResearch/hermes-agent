@@ -4851,6 +4851,8 @@ export interface ServerRequestMap {
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
+  /** Photograph the in-app browser preview's webview to a PNG (JSON text answer). */
+  'preview.screenshot': { params: EmptyRequestParams; result: ValueResult }
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
   /** Masked sudo password for the terminal tool. */
@@ -4874,6 +4876,7 @@ export const SERVER_REQUEST_METHODS = [
   'clarify',
   'preview.act',
   'preview.read',
+  'preview.screenshot',
   'secret',
   'sudo',
   'terminal.read',

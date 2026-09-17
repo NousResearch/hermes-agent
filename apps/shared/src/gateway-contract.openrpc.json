@@ -33627,6 +33627,24 @@
       }
     },
     {
+      "name": "preview.screenshot",
+      "summary": "Photograph the in-app browser preview's webview to a PNG (JSON text answer).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/EmptyRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
       "name": "secret",
       "summary": "Masked value for a named env var (skills / setup flows).",
       "params": [

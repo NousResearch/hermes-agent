@@ -161,6 +161,8 @@ server_request("terminal.read", params=ReadRangeRequestParams, result=ValueResul
                doc="Read the visible in-app terminal buffer (JSON text answer).")
 server_request("preview.read", params=ReadRangeRequestParams, result=ValueResult,
                doc="Read the in-app browser preview's text (JSON text answer).")
+server_request("preview.screenshot", params=EmptyRequestParams, result=ValueResult,
+               doc="Photograph the in-app browser preview's webview to a PNG (JSON text answer).")
 server_request("window.read", params=EmptyRequestParams, result=ValueResult,
                doc="Enumerate the native window below the app (JSON text answer).")
 

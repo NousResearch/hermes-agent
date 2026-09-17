@@ -82,6 +82,36 @@ function toDataUrl(image: CaptureImage): string {
   return `data:image/png;base64,${image.toPNG().toString('base64')}`
 }
 
+export interface CaptureFile {
+  height: number
+  path: string
+  width: number
+}
+
+/**
+ * Photograph the whole visible guest viewport to a PNG on disk (`desktop_preview`
+ * action=screenshot). `write` runs only once an image exists, so a failed capture
+ * leaves no file behind.
+ */
+export async function capturePreviewToFile(
+  guest: CaptureGuest | null | undefined,
+  write: (png: Buffer) => Promise<string> | string
+): Promise<CaptureFile> {
+  if (!guest || guest.isDestroyed()) {
+    throw new Error('preview guest is gone')
+  }
+
+  const image = await guest.capturePage()
+
+  if (!image || image.isEmpty()) {
+    throw new Error('preview capture was empty')
+  }
+
+  const size = image.getSize?.() ?? { height: 0, width: 0 }
+
+  return { height: size.height, path: await write(image.toPNG()), width: size.width }
+}
+
 export async function capturePreviewContents(
   guest: CaptureGuest | null | undefined,
   rect?: CaptureRect,

@@ -62,6 +62,27 @@ describe('preview action request routing', () => {
   })
 })
 
+describe('preview screenshot request routing', () => {
+  it('leaves a scoped screenshot request unanswered in a window showing another session', () => {
+    const { handled, respond, fail } = deliver('preview.screenshot', { session_id: 'session-a' }, 'session-b')
+
+    expect(handled).toBe(true)
+    expect(respond).not.toHaveBeenCalled()
+    expect(fail).not.toHaveBeenCalled()
+  })
+
+  it('fails fast for an unscoped request with no session in view', () => {
+    const { respond } = deliver('preview.screenshot', {}, null)
+
+    expect(respond).toHaveBeenCalledWith({
+      value: JSON.stringify({
+        error: 'The in-app browser is only photographed in the session the user is looking at.',
+        success: false
+      })
+    })
+  })
+})
+
 describe('tour request routing', () => {
   afterEach(() => {
     $toursEnabled.set(true)

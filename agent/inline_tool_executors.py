@@ -140,12 +140,19 @@ _read_preview = _callback_tool(
     ("start", "start"), ("count", "count"),
 )
 
+_screenshot_preview = _callback_tool(
+    "tools.screenshot_preview_tool", "screenshot_preview_tool", "screenshot_preview_callback",
+)
+
+_PREVIEW_CALLBACK_ACTIONS = {"read": _read_preview, "screenshot": _screenshot_preview}
+
 
 def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
-    # action=read needs the GUI callback (agent-level); open/close go through the
+    # read/screenshot need the GUI callback (agent-level); open/close go through the
     # registry handler like any other tool.
-    if (args.get("action") or "").strip() == "read":
-        return _read_preview(agent, args, ctx)
+    fn = _PREVIEW_CALLBACK_ACTIONS.get((args.get("action") or "").strip())
+    if fn is not None:
+        return fn(agent, args, ctx)
     from tools.preview_tool import _handle_preview
 
     return _handle_preview(args)

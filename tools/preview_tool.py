@@ -2,8 +2,8 @@
 """The `desktop_preview` tool — the preview pane beside the chat, as ONE tool.
 
 open/close/read used to be three tools that each re-taught "the preview pane" world;
-one action enum states it once (~576 -> ~210 schema tokens). action=read keeps its
-agent-level callback dispatch (agent_runtime_helpers -> agent.read_preview_callback).
+one action enum states it once (~576 -> ~210 schema tokens). read/screenshot keep
+their agent-level callback dispatch (agent_runtime_helpers -> agent.*_callback).
 Lives in the ``desktop_ui`` toolset — desktop-app sessions only.
 """
 
@@ -26,36 +26,41 @@ def preview_close(url: str = "") -> str:
 _ACTIONS = {
     "open": lambda args: open_preview_tool(url=args.get("url", ""), label=args.get("label", "")),
     "close": lambda args: preview_close(url=args.get("url", "")),
-    # read needs the GUI callback and is dispatched at the agent level.
+    # read/screenshot need the GUI callback and are dispatched at the agent level.
     "read": lambda args: tool_error(
         "preview read must run inside a desktop session (no GUI callback here)."),
+    "screenshot": lambda args: tool_error(
+        "preview screenshot must run inside a desktop session (no GUI callback here)."),
 }
 
 
 def _handle_preview(args, **kw):
-    """Non-read actions only: action=read is dispatched at the agent level."""
+    """open/close only: read and screenshot are dispatched at the agent level."""
     fn = _ACTIONS.get((args.get("action") or "").strip())
     if fn is None:
-        return tool_error("action must be one of: open, close, read.")
+        return tool_error("action must be one of: open, close, read, screenshot.")
     return fn(args)
 
 
 PREVIEW_SCHEMA = {
     "name": "desktop_preview",
     "description": (
-        "Open, close, or read the preview pane beside the chat. open: show "
-        "a web URL (bare domains fine), a localhost dev server, or a file path "
+        "Open, close, read, or photograph the preview pane beside the chat. open: "
+        "show a web URL (bare domains fine), a localhost dev server, or a file path "
         "(HTML renders live) — opens for the current window only. close: dismiss "
         "the whole pane, or one tab via url. read: what the pane currently shows "
         "— returns {kind, url, title, text, start, end, total_chars}; a Browser "
         "tab's text is the rendered page's visible text, paged with start/count "
         "(char offsets); a file tab answers identity only (read the file with "
-        "read_file)."
+        "read_file). screenshot: a PNG of the pane's webview alone, never the Hermes "
+        "window — {success, path, width, height, kind, title, host}; use it to see "
+        "layout or a rendering read's text cannot describe. read and screenshot need "
+        "the desktop app."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["open", "close", "read"]},
+            "action": {"type": "string", "enum": ["open", "close", "read", "screenshot"]},
             "url": {
                 "type": "string",
                 "description": "open: the target. close: one tab (omit for the whole pane).",

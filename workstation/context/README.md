@@ -8,17 +8,18 @@ Before changing Workstation code, read these documents in order:
 
 1. [`../../AGENTS.md`](../../AGENTS.md) — repository-wide engineering rules and invariants.
 2. [`CURRENT_STATE.md`](CURRENT_STATE.md) — what works, what is partial, what is not built, and the latest validation state.
-3. [`MAINLINE_CONSOLIDATION.md`](MAINLINE_CONSOLIDATION.md) — the pre-1.5 gate result, complete PR/branch disposition ledger, and recurring post-milestone review rule.
-4. [`DECISIONS.md`](DECISIONS.md) — settled downstream architecture decisions.
-5. [`CONSTRAINTS.md`](CONSTRAINTS.md) — non-negotiable boundaries and security/maintenance constraints.
-6. [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — Workstation runtime architecture and distribution model.
-7. [`../UPSTREAM.md`](../UPSTREAM.md) and [`../UPSTREAM_DELTA.md`](../UPSTREAM_DELTA.md) — upstream base, synchronization model, and tracked downstream delta.
-8. [`../SOURCE_MATRIX.md`](../SOURCE_MATRIX.md) — ownership and use of internal/external components.
-9. [`../ROADMAP.md`](../ROADMAP.md) — sequencing and intentionally deferred work.
-10. [`TESTING.md`](TESTING.md) — validation ladder and evidence required before a Workstation change is considered stable.
-11. [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — reproduced or observed problems whose causes must not be guessed.
-12. [`engineering-journal/CURRENT.md`](engineering-journal/CURRENT.md) — active hypothesis/experiment ledger and anti-repeat memory for ongoing Workstation investigations. Read it before creating a new validation harness or repeating an experiment.
-13. [`../PATCH_MANIFEST.md`](../PATCH_MANIFEST.md) when touching an upstream integration point, rebase/migration tooling, or the downstream patch surface.
+3. [`CANONICAL_EXECUTION_RELIABILITY_GATE.md`](CANONICAL_EXECUTION_RELIABILITY_GATE.md) — **active immediate implementation gate** established by the 2026-09-17 forensic audit; it supersedes older roadmap sequencing until its exit criteria pass.
+4. [`MAINLINE_CONSOLIDATION.md`](MAINLINE_CONSOLIDATION.md) — the pre-1.5 gate result, complete PR/branch disposition ledger, and recurring post-milestone review rule.
+5. [`DECISIONS.md`](DECISIONS.md) — settled downstream architecture decisions.
+6. [`CONSTRAINTS.md`](CONSTRAINTS.md) — non-negotiable boundaries and security/maintenance constraints.
+7. [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — Workstation runtime architecture and distribution model.
+8. [`../UPSTREAM.md`](../UPSTREAM.md) and [`../UPSTREAM_DELTA.md`](../UPSTREAM_DELTA.md) — upstream base, synchronization model, and tracked downstream delta.
+9. [`../SOURCE_MATRIX.md`](../SOURCE_MATRIX.md) — ownership and use of internal/external components.
+10. [`../ROADMAP.md`](../ROADMAP.md) — sequencing and intentionally deferred work. The Canonical Execution Reliability Gate is the current active milestone.
+11. [`TESTING.md`](TESTING.md) — validation ladder and evidence required before a Workstation change is considered stable.
+12. [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) — reproduced or observed problems whose causes must not be guessed.
+13. [`engineering-journal/CURRENT.md`](engineering-journal/CURRENT.md) — active hypothesis/experiment ledger and anti-repeat memory for ongoing Workstation investigations. Read it before creating a new validation harness or repeating an experiment.
+14. [`../PATCH_MANIFEST.md`](../PATCH_MANIFEST.md) when touching an upstream integration point, rebase/migration tooling, or the downstream patch surface.
 
 After this read-order, inspect the **current `main` implementation and its tests** for the subsystem you intend to change. Documentation is intent and state; code on `main` is the source of truth for implementation details.
 
@@ -28,12 +29,13 @@ A coding agent must be able to answer these questions before editing Workstation
 
 - Which existing Hermes subsystem owns this state or capability?
 - Is the proposed change extending an existing path or creating a duplicate source of truth?
-- Is the capability process-scoped, session-scoped, BrowserTask-scoped, or profile-scoped?
+- Is the capability process-scoped, session-scoped, BrowserTask-scoped, TaskRun-scoped, operation-scoped, or profile-scoped?
+- What canonical `task_id` / `run_id` / `operation_id` lineage applies to a mutation or completion claim?
 - What is the upstream delta created by the change?
 - Which behavior contract will prove the change works end to end?
 - What security boundary changes, if any?
 
-If any answer is unclear, inspect the implementation and tests before writing code. Do not infer missing behavior from filenames, old plans, or previous conversation state.
+If any answer is unclear, inspect the implementation and tests before writing code. Do not infer missing behavior from filenames, old plans or previous conversation state.
 
 ## Continuous engineering journal
 

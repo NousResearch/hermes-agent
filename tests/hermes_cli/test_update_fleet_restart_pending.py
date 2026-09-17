@@ -803,3 +803,188 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
 
     assert capsys.readouterr().err == ""
     assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+
+def _write_deferred_receipt(runtimes, fleet):
+    """A ``--no-gateway-restart`` receipt: post-pull sha recorded, restart deferred to a supervisor."""
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps({"outcome": "success", "exit_code": 0, "plan": {"runtimes": runtimes}, "fleet": fleet}),
+        encoding="utf-8",
+    )
+
+
+def _patch_live_fleet(monkeypatch, rows):
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: rows)
+
+
+def test_marker_discharged_when_receipt_records_a_non_gateway_runtime(monkeypatch, capsys):
+    """A deferred update records the managed dashboard in ``plan.runtimes``.
+
+    The gateway matrix can never vouch for a serve/dashboard identity either way, so its presence
+    must not veto the marker's own evidence: once every live gateway serves ``expected_sha``, the
+    gateway obligation the marker speaks for is settled (#107402, #107817).
+    """
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_deferred_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "dashboard", "profile": "default", "pid": 43, "code_sha": None},
+        ],
+        fleet=[],
+    )
+    _patch_live_fleet(
+        monkeypatch,
+        [{"profile": "default", "pid": 99, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_marker_kept_when_non_gateway_runtime_hides_a_missing_owed_gateway(monkeypatch, capsys):
+    """Skipping a non-gateway row must not let an owed *gateway* without a live row through."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_deferred_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "alpha", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "gateway", "profile": "beta", "pid": 43, "code_sha": "o" * 40},
+            {"kind": "dashboard", "profile": "default", "pid": 44, "code_sha": None},
+        ],
+        fleet=[],
+    )
+    _patch_live_fleet(
+        monkeypatch,
+        [{"profile": "alpha", "pid": 99, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_marker_kept_when_a_recorded_gateway_is_unidentifiable(monkeypatch, capsys):
+    """An entry naming no gateway profile still fails closed."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_deferred_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "unknown", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "dashboard", "profile": "default", "pid": 43, "code_sha": None},
+        ],
+        fleet=[],
+    )
+    _patch_live_fleet(
+        monkeypatch,
+        [{"profile": "default", "pid": 99, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_warn_discharged_when_receipt_keeps_a_stale_sample_and_a_non_gateway_runtime(monkeypatch, capsys):
+    """The receipt half of the same shape: no marker, a fleet sample frozen before the deferred
+    restart, and a recorded dashboard.
+
+    Both halves are gateway-scoped questions, so a current fleet settles them — this is the state
+    a hand-cleared marker leaves behind, and it must not re-arm the warning.
+    """
+    disk_sha = "e" * 40
+    update_cmd._fleet_restart_pending_marker_path().unlink(missing_ok=True)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_deferred_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "dashboard", "profile": "default", "pid": 43, "code_sha": None},
+        ],
+        fleet=[{"profile": "default", "pid": 42, "code_sha": "o" * 40, "state": "stale"}],
+    )
+    _patch_live_fleet(
+        monkeypatch,
+        [{"profile": "default", "pid": 99, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._pending_fleet_restart_needed()
+
+
+def test_warn_kept_when_the_receipt_gateway_identity_is_unidentifiable(monkeypatch, capsys):
+    """The receipt half keeps failing closed: a gateway entry naming no profile is never covered."""
+    disk_sha = "e" * 40
+    update_cmd._fleet_restart_pending_marker_path().unlink(missing_ok=True)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    _write_deferred_receipt(
+        runtimes=[
+            {"kind": "gateway", "profile": "unknown", "pid": 42, "code_sha": "o" * 40},
+            {"kind": "dashboard", "profile": "default", "pid": 43, "code_sha": None},
+        ],
+        fleet=[{"profile": "default", "pid": 42, "code_sha": "o" * 40, "state": "stale"}],
+    )
+    _patch_live_fleet(
+        monkeypatch,
+        [{"profile": "default", "pid": 99, "code_sha": disk_sha, "code_version": "0.21.3", "state": "current"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._pending_fleet_restart_needed()
+
+
+def test_warn_silent_when_the_completed_restart_receipt_also_records_a_dashboard(monkeypatch, capsys):
+    """The completed-restart case (above) on a host that also runs the managed dashboard.
+
+    Same receipt shape as ``test_startup_warn_silent_when_failed_receipt_already_restarted_fleet``,
+    plus the ``dashboard`` row a deferred/managed-dashboard host records. That row is what used to
+    veto the whole receipt, so the update that DID restart the fleet onto ``post_update.sha`` still
+    warned forever.
+    """
+    pre, pulled = "a" * 40, "b" * 40
+    update_cmd._fleet_restart_pending_marker_path().unlink(missing_ok=True)
+    _patch_marker_sha(monkeypatch, "c" * 40)  # checkout moved on by hand, as in the #112604 case
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "failed", "exit_code": 1,
+                "stop_reason": "AttributeError: module 'hermes_cli.main_dashboard' has no attribute 'x'",
+                "pre_update": {"sha": pre}, "post_update": {"sha": pulled},
+                "gateway_restart": {
+                    "restarted_services": ["hermes-gateway"], "relaunched_profiles": [],
+                    "externally_supervised_profiles": [], "killed_pids": [], "failed_units": [],
+                    "incomplete": False, "phase_error": "",
+                },
+                "fleet": [],
+                "plan": {
+                    "runtimes": [
+                        {"kind": "gateway", "profile": "default", "code_sha": pre, "pid": 1},
+                        {"kind": "dashboard", "profile": "default", "code_sha": None, "pid": 2},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _patch_live_fleet(
+        monkeypatch,
+        [{"profile": "default", "pid": 42, "code_sha": pulled, "code_version": "0.21.3", "state": "stale"}],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""

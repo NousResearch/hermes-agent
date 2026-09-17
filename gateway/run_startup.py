@@ -15,6 +15,7 @@ import os
 import signal
 import time
 from contextlib import suppress
+from contextvars import copy_context
 from datetime import datetime
 from pathlib import Path
 from gateway.config import Platform
@@ -107,6 +108,31 @@ class GatewayStartupMixin:
             return
         self._startup_warmup_task = asyncio.ensure_future(self._warm_turn_prerequisites())
 
+    async def _run_boot_probe_in_launch_scope(self, fn):
+        """Run a boot-time probe on the default executor under the LAUNCH profile's scope when
+        multiplexing (the ``_discover_gateway_mcp_tools`` shape). Boot probes (``check_fn``s, the
+        free-tier bootstrap) read profile-scoped secrets; an unscoped read under multiplex fails
+        closed, so routing overrides resolve as absent and default routing applies. ``copy_context``
+        carries the contextvars across the executor hop; single-profile keeps environ semantics."""
+        loop = asyncio.get_running_loop()
+        if getattr(self.config, "multiplex_profiles", False):
+            from gateway.run import _async_profile_runtime_scope
+            from hermes_constants import get_hermes_home
+            try:
+                async with _async_profile_runtime_scope(get_hermes_home()):
+                    return await loop.run_in_executor(None, copy_context().run, fn)
+            except Exception:
+                # Same fallback as load_gateway_config_for_runner: a scope that cannot be built must not
+                # abort startup; the probe runs unscoped as it did before.
+                logger.debug("multiplex launch-scope entry failed for boot probe %s; running unscoped",
+                             getattr(fn, "__name__", fn), exc_info=True)
+        return await loop.run_in_executor(None, copy_context().run, fn)
+
+    async def _run_free_tier_bootstrap(self) -> None:
+        """The free-tier bootstrap mints the Portal identity through the same profile-scoped routing
+        overrides the warm-up resolves, so it takes the same launch-profile binding."""
+        await self._run_boot_probe_in_launch_scope(self._start_free_tier_bootstrap)
+
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
         failed warm-up degrades to lazy init and must not block startup."""
@@ -115,9 +141,8 @@ class GatewayStartupMixin:
             logging.WARNING, "Turn-machinery warm-up failed; first inbound turn will initialize lazily",
             exc_info=True,
         ):
-            loop = asyncio.get_running_loop()
             t0 = time.monotonic()
-            tool_count = await loop.run_in_executor(None, _warm_turn_machinery_sync)
+            tool_count = await self._run_boot_probe_in_launch_scope(_warm_turn_machinery_sync)
             logger.info(
                 "Turn machinery warmed in %.1fs (%d tool schema(s) materialized)",
                 time.monotonic() - t0, tool_count,
@@ -1375,7 +1400,7 @@ class GatewayStartupMixin:
         # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
         # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
         # inventory and no network.
-        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
+        await self._run_free_tier_bootstrap()
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True
@@ -1507,6 +1532,10 @@ class GatewayStartupMixin:
             chat_type = "dm" if home_chat_id.startswith("D") else "group"
             scope_for_chat = getattr(transport.adapter, "scope_id_for_chat", None)
             scope_id = home.scope_id or (scope_for_chat(home_chat_id) if callable(scope_for_chat) else None)
+        if platform == Platform.MATRIX:
+            # Matrix likewise keys an in-thread reply on the ROOM's type (#112918); the adapter's
+            # get_chat_info reports "dm"/"group" for the home room.
+            chat_type = "dm" if await self._handoff_home_is_dm(transport.adapter, home_chat_id) else "group"
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
         dest_source = SessionSource(
             platform=platform,
@@ -1524,6 +1553,17 @@ class GatewayStartupMixin:
             home_chat_id=home_chat_id, effective_thread_id=effective_thread_id, source=dest_source,
             handoff_config=handoff_config,
         )
+
+    @staticmethod
+    async def _handoff_home_is_dm(adapter, home_chat_id: str) -> bool:
+        """Whether the home chat is a DM by the adapter's own ``get_chat_info`` (``type: "dm"``);
+        unknown/failed → not a DM, the common handoff target."""
+        try:
+            info = await adapter.get_chat_info(home_chat_id)
+        except Exception:
+            logger.debug("Handoff: get_chat_info failed for %s", home_chat_id, exc_info=True)
+            return False
+        return isinstance(info, dict) and info.get("type") == "dm"
 
     def _handoff_session_key(self, dest, profile_name: Optional[str]) -> str:
         """Destination session_key by the adapters' own rules. Thread keys omit user_id so the next

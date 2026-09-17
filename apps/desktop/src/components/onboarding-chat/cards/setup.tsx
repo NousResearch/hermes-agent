@@ -42,7 +42,12 @@ export function ConnectorsCard({ locked }: CardProps) {
   // straight to manage_connections; a name the gateway does not carry would be
   // a pick the build chat cannot honour.
   const rows = useMemo(() => (catalog.status === 'ready' ? orderConnectorPicks(catalog.rows) : []), [catalog])
-  const shown = rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(query.toLowerCase()))
+  const search = query.trim().toLowerCase()
+
+  const shown = search
+    ? rows.filter(row => `${row.name ?? ''} ${connectorTitle(row.connector)}`.toLowerCase().includes(search))
+    : rows.slice(0, 12)
+
   const picked = rows.filter(row => answers.connectors.includes(row.connector))
 
   const toggle = (id: string) =>

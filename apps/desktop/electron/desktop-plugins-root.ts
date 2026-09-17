@@ -181,18 +181,18 @@ export async function materializeDesktopHalf(
 
   if (fs.existsSync(target)) {
     if (!existing) {
-      return null
+      // A real standalone install has its entry point. A marker-less folder
+      // without one is an interrupted unified-package copy: the old copy
+      // wrote the marker last, so leaving it here would block every retry.
+      if (fs.existsSync(path.join(target, 'plugin.js'))) {
+        return null
+      }
     }
 
-    if (existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
+    if (existing && existing.source === sourceDir && existing.sourceMtimeMs >= stat.mtimeMs) {
       return null
     }
-
-    await fs.promises.rm(target, { force: true, recursive: true })
   }
-
-  await fs.promises.mkdir(appRoot, { recursive: true })
-  await fs.promises.cp(sourceDir, target, { force: true, recursive: true })
 
   const marker: DesktopHalfMarker = {
     package: packageName,
@@ -201,9 +201,41 @@ export async function materializeDesktopHalf(
     ...(await packageOrigin(packageDir))
   }
 
-  await fs.promises.writeFile(path.join(target, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+  await publishDesktopTree(sourceDir, target, staged =>
+    fs.promises.writeFile(path.join(staged, PACKAGE_MARKER), JSON.stringify(marker, null, 2) + '\n')
+  )
 
   return target
+}
+
+/** Copy `sourceDir` to `target` through a staging sibling (`<parent>/.<name>.staging-*`)
+ *  and rename the finished tree into place. `finalize` runs on the staged tree
+ *  before publication, so a marker is never missing from a published folder.
+ *  Directory replacement is not atomic on every platform Electron supports, but
+ *  the complete copy exists before the old one is removed, so a failure leaves
+ *  either the old folder or none — never a partial, marker-less one that a
+ *  later pass would mistake for a manual install (#112450). */
+export async function publishDesktopTree(
+  sourceDir: string,
+  target: string,
+  finalize?: (staged: string) => Promise<void>
+): Promise<void> {
+  const parent = path.dirname(target)
+  const name = path.basename(target)
+
+  await fs.promises.mkdir(parent, { recursive: true })
+  const stagingRoot = await fs.promises.mkdtemp(path.join(parent, `.${name}.staging-`))
+  const staged = path.join(stagingRoot, name)
+
+  try {
+    await fs.promises.cp(sourceDir, staged, { force: true, recursive: true })
+    await finalize?.(staged)
+    // rename() refuses to replace a non-empty directory, so the old copy goes first.
+    await fs.promises.rm(target, { force: true, recursive: true })
+    await fs.promises.rename(staged, target)
+  } finally {
+    await fs.promises.rm(stagingRoot, { force: true, recursive: true })
+  }
 }
 
 function isMissing(error: unknown): boolean {

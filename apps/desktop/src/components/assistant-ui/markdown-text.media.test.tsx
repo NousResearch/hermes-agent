@@ -1,9 +1,9 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
 
-import { MarkdownTextContent } from './markdown-text'
+import { MarkdownTextContent, MessageTextContent } from './markdown-text'
 
 const REMOTE_IMAGE_PATH = '/home/user/project/images/remote-preview.png'
 const REMOTE_IMAGE_DATA_URL = 'data:image/png;base64,cmVtb3RlLWltYWdl'
@@ -48,5 +48,16 @@ describe('MarkdownTextContent remote images', () => {
       path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fimages%2Fremote-preview.png',
       profile: 'remote-work'
     })
+  })
+})
+
+describe('MessageTextContent MEDIA directives', () => {
+  afterEach(cleanup)
+
+  it('renders a raw audio MEDIA directive through the canonical player instead of exposing the directive', async () => {
+    const { container } = render(<MessageTextContent text="MEDIA:/tmp/group-voice.mp3" />)
+
+    await waitFor(() => expect(container.querySelector('audio[controls]')).not.toBeNull())
+    expect(container.textContent).not.toContain('MEDIA:')
   })
 })

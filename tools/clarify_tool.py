@@ -136,7 +136,8 @@ def _normalize_questions(questions) -> tuple:
     return normalized, None
 
 
-def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, cancelled: bool = False) -> str:
+def _batch_result(normalized: List[dict], answers: dict, timed_out: bool,
+                  cancelled: bool = False, notice: Optional[str] = None) -> str:
     """Assemble batch result JSON with an explicit status per question.
 
     Answers locked before a timeout or cancellation are preserved. Missing
@@ -144,7 +145,9 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, cancel
     conflated with a deliberate empty-answer skip. The top-level
     ``timed_out``/``cancelled`` flags (present only when true) tell the agent
     whether blanks are deliberate skips, the user walking away, or a
-    cancel-all from a batch-capable surface.
+    cancel-all from a batch-capable surface. ``notice`` (surface-supplied,
+    only beside ``timed_out``) says WHY the wait ended, so an undeliverable
+    prompt never reads as user inactivity.
     """
     responses = []
     for entry in normalized:
@@ -166,6 +169,9 @@ def _batch_result(normalized: List[dict], answers: dict, timed_out: bool, cancel
     result: Dict[str, object] = {"responses": responses}
     if timed_out:
         result["timed_out"] = True
+    if timed_out:
+        if notice:
+            result["notice"] = str(notice)
     if cancelled:
         result["cancelled"] = True
     return json.dumps(result, ensure_ascii=False)
@@ -176,8 +182,8 @@ def run_question_batch(normalized: List[dict], callback, question: str = "") -> 
 
     Batch-capable callbacks (a ``questions`` kwarg, detected by signature)
     get the whole list once and reply with ``{"answers": {qid: raw}}`` plus
-    an optional ``timed_out`` flag — as a dict or a JSON string (the
-    tui_gateway ``_block`` bridge can only carry strings).
+    optional ``timed_out``/``cancelled``/``notice`` fields — as a dict or a
+    JSON string (the tui_gateway ``_block`` bridge can only carry strings).
 
     Legacy callbacks are looped one question at a time (messaging adapters,
     older plugins). An explicit empty answer is a skip and the loop
@@ -198,18 +204,20 @@ def run_question_batch(normalized: List[dict], callback, question: str = "") -> 
             answers = dict(raw.get("answers") or {})
             timed_out = bool(raw.get("timed_out"))
             cancelled = bool(raw.get("cancelled"))
+            notice = raw.get("notice")
         elif isinstance(raw, str) and raw.strip():
             parsed = _json_as(raw, dict)
             if isinstance(parsed, dict):
                 answers = dict(parsed.get("answers") or {})
                 timed_out = bool(parsed.get("timed_out"))
                 cancelled = bool(parsed.get("cancelled"))
+                notice = parsed.get("notice")
             else:
                 cancelled = True
         else:
             # A batch-capable surface uses an empty response for cancel-all.
             cancelled = True
-        return _batch_result(normalized, answers, timed_out, cancelled)
+        return _batch_result(normalized, answers, timed_out, cancelled, notice)
 
     answers = {}
     timed_out = False
@@ -294,7 +302,8 @@ CLARIFY_SCHEMA = {
         "enumerated inside the question text (choices render as pickable "
         "rows; options written into the question are dead prose the user "
         "can't click). Result: {responses: [...]} in question order (plus "
-        "timed_out=true if the user stopped part-way). Prefer deciding "
+        "timed_out=true, and a notice saying why, if the user stopped "
+        "part-way or the prompt could not be delivered). Prefer deciding "
         "low-stakes questions yourself; don't use this for dangerous-command "
         "confirmation (the terminal tool handles that)."
     ),

@@ -268,8 +268,8 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
     try:
-        from hermes_cli.anon_auth import route_is_welcome_host
-        if route_is_welcome_host(getattr(agent, "base_url", "")):
+        from hermes_cli.anon_auth import is_anonymous_agent
+        if is_anonymous_agent(agent):
             # The free tier has no credits, no agent key and no auth.json to inspect: its session
             # ended and could not be replaced. The two doors are a sign-in or another provider.
             _plines(agent, "   Your session ended and Hermes couldn't start a new one.",
@@ -480,13 +480,21 @@ def _recover_format_errors(
     return False
 
 
+_WELCOME_ROUTE_HEAL_COPY = {
+    "anon_on_paid_host": "Reconnected to the free model's own route.",
+    "named_on_welcome_host": "Reconnected to your Nous account's own route.",
+}
+
+
 def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -> bool:
     """Two one-shot repairs for the Nous free tier, both silent on the wire and named once in chat.
 
     ``model_not_free``: the session asked the welcome host for a model it does not serve; move
     to the first alternate the gateway named (its own model) and retry, instead of failing the
-    turn. ``anon_on_paid_host``: this process is pointed at the paid host with a free-tier
-    identity (a stale route); re-read the credentials, which heals the URL, and retry.
+    turn. ``anon_on_paid_host`` / ``named_on_welcome_host``: this process is pointed at the other
+    identity's host (a stale route); re-read the credentials, which heals the URL, and retry. The
+    refresh reports False when the store yields the same route, so a user-set
+    ``NOUS_INFERENCE_BASE_URL`` falls straight through to the terminal copy.
 
     Reads the CLASSIFIER's context (``classified.error_context``): that is where
     ``_nous_welcome_tier`` parks ``welcome_refusal`` / ``welcome_route``. The turn's other context
@@ -508,14 +516,14 @@ def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -
             logger.info("%sNous free tier: moved %s -> %s after model_not_free", agent.log_prefix, requested, target)
             return True
     route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
-    if route == "anon_on_paid_host" and not _retry.welcome_route_heal_attempted:
+    if route in _WELCOME_ROUTE_HEAL_COPY and not _retry.welcome_route_heal_attempted:
         _retry.welcome_route_heal_attempted = True
         try:
             healed = bool(agent._try_refresh_nous_client_credentials(force=True))
         except Exception:
             healed = False
         if healed:
-            _vlines(agent, "🔐 Reconnected to the free model's own route. Retrying request...")
+            _vlines(agent, f"🔐 {_WELCOME_ROUTE_HEAL_COPY[route]} Retrying request...")
             return True
     return False
 
@@ -737,6 +745,9 @@ def _welcome_surface_kind(classified: Any) -> str:
     route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
     if route == "tier_disabled":
         return "disabled"
+    # A named account on the welcome host has already signed in: no sign-in card, copy only.
+    if route == "named_on_welcome_host":
+        return ""
     return "route" if route else ""
 
 
@@ -747,13 +758,14 @@ def _stamp_free_tier(result: Dict[str, Any], kind: str, message: str) -> Dict[st
     return result
 
 
-def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
+def _welcome_outage_copy(base_url: Any, classified: Any, *, anonymous: bool = False) -> str:
     """On the Nous free tier, a transport / server failure that outlived every retry reads as one
     plain sentence (the free model is having trouble) rather than the technical summary. Empty
     for every other route and for rate limits / billing, which have their own copy."""
     try:
         from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
-        if not route_is_welcome_host(base_url):
+        # Both: an anonymous JWT sent to a user-overridden paid host never reached the free model.
+        if not anonymous or not route_is_welcome_host(base_url):
             return ""
         # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
         # are not the free model's trouble.
@@ -768,6 +780,8 @@ def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
+    # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
+    FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
 }
 
 
@@ -888,9 +902,9 @@ def nonretryable_client_error_result(
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
-    if _welcome_hint:
+    if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
-        _stamp_free_tier(result, _welcome_surface_kind(classified),
+        _stamp_free_tier(result, _kind,
                          _welcome_tier_guidance(classified, model=model, in_chat=True, door=False))
     return result
 
@@ -912,6 +926,7 @@ def max_retries_exhausted_result(
     guidance (the latter wins), persist, build the result with ``failure_reason`` /
     ``failure_retryable`` / ``billing_block``."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
+    from hermes_cli.anon_auth import is_anonymous_agent
     from agent.conversation_loop import (
         _billing_block_dict, _billing_or_entitlement_message, _billing_terminal_label,
         _print_billing_or_entitlement_guidance,
@@ -996,7 +1011,7 @@ def max_retries_exhausted_result(
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
             _free_tier_kind = _welcome_surface_kind(classified)
-        elif _outage := _welcome_outage_copy(base_url, classified):
+        elif _outage := _welcome_outage_copy(base_url, classified, anonymous=is_anonymous_agent(agent)):
             _final_response, _free_tier_kind = _outage, "outage"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
@@ -1418,16 +1433,17 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
             is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        from hermes_cli.anon_auth import route_is_welcome_host
+        from hermes_cli.anon_auth import is_anonymous_agent
+        anonymous = is_anonymous_agent(agent)
         _classified_ctx = getattr(classified, "error_context", None) or {}
-        # Route-gated: only the welcome host's fairshare body is an allowance verdict; a paid-host
-        # 429 keeps main's rule (an exhausted x-ratelimit bucket), whatever its body says.
+        # Only an anonymous request's fairshare body is an allowance verdict; named
+        # requests keep the exhausted-bucket rule, whatever their host or body says.
         _genuine = (
-            (route_is_welcome_host(getattr(agent, "base_url", "")) and is_long_welcome_rate_limit(_classified_ctx))
+            (anonymous and is_long_welcome_rate_limit(_classified_ctx))
             or is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state))
         if _genuine:
             _merged = {**(error_context if isinstance(error_context, dict) else {}), **_classified_ctx}
-            record_nous_rate_limit(headers=_err_hdrs, error_context=_merged)
+            record_nous_rate_limit(headers=_err_hdrs, error_context=_merged, anonymous=anonymous)
         else:
             logger.info(
                 "Nous 429 looks like upstream capacity "

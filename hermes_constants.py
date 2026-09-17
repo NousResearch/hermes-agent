@@ -265,6 +265,28 @@ def named_profile_is_deleted(profile_home: str | Path) -> bool:
     return profile_tombstone_path(Path(profile_home)).exists()
 
 
+# A directory under profiles/ is a profile only when something identifies it as one.
+# Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
+# none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
+# listed, served, ticked, or seeded with the default install's credentials.
+_PROFILE_IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+
+
+def named_profile_has_identity(profile_home: str | Path) -> bool:
+    # A dangling symlinked marker (clone/migration leftover) is still an identity claim:
+    # ``is_file()`` follows links, so it alone would make such a profile unlistable.
+    home = Path(profile_home)
+    return any((home / marker).is_file() or (home / marker).is_symlink() for marker in _PROFILE_IDENTITY_MARKERS)
+
+
+def named_profile_is_live(profile_home: str | Path) -> bool:
+    """A resolvable named profile: an existing dir with identity that has not been deleted.
+    ``-p``/``--profile`` resolution and ``profile_exists`` share this so a stale ghost shell can
+    never be started as a backend (whose ``ensure_hermes_home`` would rebuild the full tree)."""
+    home = Path(profile_home)
+    return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
+
+
 def mark_named_profile_deleted(profile_home: str | Path) -> None:
     marker = profile_tombstone_path(Path(profile_home))
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -787,9 +809,14 @@ def _legacy_path_has_content(path: Path) -> bool:
     return True
 
 
-def display_hermes_home() -> str:
-    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``)."""
-    home = get_hermes_home()
+def display_hermes_home(home: Path | None = None) -> str:
+    """User-facing ``~/`` display string for HERMES_HOME (``~/.hermes/profiles/coder``).
+
+    ``home`` overrides the lookup for callers that run before the CLI has applied the sticky
+    ``active_profile`` (``get_hermes_home()`` would emit the wrong-profile fallback warning there).
+    """
+    if home is None:
+        home = get_hermes_home()
     try:  # as_posix(): str() on Windows yields chimeras like ~/AppData\Local\hermes/skills/
         return "~/" + home.relative_to(Path.home()).as_posix()
     except ValueError:

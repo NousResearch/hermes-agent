@@ -139,6 +139,9 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 
 SNAPSHOT_FILE = "scan_snapshot.json"
 CHECKPOINT_FILE = "scan_checkpoint.json"
+# Checkpoint schema 2: per-session stats read the compaction-archived display history, not just
+# the active window. Version 1 caches were computed active-only and are rescanned once.
+_CHECKPOINT_SCHEMA_VERSION = 2
 
 
 def _data_dir() -> Path:
@@ -209,7 +212,7 @@ def load_checkpoint() -> Dict[str, Any]:
         data.setdefault("sessions", {})
         if isinstance(data.get("sessions"), dict):
             return data
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
 
 
 def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -558,7 +561,9 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
     except Exception as exc:
         return {"sessions": [], "aggregate": {}, "error": f"Could not open SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
 
-    previous_sessions = load_checkpoint()["sessions"]  # load_checkpoint guarantees a dict
+    previous_checkpoint = load_checkpoint()
+    previous_sessions = previous_checkpoint["sessions"]  # load_checkpoint guarantees a dict
+    checkpoint_is_current = int(previous_checkpoint.get("schema_version") or 0) == _CHECKPOINT_SCHEMA_VERSION
     reused = rescanned = 0
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
     try:
@@ -574,11 +579,14 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
             cached = previous_sessions.get(sid)
             cached = cached if isinstance(cached, dict) else {}
             title = meta.get("title") or meta.get("preview")
-            if isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
+            if checkpoint_is_current and isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
                 stats = dict(cached["stats"])
                 reused += 1
             else:
-                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid))
+                # Compaction-archived display history too (deduped, no Undo/Rewind rows): the active
+                # window shrinks after compaction, and stats read from it were never monotonic
+                # (#112273). Rewound rows stay out — that work was undone.
+                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid, include_compacted=True))
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):
@@ -599,7 +607,7 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                     progress_callback(list(sessions), idx, total_sessions)
                 except Exception:
                     pass  # Advisory — a broken publisher must never abort the scan.
-        _write_json(CHECKPOINT_FILE, {"schema_version": 1, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
+        _write_json(CHECKPOINT_FILE, {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
     finally:
         db.close()
     return {
@@ -703,9 +711,11 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     """Evaluate every achievement definition against a scan result. Used by ``compute_all``
     for finished scans AND by the background progress callback for in-flight snapshots;
     ``is_partial=True`` skips persisting ``state.json`` unlocks — an "unlock time" from
-    half a scan could be invalidated by a later session."""
+    half a scan could be invalidated by a later session. Persisted unlocks are still read
+    for partials: the background scan publishes them to the cache, so an earned badge would
+    otherwise render as locked for the whole rescan (#112273)."""
     aggregate = scan.get("aggregate", {})
-    state = load_state() if not is_partial else {"unlocks": {}}
+    state = load_state()
     unlocks = state.setdefault("unlocks", {})
     now = int(time.time())
     evaluated = []
@@ -714,6 +724,11 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
         unlock_id = definition["id"]
         if not is_partial and result["unlocked"] and unlock_id not in unlocks:
             unlocks[unlock_id] = {"unlocked_at": now, "first_tier": result.get("tier"), "evidence": evidence_for(definition, scan.get("sessions", []))}
+        # Sticky unlocks: state.json is a floor. A badge earned on evidence that rewind/compaction
+        # later removed from the scan basis must not flicker back to locked (#112273).
+        if unlock_id in unlocks and not result["unlocked"]:
+            result.update(unlocked=True, discovered=True, state="unlocked",
+                          tier=result.get("tier") or unlocks[unlock_id].get("first_tier"))
         item = {**definition, **result}
         if result["unlocked"]:
             item["unlocked_at"] = unlocks.get(unlock_id, {}).get("unlocked_at")

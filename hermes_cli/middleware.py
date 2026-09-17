@@ -159,10 +159,10 @@ class _DownstreamExecutionError(Exception):
 
 
 def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwargs: Any) -> Any:
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins import _delivery_manager
 
     payload_key = "request" if "request" in kwargs else "args"
-    callbacks = list(get_plugin_manager()._middleware.get(kind, []))
+    callbacks = list(_delivery_manager()._middleware.get(kind, []))
     if not callbacks:
         return terminal_call(kwargs[payload_key])
 

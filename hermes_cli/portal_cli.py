@@ -13,7 +13,7 @@ DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-
 # Static `portal tools` catalog — the partners Tool Gateway routes to today: (key, label, partner).
 _CATALOG = [
     ("web", "Web search & extract", "Firecrawl"),
-    ("image_gen", "Image generation", "FAL"),
+    ("image_gen", "Image generation", "FAL"),  # printed partner follows the stored image_gen.model
     ("tts", "Text-to-speech", "OpenAI TTS"),
     ("browser", "Browser automation", "Browser Use"),
     ("modal", "Cloud terminal", "Modal"),
@@ -104,7 +104,9 @@ def _cmd_open(args) -> int:
 
 def _cmd_tools(args) -> int:
     """List the Tool Gateway catalog + current routing."""
-    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_cli.nous_subscription import (
+        _MANAGED_IMAGE_GATEWAY_LABELS, _managed_image_gateway, get_nous_subscription_features,
+    )
 
     config = load_config() or {}
     try:
@@ -118,8 +120,11 @@ def _cmd_tools(args) -> int:
         print(color("  Not logged into Nous Portal — sign in with `hermes portal`.", Colors.YELLOW))
         print()
 
+    image_partner = _MANAGED_IMAGE_GATEWAY_LABELS[_managed_image_gateway(config)]
     label_width = max(len(label) for _, label, _ in _CATALOG)
     for key, label, partner in _CATALOG:
+        if key == "image_gen":
+            partner = image_partner
         feat = features.features.get(key)
         state = color("unknown", Colors.DIM) if feat is None else _feature_state(feat, via_nous="✓ via Nous Portal")
         print(f"  {label:<{label_width}}  partner: {partner:<14} {state}")

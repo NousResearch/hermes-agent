@@ -98,6 +98,16 @@ def test_discord_bot_authorized_when_allow_bots_mentions(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_discord_hook_mentions_never_grants_central_authorization(monkeypatch):
+    runner = _make_bare_runner()
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "hook_mentions")
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "999888777")
+
+    source = _make_discord_bot_source(bot_id="999888777")
+    assert runner._is_user_authorized(source) is False
+    assert runner._is_user_authorized(source, plugin_authorized=True) is True
+
+
 def test_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
     """The is_bot bypass is Discord-specific — a Telegram bot source with
     is_bot=True must NOT be authorized just because DISCORD_ALLOW_BOTS=all.

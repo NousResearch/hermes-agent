@@ -25,7 +25,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 # Allowlist of agent-turn hot-path hooks bounded by plugins.hook_callback_timeout (fail-open:
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
 # Intentionally unbounded: on_session_finalize/reset (last-chance flush — abandon can lose state);
-# subagent_start (observer); pre_gateway_dispatch (policy gate — neither fail mode is acceptable);
+# subagent_start (observer);
 # pre/post_approval_* (approval UX has its own timeout); kanban_* (own heartbeat/stale reclaim).
 # The goal is to stop a hung Python plugin callback from wedging the conversation loop (#76821) without
 # joining the worker (avoids the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
@@ -44,13 +44,16 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "pre_verify", "on_session_start", "on_session_end",
 }
 
-# Policy hooks: timeout / still-running must fail closed (block the tool).
-_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call"}
+# Policy hooks: timeout / still-running must fail closed with a surface-specific directive.
+_HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: Set[str] = {"pre_tool_call", "pre_gateway_dispatch"}
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
+_PRE_GATEWAY_DISPATCH_TIMEOUT_SKIP_REASON = (
+    "pre_gateway_dispatch plugin callback timed out or is still running"
+)
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
 SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
@@ -189,10 +192,12 @@ class PluginDispatchMixin:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 
         Payloads evolve additively: ``**kwargs`` callbacks get everything, narrow signatures only
-        what they declare. Each callback is isolated. Bounded hooks and ``pre_tool_call`` run under
-        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); ``pre_tool_call`` fails
-        closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
-        caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
+        what they declare. Each callback is isolated. Bounded hooks and policy hooks run under
+        ``plugins.hook_callback_timeout`` (worker abandoned, never joined); policy timeouts fail
+        closed with surface-specific directives, while other bounded hooks skip. Exceptions from
+        ``pre_gateway_dispatch`` callbacks also synthesize a denial. ``_HOOK_CALLER_THREAD_HOOKS``
+        always run on the caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a
+        str) to inject.
         """
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         # Gateway platform events define event-local envelopes; a bus-wide version here would turn
@@ -201,6 +206,10 @@ class PluginDispatchMixin:
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: List[Any] = []
         timeout = _resolve_hook_callback_timeout()
+        # This authorization boundary must remain bounded even when the general plugin timeout
+        # worker is disabled with zero. A hung admission callback may not wedge gateway intake.
+        if hook_name == "pre_gateway_dispatch" and timeout <= 0:
+            timeout = _HOOK_CALLBACK_TIMEOUT_SECS
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in self._hooks.get(hook_name, []):
@@ -208,8 +217,13 @@ class PluginDispatchMixin:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
-                        if fail_closed:  # policy hook: fail closed with a block directive
-                            results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                        if fail_closed:  # policy hooks return their surface's fail-closed directive
+                            if hook_name == "pre_gateway_dispatch":
+                                results.append({
+                                    "action": "skip", "reason": _PRE_GATEWAY_DISPATCH_TIMEOUT_SKIP_REASON,
+                                })
+                            else:
+                                results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
@@ -217,6 +231,11 @@ class PluginDispatchMixin:
                     results.append(ret)
             except Exception as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
+                if hook_name == "pre_gateway_dispatch":
+                    results.append({
+                        "action": "skip",
+                        "reason": "pre_gateway_dispatch plugin callback raised an exception",
+                    })
         return results
 
     def _report_hook_failure(

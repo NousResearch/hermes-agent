@@ -662,12 +662,22 @@ class GatewayBusySessionMixin:
                 return True
             return False  # base adapter queues silently behind the active turn
 
+        # Busy events bypass GatewayInboundMixin._handle_message at the adapter boundary. Run the
+        # same pre-auth policy hook before any command, queue, interrupt, or acknowledgement side
+        # effect; a queued follow-up carries the receipt so it is not evaluated a second time.
+        if not getattr(event, "_plugin_hook_ran", False):
+            event = self._hm_pre_gateway_dispatch_hook(event, event.source)
+            if event is None:
+                return True
+
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
         # See #17775. A primary transport can route a turn into a secondary
         # profile, so authorize in the stamped transport scope.
-        if not self._is_user_authorized_for_source(event.source):
+        if not self._is_user_authorized_for_source(
+            event.source, plugin_authorized=event._plugin_authorized,
+        ):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,

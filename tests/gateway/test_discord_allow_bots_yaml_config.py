@@ -47,3 +47,8 @@ def test_adapter_reads_allow_bots_from_extra_without_env(adapter_mod, monkeypatc
     adapter = _fake_adapter(adapter_mod, {"allow_bots": "mentions"})
 
     assert adapter._get_allow_bots() == "mentions"
+
+
+def test_adapter_accepts_hook_mentions_and_rejects_unknown_modes(adapter_mod):
+    assert _fake_adapter(adapter_mod, {"allow_bots": "hook_mentions"})._get_allow_bots() == "hook_mentions"
+    assert _fake_adapter(adapter_mod, {"allow_bots": "typo"})._get_allow_bots() == "none"

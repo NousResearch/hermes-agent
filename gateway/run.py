@@ -3998,10 +3998,14 @@ class GatewayRunner(
             return "default"
 
     def _is_user_authorized_for_source(
-        self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
+        self, source: SessionSource, *, allow_adapter_delegation: bool = True,
+        plugin_authorized: bool = False,
+    ) -> bool:
         """Authorize under the live transport's profile, not the routed runtime (which need not copy the
         shared bot token/allowlist); the transport home is stamped on the source for this read only."""
         def _check() -> bool:
+            if plugin_authorized:
+                return self._is_user_authorized(source, plugin_authorized=True)
             # Keep the one-argument seam used by plugins/tests; pass the keyword only when disabling.
             if allow_adapter_delegation:
                 return self._is_user_authorized(source)

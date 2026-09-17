@@ -21,6 +21,7 @@ _DEFAULT_ENV = {
     "TEAMS_ALLOW_ALL_USERS": "true", "TEAMS_ALLOWED_USERS": "default-admin",
     "MATRIX_ALLOWED_USERS": "@default-admin:example.org", "MATRIX_IGNORE_USER_PATTERNS": r"^@spam:.*",
     "WHATSAPP_ALLOWED_USERS": "+15550001111", "SLACK_ALLOW_BOTS": "all", "SLACK_API_HUMAN_USERS": "U0DEFAULT",
+    "DISCORD_ALLOW_BOTS": "all",
     "LINE_ALLOW_ALL_USERS": "true", "LINE_ALLOWED_USERS": "Udefault", "DINGTALK_ALLOWED_USERS": "default-admin",
 }
 
@@ -61,6 +62,14 @@ def _slack():
     from plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)
+    adapter.config = PlatformConfig(enabled=True, extra={})
+    return adapter
+
+
+def _discord():
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapter = DiscordAdapter.__new__(DiscordAdapter)
     adapter.config = PlatformConfig(enabled=True, extra={})
     return adapter
 
@@ -107,6 +116,7 @@ _GATES = [
      lambda: [p.pattern for p in _matrix()._ignored_user_patterns],
      [], [r"^@bot2-spam:.*"]),
     ("slack.allow_bots", {"SLACK_ALLOW_BOTS": "mentions"}, lambda: _slack()._slack_allow_bots(), "none", "mentions"),
+    ("discord.allow_bots", {"DISCORD_ALLOW_BOTS": "hook_mentions"}, lambda: _discord()._get_allow_bots(), "none", "hook_mentions"),
     ("slack.api_human_users", {"SLACK_API_HUMAN_USERS": "U0BOT2"},
      lambda: set(_slack()._slack_api_human_users()), set(), {"U0BOT2"}),
     ("line.allow_all", {"LINE_ALLOW_ALL_USERS": "true"}, lambda: _line().allow_all, False, True),

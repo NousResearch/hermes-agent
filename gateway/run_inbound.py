@@ -47,7 +47,12 @@ class GatewayInboundMixin:
     ) -> Optional["MessageEvent"]:
         """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        ``authorize`` → authorize only this event; ``allow``/None → normal dispatch. Runs BEFORE auth."""
+        # Never trust a marker carried by a reused event or set by callback mutation. Only a valid
+        # directive observed below creates the one-event authorization receipt.
+        event._plugin_hook_ran = True
+        event._plugin_authorized = False
+        _plugin_authorized = False
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _hook_results = _invoke_hook(
@@ -57,26 +62,50 @@ class GatewayInboundMixin:
             )
         except Exception as _hook_exc:
             logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
-            _hook_results = []
+            return None
+
+        # A fail-closed denial from any callback must dominate authorization regardless of callback
+        # order (for example, when a later callback times out after an earlier one authorizes).
+        _skip = next(
+            (
+                result for result in _hook_results
+                if isinstance(result, dict) and result.get("action") == "skip"
+            ),
+            None,
+        )
+        if _skip is not None:
+            logger.info(
+                "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                _skip.get("reason"), source.platform.value if source.platform else "unknown",
+                source.chat_id or "unknown",
+            )
+            return None
 
         for _result in _hook_results:
             if not isinstance(_result, dict):
                 continue
             _action = _result.get("action")
-            if _action == "skip":
-                logger.info(
-                    "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                    _result.get("reason"), source.platform.value if source.platform else "unknown",
-                    source.chat_id or "unknown",
-                )
-                return None
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
-                    event = dataclasses.replace(event, text=_new_text)
+                    event.text = _new_text
+                break
+            if _action == "authorize":
+                _new_text = _result.get("text")
+                _clear_context = _result.get("clear_channel_context", False)
+                if ("text" in _result and not isinstance(_new_text, str)) or not isinstance(_clear_context, bool):
+                    logger.warning("Ignoring malformed pre_gateway_dispatch authorize directive")
+                    break
+                if "text" in _result:
+                    event.text = str(_new_text)  # validated as str above
+                if _clear_context:
+                    event.channel_context = None
+                    event._plugin_clear_channel_context = True
+                _plugin_authorized = True
                 break
             if _action == "allow":
                 break
+        event._plugin_authorized = _plugin_authorized
         return event
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -210,12 +239,15 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = self._hm_pre_gateway_dispatch_hook(event, source)
-        if event is None:
-            return None
+        if not getattr(event, "_plugin_hook_ran", False):
+            event = self._hm_pre_gateway_dispatch_hook(event, source)
+            if event is None:
+                return None
         source = event.source
 
-        if not self._is_user_authorized_for_source(source):
+        if not self._is_user_authorized_for_source(
+            source, plugin_authorized=event._plugin_authorized,
+        ):
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.

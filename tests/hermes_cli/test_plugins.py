@@ -4,6 +4,7 @@ import logging
 import json
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1107,6 +1108,61 @@ class TestForceReloadSymmetry:
         assert mgr.invoke_hook("pre_llm_call", session_id="s1") == [
             {"context": "hi"}
         ]
+
+    def test_pre_gateway_dispatch_timeout_is_bounded_and_fails_closed(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05
+        )
+        hold = threading.Event()
+        mgr = PluginManager()
+        mgr._hooks["pre_gateway_dispatch"] = [lambda **_kw: hold.wait(timeout=10.0)]
+
+        started = time.monotonic()
+        results = mgr.invoke_hook("pre_gateway_dispatch", event=object())
+        elapsed = time.monotonic() - started
+        hold.set()
+
+        assert results == [{
+            "action": "skip",
+            "reason": "pre_gateway_dispatch plugin callback timed out or is still running",
+        }]
+        assert elapsed < 1.0
+
+    def test_pre_gateway_dispatch_callback_exception_fails_closed_after_authorize(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+
+        def _raise(**_kwargs):
+            raise RuntimeError("broken policy callback")
+
+        mgr = PluginManager()
+        mgr._hooks["pre_gateway_dispatch"] = [
+            lambda **_kw: {"action": "authorize"},
+            _raise,
+        ]
+
+        assert mgr.invoke_hook("pre_gateway_dispatch", event=object()) == [
+            {"action": "authorize"},
+            {
+                "action": "skip",
+                "reason": "pre_gateway_dispatch plugin callback raised an exception",
+            },
+        ]
+
+    def test_pre_gateway_dispatch_zero_timeout_cannot_disable_bounding(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0
+        )
+        seen = {}
+        mgr = PluginManager()
+        mgr._hooks["pre_gateway_dispatch"] = [
+            lambda **_kw: seen.setdefault("thread", threading.current_thread())
+        ]
+
+        mgr.invoke_hook("pre_gateway_dispatch", event=object())
+
+        assert seen["thread"] is not threading.current_thread()
 
     def test_hook_exception_still_isolated_under_timeout_path(self, monkeypatch):
         monkeypatch.setattr(

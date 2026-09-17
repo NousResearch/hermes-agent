@@ -1801,9 +1801,9 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
-    desktop_delivery_enabled: When True, job output is also delivered to a persistent
-        per-job Desktop delivery session (in addition to the normal deliver target).
-        The delivery session accumulates output across runs and appears in the Desktop sidebar."""
+    desktop_delivery_enabled: When True, job output is also delivered to a Desktop
+        delivery session (in addition to the normal deliver target). Each invocation
+        gets its own session, so the Desktop sidebar shows one chat per run."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):

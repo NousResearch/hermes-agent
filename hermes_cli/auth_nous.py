@@ -406,6 +406,36 @@ def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
     return True
 
 
+def _nous_state_from_shared_grant() -> Optional[Dict[str, Any]]:
+    """Build a profile-local Nous state from the cross-profile shared grant, or None.
+
+    Every profile writes its signed-in grant to ``<hermes-root>/shared/nous_auth.json`` on login and
+    on every runtime refresh, so a profile whose local ``providers.nous`` section was cleared
+    (logout, quarantine of a dead grant, a freshly cloned profile) is not necessarily signed out.
+    The caller adopts the returned state verbatim — no network call and no refresh-token rotation —
+    so a live shared sign-in is never reported as "not logged into Nous Portal". The credential pool
+    reads that error as transient and benches the only credential for an hour, and the CLI then shows
+    the first-run "no inference provider configured" wizard on a machine that has a working login.
+
+    None when the shared store is missing/unreadable or carries no refresh token (a free-tier
+    identity has none), leaving the caller's original "log in again" error intact.
+    """
+    from hermes_cli.auth import _nonempty_str, _read_shared_nous_state
+    try:
+        shared = _read_shared_nous_state() or {}
+    except Exception as exc:
+        logger.debug("Shared Nous store unavailable for self-heal: %s", exc)
+        return None
+    if not _nonempty_str(shared.get("refresh_token")):
+        return None
+    state = {k: v for k, v in _nous_shared_shape(shared).items() if v not in (None, "")}
+    state["tls"] = {"insecure": False, "ca_bundle": None}
+    _oauth_trace(
+        "nous_state_seeded_from_shared_store",
+        refresh_token_fp=_token_fingerprint(state.get("refresh_token")))
+    return state
+
+
 def _nous_shared_shape(src: Dict[str, Any]) -> Dict[str, Any]:
     """The defaulted OAuth core (tokens + routing + expiry) shared across profiles."""
     return {
@@ -1050,9 +1080,18 @@ def _resolve_nous_runtime_credentials(
     """
     from hermes_cli.auth import (
         _assert_nous_inference_jwt_usable, _auth_file_path, _provider_state_transaction,
-        _resolve_verify, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
-        _tls_state_from_verify)
+        _resolve_verify, _save_provider_state_to_source, _select_nous_invoke_jwt,
+        _sync_nous_pool_from_auth_store, _tls_state_from_verify)
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
+        if not state:
+            # A profile with no local Nous state is not necessarily signed out: adopt the
+            # cross-profile shared grant (verbatim, no rotation) before declaring a logout.
+            seeded = _nous_state_from_shared_grant()
+            if seeded is not None:
+                state = seeded
+                # Persist: the credential pool and the next session must see a signed-in profile,
+                # not re-derive it from the shared store on every resolution.
+                _save_provider_state_to_source(auth_store, "nous", state, state_source_path)
         if not state:
             raise _nous_err("Hermes is not logged into Nous Portal.", relogin=True)
         run = _NousRuntimeResolve(

@@ -48,7 +48,8 @@ from hermes_cli.auth_oauth_grants import (  # noqa: F401  re-exported
     SINGLE_USE_REFRESH_POOL_PROVIDERS, strip_cloned_single_use_oauth_grants)
 from hermes_cli.auth_nous import (  # noqa: F401  re-exported
     NOUS_SESSION_TERMINAL, NOUS_SESSION_UNKNOWN, NOUS_SESSION_VALID, _ALLOWED_NOUS_INFERENCE_HOSTS,
-    _agent_key_is_usable, _apply_nous_refreshed_tokens, _assert_nous_inference_jwt_usable,
+    _nous_state_from_shared_grant, _agent_key_is_usable, _apply_nous_refreshed_tokens,
+    _assert_nous_inference_jwt_usable,
     _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
     _login_nous, _merge_shared_nous_oauth_state, _migrate_stale_nous_portal_url,
     _nous_device_code_login, _nous_inference_env_override, _nous_invoke_jwt_is_usable,
@@ -1542,13 +1543,20 @@ def resolve_nous_access_token(
         return token
 
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
+        persist = lambda: _save_provider_state_to_source(  # noqa: E731
+            auth_store, "nous", state, state_source_path)
+        if not state:
+            # A profile with no local Nous state is not necessarily signed out: adopt the
+            # cross-profile shared grant (verbatim, no rotation) before declaring a logout.
+            seeded = _nous_state_from_shared_grant()
+            if seeded is not None:
+                state = seeded
+                persist()
         if not state:
             raise _nous_err("Hermes is not logged into Nous Portal.", relogin=True)
         portal_base_url = _nous_portal_base_url(state)
         client_id = str(state.get("client_id") or DEFAULT_NOUS_CLIENT_ID)
         verify = _resolve_verify(insecure=insecure, ca_bundle=ca_bundle, auth_state=state)
-        persist = lambda: _save_provider_state_to_source(  # noqa: E731
-            auth_store, "nous", state, state_source_path)
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):

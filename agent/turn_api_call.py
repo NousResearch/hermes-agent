@@ -243,11 +243,11 @@ def nous_rate_limit_guard(
             from agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
-            _nous_remaining = nous_rate_limit_remaining()
+            from hermes_cli import anon_auth
+            _welcome = anon_auth.is_anonymous_request(agent.provider, getattr(agent, "api_key", None))
+            _nous_remaining = nous_rate_limit_remaining(anonymous=_welcome)
             if _nous_remaining is not None and _nous_remaining > 0:
-                from hermes_cli import anon_auth
                 reset = _fmt_nous_remaining(_nous_remaining)
-                _welcome = anon_auth.route_is_welcome_host(getattr(agent, "base_url", ""))
                 if _welcome:
                     _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
                         reset=anon_auth.friendly_wait(_nous_remaining))

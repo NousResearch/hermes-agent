@@ -526,6 +526,7 @@ class _Ctx:
     context_length: int
     num_messages: int
     base_url: str = ""  # the route the call went to; "" when the caller did not say
+    anonymous: bool = False
 
     def __post_init__(self) -> None:
         self.error_type = type(self.error).__name__
@@ -579,6 +580,8 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     400/403 whose message names the wrong host or a dark tier is deterministic for the request.
     The parsed refusal rides ``error_context`` so the terminal copy can say what happened.
     """
+    if not c.anonymous:
+        return None
     from hermes_cli.anon_auth import (
         WELCOME_TIER_GATE_REASONS, parse_welcome_refusal, welcome_route_refusal)
     status = c.status_code
@@ -732,11 +735,15 @@ def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
     base_url: str = "",
+    api_key: Any = None,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``).
 
     ``base_url`` (optional) is the route the call went to; the Nous welcome tier keys its
-    dark-tier 403 on it because that refusal carries no distinguishing message."""
+    dark-tier 403 on it because that refusal carries no distinguishing message.
+    ``api_key`` identifies an anonymous request; a host or fairshare reason alone does not.
+    The credential is never included in the returned context."""
+    from hermes_cli.anon_auth import is_anonymous_request
     status_code = _extract_status_code(error)
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
@@ -745,6 +752,7 @@ def classify_api_error(
     c = _Ctx(
         error, status_code, body, _build_error_msg(error, body), provider, model,
         approx_tokens, context_length, num_messages, str(base_url or ""),
+        is_anonymous_request(provider, api_key),
     )
     verdict = next((v for v in (stage(c) for stage in _STAGES) if v is not None), _V_UNKNOWN)
     base = {"status_code": status_code, "provider": provider, "model": model, "message": _extract_message(error, body)}

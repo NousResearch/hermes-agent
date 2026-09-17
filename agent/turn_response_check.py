@@ -198,7 +198,8 @@ def check_api_response(
     if agent.provider == "nous":
         try:
             from agent.nous_rate_guard import clear_nous_rate_limit
-            clear_nous_rate_limit()
+            from hermes_cli.anon_auth import is_anonymous_request
+            clear_nous_rate_limit(anonymous=is_anonymous_request(agent.provider, getattr(agent, "api_key", None)))
         except Exception:
             pass
     from agent import relay_llm

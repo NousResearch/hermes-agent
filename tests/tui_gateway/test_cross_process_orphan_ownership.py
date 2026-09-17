@@ -580,3 +580,65 @@ def test_new_runtime_never_takes_a_live_foreign_or_attached_lease(
         attached["active_session_lease"].release()
     finally:
         _stop_child(child, release_file)
+
+
+def test_takeover_stays_within_the_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Timestamp ids collide across profiles' stores (#100029): profile B's refusal must not lift profile A's
+    detached runtime's lease — the entry that refused lives in B's registry, not A's."""
+    home_a, home_b = tmp_path / "A", tmp_path / "B"
+    key = "20260916_175430_a9e77f"
+    sibling = {**_runtime_record(key, server._detached_ws_transport, running=True), "profile_home": str(home_a)}
+    new = {**_runtime_record(key, object(), running=False), "profile_home": str(home_b)}
+    monkeypatch.setattr(server, "_sessions", {"a": sibling, "b": new})
+    assert server._ensure_active_session_slot("a", sibling) is None
+    holder_b, message = try_acquire_active_session(
+        session_id=key, surface="desktop", config={}, metadata={"live_session_id": "other-window"},
+        track_liveness=True, registry_home=home_b)
+    assert holder_b is not None and message is None
+    try:
+        refusal = server._ensure_active_session_slot("b", new)
+        assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
+        assert new.get("active_session_lease") is None
+        assert sibling["active_session_lease"] is not None and not sibling["agent"].interrupted
+    finally:
+        holder_b.release()
+        sibling["active_session_lease"].release()
+
+
+def test_taken_over_runtime_finalize_spares_the_new_owners_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a takeover the old record's automatic reap must not end the durable row, interrupt the key's
+    delegations or unregister the approval callback — the new runtime is driving all three now."""
+    key = "restored-tui-chat"
+    old = {**_runtime_record(key, server._detached_ws_transport, running=True), "source": "tui", "slash_worker": None}
+    new = {**_runtime_record(key, object(), running=False), "source": "tui"}
+    monkeypatch.setattr(server, "_sessions", {"old": old, "new": new})
+    assert server._ensure_active_session_slot("old", old) is None
+    assert server._ensure_active_session_slot("new", new) is None
+    lease = new["active_session_lease"]
+
+    ended: list = []
+    key_interrupts: list = []
+    unregistered: list = []
+
+    class _FakeDB:
+        def get_session(self, target):
+            return {"id": target, "source": "tui"}
+
+        def end_session(self, target, reason):
+            ended.append((target, reason))
+
+    @contextlib.contextmanager
+    def _db(_session):
+        yield _FakeDB()
+
+    monkeypatch.setattr(server, "_session_db", _db)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr("tools.async_delegation.interrupt_for_session",
+                        lambda *a, **k: key_interrupts.append(k.get("session_key")))
+    monkeypatch.setattr("tools.approval.unregister_gateway_notify", lambda k: unregistered.append(k))
+    try:
+        server._teardown_session(old, end_reason="ws_orphan_reap")
+        assert ended == [] and key_interrupts == [""] and unregistered == []
+        assert lease.released is False and new["active_session_lease"] is lease
+    finally:
+        lease.release()

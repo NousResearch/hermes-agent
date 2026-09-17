@@ -1629,7 +1629,7 @@ def _record_task_failure(
                     "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                     "consecutive_failures = ?, last_failure_error = ? "
                     "WHERE id = ? AND status IN ('running', 'ready', 'triage', 'review')",
-                    (failures, error[:500], task_id),
+                    (retry_status, failures, error[:500], task_id),
                 )
             else:
                 # Timeout/crash path: source phase already restored with claim

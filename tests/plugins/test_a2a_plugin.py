@@ -3,8 +3,8 @@
 Covers security primitives (peer-token identity, injection filtering,
 redaction), v1.0 protocol shapes (Agent Card, Task, Part, roles, error codes),
 the client tools (with HTTP mocked), adapter RPC handlers driven directly
-(no HTTP), and real end-to-end inbound round-trips against a live http.server
-with a mocked agent handler.
+(no HTTP), real end-to-end inbound round-trips against a live http.server
+with a mocked agent handler, and one real-socket client-disconnect case.
 """
 
 from __future__ import annotations
@@ -15,12 +15,14 @@ import hmac
 import json
 import re
 import os
+import select
 import socket
 import threading
 import urllib.error
 import urllib.request
 from concurrent.futures import Future
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import struct
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -1746,3 +1748,96 @@ class TestMultiplexConstructionScope:
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
         assert adapter._public_url == "https://default-profile.example.com/"
+
+
+# --------------------------------------------------------------------------
+# Client disconnect during the response write
+# --------------------------------------------------------------------------
+
+
+def _make_slow_json_handler():
+    """The REAL ``A2ARequestHandler``, with only the response timing held back.
+
+    ``_json`` itself is the production code under test; nothing in the transport or in the
+    response write is stubbed. Imported lazily to match this file's other adapter imports.
+    """
+    from plugins.platforms.a2a.adapter import A2ARequestHandler
+
+    class _SlowJsonHandler(A2ARequestHandler):
+        entered: threading.Event
+        release: threading.Event
+        wrote: threading.Event
+        expect_abort: threading.Event
+
+        def log_message(self, *args):  # silence the access log
+            pass
+
+        def do_GET(self):  # noqa: N802
+            type(self).entered.set()
+            type(self).release.wait(timeout=10)
+            if type(self).expect_abort.is_set():
+                # Wait until the peer's RST actually reached this socket — after a hard abort the
+                # connection turns readable. Writing before that can win the race and succeed into
+                # the kernel buffer, which would make this test intermittent. Only the aborted
+                # request waits here; a healthy request must not (its peer never goes away).
+                select.select([self.connection], [], [], 5)
+            try:
+                self._json(200, {"status": "ok", "probe": True})
+            finally:
+                type(self).wrote.set()
+
+    _SlowJsonHandler.entered = threading.Event()
+    _SlowJsonHandler.release = threading.Event()
+    _SlowJsonHandler.wrote = threading.Event()
+    _SlowJsonHandler.expect_abort = threading.Event()
+    return _SlowJsonHandler
+
+
+class TestClientDisconnectDuringResponseWrite:
+    """A peer that gives up mid-response must not raise inside the handler thread.
+
+    The disconnect is physical: the client aborts with ``SO_LINGER(1, 0)``, so the peer sees a TCP
+    RST rather than a graceful FIN. The failure surfaces through the server's own error hook
+    (``socketserver.handle_error``, which logs a full traceback), so the test observes that hook
+    directly instead of scraping stderr — same seam, no sleep-based races.
+    """
+
+    def test_aborted_write_is_absorbed_and_server_stays_usable(self):
+        handler_cls = _make_slow_json_handler()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        server.daemon_threads = True
+        handler_errors: list = []
+        server.handle_error = lambda request, client_address: handler_errors.append(client_address)  # noqa: ARG005
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        try:
+            handler_cls.expect_abort.set()
+            client = socket.create_connection(("127.0.0.1", port), timeout=5)
+            client.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            assert handler_cls.entered.wait(timeout=5), "handler never saw the request"
+            # hard abort: RST instead of FIN, so the response write meets a dead peer
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            client.close()
+            handler_cls.release.set()
+            assert handler_cls.wrote.wait(timeout=5), "handler never attempted the response write"
+            handler_cls.expect_abort.clear()
+
+            # 1) the aborted write did not escape the handler thread
+            assert handler_errors == [], f"handler thread raised on a dead peer: {handler_errors}"
+
+            # 2) the server is still alive and still serves real requests
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as follow_up:
+                follow_up.sendall(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                body = b""
+                while chunk := follow_up.recv(4096):
+                    body += chunk
+            assert body.startswith(b"HTTP/1."), body[:80]
+            assert b" 200 " in body.split(b"\r\n", 1)[0]
+            assert b'"probe"' in body
+        finally:
+            handler_cls.release.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)

@@ -69,7 +69,10 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
     rp = _rp()
-    explicit_api_key = str(explicit_api_key or "").strip()
+    # Callable token sources (key_cmd/Entra) pass through; str() would make their repr the
+    # bearer (#113976).
+    from agent.command_token_source import normalize_token_source
+    explicit_api_key = normalize_token_source(explicit_api_key)
     explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
     cfg_base_url, cfg_api_mode, cfg_auth_mode, cfg_entra = "", "chat_completions", "api_key", {}
     if rp._cfg_provider(model_cfg) == "azure-foundry":

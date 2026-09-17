@@ -637,7 +637,10 @@ _EXPLICIT_RESOLVERS: Dict[str, Callable[..., Dict[str, Any]]] = {
 def _resolve_explicit_runtime(*, provider: str, requested_provider: str, model_cfg: Dict[str, Any],
                               explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
                               target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    explicit_api_key = str(explicit_api_key or "").strip()
+    # key_cmd/Entra overrides arrive as callable token sources; str() would send their repr as
+    # the bearer — strip strings, pass callables through (#113976).
+    from agent.command_token_source import normalize_token_source
+    explicit_api_key = normalize_token_source(explicit_api_key)
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
     if not explicit_api_key and not explicit_base_url:
         return None

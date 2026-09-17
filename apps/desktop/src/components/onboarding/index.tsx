@@ -298,8 +298,13 @@ export function DesktopOnboardingOverlay({
           const current = $desktopOnboarding.get()
 
           return (
+            // `!== true` rather than `=== false`: an UNRESOLVED readiness state
+            // (a boot round whose probes both timed out) is left at `null`
+            // instead of being written down as unconfigured, and it needs this
+            // tick to settle too — otherwise the overlay sits on its
+            // "starting" header with nothing left to re-check it.
             !current.manual &&
-            current.configured === false &&
+            current.configured !== true &&
             current.flow.status === 'idle' &&
             current.mode === 'oauth' &&
             !current.localEndpoint

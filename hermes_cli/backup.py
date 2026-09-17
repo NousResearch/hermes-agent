@@ -1420,7 +1420,29 @@ def run_import(args) -> None:
 
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                _extract_member_atomically(zf, member, target, new_file_mode)
+                if target.suffix == ".db":
+                    # Route through the live-safe SQLite backup API so open
+                    # gateway / dashboard connections converge on the restored
+                    # data without a corrupt inode swap (issues #65942 / #90950).
+                    # Extract to a temp file first, then hand the path to
+                    # _safe_restore_db; clean up on any outcome.
+                    fd, tmp_path = tempfile.mkstemp(dir=target.parent, suffix=".db.tmp")
+                    try:
+                        os.close(fd)
+                        with zf.open(member) as src_f, open(tmp_path, "wb") as dst_f:
+                            shutil.copyfileobj(src_f, dst_f)
+                        if not _safe_restore_db(Path(tmp_path), target):
+                            errors.append(
+                                f"  {rel}: database held open — stop the gateway and retry"
+                            )
+                            continue
+                    finally:
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                else:
+                    _extract_member_atomically(zf, member, target, new_file_mode)
                 if target.name in _SECRET_FILE_NAMES:
                     os.chmod(target, 0o600)
                 restored += 1
@@ -1934,7 +1956,13 @@ def restore_quick_snapshot(
                 # (gateway, dashboard, another CLI session) see the
                 # restored data instead of continuing to serve stale
                 # cached pages from a replaced inode (issue #65942).
-                _safe_restore_db(src, dst)
+                if not _safe_restore_db(src, dst):
+                    logger.error(
+                        "Refused to restore %s — a live process holds the "
+                        "database; stop the gateway and retry.",
+                        rel,
+                    )
+                    continue
             else:
                 shutil.copy2(src, dst)
             restored += 1

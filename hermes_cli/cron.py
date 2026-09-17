@@ -527,6 +527,34 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
+        # For deliver:local jobs the failure-streak nudge is composed but never
+        # delivered (delivery_outcome='suppressed'), so the operator never sees
+        # the escalation. Surface it here so `hermes cron doctor` is the
+        # visibility backstop (#111882).
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _cfg = _load_cfg() or {}
+            _threshold = int(((_cfg.get("cron") or {}) if isinstance(_cfg, dict) else {}).get(
+                "failure_nudge_threshold", 3))
+        except Exception:
+            _threshold = 3
+        if _threshold > 0:
+            try:
+                _streak = int(job.get("failure_streak") or 0)
+                # Only recurring jobs get the nudge; match _failure_streak_nudge guard.
+                _sched = job.get("schedule") or {}
+                _kind = _sched.get("kind") if isinstance(_sched, dict) else None
+                if _kind in {"cron", "interval"} and _streak >= _threshold:
+                    _ref = job.get("name") or job.get("id") or "this job"
+                    issues.append(
+                        f"this job has failed {_streak} runs in a row — worth a review. "
+                        f"Fix its prompt/config, or pause it with `hermes cron pause {_ref}` "
+                        f"(resume/remove also available) to stop the noise.")
+            except Exception:
+                pass
+        # Local-delivery failures already have last_status != ok above; no extra
+        # delivery check needed. Non-local failures also surface via
+        # last_delivery_error below.
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last run finished but the result was not delivered ({_short_reason(delivery_err)}). "
                       f"{_delivery_fix_hint(job)}")

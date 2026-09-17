@@ -2551,7 +2551,7 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
     normalized_deliver: str, incident_acked: bool, success: bool,
-    delivery_queued=None,
+    delivery_queued=None, job: Optional[dict] = None,
 ) -> str:
     if delivery_error:
         return "failed"
@@ -2564,6 +2564,38 @@ def _classify_delivery_outcome(
     if incident_acked and not success:
         # Failure ping withheld: operator acked this exact signature (vs. plain "suppressed").
         return "suppressed_acked"
+    # For deliver:local recurring jobs whose failure streak has crossed the
+    # nudge threshold, the escalation text is composed but never reaches the
+    # operator (reported as "suppressed" — #111882). Log a warning so the
+    # gateway log and `hermes cron doctor` surface it even when no delivery
+    # channel is configured.
+    if not success and isinstance(job, dict) and normalized_deliver == "local":
+        try:
+            from hermes_cli.config import load_config as _lc
+            _cfg2 = _lc() or {}
+            _thr = int(((_cfg2.get("cron") or {}) if isinstance(_cfg2, dict) else {}).get(
+                "failure_nudge_threshold", 3))
+        except Exception:
+            _thr = 3
+        if _thr > 0:
+            try:
+                _streak = int(job.get("failure_streak") or 0) + 1
+                _sched = job.get("schedule") or {}
+                _kind2 = _sched.get("kind") if isinstance(_sched, dict) else None
+                if _kind2 in {"cron", "interval"} and _streak >= _thr:
+                    logger.warning(
+                        "Job '%s' (deliver: local) has failed %d runs in a row — "
+                        "worth a review. The failure-streak nudge was suppressed "
+                        "because no delivery channel is configured; run "
+                        "`hermes cron doctor` or `hermes cron list` to inspect, "
+                        "or pause with `hermes cron pause %s`.",
+                        job.get("name") or job.get("id", "?"), _streak,
+                        job.get("name") or job.get("id", "?"))
+            except Exception:
+                pass  # never crash outcome classification on bookkeeping
+        # Still suppressed for delivery_outcome bookkeeping — the warning + doctor
+        # surfacing above is the visibility backstop; the actual delivery target
+        # remains local (no channel to send to).
     return "suppressed"
 
 
@@ -2807,6 +2839,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         normalized_deliver=_normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)),
         incident_acked=d.incident_acked,
         success=d.success,
+        job=job,
     )
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
@@ -2847,7 +2880,7 @@ def _deliver_crash_failure(
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
-        delivery_queued=job.get("last_delivery_queued"))
+        delivery_queued=job.get("last_delivery_queued"), job=job)
     if delivery_outcome in ("delivered", "not_configured"):
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome

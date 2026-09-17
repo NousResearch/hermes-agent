@@ -2319,9 +2319,10 @@ class GatewayTurnMixin:
             # streaming + kanban paths do.
             from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
             from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
+            from tools.send_message_senders import _bound_caption
             for media_path, _is_voice in (media_files or []):
                 _ext = os.path.splitext(media_path)[1].lower()
-                _caption = media_captions.get(media_path) or None
+                _caption = _bound_caption(media_captions.get(media_path), source.platform) or None
                 _cap_kw = {"caption": _caption} if _caption else {}
                 with suppress(Exception):
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):

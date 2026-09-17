@@ -4028,6 +4028,7 @@ class BasePlatformAdapter(ABC):
         ``media_captions`` maps a delivered path to the caption carried by its MEDIA tag
         (``MEDIA:<path> | <caption>``); absent tags get no caption."""
         from urllib.parse import quote as _quote
+        from tools.send_message_senders import _bound_caption
         _captions = media_captions or {}
 
         def _as_image(path: str) -> bool:
@@ -4036,7 +4037,8 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", _captions.get(p, "")) for p in _image_paths],
+                event, [(f"file://{_quote(p)}", _bound_caption(_captions.get(p, ""), self.platform))
+                        for p in _image_paths],
                 metadata, human_delay, record_delivery)
         chat_id = event.source.chat_id
 
@@ -4044,7 +4046,7 @@ class BasePlatformAdapter(ABC):
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
             do. A MEDIA-tag caption rides on the attachment bubble."""
             ext = Path(path).suffix.lower()
-            caption = _captions.get(path) or None if media_tag else None
+            caption = _bound_caption(_captions.get(path), self.platform) or None if media_tag else None
             # Only pass ``caption`` when a tag carried one: an absent caption keeps the call shape
             # byte-identical to the pre-caption behaviour (adapters predating captions included).
             _cap_kw = {"caption": caption} if caption else {}

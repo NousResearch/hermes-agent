@@ -176,6 +176,22 @@ async def test_post_stream_document_carries_caption(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_post_stream_document_bounds_caption_for_enum_platform(tmp_path, monkeypatch):
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "long-ticket.pdf")
+    adapter = _adapter()
+    event = MessageEvent(
+        text="hi", message_type=MessageType.TEXT,
+        source=SessionSource(platform=Platform.DISCORD, chat_id="C123CHAN", chat_type="group"),
+        message_id="171.000002")
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), f"MEDIA:{media_file} | {'x' * 2500}", event, adapter,
+    )
+
+    assert len(adapter.send_document.await_args.kwargs["caption"]) == 2000
+
+
+@pytest.mark.asyncio
 async def test_post_stream_document_without_caption_omits_caption_kwarg(tmp_path, monkeypatch):
     """No pipe → the dispatch call stays byte-identical to the pre-caption shape."""
     media_file = _allowed_media_path(tmp_path, monkeypatch, "ticket2.pdf")

@@ -291,6 +291,7 @@ class GatewayNotificationsMixin:
             from gateway.platforms.base import (
                 BasePlatformAdapter, extract_media_captions, should_send_media_as_audio,
             )
+            from tools.send_message_senders import _bound_caption
             media_files, cleaned = adapter.extract_media(response)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
             # Per-tag captions (`MEDIA:<path> | <caption>`) keyed by the delivered path; empty when
@@ -320,14 +321,15 @@ class GatewayNotificationsMixin:
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
             if image_paths:
                 try:
-                    images = [(f"file://{_quote(p)}", media_captions.get(p, "")) for p in image_paths]
+                    images = [(f"file://{_quote(p)}", _bound_caption(media_captions.get(p, ""), event.source.platform))
+                              for p in image_paths]
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    caption = media_captions.get(media_path) or None
+                    caption = _bound_caption(media_captions.get(media_path), event.source.platform) or None
                     _cap_kw = {"caption": caption} if caption else {}
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(

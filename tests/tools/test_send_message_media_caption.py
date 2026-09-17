@@ -22,6 +22,7 @@ import pytest
 
 from gateway.config import Platform
 from tools.send_message_senders import _fold_captions_into_text
+from tools.send_message_senders import _bound_caption
 from tools.send_message_tool import _send_live_adapter_media, _send_plugin_standalone, _send_to_platform
 
 
@@ -66,6 +67,10 @@ def test_fold_skips_excluded_and_uncaptioned_paths():
     media = [("/a.png", False), ("/b.png", False)]
     assert _fold_captions_into_text("body", media, {"/a.png": "A", "/b.png": "B"}, exclude="/b.png") == "body\n\nA"
     assert _fold_captions_into_text("body", media, {}) == "body"
+
+
+def test_tag_caption_limit_accepts_platform_enum():
+    assert len(_bound_caption("x" * 2500, Platform.DISCORD)) == 2000
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +221,7 @@ class _LiveAdapter:
 
     def __init__(self):
         self.calls = []
+        self.platform = Platform.DISCORD
 
     async def send(self, *, chat_id, content, metadata=None):
         self.calls.append(("send", content))
@@ -238,6 +244,17 @@ def test_live_adapter_tag_caption_rides_the_bubble():
             adapter, "ch", "", [(img, False)], media_captions={img: "Подпись"}))
         assert result.get("success") is True
         assert adapter.calls == [("image", img, "Подпись")]
+    finally:
+        os.unlink(img)
+
+
+def test_live_adapter_enum_platform_bounds_tag_caption():
+    img = _tmpfile(".png")
+    try:
+        adapter = _LiveAdapter()
+        asyncio.run(_send_live_adapter_media(
+            adapter, "ch", "", [(img, False)], media_captions={img: "x" * 2500}))
+        assert len(adapter.calls[0][2]) == 2000
     finally:
         os.unlink(img)
 
@@ -424,4 +441,3 @@ def test_handle_send_reaches_discord_wire_with_tag_caption(monkeypatch):
         assert _payload_json_content(posts[0][2]) == "Подпись на баббле"
     finally:
         os.unlink(img)
-

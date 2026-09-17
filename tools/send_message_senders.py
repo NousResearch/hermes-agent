@@ -28,6 +28,7 @@ _TAG_CAPTION_LIMITS = {"telegram": _TELEGRAM_CAPTION_LIMIT, "discord": 2000, "wh
 
 def _tag_caption_limit(platform) -> int:
     """Caption cap (chars) for ``platform``; the shared ceiling when the platform is unknown."""
+    platform = getattr(platform, "value", platform)
     return _TAG_CAPTION_LIMITS.get(str(platform or "").strip().lower(), _DEFAULT_CAPTION_LIMIT)
 
 

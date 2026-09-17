@@ -33,8 +33,9 @@ def delegated_child_context(session_id: str | None = None) -> Iterator[None]:
     token = _DELEGATED_CHILD_CONTEXT.set(True)
     try:
         from gateway.session_context import scoped_current_session_id  # lazy: it calls is_delegated_child_context()
+        from agent.turn_authorization import without_turn_authorization
 
-        with scoped_current_session_id(session_id):
+        with without_turn_authorization(), scoped_current_session_id(session_id):
             yield
     finally:
         _DELEGATED_CHILD_CONTEXT.reset(token)

@@ -15,7 +15,7 @@ def _turn(result):
     return SimpleNamespace(
         result=result, agent=SimpleNamespace(_session_title_hint="Bot Chat"), terminal_callback=None,
         receipt_committed=True, receipt_attempted=False, marker_key="", error_retained=False,
-        error_detail="", prompt_text="ping",
+        error_detail="", prompt_text="ping", turn_id="bot-turn",
     )
 
 
@@ -23,8 +23,10 @@ def test_live_bot_chat_completion_empties_marker_only_for_successful_turns(monke
     monkeypatch.setattr(srv, "_get_usage", lambda _agent: {})
     monkeypatch.setattr(srv, "render_message", lambda _text, _cols: None)
     monkeypatch.setattr(srv, "_clear_inflight_turn", lambda _session: None)
+    monkeypatch.setattr(srv, "_retire_turn_marker", lambda *_args, **_kwargs: None)
     session = {"pending_title": None, "session_key": "k", "history_lock": contextlib.nullcontext(),
-               "agent": SimpleNamespace(_session_title_hint="Bot Chat")}
+               "agent": SimpleNamespace(_session_title_hint="Bot Chat"),
+               "_active_turn_id": "bot-turn"}
 
     payload, _, status = srv._complete_turn_payload(session, _turn({"final_response": " *NO_REPLY* "}), None, 80)
     assert (status, payload["text"]) == ("complete", "")
@@ -61,8 +63,10 @@ def test_live_bot_chat_stream_holds_back_partial_silence_marker(monkeypatch):
             return {"final_response": final}
 
         agent = SimpleNamespace(_session_title_hint="Bot Chat", run_conversation=run_conversation)
-        session = {"pending_title": None, "session_key": "k", "history_lock": contextlib.nullcontext(), "agent": agent}
-        st = srv._TurnRun(agent=agent, one_turn_restore=None, terminal_callback=None, receipt_committed=True)
+        session = {"pending_title": None, "session_key": "k", "history_lock": contextlib.nullcontext(),
+                   "agent": agent, "_active_turn_id": "bot-turn"}
+        st = srv._TurnRun(agent=agent, one_turn_restore=None, terminal_callback=None,
+                          receipt_committed=True, turn_id="bot-turn")
         srv._invoke_agent("sid", session, st, "ping", "ping", None, [], None, None)
         return [p["text"] for e, p in events if e == "message.delta"], (session.get("inflight_turn") or {}).get("assistant", "")
 

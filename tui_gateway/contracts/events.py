@@ -101,6 +101,18 @@ class NoticePayload(Payload):
 event("notice", NoticePayload, doc="Informational one-liner for the session (capabilities refreshed).")
 
 
+# Private sidecar accounting event. The sidecar consumes and strips this
+# before any browser-facing serialization.
+class PersonAdmissionPayload(Payload):
+    admission_id: str
+    status: str
+    reason: str | None = None
+
+
+event("person.admission", PersonAdmissionPayload,
+      doc="Private exact-ID lifecycle accounting for a trusted personal prompt.")
+
+
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 

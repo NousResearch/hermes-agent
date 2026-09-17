@@ -337,3 +337,53 @@ def test_shutdown_drain_sleep_never_overshoots_the_reserve(monkeypatch):
     assert events == ["finalize:idle:compute_host_sigterm"]
     assert slept, "the drain loop should have ticked at least once"
     assert sum(slept) <= drain_budget + 1e-6
+
+
+def test_interrupt_waiters_use_unique_wire_ids_for_duplicate_client_ids():
+    supervisor = HostSupervisor(
+        argv=[sys.executable, "-c", ""], autostart=False
+    )
+    sent = []
+    sent_lock = threading.Lock()
+    supervisor.start = lambda: None
+
+    def capture(frame):
+        with sent_lock:
+            sent.append(dict(frame))
+
+    supervisor._send_frame = capture
+    results = {}
+
+    def interrupt(sid):
+        results[sid] = supervisor.interrupt(
+            sid,
+            request_id="duplicate-client-id",
+            expected_turn_id=f"{sid}-turn",
+            timeout=2.0,
+        )
+
+    threads = [threading.Thread(target=interrupt, args=(sid,)) for sid in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + 2.0
+    while len(sent) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(sent) == 2
+    assert {frame["parent_request_id"] for frame in sent} == {"duplicate-client-id"}
+    assert len({frame["request_id"] for frame in sent}) == 2
+
+    for frame in sent:
+        supervisor._handle_host_frame(
+            {
+                "type": "interrupt.ack",
+                "sid": frame["sid"],
+                "request_id": frame["request_id"],
+                "applied": True,
+                "admitted": True,
+            }
+        )
+    for thread in threads:
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+    assert set(results) == {"a", "b"}
+    assert {result["sid"] for result in results.values()} == {"a", "b"}

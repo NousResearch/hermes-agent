@@ -958,9 +958,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
         """Register before the reader can publish completion, even for an exited child."""
         from contextvars import copy_context
+        from agent.turn_authorization import without_turn_authorization
 
-        # Reader completion must retain the producer's multiplex profile scope.
-        reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
+        # Reader completion must retain the producer's multiplex profile scope, but it can
+        # outlive the tool call and the turn that spawned it.  Capture the long-lived
+        # reader context only after removing the person's bearer authority.
+        with without_turn_authorization():
+            reader_context = copy_context()
+        reader = threading.Thread(target=reader_context.run, args=(reader_target, session, *extra_args),
                                   daemon=True, name=reader_name)
         session._reader_thread = reader
         with self._lock:

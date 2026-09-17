@@ -25,7 +25,8 @@ class _Timer:
 def _session(sid):
     return dict(agent=None, agent_ready=threading.Event(), session_key=sid,
                 history=[], history_version=0, history_lock=threading.Lock(),
-                running=True, transport=server._detached_ws_transport,
+                running=True, _active_turn_id=f"{sid}-turn",
+                _active_turn_route="compute", transport=server._detached_ws_transport,
                 attached_images=[], cols=80, source="desktop", inflight_turn=None)
 
 
@@ -93,6 +94,8 @@ def test_real_child_detached_turn_activity(tmp_path, monkeypatch, mode):
             (tmp_path / "release").unlink()
             (tmp_path / "provider-started").unlink()
             session["running"] = True
+            session["_active_turn_route"] = "compute"
+            server._activate_turn_identity(session)
             # Same sid and caller rid, same child/agent, but NO new activity.
             server._submit_prompt_to_compute_host("request", sid, session, "next")
             assert session["_compute_host_turn_id"] != old_token

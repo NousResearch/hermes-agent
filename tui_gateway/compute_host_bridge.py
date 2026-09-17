@@ -34,6 +34,16 @@ def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
         or (session.get("agent") is None and session.get("agent_ready") is not None))
 
 
+def _session_active_turn_uses_compute_host(session: dict) -> bool:
+    """Route control to the runner selected when the active turn was admitted."""
+    with session["history_lock"]:
+        running = bool(session.get("running"))
+        route = session.get("_active_turn_route")
+    if running and route in {"inline", "compute"}:
+        return route == "compute"
+    return _session_uses_compute_host(session)
+
+
 def _get_compute_host_supervisor(cfg: dict | None = None):
     global _compute_host_supervisor
     isolation_cfg = cfg or _load_dashboard_process_isolation_config()
@@ -201,48 +211,176 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
         session["_metadata_mirror_updated_at"] = time.time()
 
 
-def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+def _on_compute_host_turn_done(
+    rid: str, sid: str, session: dict, frame: dict, *, expected_turn_id: str
+) -> None:
+    completion_claim = {
+        "turn_id": expected_turn_id,
+        "event": threading.Event(),
+        "owner_thread_id": threading.get_ident(),
+        "stop_tts": False,
+        "retire_turn_marker": False,
+        "effects_sealed": False,
+        "error": None,
+    }
+    completed = False
+    # Keep running/identity published while terminal effects execute. Admissions
+    # therefore remain closed; interrupts join the completion claim rather than
+    # publishing an idle boundary in the middle of stale metadata/events.
     with session["history_lock"]:
+        if (
+            session.get("_compute_host_turn_id") != expected_turn_id
+            or session.get("_active_turn_id") != expected_turn_id
+        ):
+            return
+        session["_turn_completion_claim"] = completion_claim
+        session.pop("_compute_host_turn_id", None)
+        session.pop("_compute_host_activity_ns", None)
         _compute_host_adopt_frame_meta(session, frame)
-        session["running"] = False
-        session["last_active"] = time.time()
-        _clear_inflight_turn(session)
-        session.pop("_compute_host_open_request", None)
-    if frame.get("type") == "turn.error":
-        message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
-    _apply_compute_host_metadata_mirror(session, frame)
-    info = _compute_host_session_info(session)
-    if not frame.get("session_info_emitted"):
-        _emit("session.info", sid, info)
-    _drain_queued_prompt(rid, sid, session)
+    try:
+        if frame.get("type") == "turn.error":
+            message = str(frame.get("message") or "compute host turn failed")
+            _emit(
+                "message.complete", sid,
+                {"text": f"Error: {message}", "status": "error"},
+            )
+        _apply_compute_host_metadata_mirror(session, frame)
+        info = _compute_host_session_info(session)
+        if not frame.get("session_info_emitted"):
+            _emit("session.info", sid, info)
+    finally:
+        effect_error = None
+        with session["history_lock"]:
+            owns_completion = bool(
+                session.get("_turn_completion_claim") is completion_claim
+                and session.get("_active_turn_id") == expected_turn_id
+            )
+            if owns_completion:
+                completion_claim["effects_sealed"] = True
+                stop_tts = bool(completion_claim.get("stop_tts"))
+                retire_marker = bool(
+                    completion_claim.get("retire_turn_marker")
+                )
+                marker_keys = tuple(
+                    dict.fromkeys(
+                        key
+                        for key in (
+                            session.get("_active_turn_marker_key"),
+                            session.get("session_key"),
+                        )
+                        if key
+                    )
+                )
+            else:
+                stop_tts = retire_marker = False
+                marker_keys = ()
+        if stop_tts:
+            try:
+                _tts_stream_stop()
+            except Exception as exc:
+                effect_error = exc
+        if retire_marker and marker_keys:
+            try:
+                _retire_turn_marker(
+                    session,
+                    *marker_keys,
+                    include_current=False,
+                    expected_turn_id=expected_turn_id,
+                )
+            except Exception as exc:
+                effect_error = effect_error or exc
+        completion_claim["error"] = effect_error
+        with session["history_lock"]:
+            if (
+                session.get("_turn_completion_claim") is completion_claim
+                and session.get("_active_turn_id") == expected_turn_id
+            ):
+                session["running"] = False
+                session["last_active"] = time.time()
+                _clear_inflight_turn(session)
+                _clear_active_turn_state(
+                    session, expected_turn_id=expected_turn_id
+                )
+                session.pop("_compute_host_open_request", None)
+                session.pop("_compute_host_pending_clarify", None)
+                completed = True
+            if session.get("_turn_completion_claim") is completion_claim:
+                session.pop("_turn_completion_claim", None)
+        completion_claim["event"].set()
+        if completed:
+            with contextlib.suppress(Exception):
+                _drain_queued_prompt(rid, sid, session)
 
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None,
+    expected_turn_id: str | None = None, expected_turn_authorization=None,
+) -> dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
                                      display_kind=display_kind)
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
-    turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
-    with session["history_lock"]:
-        session["_compute_host_turn_id"] = turn_id
-        session.pop("_compute_host_activity_ns", None)
+    frame["request_id"] = uuid.uuid4().hex
+    turn_id = ""
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure via the callback before re-raising;
         # leave the session untouched so prompt.submit can fail open to the in-process path.
         if done.get("reason") != "send_failed":
-            with session["history_lock"]:
-                if session.get("_compute_host_turn_id") != turn_id:
-                    return
-                session.pop("_compute_host_turn_id", None)
-                session.pop("_compute_host_activity_ns", None)
-            _on_compute_host_turn_done(rid, sid, session, done)
+            _on_compute_host_turn_done(
+                rid, sid, session, done, expected_turn_id=turn_id
+            )
+    with session["history_lock"]:
+        identity_matches = bool(
+            not expected_turn_id
+            or (
+                session.get("_active_turn_id") == expected_turn_id
+                and (
+                    expected_turn_authorization is None
+                    or session.get("_active_turn_authorization")
+                    is expected_turn_authorization
+                )
+            )
+        )
+        if (
+            not identity_matches
+            or not session.get("running")
+            or session.get("_turn_cancel_requested")
+            or session.get("_turn_interrupt_claim") is not None
+            or session.get("_active_turn_route") != "compute"
+        ):
+            if (
+                identity_matches
+                and session.get("running")
+                and session.get("_active_turn_route") == "compute"
+                and session.get("_turn_cancel_requested")
+            ):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                _clear_active_turn_state(
+                    session,
+                    expected_turn_id=expected_turn_id,
+                ) if expected_turn_authorization is None else _clear_active_turn_state(
+                    session,
+                    expected_turn_authorization,
+                    expected_turn_id=expected_turn_id,
+                )
+            return _ok(
+                rid,
+                {"status": "streaming", "turn_isolation": True},
+            )
+        turn_id = str(expected_turn_id or session.get("_active_turn_id") or "")
+        if not turn_id:
+            turn_id = _activate_turn_identity(session)
+        frame["turn_id"] = turn_id
+        session["_compute_host_turn_id"] = turn_id
+        session.pop("_compute_host_activity_ns", None)
     try:
+        # The child serializes turn admission against expected-turn tombstones,
+        # so this callback-capable write must stay outside history_lock.
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:
         with session["history_lock"]:
@@ -251,10 +389,22 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_activity_ns", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
-        session["_compute_host_active"] = True
-        if image_paths is None:
-            session["attached_images"] = []
-    return _ok(rid, {"status": "streaming", "turn_isolation": True})
+        still_current = bool(
+            session.get("running")
+            and session.get("_active_turn_id") == turn_id
+            and not session.get("_turn_cancel_requested")
+        )
+        if still_current:
+            session["_compute_host_active"] = True
+            if image_paths is None:
+                session["attached_images"] = []
+    return _ok(
+        rid,
+        {
+            "status": "streaming",
+            "turn_isolation": True,
+        },
+    )
 
 
 def _send_compute_host_control(

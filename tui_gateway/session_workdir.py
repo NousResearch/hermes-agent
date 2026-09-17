@@ -139,7 +139,9 @@ def _display_session_cwd(session: dict | None) -> str:
     return healed
 
 
-def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
+def _reconcile_session_cwd_from_terminal(
+    session: dict | None, expected_turn_id: str | None = None
+) -> bool:
     """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
     a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary
     checkout's branch). A plain `cd` is deliberately NOT a workspace move (see ``_apply_project_workspace``): a non-git
@@ -171,20 +173,63 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
         return False
     # This is the session's workspace now (a desktop launch-artifact cwd earns a real row); the settle marker keeps it
     # overridable by the NEXT settle.
-    session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=True)
-    _register_session_cwd(session)
+    lock = session.get("history_lock") or contextlib.nullcontext()
+    with lock:
+        # Re-checked under the lock: the git probes above are subprocess calls, so a
+        # newer turn can take the session while they run. Its workspace is not ours
+        # to move.
+        if expected_turn_id is not None:
+            current_turn = session.get("_active_turn_id")
+            if current_turn and current_turn != expected_turn_id:
+                return False
+        session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=True)
+        _register_session_cwd(session)
     _persist_session_cwd_and_schedule_git_meta(session, resolved)
     return True
 
 
-def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
-    """Emit end-of-turn ``session.info``, reconciling a settled cwd first (the agent has stopped moving; riding the
-    turn-end event needs no new event type/round trip)."""
+def _emit_settled_session_info(
+    sid: str,
+    session: dict,
+    agent,
+    expected_turn_id: str | None = None,
+) -> bool:
+    """Reconcile and publish an end-of-turn snapshot for the exact owner.
+
+    Callers keep the turn's completion claim installed until this returns.  The
+    snapshot reports ``running=False`` without publishing idle in shared state,
+    so no newer generation can be admitted between cwd reconciliation and the
+    terminal ``session.info`` event.
+    """
+    lock = session.get("history_lock") or contextlib.nullcontext()
+
+    def superseded() -> bool:
+        # A DIFFERENT live id means a newer generation owns the session. An ABSENT id
+        # is not proof that nobody took over: a newer turn can start AND finish inside
+        # this window, so require the id to still be ours once one was observed.
+        if expected_turn_id is None:
+            return False
+        current = session.get("_active_turn_id")
+        return bool(current) and current != expected_turn_id
+
+    with lock:
+        if superseded():
+            return False
     try:
-        _reconcile_session_cwd_from_terminal(session)
+        # Fenced INSIDE the reconcile, not just around the emit: this mutates
+        # session['cwd'], explicit_cwd, agent.session_cwd, the terminal task env and
+        # the DB row. A superseded turn running it would silently re-anchor the LIVE
+        # turn's workspace to this turn's landing directory.
+        _reconcile_session_cwd_from_terminal(session, expected_turn_id=expected_turn_id)
     except Exception:
         logger.debug("failed to reconcile settled session cwd", exc_info=True)
-    _emit("session.info", sid, _session_info(agent, session))
+    with lock:
+        if superseded():
+            return False
+        settled_session = dict(session)
+        settled_session["running"] = False
+    _emit("session.info", sid, _session_info(agent, settled_session))
+    return True
 
 
 def _session_source(session: dict | None) -> str:

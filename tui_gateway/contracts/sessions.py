@@ -528,7 +528,9 @@ class SessionInterruptResult(Result):
 
 
 method("session.interrupt", params=SessionInterruptParams, result=SessionInterruptResult,
-       doc="Stop the running turn (and streaming TTS); retires the crash-recovery marker.")
+       doc=("Stop the running turn (and streaming TTS); retires the crash-recovery marker. "
+            "Direct interruption is unavailable while a person-authorized turn is active; "
+            "send an authenticated prompt.submit correction through the trusted admission rail."))
 
 
 class CorrectionStatus(WireEnum):

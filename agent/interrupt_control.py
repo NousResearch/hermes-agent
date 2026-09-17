@@ -106,9 +106,21 @@ def _ic_signal_tool_workers(agent, active: bool, **kw) -> None:
 class InterruptControlMixin:
     """interrupt()/hard_interrupt()/clear_interrupt()/steer()/redirect() (see module docstring)."""
 
+    def bind_gateway_turn(self, turn_id: str) -> None:
+        """Publish the immutable gateway turn identity under the interrupt lock."""
+        with _ic_lock(self, "_pending_redirect_lock"):
+            self._active_gateway_turn_id = turn_id
+
+    def clear_gateway_turn(self, turn_id: str) -> None:
+        """Clear only the gateway turn still owned by ``turn_id``."""
+        with _ic_lock(self, "_pending_redirect_lock"):
+            if getattr(self, "_active_gateway_turn_id", None) == turn_id:
+                self._active_gateway_turn_id = None
+
     def interrupt(
         self, message: Optional[str] = None, *, hard_cancel: bool = False,
         tool_reason: Optional[str] = None, require_generation: Optional[int] = None,
+        require_turn_id: Optional[str] = None,
     ) -> bool:
         """Request the agent to interrupt its current tool-calling loop (call from another thread).
 
@@ -153,6 +165,11 @@ class InterruptControlMixin:
             _fence_cancel_before_commit(
                 _fence(), when_in_flight=True, failure_log="Compression hard-cancel fence wait failed"
             )
+            if (
+                require_turn_id is not None
+                and getattr(self, "_active_gateway_turn_id", None) != require_turn_id
+            ):
+                return False
             if require_generation is None:
                 # No claim to race: publish WITHOUT the liveness lock (bare AIAgent stand-ins in other
                 # suites lack the liveness seam and would AttributeError).
@@ -206,11 +223,25 @@ class InterruptControlMixin:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
         return True
 
-    def hard_interrupt(self, message: Optional[str] = None, *, tool_reason: Optional[str] = None) -> None:
+    def hard_interrupt(
+        self,
+        message: Optional[str] = None,
+        *,
+        tool_reason: Optional[str] = None,
+        require_generation: Optional[int] = None,
+        require_turn_id: Optional[str] = None,
+    ) -> bool:
         """Explicit stop preserving the ``interrupt()`` ABI (frontends feature-detect this and fall back to
         legacy ``interrupt()`` for third-party agents). Bypasses dynamic dispatch: legacy subclasses may
         override interrupt(message=None) without hard_cancel."""
-        InterruptControlMixin.interrupt(self, message, hard_cancel=True, tool_reason=tool_reason)
+        return InterruptControlMixin.interrupt(
+            self,
+            message,
+            hard_cancel=True,
+            tool_reason=tool_reason,
+            require_generation=require_generation,
+            require_turn_id=require_turn_id,
+        )
 
     def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal. ``preserve_redirect`` is only for the

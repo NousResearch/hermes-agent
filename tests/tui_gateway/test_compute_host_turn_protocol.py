@@ -25,7 +25,7 @@ def _frames(out: io.StringIO) -> list[dict]:
     return [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
 
 
-def _wait(out: io.StringIO, predicate, timeout: float = 5.0) -> dict:
+def _wait(out: io.StringIO, predicate, timeout: float = 10.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for frame in _frames(out):
@@ -77,6 +77,149 @@ def _session(agent) -> dict:
         "cols": 80, "slash_worker": None, "show_reasoning": False, "tool_progress_mode": "all",
         "inflight_turn": None, "active_session_lease": object(),
     }
+
+
+def test_interrupt_tombstones_turn_queued_before_child_admission():
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, max_workers=1, heartbeat_secs=0)
+    release = threading.Event()
+    blocker = host._executor.submit(lambda: release.wait(5))
+    server._sessions.pop("queued-before-admission", None)
+    try:
+        host.handle_frame(
+            {
+                "type": "turn.start",
+                "sid": "queued-before-admission",
+                "request_id": "turn-request",
+                "turn_id": "queued-turn",
+                "text": "must not run",
+            }
+        )
+        host.handle_frame(
+            {
+                "type": "interrupt",
+                "sid": "queued-before-admission",
+                "request_id": "interrupt-request",
+                "expected_turn_id": "queued-turn",
+            }
+        )
+        ack = _wait(
+            out,
+            lambda frame: frame.get("type") == "interrupt.ack",
+        )
+        assert ack["applied"] is True
+        assert ack["admitted"] is False
+        release.set()
+        ended = _wait(
+            out,
+            lambda frame: frame.get("type") == "turn.end"
+            and frame.get("request_id") == "turn-request",
+        )
+        assert ended["interrupted"] is True
+        assert "queued-before-admission" not in server._sessions
+    finally:
+        release.set()
+        blocker.result(timeout=5)
+        host.close()
+
+
+def test_stale_worker_exception_preserves_new_child_generation(
+    turn_env, monkeypatch
+):
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "stale-worker"
+    session = _session(_agent([]))
+    server._sessions[sid] = session
+    observed = {}
+
+    def fail_old_worker(
+        _rid, _sid, current, _text, *, expected_turn_id=None, **_kwargs
+    ):
+        observed["expected_turn_id"] = expected_turn_id
+        with current["history_lock"]:
+            current.update(
+                running=True,
+                _active_turn_id="new-turn",
+                _active_turn_route="inline",
+            )
+            server._start_inflight_turn(current, "new prompt")
+        raise RuntimeError("old startup failed")
+
+    monkeypatch.setattr(server, "_run_prompt_submit", fail_old_worker)
+    try:
+        host._run_real_turn(
+            {
+                "type": "turn.start",
+                "sid": sid,
+                "request_id": "old-request",
+                "turn_id": "old-turn",
+                "text": "old prompt",
+            }
+        )
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
+    assert observed["expected_turn_id"] == "old-turn"
+    assert session["running"] is True
+    assert session["_active_turn_id"] == "new-turn"
+    assert session["_active_turn_route"] == "inline"
+    assert session["inflight_turn"]["user"] == "new prompt"
+
+
+def test_superseded_child_submit_does_not_join_new_turn_thread(
+    turn_env, monkeypatch
+):
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "superseded-worker"
+    session = _session(_agent([]))
+    server._sessions[sid] = session
+
+    class NewTurnThread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            raise AssertionError("old worker joined the newer turn")
+
+    def supersede_old_worker(
+        _rid, _sid, current, _text, *, expected_turn_id=None, **_kwargs
+    ):
+        assert expected_turn_id == "old-turn"
+        with current["history_lock"]:
+            current.update(
+                running=True,
+                _active_turn_id="new-turn",
+                _active_turn_route="inline",
+                _run_thread=NewTurnThread(),
+                _run_thread_turn_id="new-turn",
+            )
+            server._start_inflight_turn(current, "new prompt")
+        return False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", supersede_old_worker)
+    try:
+        host._run_real_turn(
+            {
+                "type": "turn.start",
+                "sid": sid,
+                "request_id": "old-request",
+                "turn_id": "old-turn",
+                "text": "old prompt",
+            }
+        )
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
+    frames = _frames(out)
+    assert frames[-1]["type"] == "turn.end"
+    assert frames[-1]["interrupted"] is True
+    assert session["running"] is True
+    assert session["_active_turn_id"] == "new-turn"
+    assert session["inflight_turn"]["user"] == "new prompt"
 
 
 def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env):

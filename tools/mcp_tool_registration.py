@@ -150,7 +150,15 @@ def _select_utility_schemas(server_name: str, server: "MCPServerTask", config: d
     """Utility schemas allowed by config (``tools.resources``/``tools.prompts``) and advertised
     capabilities. ``initialize_result.capabilities`` is the truth (sub-object non-None iff the
     family is served); without it fall back to the legacy session-method check, which never
-    filters anything since ClientSession defines all four methods."""
+    filters anything since ClientSession defines all four methods. Generated utility handlers do
+    not yet inject per-request headers, so any server that declares ``per_call_authorization``
+    gets no resource/prompt utility surface (native tools remain available)."""
+    if config.get("per_call_authorization"):
+        logger.info(
+            "MCP server '%s': generated resource/prompt utilities disabled for per-call authorization",
+            server_name,
+        )
+        return []
     tools_filter = config.get("tools") or {}
     enabled = {f: _parse_boolish(tools_filter.get(f), default=True) for f in ("resources", "prompts")}
     advertised = getattr(getattr(server, "initialize_result", None), "capabilities", None)

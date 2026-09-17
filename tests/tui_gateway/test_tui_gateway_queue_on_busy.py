@@ -344,10 +344,17 @@ def test_busy_interrupt_mode_ignores_completed_background_delegation(monkeypatch
     """A terminal delegation must not suppress normal busy-turn interruption."""
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     calls = {"interrupt": 0}
-    agent = types.SimpleNamespace(
-        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    agent = types.SimpleNamespace()
+    agent.bind_gateway_turn = lambda turn_id: setattr(agent, "_turn_id", turn_id)
+    agent.hard_interrupt = lambda *_a, require_turn_id=None, **_k: (
+        calls.__setitem__("interrupt", calls["interrupt"] + 1)
+        if require_turn_id == agent._turn_id
+        else False
     )
-    session = _session(agent=agent, running=True)
+    agent.bind_gateway_turn("busy-turn")
+    session = _session(
+        agent=agent, running=True, _active_turn_id="busy-turn", _active_turn_route="inline"
+    )
 
     with ad._records_lock:
         ad._records["deleg_completed"] = {
@@ -623,20 +630,16 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
     finally:
         server._sessions.pop("sid", None)
 
-    assert dispatched == [
-        (
-            "drain-b",
-            "sid",
-            "B",
-            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0},
-        ),
-        (
-            "drain-c",
-            "sid",
-            "C",
-            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0},
-        ),
+    assert [(rid, sid, text) for rid, sid, text, _kwargs in dispatched] == [
+        ("drain-b", "sid", "B"),
+        ("drain-c", "sid", "C"),
     ]
+    assert [kwargs["image_paths"] for *_prefix, kwargs in dispatched] == [
+        ["/tmp/b.png"],
+        ["/tmp/c.png"],
+    ]
+    assert all(kwargs["queued_prompt_generation"] == 0 for *_prefix, kwargs in dispatched)
+    assert all(kwargs["expected_turn_id"] for *_prefix, kwargs in dispatched)
 
 
 # ── _drain_queued_prompt ───────────────────────────────────────────────────
@@ -784,7 +787,7 @@ def test_drain_does_not_clear_stop_after_its_final_generation_check(monkeypatch)
     assert session["running"] is False
 
 
-def test_drain_continues_with_later_queued_prompt_after_dispatch_failure(monkeypatch):
+def test_drain_preserves_failed_head_without_skipping_to_later_prompt(monkeypatch):
     calls = []
 
     def _run(_rid, _sid, session, text, **_kwargs):
@@ -800,7 +803,9 @@ def test_drain_continues_with_later_queued_prompt_after_dispatch_failure(monkeyp
     )
 
     assert server._drain_queued_prompt("r1", "sid", session) is True
-    assert calls == ["broken", "next"]
-    assert session["queued_prompt"] is None
-    assert session.get("queued_prompts") is None
+    assert calls == ["broken"]
+    assert session["queued_prompt"]["text"] == "broken"
+    assert [entry["text"] for entry in session.get("queued_prompts") or []] == [
+        "next"
+    ]
 

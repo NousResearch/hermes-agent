@@ -141,6 +141,7 @@ def test_tui_tick_fires_when_idle_and_due(server, session):
 
     def fake_submit(rid, sid_, session_, text, **kwargs):
         fired["text"] = text
+        return True
 
     with patch.object(server, "_run_prompt_submit", fake_submit), \
          patch.object(server, "_emit"):

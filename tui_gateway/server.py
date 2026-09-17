@@ -638,6 +638,33 @@ def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
     return write_json(_event_frame(event, sid, payload))
 
 
+def _emit_private_live(
+    event: str, sid: str, payload: dict | None = None, peer: Transport | None = None
+) -> bool:
+    """Deliver a PRIVATE live event to one peer, never to a session's fan-out.
+
+    A session with several attached viewers (second desktop tab, pop-out, browser)
+    holds a FanoutTransport, so routing a private frame through the session would
+    hand it to every watcher. prompt.submit -- the only authority ingress -- pins
+    the originating peer, so personal admissions always take the direct path.
+    Without a pinned peer we fall back to the session route rather than dropping
+    the event, EXCEPT when that route is a fan-out: a private correlation id is
+    not worth broadcasting to every watcher.
+    """
+    target = peer or current_transport()
+    if target is None:
+        session_transport = (_sessions.get(sid) or {}).get("transport")
+        if isinstance(session_transport, FanoutTransport):
+            return False
+        # No fan-out risk: take the ordinary emit path, which owns session
+        # routing and is the seam tests and tooling observe.
+        return _emit(event, sid, payload)
+    from tui_gateway.event_replay import _stamp_event
+    frame = _event_frame(event, sid, payload)
+    _stamp_event(frame)
+    return bool(target.write(frame))
+
+
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),

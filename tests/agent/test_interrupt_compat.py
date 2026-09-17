@@ -32,6 +32,36 @@ class _LegacyAgent:
         self.calls.append(("legacy", message))
 
 
+class _GenerationAgent:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str | None, str | None, int | None]] = []
+
+    def hard_interrupt(
+        self,
+        message: str | None = None,
+        *,
+        tool_reason: str | None = None,
+        require_generation: int | None = None,
+    ) -> bool:
+        self.calls.append((message, tool_reason, require_generation))
+        return True
+
+
+class _TurnAgent:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str | None, str | None, str | None]] = []
+
+    def hard_interrupt(
+        self,
+        message: str | None = None,
+        *,
+        tool_reason: str | None = None,
+        require_turn_id: str | None = None,
+    ) -> bool:
+        self.calls.append((message, tool_reason, require_turn_id))
+        return require_turn_id == "turn-7"
+
+
 def test_explicit_producer_prefers_feature_detected_hard_interrupt() -> None:
     agent = _ModernAgent()
 
@@ -65,6 +95,64 @@ def test_explicit_producer_falls_back_to_old_interrupt_signature() -> None:
 
 def test_explicit_producer_reports_unsupported_agent() -> None:
     assert request_hard_interrupt(object(), "stop now") is False
+
+
+def test_generation_bound_interrupt_is_forwarded_to_supporting_agent() -> None:
+    agent = _GenerationAgent()
+
+    assert request_hard_interrupt(
+        agent, "stop now", tool_reason="fixed category", require_generation=7
+    ) is True
+    assert agent.calls == [("stop now", "fixed category", 7)]
+
+
+def test_generation_bound_interrupt_fails_closed_for_legacy_agent() -> None:
+    agent = _LegacyAgent()
+
+    assert request_hard_interrupt(agent, "stop now", require_generation=7) is False
+    assert agent.calls == []
+
+
+def test_turn_bound_interrupt_is_forwarded_to_supporting_agent() -> None:
+    agent = _TurnAgent()
+
+    assert request_hard_interrupt(
+        agent, "stop now", tool_reason="fixed category", require_turn_id="turn-7"
+    ) is True
+    assert agent.calls == [("stop now", "fixed category", "turn-7")]
+
+
+def test_turn_bound_interrupt_fails_closed_for_legacy_agent() -> None:
+    agent = _LegacyAgent()
+
+    assert request_hard_interrupt(agent, "stop now", require_turn_id="turn-7") is False
+    assert agent.calls == []
+
+
+def test_ai_agent_interrupt_is_bound_to_gateway_turn_identity() -> None:
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._active_gateway_turn_id = "new-turn"
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent._tool_interrupt_reason = None
+    agent._hard_interrupt_requested = threading.Event()
+    agent._pending_redirect_lock = threading.RLock()
+    agent._pending_redirect = None
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
+    agent._tool_worker_threads = set()
+    agent._tool_worker_threads_lock = threading.Lock()
+    agent._active_children = []
+    agent._active_children_lock = threading.Lock()
+    agent.quiet_mode = True
+    agent.api_mode = "test"
+
+    assert agent.hard_interrupt(require_turn_id="old-turn") is False
+    assert agent._interrupt_requested is False
+    assert agent.hard_interrupt(require_turn_id="new-turn") is True
+    assert agent._interrupt_requested is True
 
 
 def test_dynamic_proxy_does_not_fabricate_hard_interrupt_support() -> None:

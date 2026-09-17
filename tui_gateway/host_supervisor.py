@@ -233,10 +233,27 @@ class HostSupervisor:
             raise
         return request_id
 
-    def interrupt(self, sid: str, *, request_id: str | None = None) -> None:
+    def interrupt(
+        self,
+        sid: str,
+        *,
+        request_id: str | None = None,
+        expected_turn_id: str | None = None,
+        timeout: float = 30.0,
+    ) -> dict:
         self.start()
-        self._send_frame(
-            {"type": "interrupt", "sid": sid, "request_id": request_id or uuid.uuid4().hex})
+        parent_request_id = request_id
+        request_id = uuid.uuid4().hex
+        frame = {
+            "type": "interrupt",
+            "sid": sid,
+            "request_id": request_id,
+        }
+        if parent_request_id is not None:
+            frame["parent_request_id"] = parent_request_id
+        if expected_turn_id is not None:
+            frame["expected_turn_id"] = expected_turn_id
+        return self._await_reply(frame, request_id, timeout)
 
     def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""

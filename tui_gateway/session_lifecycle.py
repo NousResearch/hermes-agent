@@ -320,6 +320,16 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    sid = _lifecycle_own_sid(session)
+    with (session.get("history_lock") or contextlib.nullcontext()):
+        abandoned_admissions = _collect_person_admissions(session)
+        _clear_active_turn_state(session)
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        session["_queued_prompt_generation"] = int(
+            session.get("_queued_prompt_generation", 0)
+        ) + 1
+    _emit_person_admissions(sid, abandoned_admissions, reason="session_finalized")
     _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
@@ -512,50 +522,349 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return bool(_ws_session_is_detached(session) and not session.get("running"))
 
 
-def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None = None) -> bool:
+_INTERRUPT_HOSTED_TASK_MISMATCH = object()
+_INTERRUPT_TURN_MISMATCH = object()
+
+
+def _interrupt_session_turn(
+    sid: str,
+    session: dict,
+    *,
+    request_id: str | None = None,
+    reject_person_authorized: bool = False,
+    stop_tts: bool = False,
+    retire_turn_marker: bool = False,
+    expected_hosted_task_id: str | None = None,
+    expected_turn_id: str | None = None,
+) -> bool | None:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics."""
-    use_compute_host = _session_uses_compute_host(session)
-    should_interrupt = bool(session.get("running"))
-    run_thread_alive = False
-    if use_compute_host:
-        # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
-        # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
-        if should_interrupt or session.get("_compute_host_active"):
-            _get_compute_host_supervisor().interrupt(sid, request_id=request_id)
-    else:
-        run_thread_alive = (rt := session.get("_run_thread")) is not None and rt.is_alive()
     with session["history_lock"]:
-        session["_turn_cancel_requested"] = True
-        session["queued_prompt"] = None
-        session.pop("queued_prompts", None)
-        session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
-    if should_interrupt:
-        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
-        # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
-        # resources. Observer-only; dispatch failures never break the interrupt.
-        try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                reason="user_stop", invalidation_reason="session_interrupt",
+        authorization = session.get("_active_turn_authorization")
+        if (
+            reject_person_authorized
+            and session.get("running")
+            and authorization is not None
+            and authorization.is_personal
+        ):
+            return None
+        completion_claim = session.get("_turn_completion_claim")
+        if isinstance(completion_claim, dict):
+            completion_turn_id = str(completion_claim.get("turn_id") or "")
+            if (
+                expected_turn_id is not None
+                and completion_turn_id != expected_turn_id
+            ):
+                return _INTERRUPT_TURN_MISMATCH
+            completion_too_late = bool(
+                completion_claim.get("effects_sealed")
             )
-        except Exception:
-            logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
-    if not use_compute_host:
+            if not completion_too_late:
+                completion_claim["stop_tts"] = bool(
+                    completion_claim.get("stop_tts") or stop_tts
+                )
+                completion_claim["retire_turn_marker"] = bool(
+                    completion_claim.get("retire_turn_marker")
+                    or retire_turn_marker
+                )
+            completion_event = completion_claim.get("event")
+            completion_same_thread = (
+                completion_claim.get("owner_thread_id") == threading.get_ident()
+            )
+            completion_route = session.get("_active_turn_route")
+        else:
+            completion_event = None
+            completion_same_thread = False
+            completion_route = None
+            completion_turn_id = ""
+            completion_too_late = False
+    if isinstance(completion_claim, dict):
+        if not completion_same_thread and isinstance(completion_event, threading.Event):
+            completion_event.wait()
+        if completion_too_late:
+            return _INTERRUPT_TURN_MISMATCH
+        if completion_claim.get("error") is not None:
+            raise completion_claim["error"]
+        return completion_route == "compute"
+    claim = {
+        "event": threading.Event(),
+        "result": False,
+        "error": None,
+        "stop_tts": bool(stop_tts),
+        "retire_turn_marker": bool(retire_turn_marker),
+    }
+    owner = False
+    wait_claim = None
+    dropped_queued_authorizations = []
+    abandoned_authorization = None
+    claimed_authorization = None
+    claimed_turn_id = ""
+    claimed_session_key = ""
+    try:
+        with session["history_lock"]:
+            if reject_person_authorized:
+                authorization = session.get("_active_turn_authorization")
+                if session.get("running") and authorization is not None and authorization.is_personal:
+                    return None
+            if expected_hosted_task_id is not None:
+                task = session.get("_hosted_room_task")
+                if not (
+                    session.get("running")
+                    and isinstance(task, dict)
+                    and task.get("task_id") == expected_hosted_task_id
+                ):
+                    return _INTERRUPT_HOSTED_TASK_MISMATCH
+            if (
+                expected_turn_id is not None
+                and session.get("_active_turn_id") != expected_turn_id
+            ):
+                return _INTERRUPT_TURN_MISMATCH
+            existing_claim = session.get("_turn_interrupt_claim")
+            if isinstance(existing_claim, dict):
+                existing_claim["stop_tts"] = bool(
+                    existing_claim.get("stop_tts") or stop_tts
+                )
+                existing_claim["retire_turn_marker"] = bool(
+                    existing_claim.get("retire_turn_marker") or retire_turn_marker
+                )
+                wait_claim = existing_claim
+            else:
+                owner = True
+                session["_turn_interrupt_claim"] = claim
+                running = bool(session.get("running"))
+                route = session.get("_active_turn_route")
+                use_compute_host = (
+                    route == "compute"
+                    if running and route in {"inline", "compute"}
+                    else _session_uses_compute_host(session)
+                )
+                should_interrupt = running
+                claimed_authorization = session.get("_active_turn_authorization")
+                claimed_agent = session.get("agent")
+                if running and not session.get("_active_turn_id"):
+                    _activate_turn_identity(session)
+                claimed_turn_id = str(session.get("_active_turn_id") or "")
+                claimed_session_key = str(session.get("session_key") or "")
+                session["_turn_cancel_requested"] = True
+                queued_entries = [
+                    session.get("queued_prompt"),
+                    *(session.get("queued_prompts") or []),
+                ]
+                dropped_queued_authorizations = [
+                    entry.get("turn_authorization")
+                    for entry in queued_entries
+                    if isinstance(entry, dict)
+                    and bool(
+                        getattr(entry.get("turn_authorization"), "is_personal", False)
+                    )
+                ]
+                session["queued_prompt"] = None
+                session.pop("queued_prompts", None)
+                session["_queued_prompt_generation"] = int(
+                    session.get("_queued_prompt_generation", 0)
+                ) + 1
+                if not should_interrupt:
+                    abandoned_authorization = session.get("_active_turn_authorization")
+                    _clear_active_turn_state(session)
+
+        if wait_claim is not None:
+            wait_claim["event"].wait()
+            if wait_claim.get("error") is not None:
+                raise RuntimeError("concurrent session interrupt failed") from wait_claim["error"]
+            return wait_claim.get("result", False)
+
+        _emit_person_admissions(
+            sid, dropped_queued_authorizations, reason="interrupted_while_queued"
+        )
+        if bool(getattr(abandoned_authorization, "is_personal", False)):
+            _emit_person_admissions(sid, [abandoned_authorization], reason="interrupted")
+        run_thread_alive = False
+        if use_compute_host:
+            # The host owns the live turn (parent `running` can lag a blocked tool), so let it decide. Gate on
+            # `_compute_host_active`: HostSupervisor.interrupt() calls start(), so a lazy session would spawn a child to interrupt.
+            if should_interrupt or session.get("_compute_host_active"):
+                interrupt_ack = _get_compute_host_supervisor().interrupt(
+                    sid,
+                    request_id=request_id,
+                    expected_turn_id=claimed_turn_id or None,
+                )
+                if isinstance(interrupt_ack, dict) and not interrupt_ack.get("applied"):
+                    raise RuntimeError("compute-host did not apply the turn interrupt")
+                if isinstance(interrupt_ack, dict) and not interrupt_ack.get("admitted", True):
+                    with session["history_lock"]:
+                        if (
+                            session.get("_turn_interrupt_claim") is claim
+                            and session.get("_active_turn_id") == claimed_turn_id
+                            and session.get("_active_turn_authorization")
+                            is claimed_authorization
+                        ):
+                            session["running"] = False
+                            _clear_inflight_turn(session)
+                            _clear_active_turn_state(session, claimed_authorization)
+                            session.pop("_hosted_room_task", None)
+                            if session.get("_compute_host_turn_id") == claimed_turn_id:
+                                session.pop("_compute_host_turn_id", None)
+                                session.pop("_compute_host_activity_ns", None)
+        else:
+            run_thread_alive = bool(
+                session.get("_run_thread_turn_id") == claimed_turn_id
+                and (rt := session.get("_run_thread")) is not None
+                and rt.is_alive()
+            )
         if should_interrupt:
-            from agent.interrupt_compat import request_hard_interrupt
-            request_hard_interrupt(session.get("agent"))
-        if not run_thread_alive:
-            with session["history_lock"]:
-                if session.get("running"):
-                    session["running"] = False
-                    _clear_inflight_turn(session)
-    _clear_pending(sid)
-    with contextlib.suppress(Exception):
-        from tools.approval import resolve_gateway_approval
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
-    return use_compute_host
+            # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
+            # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
+            # resources. Observer-only; dispatch failures never break the interrupt.
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "agent_loop_stopped", session_key=claimed_session_key, platform="tui",
+                    reason="user_stop", invalidation_reason="session_interrupt",
+                )
+            except Exception:
+                logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+        if not use_compute_host:
+            if should_interrupt:
+                from agent.interrupt_compat import request_hard_interrupt
+                request_hard_interrupt(
+                    claimed_agent,
+                    require_turn_id=(
+                        claimed_turn_id
+                        if callable(getattr(claimed_agent, "bind_gateway_turn", None))
+                        else None
+                    ),
+                )
+            if not run_thread_alive:
+                stalled_authorization = None
+                with session["history_lock"]:
+                    if (
+                        session.get("_turn_interrupt_claim") is claim
+                        and session.get("running")
+                        and session.get("_active_turn_id") == claimed_turn_id
+                        and session.get("_active_turn_authorization") is claimed_authorization
+                    ):
+                        stalled_authorization = session.get("_active_turn_authorization")
+                        session["running"] = False
+                        _clear_inflight_turn(session)
+                        _clear_active_turn_state(session, claimed_authorization)
+                        session.pop("_hosted_room_task", None)
+                if bool(getattr(stalled_authorization, "is_personal", False)):
+                    _emit_person_admissions(
+                        sid, [stalled_authorization], reason="interrupted"
+                    )
+        with session["history_lock"]:
+            no_newer_turn = not session.get("running") or (
+                session.get("_active_turn_id") == claimed_turn_id
+            )
+        if no_newer_turn:
+            _clear_pending(sid)
+            with contextlib.suppress(Exception):
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(claimed_session_key, "deny", resolve_all=True)
+        claim["result"] = use_compute_host
+        return use_compute_host
+    except BaseException as exc:
+        if owner:
+            claim["error"] = exc
+        raise
+    finally:
+        if owner:
+            should_drain = False
+            settle_error = None
+            try:
+                # Followers may require stronger idempotent effects than the
+                # owner. Reconcile until no follower changed the union, then
+                # remove the claim atomically with that final observation.
+                while True:
+                    marker_keys: tuple[str, ...] = ()
+                    do_tts = False
+                    with session["history_lock"]:
+                        if session.get("_turn_interrupt_claim") is not claim:
+                            break
+                        do_tts = bool(
+                            claim.get("stop_tts") and not claim.get("tts_applied")
+                        )
+                        if do_tts:
+                            claim["tts_applied"] = True
+                        do_marker = bool(
+                            claim.get("retire_turn_marker")
+                            and not claim.get("marker_applied")
+                        )
+                        if do_marker:
+                            claim["marker_applied"] = True
+                            marker_keys = tuple(
+                                dict.fromkeys(
+                                    key
+                                    for key in (
+                                        str(
+                                            session.pop(
+                                                "_active_turn_marker_key", ""
+                                            )
+                                            or ""
+                                        ),
+                                        claimed_session_key,
+                                    )
+                                    if key
+                                )
+                            )
+                        if not do_tts and not do_marker:
+                            session.pop("_turn_interrupt_claim", None)
+                            should_drain = bool(
+                                not session.get("running")
+                                and not session.get("_closing")
+                                and session.get("queued_prompt")
+                            )
+                            break
+                    if do_tts:
+                        try:
+                            _tts_stream_stop()
+                        except Exception:
+                            logger.debug(
+                                "TTS stop failed during session interrupt", exc_info=True
+                            )
+                    if marker_keys:
+                        try:
+                            _retire_turn_marker(
+                                session,
+                                *marker_keys,
+                                include_current=False,
+                                expected_turn_id=claimed_turn_id or None,
+                            )
+                        except BaseException as exc:
+                            # An effect failure must not freeze the union: a
+                            # follower may have requested TTS while marker I/O
+                            # was blocked. Preserve the first error and keep
+                            # reconciling until every requested effect ran.
+                            if claim.get("error") is None:
+                                claim["error"] = exc
+                                settle_error = exc
+                            else:
+                                logger.debug(
+                                    "marker retirement failed while propagating prior error",
+                                    exc_info=True,
+                                )
+                if should_drain:
+                    threading.Thread(
+                        target=_drain_queued_prompt,
+                        args=(request_id or f"interrupt-{sid}", sid, session),
+                        daemon=True,
+                    ).start()
+            except BaseException as exc:
+                if claim.get("error") is None:
+                    claim["error"] = exc
+                    settle_error = exc
+                else:
+                    logger.debug(
+                        "interrupt post-effect failed while propagating prior error",
+                        exc_info=True,
+                    )
+            finally:
+                with session["history_lock"]:
+                    if session.get("_turn_interrupt_claim") is claim:
+                        session.pop("_turn_interrupt_claim", None)
+                claim["event"].set()
+            if settle_error is not None:
+                raise settle_error
 
 
 def _session_has_active_delegations(sid: str, session: dict | None = None) -> bool:

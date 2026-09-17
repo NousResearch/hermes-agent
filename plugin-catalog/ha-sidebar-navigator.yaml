@@ -1,8 +1,8 @@
 name: ha-sidebar-navigator
 repo: https://github.com/badiyee85/HA-Plugins-sidebar-navigator
-sha: 6d0a4629472e3895e683dd2cf1620a59966be628
+sha: 98bfbc34acb801cb01dc2b3ff45746521a242507
 version: "0.3.0"
-image: https://raw.githubusercontent.com/badiyee85/HA-Plugins-sidebar-navigator/6d0a4629472e3895e683dd2cf1620a59966be628/docs/images/banner.png
+image: https://raw.githubusercontent.com/badiyee85/HA-Plugins-sidebar-navigator/98bfbc34acb801cb01dc2b3ff45746521a242507/docs/images/banner.png
 description: Full-power sidebar navigator & uncapped project/session explorer for Hermes Desktop.
   Bypasses the 3-session overview cap with searchable, scrollable project trees and timeline view.
 maintainer: badiyee85

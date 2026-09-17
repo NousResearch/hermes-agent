@@ -20,7 +20,7 @@ from agent.secret_sources.base import run_cli
 from agent.secret_sources.onepassword import _OP_ENV_ALLOWLIST, _scrub, find_op
 from agent.vault_backends.base import LoginBackend, UnlockRequired, run_with_stdin_secret
 from agent.vault_backends import unlock as _unlock
-from agent.vault_store import VaultItemMeta, normalize_origin
+from agent.vault_store import VaultItemMeta, normalize_origin, normalize_otp_secret, totp_now
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,23 @@ class OnePasswordLoginBackend(LoginBackend):
         return item
 
     @staticmethod
+    def _connect_otp_seed(item) -> Optional[str]:
+        """Canonical RFC 6238 seed from a Connect item's one-time-password field, else None.
+
+        The same helper backs both ``has_otp`` (the agent's "codes are minted automatically"
+        hint) and ``resolve_otp``, so a stored item is never announced as automatic unless a
+        code can actually be minted from it.
+        """
+        raw = next((f.get("value") for f in item.get("fields", [])
+                    if f.get("type") == "OTP" or f.get("purpose") == "ONE_TIME_PASSWORD"), None)
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        try:
+            return normalize_otp_secret(raw) or None
+        except Exception:
+            return None
+
+    @staticmethod
     def _connect_meta(item, vault_id):
         handle = f"op:connect:{vault_id}:{item.get('id')}"
         OnePasswordLoginBackend._connect_ids(handle)
@@ -123,8 +140,9 @@ class OnePasswordLoginBackend(LoginBackend):
             return None
         username = next((f.get("value") for f in item.get("fields", []) if f.get("purpose") == "USERNAME"), None)
         return VaultItemMeta(id=handle, kind="login", label=str(item.get("title") or origin),
-            origin=origin, created_at=str(item.get("createdAt") or ""),
-            identifier_type="username" if username else None, identifier=username)
+                             has_otp=OnePasswordLoginBackend._connect_otp_seed(item) is not None,
+                             origin=origin, created_at=str(item.get("createdAt") or ""),
+                             identifier_type="username" if username else None, identifier=username)
 
     def is_unlocked(self) -> bool:
         try:
@@ -209,8 +227,10 @@ class OnePasswordLoginBackend(LoginBackend):
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         if self._connect_credentials()[1]:
-            # Connect does not mint one-time codes. Do not pass its handle to the CLI.
-            return None
+            # Connect exposes the item's OTP field (an otpauth:// URI); mint the code locally,
+            # never over the CLI. No stored seed → None → the user is asked.
+            seed = self._connect_otp_seed(self._connect_item(handle))
+            return totp_now(seed) if seed else None
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
             code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()

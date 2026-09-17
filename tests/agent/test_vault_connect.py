@@ -59,3 +59,82 @@ def test_connect_native_metadata_resolution_and_fail_closed(monkeypatch):
     finally:
         reset_secret_scope(token); set_multiplex_active(False)
         server.shutdown(); server.server_close(); thread.join()
+
+
+OTP_URI = ('otpauth://totp/Example:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+           '&digits=8&period=3600&algorithm=SHA1')
+
+
+def _connect_server(item_fields):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def do_GET(self):
+            item = {'id': I, 'vault': {'id': V}, 'category': 'LOGIN', 'title': 'Example',
+                    'urls': [{'href': 'https://example.com/login'}]}
+            routes = {'/v1/vaults': [{'id': V}], f'/v1/vaults/{V}/items': [item],
+                      f'/v1/vaults/{V}/items/{I}': dict(item, fields=item_fields)}
+            self.send_response(200); self.end_headers()
+            self.wfile.write(json.dumps(routes.get(self.path, {})).encode())
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    return server, thread
+
+
+def _scoped_backend(server):
+    scope = set_secret_scope({'OP_CONNECT_HOST': f'http://127.0.0.1:{server.server_port}',
+                              'OP_CONNECT_TOKEN': 'scoped-token'})
+    return OnePasswordLoginBackend(), scope
+
+
+def test_connect_one_time_password_field_is_announced_and_minted(monkeypatch):
+    """A Connect item storing an otpauth:// URI is announced as automatic AND actually minted.
+
+    Regression: the Connect branch of ``resolve_otp`` returned None unconditionally, so even an
+    item with a usable authenticator seed could never produce a code — ``browser_vault_enter_code``
+    fell through to asking the user (unavailable headless) instead of minting it.
+    """
+    import time as _time
+    from agent.vault_store import normalize_otp_secret, totp_now
+    fields = [{'purpose': 'USERNAME', 'value': 'synthetic@example.com'},
+              {'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
+              {'id': 'TOTP_synthetic', 'label': 'one-time password', 'type': 'OTP', 'value': OTP_URI}]
+    server, thread = _connect_server(fields)
+    monkeypatch.delenv('OP_SERVICE_ACCOUNT_TOKEN', raising=False)
+    set_multiplex_active(True)
+    backend, scope = _scoped_backend(server)
+    try:
+        handle = backend.list_items()[0].id
+        # The Connect LIST route carries no fields, so a field-less list item must NOT claim
+        # automatic 2FA; the authoritative answer is the item detail route.
+        assert backend.list_items()[0].has_otp is False
+        code = backend.resolve_otp(handle)
+        expected = totp_now(normalize_otp_secret(OTP_URI), at=_time.time())
+        assert code == expected and code.isdigit() and len(code) == 8
+        meta = backend.get_meta(handle)
+        assert meta.has_otp is True, 'a stored authenticator seed must be announced as automatic'
+        assert OTP_URI not in repr(meta)
+    finally:
+        reset_secret_scope(scope); set_multiplex_active(False)
+        server.shutdown(); server.server_close(); thread.join()
+
+
+def test_connect_without_usable_seed_stays_single_factor(monkeypatch):
+    """No OTP field, or an unusable one, must not be announced as automatic nor mint a code."""
+    cases = [
+        [{'purpose': 'USERNAME', 'value': 'synthetic@example.com'},
+         {'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE}],
+        [{'purpose': 'PASSWORD', 'value': SYNTHETIC_VALUE},
+         {'type': 'OTP', 'value': 'not-a-seed!!'}],
+    ]
+    for fields in cases:
+        server, thread = _connect_server(fields)
+        monkeypatch.delenv('OP_SERVICE_ACCOUNT_TOKEN', raising=False)
+        set_multiplex_active(True)
+        backend, scope = _scoped_backend(server)
+        try:
+            handle = backend.list_items()[0].id
+            assert backend.get_meta(handle).has_otp is False
+            assert backend.resolve_otp(handle) is None
+        finally:
+            reset_secret_scope(scope); set_multiplex_active(False)
+            server.shutdown(); server.server_close(); thread.join()

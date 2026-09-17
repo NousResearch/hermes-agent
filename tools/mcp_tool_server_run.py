@@ -71,6 +71,12 @@ class MCPServerRunMixin:
             keepalive_interval = max(
                 _core._MIN_KEEPALIVE_INTERVAL,
                 float(_core._DEFAULT_KEEPALIVE_INTERVAL if configured is None else configured))
+        # No keepalive, but an unproven stdio session must still get its chance to prove
+        # itself: it counts as proven only once a FULL default interval has elapsed — not on
+        # the first timeout wake, which a shorter recycle deadline may cause (see below).
+        proof_at = None
+        if keepalive_interval is None and not self._session_proven:
+            proof_at = time.monotonic() + _core._DEFAULT_KEEPALIVE_INTERVAL
         shutdown_task, reconnect_task = self._event_waiters()
         rpc_idle_task = None
         waiters = [shutdown_task, reconnect_task]
@@ -79,10 +85,8 @@ class MCPServerRunMixin:
                 if self._recycle_if_due():
                     return "recycle"
                 timeout = keepalive_interval
-                if timeout is None and not self._session_proven:
-                    # No keepalive, but an unproven stdio session must still get its chance to
-                    # prove itself: wake once after the default interval (no ping) — see below.
-                    timeout = float(_core._DEFAULT_KEEPALIVE_INTERVAL)
+                if timeout is None and not self._session_proven and proof_at is not None:
+                    timeout = max(0.0, proof_at - time.monotonic())
                 recycle_deadline = self._next_stdio_recycle_deadline()
                 if recycle_deadline is not None:
                     recycle_timeout = max(0.0, recycle_deadline - time.monotonic())
@@ -106,8 +110,10 @@ class MCPServerRunMixin:
                 if keepalive_interval is None:
                     # Stdio without a keepalive: idling a full default interval with the child
                     # still alive is the proof of health a successful ping gives remote
-                    # transports — clear the rapid-drop budget without pinging (#62212).
-                    if not self._session_proven and not self._stdio_children_dead():
+                    # transports — clear the rapid-drop budget without pinging (#62212). An
+                    # earlier wake (a hidden-then-missed recycle deadline) is not that proof.
+                    if (not self._session_proven and proof_at is not None
+                            and time.monotonic() >= proof_at and not self._stdio_children_dead()):
                         self._mark_session_proven()
                     continue
                 # Timeout: probe for a stale session — NEVER while an RPC is in flight (a

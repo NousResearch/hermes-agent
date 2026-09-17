@@ -147,19 +147,23 @@ class TestKeepaliveInterval:
     the session alive instead of hitting an expired session on every idle call.
     """
 
-    async def _run_lifecycle_cycles(self, config):
+    async def _run_lifecycle_cycles(self, config, idle_timeout=None):
         """Run two lifecycle cycles on a server with the *full* ``config``: the first
-        ``asyncio.wait`` times out (no event fired), the second is ended by shutdown.
+        ``asyncio.wait`` times out (no event fired) and the loop's clock is advanced by
+        that timeout, the second is ended by shutdown.
         Returns ``(task, [timeout_of_cycle_1, timeout_of_cycle_2])``."""
         task = MCPServerTask("test")
         task._config = config
+        task._idle_timeout_seconds = idle_timeout
         task.session = SimpleNamespace(send_ping=AsyncMock())
         timeouts = []
         real_wait = asyncio.wait
+        elapsed = [0.0]
 
         async def fake_wait(tasks, timeout=None, return_when=None):
             timeouts.append(timeout)
             if len(timeouts) == 1:
+                elapsed[0] += timeout or 0.0
                 return set(), set(tasks)  # simulate the timeout firing
             task._shutdown_event.set()
             return await real_wait(
@@ -167,12 +171,14 @@ class TestKeepaliveInterval:
             )
 
         import tools.mcp_tool as mcp_mod
-        orig = mcp_mod.asyncio.wait
+        import tools.mcp_tool_server_run as run_mod
+        orig, orig_time = mcp_mod.asyncio.wait, run_mod.time
         mcp_mod.asyncio.wait = fake_wait
+        run_mod.time = SimpleNamespace(monotonic=lambda: orig_time.monotonic() + elapsed[0])
         try:
             assert await task._wait_for_lifecycle_event() == "shutdown"
         finally:
-            mcp_mod.asyncio.wait = orig
+            mcp_mod.asyncio.wait, run_mod.time = orig, orig_time
         return task, timeouts
 
     async def _captured_interval(self, config):
@@ -185,7 +191,10 @@ class TestKeepaliveInterval:
     async def test_default_interval_when_unset(self):
         from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         assert await self._captured_interval({}) == _DEFAULT_KEEPALIVE_INTERVAL
-
+        # An explicit interval is honoured on stdio too (where there is no default).
+        _task, timeouts = await self._run_lifecycle_cycles(
+            {"command": "example-mcp", "keepalive_interval": 42})
+        assert timeouts[0] == 42
 
     @pytest.mark.asyncio
     async def test_interval_clamped_to_floor(self):
@@ -200,12 +209,19 @@ class TestKeepaliveInterval:
     async def test_default_stdio_connection_waits_without_keepalive(self):
         """A healthy local pipe must not be probed solely because it is idle — but surviving a
         full default interval idle must still prove the session (clears the rapid-drop budget);
-        once proven, the loop waits without any timeout."""
+        once proven, the loop waits without any timeout. An earlier wake caused by a shorter
+        idle limit is NOT proof: the budget stays armed until the full interval has passed."""
         from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"})
 
-        assert timeouts == [_DEFAULT_KEEPALIVE_INTERVAL, None]
+        assert timeouts[0] == pytest.approx(_DEFAULT_KEEPALIVE_INTERVAL, abs=0.05)
+        assert timeouts[1] is None
         assert task._session_proven is True
+        task.session.send_ping.assert_not_called()
+
+        task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"}, idle_timeout=60)
+        assert timeouts[0] == pytest.approx(60, abs=0.05)  # woke for the idle deadline, not the proof
+        assert task._session_proven is False
         task.session.send_ping.assert_not_called()
 
     @pytest.mark.asyncio

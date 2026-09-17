@@ -18335,11 +18335,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif agent_failed_early or hidden_reasoning_incomplete:
                 # Transient failure (429/timeout/5xx): persist only the user
                 # message so the next message can load a transcript that
-                # reflects what was said.  Skip the assistant error text since
-                # it's a gateway-generated hint, not model output. Hidden-
-                # reasoning-only incomplete turns follow the same persistence
-                # rule so peer-agent channels don't ingest them as completed
-                # assistant turns. (#7100, #51628)
+                # reflects what was said. Hidden-reasoning-only incomplete
+                # turns follow the same user-persistence rule so peer-agent
+                # channels don't ingest them as completed assistant turns.
+                # (#7100, #51628)
                 _user_entry = {
                     "role": "user",
                     "content": (
@@ -18376,6 +18375,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _user_entry,
                         skip_db=agent_persisted,
                     )
+                    # Record a safe gateway fallback only when the agent did
+                    # not already persist an assistant turn. This keeps a
+                    # user-only early failure from looking like a missing
+                    # reply without duplicating agent-owned error text. A
+                    # timed-out agent may still flush after this handler
+                    # returns, so it owns that terminal transcript state.
+                    if (
+                        agent_failed_early
+                        and response
+                        and not agent_result.get("gateway_timeout_fallback")
+                    ):
+                        _agent_history_offset = agent_result.get(
+                            "history_offset", len(history)
+                        )
+                        _agent_turn_messages = (
+                            agent_messages[_agent_history_offset:]
+                            if isinstance(_agent_history_offset, int)
+                            and 0 <= _agent_history_offset <= len(agent_messages)
+                            else []
+                        )
+                        _agent_persisted_assistant = agent_persisted and any(
+                            msg.get("role") == "assistant" and msg.get("content")
+                            for msg in _agent_turn_messages
+                        )
+                        if not _agent_persisted_assistant:
+                            await self.async_session_store.append_to_transcript(
+                                session_entry.session_id,
+                                {"role": "assistant", "content": response, "timestamp": ts},
+                                skip_db=False,
+                            )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
@@ -25945,6 +25974,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "tools": tools_holder[0] or [],
                     "history_offset": 0,
                     "failed": True,
+                    "gateway_timeout_fallback": True,
                 }
 
             # Track fallback model state: if the agent switched to a

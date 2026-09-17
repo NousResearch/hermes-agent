@@ -336,11 +336,13 @@ class EmailAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
-        # Env first, then PlatformConfig.extra (config.yaml-only setups). Host/address are stripped: a stray
-        # newline made IMAP4_SSL raise ``[Errno 8] nodename nor servname`` instead of "host not set".
+        # An explicit config.yaml value wins; env is the fallback for env-only setups (a secondary
+        # profile's own config.yaml must not be shadowed by a bridged default profile's env under
+        # multiplex). Host/address are stripped: a stray newline made IMAP4_SSL raise
+        # ``[Errno 8] nodename nor servname`` instead of "host not set".
         extra = config.extra or {}
-        setting = lambda env, key: _get_secret(env, "") or extra.get(key, "")  # noqa: E731
-        tls_verify = lambda env, key: _esecret_bool(env, is_truthy_value(extra.get(key), default=True))  # noqa: E731
+        setting = lambda env, key: extra.get(key) or _get_secret(env, "")  # noqa: E731
+        tls_verify = lambda env, key: is_truthy_value(extra.get(key), default=_esecret_bool(env, True))  # noqa: E731
         self._address = setting("EMAIL_ADDRESS", "address").strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
@@ -775,8 +777,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
     smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
-    smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
-    smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
+    smtp_security = _normalize_security(extra.get("smtp_security") or _get_secret("EMAIL_SMTP_SECURITY", ""), default="tls" if smtp_port == 465 else "starttls")
+    smtp_tls_verify = is_truthy_value(extra.get("smtp_tls_verify"), default=_esecret_bool("EMAIL_SMTP_TLS_VERIFY", True))
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:

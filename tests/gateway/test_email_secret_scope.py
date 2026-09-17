@@ -243,6 +243,41 @@ class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
         finally:
             ss.reset_secret_scope(token)
 
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "leaked-default@test.invalid",
+        "EMAIL_PASSWORD": "leaked-default-pw",
+        "EMAIL_IMAP_HOST": "imap.leaked-default.example",
+        "EMAIL_SMTP_HOST": "smtp.leaked-default.example",
+        "EMAIL_SMTP_SECURITY": "starttls",
+        "EMAIL_IMAP_SECURITY": "starttls",
+        "EMAIL_SMTP_TLS_VERIFY": "true",
+        "EMAIL_IMAP_TLS_VERIFY": "true",
+    }, clear=False)
+    def test_explicit_config_yaml_wins_over_bridged_environ(self):
+        """A profile's own config.yaml (``extra``) values must win over os.environ, not the
+        reverse — os.environ can hold a bridged DEFAULT profile's values under multiplex, and
+        a secondary profile's explicit choice must not be silently overridden by them."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        cfg = PlatformConfig(enabled=True, extra={
+            "address": "explicit@example.com",
+            "imap_host": "imap.explicit.example",
+            "smtp_host": "smtp.explicit.example",
+            "smtp_security": "tls",
+            "imap_security": "tls",
+            "smtp_tls_verify": False,
+            "imap_tls_verify": False,
+        })
+        adapter = EmailAdapter(cfg)
+        self.assertEqual(adapter._address, "explicit@example.com")
+        self.assertEqual(adapter._imap_host, "imap.explicit.example")
+        self.assertEqual(adapter._smtp_host, "smtp.explicit.example")
+        self.assertEqual(adapter._smtp_security, "tls")
+        self.assertEqual(adapter._imap_security, "tls")
+        self.assertFalse(adapter._smtp_tls_verify)
+        self.assertFalse(adapter._imap_tls_verify)
+
 
 if __name__ == "__main__":
     unittest.main()

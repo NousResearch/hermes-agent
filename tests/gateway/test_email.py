@@ -854,6 +854,40 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
 
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "465",
+        # A bridged/default-profile value the sender's own explicit choice must not be
+        # shadowed by (#N: extra.get(...) must be checked before the env fallback).
+        "EMAIL_SMTP_SECURITY": "starttls",
+    })
+    def test_explicit_smtp_security_wins_over_environ(self):
+        """extra['smtp_security']='tls' must win over EMAIL_SMTP_SECURITY=starttls in os.environ
+        — a direct-SSL connection (SMTP_SSL), not a plaintext-then-STARTTLS one."""
+        import asyncio
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+        async def _send_email(extra, chat_id, message):
+            return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
+
+        with patch("smtplib.SMTP") as mock_smtp, patch("smtplib.SMTP_SSL") as mock_smtp_ssl:
+            mock_ssl_server = MagicMock()
+            mock_smtp_ssl.return_value = mock_ssl_server
+
+            result = asyncio.run(
+                _send_email(
+                    {"address": "hermes@test.com", "smtp_host": "smtp.test.com", "smtp_security": "tls"},
+                    "user@test.com", "Hello",
+                )
+            )
+
+            self.assertTrue(result["success"])
+            mock_smtp_ssl.assert_called_once()
+            mock_smtp.assert_not_called()
+            mock_ssl_server.starttls.assert_not_called()
+
 
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""

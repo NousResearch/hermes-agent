@@ -37,52 +37,58 @@ not for a one-line fix or throwaway script.
 - Optionally, the Decision HUD MCP tools (`decision_hud__decision_push`,
   `decision_hud__decision_list`) if the project has that plugin installed
   -- routing to Decision HUD degrades gracefully to `clarify` if absent
-  (see Procedure step 4).
+  (see Procedure step 3).
 
 ## How to Run
 
 ```bash
 bash scripts/init_project.sh <project-name>       # new directory
 bash scripts/init_project.sh . --here              # init in cwd
-python3 scripts/translate_speckit_skills.py <project_dir>
 python3 scripts/spec_decision_gate.py --questions
 python3 scripts/spec_decision_gate.py --answers answers.json
 ```
+
+`init_project.sh` is the single entry point: it installs Spec Kit, seeds
+worldview/philosophical-preamble/constitution/EARS docs, AND
+auto-translates the installed `speckit-*` skills into Hermes frontmatter
+-- one call, nothing to remember to chain. Run
+`translate_speckit_skills.py <project_dir>` on its own only to re-sync
+the translated copies after upgrading `specify-cli` without re-running
+the rest of init.
 
 ## Quick Reference
 
 | Step | Command | Produces |
 |---|---|---|
-| 1 | `init_project.sh` | `.specify/`, `.claude/skills/speckit-*`, seeded `docs/worldview.md` + `docs/philosophical-preamble.md`, seeded constitution, EARS/contract-testing reference docs |
-| 2 | `translate_speckit_skills.py` | Hermes-frontmatter copies of the speckit-* skills under `.hermes/skills/` |
-| 3 | `/speckit-constitution` (in Claude Code) | Refined `.specify/memory/constitution.md` |
-| 4 | `/speckit-specify` | `spec.md` with EARS-formatted FR- lines (see `references/ears-syntax.md`) |
-| 5 | `/speckit-clarify`, `/speckit-plan`, `/speckit-tasks` | Resolved ambiguities, `plan.md`, `tasks.md` -- every open question routed via `spec_decision_gate.py` first |
-| 6 | `/speckit-implement`, `/speckit-converge` | Working code, verified against spec/plan/tasks |
-| 7 | `generate_property_tests.py` | Scaffolded property-based tests from agreed EARS-JSON requirements |
-| 8 | `generate_mock_server.py` (if a client/server boundary exists) | Running mock server from a shared contract, for client-first contract testing |
+| 1 | `init_project.sh` | `.specify/`, `.claude/skills/speckit-*` auto-translated into `.hermes/skills/` (Hermes frontmatter), seeded `docs/worldview.md` + `docs/philosophical-preamble.md`, seeded constitution, EARS/contract-testing reference docs -- all in one call |
+| 2 | `/speckit-constitution` (in Claude Code) | Refined `.specify/memory/constitution.md` |
+| 3 | `/speckit-specify` | `spec.md` with EARS-formatted FR- lines (see `references/ears-syntax.md`) |
+| 4 | `/speckit-clarify`, `/speckit-plan`, `/speckit-tasks` | Resolved ambiguities, `plan.md`, `tasks.md` -- every open question routed via `spec_decision_gate.py` first |
+| 5 | `/speckit-implement`, `/speckit-converge` | Working code, verified against spec/plan/tasks |
+| 6 | `generate_property_tests.py` | Scaffolded property-based tests from agreed EARS-JSON requirements |
+| 7 | `generate_mock_server.py` (if a client/server boundary exists) | Running mock server from a shared contract, for client-first contract testing |
 
 ## Procedure
 
-1. **Bootstrap.** Run `init_project.sh` for a new project, or `. --here`
-   inside an existing one. This installs real Spec Kit into the project
-   (verified working: `specify init --integration claude` produces
-   `.claude/skills/speckit-*` + `.specify/`), seeds `docs/worldview.md`
-   (standing, general -- only if it doesn't already exist, since it's
-   meant to be filled in gradually via conversation, not overwritten)
-   and `docs/philosophical-preamble.md` (per-project "why this project
-   exists," always re-seeded if absent), adds both `@docs/...` import
-   lines to `CLAUDE.md`, and copies pre-seeded constitution defaults
-   over the blank template.
-2. **Translate skills.** Run `translate_speckit_skills.py <project_dir>`
-   so the installed `speckit-*` skills carry Hermes-shaped frontmatter,
-   not just Claude-Code-shaped frontmatter. This is a mechanical
-   field-rename only (name/description/tags/category); it does not
-   rewrite the skill body.
-3. **Refine the constitution.** Run `/speckit-constitution` conversationally
-   to replace the remaining `[BRACKETED]` placeholders in
-   `constitution-defaults.md`'s seed with project-specific principles.
-4. **Route every open question through the decision gate.** Any
+1. **Bootstrap.** Run `init_project.sh <project-name>` for a new project,
+   or `. --here` inside an existing one -- ONE call does the whole
+   setup: installs real Spec Kit (verified working, `specify init
+   --integration claude` produces `.claude/skills/speckit-*` +
+   `.specify/`), seeds `docs/worldview.md` only if absent (meant to be
+   filled in gradually via conversation, not overwritten), seeds
+   `docs/philosophical-preamble.md` always if absent, adds both
+   `@docs/...` import lines to `CLAUDE.md`, copies pre-seeded
+   constitution defaults over the blank template, AND auto-translates
+   every installed `speckit-*` skill into Hermes-shaped frontmatter
+   under `.hermes/skills/` (mechanical field-rename only -- doesn't
+   touch the skill body) so they read as native Hermes skills, not just
+   Claude-Code ones. Re-run `translate_speckit_skills.py` alone only to
+   re-sync after upgrading `specify-cli` without redoing the rest.
+2. **Refine the constitution.** Run `/speckit-constitution`
+   conversationally to replace the remaining `[BRACKETED]` placeholders
+   in `constitution-defaults.md`'s seed with project-specific
+   principles.
+3. **Route every open question through the decision gate.** Any
    `[NEEDS CLARIFICATION]` marker or judgment call surfaced during
    `/speckit-clarify`, `/speckit-plan`, or `/speckit-tasks` is answered
    by `python3 scripts/spec_decision_gate.py --answers <answers.json>`
@@ -103,24 +109,24 @@ python3 scripts/spec_decision_gate.py --answers answers.json
      without running that gate. If the Decision HUD MCP tools aren't
      available in this session, degrade to `clarify` instead of silently
      skipping the question.
-5. **Write requirements in EARS syntax.** `spec.md`'s FR- lines follow
+4. **Write requirements in EARS syntax.** `spec.md`'s FR- lines follow
    one of the five EARS patterns (`references/ears-syntax.md`). Before
    an EARS line becomes implementation scope, run it through the
    `ears-sensibility-gate` skill if present (checks proportionality,
    actor ownership, testability, conflicts) -- syntactic validity alone
    is not sufficient.
-6. **Promote agreed requirements to structured JSON.** Validate against
+5. **Promote agreed requirements to structured JSON.** Validate against
    `references/ears-schema.json`. This is the layer that seeds
    property-based test generation later, distinct from and
    complementary to the hand-written tests `/speckit-implement` writes.
-7. **Scaffold property-based tests.** Once requirements are agreed and
+6. **Scaffold property-based tests.** Once requirements are agreed and
    saved as EARS-JSON, run `generate_property_tests.py <requirements_dir>
    --out <test_file.py>` to produce `hypothesis`-based test scaffolds
    (requires `pip install hypothesis`). These are scaffolds, not
    finished tests -- every `@given(st.nothing())` placeholder must be
    replaced with a real domain strategy before the test means anything;
    never leave a placeholder in and call the requirement covered.
-8. **Contract testing (only if this project has a client/server or
+7. **Contract testing (only if this project has a client/server or
    multi-consumer boundary).** See `references/contract-testing.md` for
    the full two-layer approach (shared schema-first contract +
    Pact-style consumer-driven tests) and the client-first build
@@ -128,10 +134,10 @@ python3 scripts/spec_decision_gate.py --answers answers.json
    to mock the contract directly, before any server implementation
    exists. Skip this step entirely for single-process tools/scripts
    with no real consumer boundary.
-9. **Run the rest of the Spec Kit pipeline as normal**
+8. **Run the rest of the Spec Kit pipeline as normal**
    (`/speckit-plan`, `/speckit-checklist`, `/speckit-tasks`,
    `/speckit-analyze`, `/speckit-implement`, `/speckit-converge`),
-   applying step 4's gate to every open question along the way.
+   applying step 3's gate to every open question along the way.
 
 ## Pitfalls
 
@@ -154,13 +160,20 @@ python3 scripts/spec_decision_gate.py --answers answers.json
 - Don't build the contract-testing layer for a project with no real
   client/server or multi-consumer boundary -- it's a real added cost
   with no payoff for a single-process tool.
+- Don't skip the translation step or treat it as optional -- an agent
+  that only sees `.claude/skills/speckit-*` and not their Hermes
+  translations will miss them entirely in non-Claude-Code sessions;
+  `init_project.sh` runs translation automatically so this shouldn't
+  come up, but if `translate_speckit_skills.py` is ever invoked
+  manually, always run it right after `specify init`, never deferred.
 
 ## Verification
 
 - `init_project.sh` produced `.specify/`, `.claude/skills/speckit-*`,
-  `docs/worldview.md`, a seeded (not blank) constitution, and
-  `docs/spec-driven/ears-syntax.md` + `ears-schema.json` in the target
-  project.
+  their Hermes-translated copies under `.hermes/skills/`,
+  `docs/worldview.md`, `docs/philosophical-preamble.md`, a seeded (not
+  blank) constitution, and `docs/spec-driven/ears-syntax.md` +
+  `ears-schema.json` + `contract-testing.md` in the target project.
 - Every open question logged during `/speckit-clarify`/`/speckit-plan`/
   `/speckit-tasks` has a recorded `spec_decision_gate.py` verdict
   (resolve_silently + cited evidence, clarify_now + answer, or

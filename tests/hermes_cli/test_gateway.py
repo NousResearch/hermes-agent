@@ -982,6 +982,7 @@ class TestReapUnsupervisedGatewayOrphansWindows:
         marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 77)
         monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid, **kwargs: marked_pids.append(pid))
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
@@ -1186,6 +1187,7 @@ class TestReaperCandidateIsSupervisorOwned:
         marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 77)
         monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid, **kwargs: marked_pids.append(pid))
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
@@ -1225,6 +1227,7 @@ class TestReaperCandidateIsSupervisorOwned:
         marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 77)
         monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid, **kwargs: marked_pids.append(pid))
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)
@@ -1362,6 +1365,7 @@ class TestWindowsScheduledTaskSupervisorGuard:
         marked_pids = []
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
         monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 77)
         monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid, **kwargs: marked_pids.append(pid))
         monkeypatch.setattr("time.sleep", lambda _: None)
         monkeypatch.setattr("time.monotonic", lambda: 1.0)

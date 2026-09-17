@@ -59,6 +59,10 @@ def _runner_fake(user_config, chat_id):
     from gateway.display_config import resolve_display_setting
 
     ctx = types.SimpleNamespace(
+        # Upstream added a scheduled_heartbeat guard to _setup_stream_consumer (2026-09-14
+        # lineage, merged 6005aa1f); the real RunContext carries the field (turn_context.py),
+        # so this fixture must too or the guard AttributeErrors. Caught by the 9/16 merge audit.
+        scheduled_heartbeat=False,
         streaming_tts_consumer_holder=[None],
         user_config=user_config,
         resolve_display_setting=resolve_display_setting,

@@ -91,6 +91,25 @@ def test_standalone_guidance_matches_profile_membership(profile, monkeypatch, ca
     assert ("hermes --profile default gateway restart" in output) == (home_kind == "named")
 
 
+@pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", "", None])
+def test_doctor_bounds_persisted_fire_errors(profile, capsys, detail):
+    from cron import jobs
+    from hermes_cli.cron import _short_reason, cron_doctor
+
+    job = jobs.create_job(prompt="probe", schedule="every 1h")
+    records = jobs.load_jobs()
+    records[0]["last_fire_error"] = {"at": "test-time", "detail": detail}
+    jobs.save_jobs(records)
+    assert cron_doctor() == bool(detail)
+    output = capsys.readouterr().out
+    if detail:
+        assert f"missed scheduled fire at test-time: {_short_reason(detail)}" in output
+        assert detail not in output
+        assert "secret second line" not in output
+    else:
+        assert "missed scheduled fire" not in output
+
+
 @pytest.mark.parametrize("dispatch", ["catch_up", "late", "forward_error"])
 def test_doctor_reports_persisted_dispatch_health(profile, capsys, dispatch):
     from cron import jobs

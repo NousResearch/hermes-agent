@@ -564,11 +564,9 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
             issues.append(
                 f"last fire was late (scheduled {scheduled}, {_format_lateness(lateness)} late) — "
                 f"scheduler was delayed")
-    if fire_err := job.get("last_fire_error"):
+    if isinstance(fire_err := job.get("last_fire_error"), dict) and fire_err.get("detail"):
         # The handoff error survives next_run_at advancing beyond the failed dispatch.
-        detail = fire_err.get("detail") if isinstance(fire_err, dict) else str(fire_err)
-        at = fire_err.get("at", "?") if isinstance(fire_err, dict) else "?"
-        issues.append(f"missed scheduled fire at {at}: {detail}")
+        issues.append(f"missed scheduled fire at {fire_err.get('at', '?')}: {_short_reason(fire_err['detail'])}")
     if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
         next_run = str(job.get("next_run_at") or "").strip()
         issue = _next_run_overdue_issue(next_run) if next_run else "active job has no next_run_at"

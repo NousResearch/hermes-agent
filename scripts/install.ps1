@@ -12,6 +12,12 @@
 #
 # ============================================================================
 
+# Ensure UTF-8 encoding for all output/input to prevent path distortion on non-ASCII usernames
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+$env:LC_ALL = "en_US.UTF-8"
+
 param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
@@ -30,8 +36,8 @@ param(
     # existing tree pass -ForceCommit.
     [switch]$ForceCommit,
     [string]$Tag = "",
-    [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
-    [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
+    [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ("$env:LOCALAPPDATA" -match '[^\x00-\x7F]') { "C:\hermes" } else { "$env:LOCALAPPDATA\hermes" }),
+    [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } elseif ("$env:LOCALAPPDATA" -match '[^\x00-\x7F]') { "C:\hermes\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -345,14 +351,14 @@ if ($PSBoundParameters.ContainsKey('HermesHome')) {
     $HermesHome = ConvertTo-LongPath $HermesHome
 } else {
     $HermesHome = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+        if ($env:HERMES_HOME) { $env:HERMES_HOME } elseif ("$env:LOCALAPPDATA" -match '[^\x00-\x7F]') { "C:\hermes" } else { "$env:LOCALAPPDATA\hermes" }
     )
 }
 if ($PSBoundParameters.ContainsKey('InstallDir')) {
     $InstallDir = ConvertTo-LongPath $InstallDir
 } else {
     $InstallDir = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } elseif ("$env:LOCALAPPDATA" -match '[^\x00-\x7F]') { "C:\hermes\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
     )
 }
 if ($script:NormalizedProfilePaths) {

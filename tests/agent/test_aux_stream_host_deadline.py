@@ -274,6 +274,70 @@ def test_async_stream_retires_dynamic_host_deadline_after_progress(monkeypatch):
     assert response.choices[0].message.content == "ab"
 
 
+def test_sync_dispatch_does_not_retire_host_deadline_before_provider_output():
+    fence = CompressionCommitFence(total_ceiling_seconds=60.0)
+    armed_deadline = fence.deadline_monotonic
+
+    def _create(**kwargs):
+        assert kwargs["stream"] is True
+        assert fence.deadline_monotonic == armed_deadline
+        assert fence.progress_observed is False
+        return iter([_chunk("summary")])
+
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+    )
+    with (
+        aux.aux_progress_hook(fence.touch_progress),
+        aux.aux_stream_deadline(lambda: fence.deadline_monotonic),
+    ):
+        response = aux._create_with_progress(
+            client, {"model": "m", "messages": [], "timeout": 30.0}
+        )
+
+    assert response.choices[0].message.content == "summary"
+    assert fence.deadline_monotonic is None
+    assert fence.progress_observed is True
+
+
+def test_async_dispatch_does_not_retire_host_deadline_before_provider_output():
+    fence = CompressionCommitFence(total_ceiling_seconds=60.0)
+    armed_deadline = fence.deadline_monotonic
+
+    class _AsyncChunks:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if getattr(self, "_sent", False):
+                raise StopAsyncIteration
+            self._sent = True
+            return _chunk("summary")
+
+    async def _create(**kwargs):
+        assert kwargs["stream"] is True
+        assert fence.deadline_monotonic == armed_deadline
+        assert fence.progress_observed is False
+        return _AsyncChunks()
+
+    async def _run():
+        client = SimpleNamespace(
+            chat=SimpleNamespace(completions=SimpleNamespace(create=_create))
+        )
+        with (
+            aux.aux_progress_hook(fence.touch_progress),
+            aux.aux_stream_deadline(lambda: fence.deadline_monotonic),
+        ):
+            return await aux._acreate_with_progress(
+                client, {"model": "m", "messages": [], "timeout": 30.0}
+            )
+
+    response = asyncio.run(_run())
+    assert response.choices[0].message.content == "summary"
+    assert fence.deadline_monotonic is None
+    assert fence.progress_observed is True
+
+
 def test_codex_watchdog_thread_keeps_dynamic_host_deadline(monkeypatch):
     """The timer sees pre-stream expiry and retirement despite thread-local scope."""
     clock = [100.0]

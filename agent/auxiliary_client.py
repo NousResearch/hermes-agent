@@ -6488,7 +6488,6 @@ def _create_with_progress_once(
     error is surfaced to the normal recovery chains instead.
     """
     _notify_aux_dispatch()
-    _notify_aux_progress()  # Preserve the watchdog's historical dispatch tick.
     if (not _aux_progress_active() and not force_stream) or _client_streams_internally(client):
         response = client.chat.completions.create(**kwargs)
         if not _client_streams_internally(client):
@@ -6718,7 +6717,6 @@ async def _acreate_with_progress(
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
     _notify_aux_dispatch()
-    _notify_aux_progress()
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
         response = await client.chat.completions.create(**kwargs)
         if not _async_client_streams_internally(client):

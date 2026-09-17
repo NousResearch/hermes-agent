@@ -549,7 +549,7 @@ def test_isolated_provider_worker_inherits_protection_and_progress_hook() -> Non
 
     assert observed["protected"] is True
     assert observed["thread"] != caller
-    # The hook must reach the isolated worker thread; the seam wrapper adds its own dispatch ticks.
+    # The hook must reach the isolated worker thread.
     assert "tick" in progress
 
 

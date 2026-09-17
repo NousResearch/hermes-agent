@@ -14,12 +14,15 @@ from typing import Iterable, Sequence, Tuple
 _ITEMS_JSON_LIMIT = 12_000
 
 
-def matrix_tool_activity_bodies(lines: Sequence[str] | Iterable[str]) -> Tuple[str, str]:
+def matrix_tool_activity_bodies(
+    lines: Sequence[str] | Iterable[str],
+    footer: str | None = None,
+) -> Tuple[str, str]:
     """Build plain body + HTML for Matrix tool progress.
 
     Contract:
-    - plain body: ``🛠 Tool activity (N updates)`` only
-    - HTML: always-visible ``<p><strong>…</strong></p><ol><li>…</li></ol>``
+    - tools-only plain body: ``🛠 Tool activity (N updates)``
+    - HTML: always-visible title, optional ordered list, optional footer
     - no fences, details, spoilers, or multi-line dumps
     """
     items: deque[tuple[str, int]] = deque()
@@ -45,10 +48,20 @@ def matrix_tool_activity_bodies(lines: Sequence[str] | Iterable[str]) -> Tuple[s
         while items_size > _ITEMS_JSON_LIMIT:
             _, removed_size = items.popleft()
             items_size -= removed_size
-    body = f"🛠 Tool activity ({n} update{'s' if n != 1 else ''})"
-    if not items:
-        return body, f"<p><strong>{_html.escape(body)}</strong></p>"
-    recent = f"<p>Showing latest {len(items)} updates.</p>" if len(items) < n else ""
-    html_items = "".join(item for item, _ in items)
-    html_body = f"<p><strong>{_html.escape(body)}</strong></p>{recent}<ol>{html_items}</ol>"
-    return body, html_body
+    footer_text = str(footer or "").strip() or None
+    title = (
+        f"🛠 Tool activity ({n} update{'s' if n != 1 else ''})"
+        if n
+        else "🛠 Tool activity"
+    )
+    body = f"{title} · {footer_text}" if footer_text else title
+    html_parts = [f"<p><strong>{_html.escape(title)}</strong></p>"]
+    if items:
+        recent = f"<p>Showing latest {len(items)} updates.</p>" if len(items) < n else ""
+        if recent:
+            html_parts.append(recent)
+        html_items = "".join(item for item, _ in items)
+        html_parts.append(f"<ol>{html_items}</ol>")
+    if footer_text:
+        html_parts.append(f"<p>{_html.escape(footer_text)}</p>")
+    return body, "".join(html_parts)

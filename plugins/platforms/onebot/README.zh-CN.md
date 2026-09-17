@@ -197,8 +197,8 @@ base64 内嵌上报的大于 4 MiB 的帧会被拒收。生产传图以 URL（Na
 | `/mode interim\|instant` | 按聊天设置 loop 合并模式（`interim` = 中间评论合并转发，`instant` = 原样直发）；仅内存态，重启恢复默认 |
 | `/id` | 打印当前 chat id |
 | `/ver` | 打印插件版本 |
-| `/approve <序号\|flag>` | 同意待处理的好友申请/群邀请（OneBot `set_friend_add_request` / `set_group_add_request`）；引用 admin 私聊通知里的 `#序号` 或完整 flag |
-| `/reject <序号\|flag>` | 拒绝待处理的好友申请/群邀请（同上 API，`approve=false`） |
+| `/approve <序号\|flag>` | 同意待处理的好友申请/群邀请（OneBot `set_friend_add_request` / `set_group_add_request`）；引用 admin 私聊通知里的 `#序号` 或完整 flag。裸 `/approve`（无参数）本插件**不**处理——透传给网关核心的危险命令 / 数据训练档模型确认流程 |
+| `/reject <序号\|flag>` | 拒绝待处理的好友申请/群邀请（同上 API，`approve=false`）；裸 `/reject` 同样透传网关核心 |
 
 `/ocr` 要求图片还在临时媒体目录里（6 小时 TTL 清理会删）。
 

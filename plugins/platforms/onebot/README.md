@@ -217,8 +217,8 @@ Admins get a few local slash commands handled inside the adapter (anything else 
 | `/mode interim\|instant` | per-chat loop-merge mode override (`interim` = merge commentary into forwards, `instant` = send as-is); in-memory only, resets on restart |
 | `/id` | print the current chat id |
 | `/ver` | print the plugin version |
-| `/approve <seq\|flag>` | accept a pending friend request / group invite (OneBot `set_friend_add_request` / `set_group_add_request`); references use the `#seq` from the admin DM notification or the full flag |
-| `/reject <seq\|flag>` | decline a pending friend request / group invite (same APIs with `approve=false`) |
+| `/approve <seq\|flag>` | accept a pending friend request / group invite (OneBot `set_friend_add_request` / `set_group_add_request`); references use the `#seq` from the admin DM notification or the full flag. Bare `/approve` (no arg) is **not** handled here — it passes through to the gateway core's pending dangerous-command / data-training-tier confirmation flow |
+| `/reject <seq\|flag>` | decline a pending friend request / group invite (same APIs with `approve=false`); bare `/reject` passes through to the gateway core the same way |
 
 `/ocr` needs the image to still exist in the temp media dir (6-hour TTL cleanup applies).
 

@@ -1404,6 +1404,12 @@ class OneBotAdapter(BasePlatformAdapter):
         cmd = m.group(1).lower()
         arg = (m.group(2) or "").strip()
         if cmd in ("approve", "reject"):
+            if not arg:
+                # 裸 /approve：不处理，透传给网关原生斜杠分发——核心的
+                # 危险命令 / 数据训练档模型确认流程要收到裸 /approve。
+                # 返回 None 时调用点（_process_message admin 门）不发回复，
+                # 消息照常构造事件交给网关。
+                return None
             # 入口在 _process_message 的 admin 门之后；此处兜底防非 admin 直调
             if user_id not in self._admin_users:
                 return "❌ 仅管理员可执行审批命令。"

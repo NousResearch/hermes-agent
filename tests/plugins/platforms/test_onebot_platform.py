@@ -2803,6 +2803,59 @@ def test_approve_unknown_ref_errors(monkeypatch, tmp_path) -> None:
     assert actions == []
 
 
+def test_bare_approve_returns_none_passes_through(monkeypatch, tmp_path) -> None:
+    """裸 /approve（无参数）→ 返回 None 不产生适配器回复：透传网关核心
+    的危险命令 / 数据训练档模型确认流程，不走好友申请审批台账。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    actions = []
+
+    async def fake_call_action(action, params, timeout=30.0):
+        actions.append((action, params))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(adapter, "_call_action", fake_call_action)
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve")
+    )
+    assert reply is None  # 调用点 if reply: 不发送，消息继续构造事件交网关
+    assert actions == []  # 未调任何审批 API
+
+    # 台账为空也不影响：裸 /approve 与申请台账无关
+    reply2 = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/reject")
+    )
+    assert reply2 is None
+    assert actions == []
+
+
+def test_approve_with_flag_arg_still_approves(monkeypatch, tmp_path) -> None:
+    """带参数 /approve <已知flag> → 仍正常审批（无参数透传不影响带参路径）。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    _, actions = asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    assert actions == []
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve friend_flag_1")
+    )
+    assert "✅" in reply
+    assert actions == [("set_friend_add_request", {"flag": "friend_flag_1", "approve": True})]
+    assert adapter._requests["friend_flag_1"]["status"] == "processed"
+
+
+def test_bare_approve_no_usage_reply_with_pending_requests(monkeypatch, tmp_path) -> None:
+    """有 pending 申请时裸 /approve 仍透传（不回"用法：/approve <flag或序号>"）。"""
+    adapter = _make_request_adapter(monkeypatch, tmp_path)
+    asyncio.run(
+        _dispatch_request_and_collect(adapter, _friend_request_frame())
+    )
+    reply = asyncio.run(
+        adapter._handle_local_command("private:888", "dm", "888", "/approve")
+    )
+    assert reply is None
+    assert "用法" not in str(reply)
+
+
 def test_repeat_approve_idempotent_no_second_api_call(monkeypatch, tmp_path) -> None:
     """同一 flag 重复审批 → 幂等回复，不二次调 API。"""
     adapter = _make_request_adapter(monkeypatch, tmp_path)

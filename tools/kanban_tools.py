@@ -651,7 +651,17 @@ def _handle_block(args: dict, **kw) -> str:
                f"the completion judge will evaluate it.")
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
         _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
-        return _ok_landed(kb, conn, tid, "blocked", block_kind=kind)
+        landed = kb.get_task(conn, tid)
+        extra: dict = {"block_kind": landed.block_kind if landed else kind}
+        if kind == "dependency" and landed and landed.block_kind != "dependency":
+            extra["requested_kind"] = kind
+            extra["rekind_reason"] = "no_open_parent"
+            extra["note"] = (
+                "kind='dependency' requires an incomplete parent; none were "
+                "open, so this was recorded as needs_input (sticky until a "
+                "human unblocks) instead of parking in todo."
+            )
+        return _ok_landed(kb, conn, tid, "blocked", **extra)
 
 
 @_kanban_handler("kanban_request_review")

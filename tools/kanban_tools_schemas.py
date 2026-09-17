@@ -190,8 +190,9 @@ KANBAN_BLOCK_SCHEMA = _schema(
             "enum": ["dependency", "needs_input", "capability", "transient"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
-                "resumes automatically; the others surface to a human. "
-                "Omit only if none apply."
+                "resumes automatically when an incomplete parent finishes; "
+                "if no parent is open it is recorded as needs_input instead. "
+                "The others surface to a human. Omit only if none apply."
             ),
         },
     },

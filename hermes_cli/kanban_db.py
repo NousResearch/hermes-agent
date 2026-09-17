@@ -3065,8 +3065,11 @@ def block_task(
     kind: Optional[str] = None, expected_run_id: Optional[int] = None,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
-    :func:`_route_block`). ``transient`` still counts toward the loop breaker
-    so a forever-flaky task escalates. True on any transition."""
+    :func:`_route_block`). ``kind='dependency'`` with no incomplete parent is
+    re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
+    promote it into a context-free respawn. ``transient`` still counts
+    toward the loop breaker so a forever-flaky task escalates. True on any
+    transition."""
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -3076,10 +3079,22 @@ def block_task(
         if cur_row is None:
             return False
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
+        requested_kind = kind
+        rekind_reason = None
+        # ``dependency`` only waits on incomplete parents. A worker filing that
+        # kind with none open would park in ``todo`` and ``recompute_ready``
+        # would promote+respawn it context-free on the next tick. Re-kind to
+        # ``needs_input`` so it is sticky until a human unblocks.
+        if kind == "dependency" and _parents_satisfied(conn, task_id):
+            kind = "needs_input"
+            rekind_reason = "no_open_parent"
         new_status, event_kind, set_sql, params, payload = _route_block(
             kind, reason, source_status, prev_kind=_row_get(cur_row, "block_kind"),
             prev_recurrences=int(_row_get(cur_row, "block_recurrences") or 0),
         )
+        if rekind_reason:
+            payload["requested_kind"] = requested_kind
+            payload["rekind_reason"] = rekind_reason
         sql = f"""
                 UPDATE tasks
                    SET status        = '{new_status}',
@@ -3117,7 +3132,9 @@ def _route_block(
 
     ``dependency`` never enters the human ``blocked`` bucket: it waits in
     ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
-    as something to "unblock". Every other kind counts unblock-loop
+    as something to "unblock". Callers that pass ``dependency`` with no
+    incomplete parent are re-kinded to ``needs_input`` before this runs
+    (see :func:`block_task`). Every other kind counts unblock-loop
     recurrences: block_task only fires from running/ready (AFTER an unblock
     returned the task to the pool), so a stored ``block_kind`` equal to the
     incoming one means blocked -> unblocked -> re-block for the same cause

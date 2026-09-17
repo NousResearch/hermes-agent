@@ -541,6 +541,60 @@ def _do_decide(backend, action, args, session_id=None, **_):
             "decision": "escalate",
             "hint": "Decision lane abstained — plan the next step with capture + your usual reasoning.",
         }
+    metrics = get_shadow_state_metrics(session_id)
+    if metrics:
+        payload["semantic_metrics"] = metrics
+    return json.dumps(payload)
+
+
+def _do_run_goal(backend, action, args, session_id=None, **_):
+    """Bounded decide→act loop without main-planner round trips (#113850 / RFC #112639)."""
+    goal = (args.get("goal") or args.get("goal_hint") or "").strip()
+    if not goal:
+        return json.dumps({"error": "run_goal requires `goal` (or `goal_hint`)"})
+    from tools.computer_use.decide_loop import run_decide_loop
+
+    sid = session_id or ""
+    app = args.get("app")
+
+    def handle(cu_args: Dict[str, Any]) -> Any:
+        return handle_computer_use(cu_args, session_id=sid)
+
+    from tools.computer_use.readiness_predicates import verify_action
+
+    def verify_fn(action: str, decision: dict, _exec_result: dict | None) -> dict | None:
+        cap = backend.capture(mode="ax", app=app)
+        if not cap.pid or not cap.window_id:
+            return None
+        vr = verify_action(
+            backend,
+            action=action,
+            pid=int(cap.pid),
+            window_id=int(cap.window_id),
+            expect_label=decision.get("expect_label"),
+            expect_role=decision.get("expect_role"),
+            text=str(decision.get("text") or decision.get("value") or ""),
+            value=str(decision.get("value") or ""),
+        )
+        return {"verify_status": vr.status}
+
+    result = run_decide_loop(
+        goal,
+        handle,
+        app=app,
+        max_steps=min(int(args.get("max_steps") or 8), 32),
+        stuck_threshold=int(args.get("stuck_threshold") or 3),
+        step_pause_s=float(args.get("step_pause_s") or 0.35),
+        use_trajectory_cache=bool(args.get("use_cache")),
+        metrics_fn=lambda: get_shadow_state_metrics(sid),
+        verify_fn=verify_fn,
+        use_prepared_actions=bool(args.get("use_prepared")),
+    )
+    payload = result.to_dict()
+    payload["action"] = "run_goal"
+    payload["ok"] = result.ok
+    payload["semantic_metrics"] = get_shadow_state_metrics(sid)
+    payload["identity_trend"] = get_identity_trend(sid)
     return json.dumps(payload)
 
 
@@ -584,6 +638,7 @@ _ACTIONS: Dict[str, _ActionSpec] = {
     "list_apps": _ActionSpec(partial(_do_listing, key="apps")),
     "list_windows": _ActionSpec(partial(_do_listing, key="windows")),
     "decide": _ActionSpec(_do_decide),
+    "run_goal": _ActionSpec(_do_run_goal),
 }
 # Native input actions deliver to the backend's sticky target; `app=` is NOT a targeting parameter (guard in _dispatch).
 _INPUT_ACTIONS = frozenset(a for a, s in _ACTIONS.items() if s.input)

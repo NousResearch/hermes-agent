@@ -165,3 +165,24 @@ def test_handle_decide_requires_goal():
     raw = cu_tool.handle_computer_use({"action": "decide"})
     assert "error" in json.loads(raw)
     cu_tool.reset_backend_for_tests()
+
+
+def test_run_goal_action_invokes_loop(monkeypatch):
+    captured = {}
+
+    def fake_loop(goal, handle, **kwargs):
+        captured["goal"] = goal
+        captured["kwargs"] = kwargs
+        from tools.computer_use.decide_loop import LoopResult
+
+        return LoopResult(ok=True, status="done", goal=goal, max_steps=kwargs.get("max_steps", 8))
+
+    monkeypatch.setattr("tools.computer_use.decide_loop.run_decide_loop", fake_loop)
+    backend = type("B", (), {"capture": lambda *a, **k: type("C", (), {"pid": 1, "window_id": 2})()})()
+    raw = cu_tool._do_run_goal(backend, "run_goal", {"goal": "test goal", "use_cache": True, "use_prepared": True})
+    payload = json.loads(raw)
+    assert payload["ok"] is True
+    assert payload["action"] == "run_goal"
+    assert captured["goal"] == "test goal"
+    assert captured["kwargs"]["use_trajectory_cache"] is True
+    assert captured["kwargs"]["use_prepared_actions"] is True

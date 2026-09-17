@@ -50,19 +50,39 @@ _PROPERTIES: Dict[str, Any] = {
     "goal": {
         "type": "string",
         "description": (
-            "For action='decide': the bounded goal to evaluate against the current screen (semantic "
-            "elements only — no screenshot is sent to Jev by default)."
+            "For action='decide' or 'run_goal': the bounded goal to evaluate against the current "
+            "screen (semantic elements only — no screenshot is sent to Jev by default)."
         ),
     },
     "goal_hint": {
         "type": "string",
-        "description": "Alias for `goal` on action='decide'.",
+        "description": "Alias for `goal` on action='decide' or 'run_goal'.",
     },
     "busy": {
         "type": "boolean",
         "description": (
             "For action='decide': true when the UI appears to be loading or otherwise not ready "
             "for input (rules stage may suggest wait)."
+        ),
+    },
+    "max_steps": {
+        "type": "integer",
+        "description": (
+            "For action='run_goal': maximum decide→act iterations before stopping (default 8, max 32)."
+        ),
+    },
+    "use_cache": {
+        "type": "boolean",
+        "description": (
+            "For action='run_goal': replay a previously successful trajectory for this goal/app "
+            "before calling decide again."
+        ),
+    },
+    "use_prepared": {
+        "type": "boolean",
+        "description": (
+            "For action='run_goal': route mutating steps through PreparedAction prepare→validate→commit "
+            "(RFC #112639 runahead path)."
         ),
     },
     "mode": {

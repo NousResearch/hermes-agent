@@ -703,6 +703,59 @@ class TestImageApiSurface:
         assert result["exact_aspect_ratio"] == "9:16"
         assert result["image"] == "/tmp/i.png"
 
+    def test_token_billed_call_records_session_usage(self):
+        """#114324: an OpenRouter token-billed call must reach session_model_usage."""
+        from agent import aux_accounting
+
+        recorded = []
+
+        class _DB:
+            def record_auxiliary_usage(self, *args, **kwargs):
+                recorded.append(kwargs)
+
+        token = aux_accounting.set_accounting_context(_DB(), "sess-1")
+        try:
+            with patch(_RUNTIME, return_value=_runtime_ok()), \
+                 patch("requests.post", return_value=_mock_image_api_response(
+                     usage={"total_tokens": 1128, "prompt_tokens": 1000,
+                            "completion_tokens": 128})), \
+                 patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+                result = _openrouter_image_api().generate(
+                    prompt="p", aspect_ratio="portrait", model="krea/krea-2-medium"
+                )
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        assert result["success"] is True
+        assert len(recorded) == 1
+        assert recorded[0]["input_tokens"] == 1000
+        assert recorded[0]["output_tokens"] == 128
+        assert recorded[0]["model"] == "krea/krea-2-medium"
+
+    def test_untokened_call_records_nothing(self):
+        """No token usage in the body: no session write (flat-fee image models)."""
+        from agent import aux_accounting
+
+        recorded = []
+
+        class _DB:
+            def record_auxiliary_usage(self, *args, **kwargs):
+                recorded.append(kwargs)
+
+        token = aux_accounting.set_accounting_context(_DB(), "sess-1")
+        try:
+            with patch(_RUNTIME, return_value=_runtime_ok()), \
+                 patch("requests.post", return_value=_mock_image_api_response()), \
+                 patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+                result = _openrouter_image_api().generate(
+                    prompt="p", aspect_ratio="portrait", model="krea/krea-2-medium"
+                )
+        finally:
+            aux_accounting.reset_accounting_context(token)
+
+        assert result["success"] is True
+        assert recorded == []
+
     def test_multiple_images_land_in_additional_images(self):
         entries = [
             {"b64_json": "AA==", "media_type": "image/png"},

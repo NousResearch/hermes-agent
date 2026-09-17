@@ -27,6 +27,41 @@ def test_external_process_plugin_provider_admitted():
     assert _plugin_provider_enters_picker(_profile("acme-acp", "external_process")) is True
 
 
+def test_explicit_client_kwargs_launches_any_external_process_profile(monkeypatch):
+    """Launch kwargs are keyed on the provider profile's auth_type, not a hardcoded
+    vendor slug: an out-of-tree external_process provider gets the same ACP launch
+    path (command/args) as copilot-acp (#102421)."""
+    import providers as providers_mod
+    from agent.agent_init import _explicit_client_kwargs
+
+    class _Agent:
+        provider = "acme-acp"
+        acp_command = ["acme"]
+        acp_args = ["--stdio"]
+
+    monkeypatch.setattr(providers_mod, "get_provider_profile",
+                        lambda name: SimpleNamespace(auth_type="external_process"))
+    kwargs = _explicit_client_kwargs(_Agent(), api_key=None, base_url=None, _provider_timeout=None)
+    assert kwargs["command"] == ["acme"] and kwargs["args"] == ["--stdio"]
+
+
+def test_explicit_client_kwargs_copilot_acp_still_launches(monkeypatch):
+    """The built-in copilot-acp provider keeps its launch kwargs through the generic
+    profile-keyed path — same contract, now without the vendor hardcode."""
+    import providers as providers_mod
+    from agent.agent_init import _explicit_client_kwargs
+
+    class _Agent:
+        provider = "copilot-acp"
+        acp_command = ["copilot"]
+        acp_args = []
+
+    monkeypatch.setattr(providers_mod, "get_provider_profile",
+                        lambda name: SimpleNamespace(auth_type="external_process"))
+    kwargs = _explicit_client_kwargs(_Agent(), api_key=None, base_url=None, _provider_timeout=None)
+    assert kwargs["command"] == ["copilot"]
+
+
 @pytest.mark.parametrize("auth_type", ["oauth_device_code", "oauth_external", "aws_sdk", "copilot", "vertex"])
 def test_bespoke_auth_classes_still_excluded(auth_type):
     from hermes_cli.models_catalog_static import _plugin_provider_enters_picker
@@ -38,6 +73,34 @@ def test_api_key_plugin_providers_unchanged():
     from hermes_cli.models_catalog_static import _plugin_provider_enters_picker
 
     assert _plugin_provider_enters_picker(_profile("acme-api", "api_key")) is True
+
+
+def test_live_catalog_tolerates_credential_kwargs_fetch_models():
+    """A signature-strict external_process profile (fetch_models requiring keyword-only
+    api_key/base_url) still yields its catalog: probe no-args, fall back to credentials
+    (#111194 hardened discovery the same way)."""
+    from hermes_cli.models import _profile_live_catalog
+
+    def _strict_fetch(*, api_key, base_url):
+        assert api_key, "credential kwargs must be passed on the TypeError fallback"
+        return ["acme-pro"]
+
+    profile = SimpleNamespace(
+        auth_type="external_process", fetch_models=_strict_fetch,
+        base_url="https://acme.example/v1",
+    )
+    import providers as providers_mod
+    import hermes_cli.models as models_mod
+    orig = getattr(providers_mod, "get_provider_profile", None)
+    providers_mod.get_provider_profile = lambda name: profile
+    orig_creds = models_mod._api_key_credentials
+    models_mod._api_key_credentials = lambda normalized: ("test-key", None)
+    try:
+        assert _profile_live_catalog("acme-acp") == ["acme-pro"]
+    finally:
+        if orig is not None:
+            providers_mod.get_provider_profile = orig
+        models_mod._api_key_credentials = orig_creds
 
 
 def test_external_process_providers_in_model_options_payload(monkeypatch):

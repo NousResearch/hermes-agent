@@ -1507,7 +1507,15 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     # external_process providers (ACP agent CLIs) have no api_key/base_url credentials:
     # the profile's fetch_models drives its own subprocess, so let it supply the catalog.
     if profile and profile.auth_type == "external_process":
-        live = profile.fetch_models()
+        # Signature tolerance: external_process profiles own their subprocess and most take no
+        # kwargs, but a profile may require keyword-only HTTP credentials (#111194 hardened
+        # discovery the same way). Probe no-args first, fall back to credential kwargs.
+        try:
+            live = profile.fetch_models()
+        except TypeError:
+            api_key, base_url = _api_key_credentials(normalized)
+            live = profile.fetch_models(
+                api_key=api_key, base_url=base_url or profile.base_url or None)
         return list(live) if live else None
     if not (profile and profile.auth_type == "api_key" and profile.base_url):
         return None

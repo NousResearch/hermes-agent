@@ -792,9 +792,18 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
         client_kwargs["default_query"] = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
-    if agent.provider == "copilot-acp":
-        client_kwargs["command"] = agent.acp_command
-        client_kwargs["args"] = agent.acp_args
+    # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the
+    # provider profile's auth_type, not one vendor slug, so out-of-tree external_process
+    # plugin providers get the same launch path as the built-in copilot-acp (#102421).
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(agent.provider)
+        if profile is not None and profile.auth_type == "external_process":
+            client_kwargs["command"] = agent.acp_command
+            client_kwargs["args"] = agent.acp_args
+    except Exception as exc:
+        logger.debug("External-process launch kwargs unavailable for %s: %s", agent.provider, exc)
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)

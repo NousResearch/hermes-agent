@@ -57,5 +57,23 @@ class TestJevProfile:
         assert "jev" not in slugs
         assert "typesafe" not in slugs
 
+    def test_auth_registry_and_env_vars(self, jev_profile):
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+
+        assert resolve_provider("typesafe") == "jev"
+        assert "jev" in PROVIDER_REGISTRY
+        assert PROVIDER_REGISTRY["jev"].inference_base_url == jev_profile.base_url
+        assert OPTIONAL_ENV_VARS["TYPESAFE_API_KEY"]["password"] is True
+        assert OPTIONAL_ENV_VARS["TYPESAFE_BASE_URL"]["password"] is False
+
+    def test_not_in_provider_catalog(self):
+        import model_tools  # noqa: F401
+        from hermes_cli.provider_catalog import provider_catalog
+
+        slugs = {d.slug for d in provider_catalog()}
+        assert "jev" not in slugs
+        assert "typesafe" not in slugs
+
     def test_systemone_api_mode(self, jev_profile):
         assert jev_profile.api_mode == "systemone"

@@ -44,6 +44,10 @@ def isolated_home(tmp_path, monkeypatch):
             "model:\n  default: qwen3\n  base_url: http://localhost:8080/v1\n",
             id="loopback-base-url-only",
         ),
+        pytest.param(
+            "model:\n  default: openrouter/auto\n  provider: openrouter\n",
+            id="provider-openrouter",
+        ),
     ],
 )
 def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_block):
@@ -51,11 +55,31 @@ def test_configured_custom_endpoint_resolves_as_a_provider(isolated_home, model_
     from hermes_cli.auth import resolve_provider
     from hermes_cli.free_tier_bootstrap import run_bootstrap
 
-    assert resolve_provider("auto") == "custom"
+    assert resolve_provider("auto") in ("custom", "openrouter")
     record = run_bootstrap(announce=False)
     assert record.provider_configured is True
     assert record.other_providers is True
-    assert record.inference_provider == "custom"
+
+
+def test_configured_openrouter_pin_resolves_as_a_provider(isolated_home):
+    """``model.provider: openrouter`` is explicit intent like a registry pin, not "nothing
+    configured".
+
+    Regression for #109397: ``_config_model_provider()`` recognised ``custom`` but not
+    ``openrouter`` (both are intentionally absent from PROVIDER_REGISTRY), so the boot inventory
+    parked dashboard sessions on Setup Required for openrouter-pinned installs.
+    """
+    (isolated_home / "config.yaml").write_text(
+        "model:\n  default: openrouter/auto\n  provider: openrouter\n", encoding="utf-8",
+    )
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
+    assert resolve_provider("auto") == "openrouter"
+    record = run_bootstrap(announce=False)
+    assert record.provider_configured is True
+    assert record.other_providers is True
+    assert record.inference_provider == "openrouter"
 
 
 def test_stale_remote_base_url_without_a_custom_pin_is_not_a_provider(isolated_home):

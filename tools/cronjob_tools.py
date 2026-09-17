@@ -35,8 +35,8 @@ from cron.jobs import (
     AmbiguousJobReference,
     admit_job_event,
     claim_job_for_fire,
-    event_batch_prompt,
     get_job,
+    resolve_event_run_prompt,
     is_job_runnable,
     list_jobs,
     mark_job_run,
@@ -296,8 +296,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
 
         claim = job.get("fire_claim")
         fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
-        if extra_prompt is None:
-            extra_prompt = event_batch_prompt(job)
+        extra_prompt = resolve_event_run_prompt(job, extra_prompt)
 
         # Inside the gateway process deliver on the loop that owns clients such as
         # Matrix/aiohttp (a standalone asyncio.run() loop breaks them).

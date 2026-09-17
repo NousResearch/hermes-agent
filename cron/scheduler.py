@@ -432,8 +432,8 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, event_batch_prompt,
-    fire_claim_fence, is_event_claim, clear_run_claim, get_due_jobs, heartbeat_fire_claim,
+    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
+    is_event_claim, resolve_event_run_prompt, clear_run_claim, get_due_jobs, heartbeat_fire_claim,
     heartbeat_run_claim, mark_job_run, save_job_output, self_removal_delivery_allowed,
     self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
@@ -2479,8 +2479,7 @@ def run_one_job(
         _stamped = job.get("manual_run_prompt")
         if _stamped and job.get("manual_run_at"):
             extra_prompt = str(_stamped)
-        if extra_prompt is None:
-            extra_prompt = event_batch_prompt(job)
+    extra_prompt = resolve_event_run_prompt(job, extra_prompt)
     claim = job.get("fire_claim")
     fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
     execution_token = object()
@@ -3632,7 +3631,10 @@ def _sweep_mcp_orphans() -> None:
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
-    claimed = claim_job_for_fire(job["id"], return_job=True)
+    claim_kwargs = {"return_job": True}
+    if job.get("_event_rerun"):
+        claim_kwargs["event_rerun"] = True
+    claimed = claim_job_for_fire(job["id"], **claim_kwargs)
     if not claimed:
         finish_execution(
             job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
@@ -3640,7 +3642,10 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
-    claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
+    if is_event_claim(claimed_job) or job.get("_event_rerun"):
+        claimed_job["_scheduled_instant"] = None
+    else:
+        claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 
@@ -3695,7 +3700,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
         execution = create_execution(
-            job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
+            job_id, source="builtin",
+            scheduled_instant=(None if job.get("_event_rerun") else job.get("_scheduled_instant")))
         dispatched_job = dict(job, execution_id=execution["id"])
         _ctx = contextvars.copy_context()
     except Exception as execution_err:

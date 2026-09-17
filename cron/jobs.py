@@ -2727,7 +2727,7 @@ def _machine_id() -> str:
 
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = FIRE_CLAIM_TTL_SECONDS, force: bool = False,
-    manual: bool = False, return_job: bool = False,
+    manual: bool = False, return_job: bool = False, event_rerun: bool = False,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2749,8 +2749,9 @@ def claim_job_for_fire(
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
             return False  # someone holds a fresh claim
         pending_events = _recover_stale_event_claim(job, now, claim_ttl_seconds)
-        event_rerun = bool(job.get("event_rerun_due")) and bool(pending_events)
-        if event_rerun:
+        # Only an explicit event-rerun claim (ticker follow-up) may promote pending.
+        # Manual/force/provider/scheduled claims leave the batch for its own event run.
+        if event_rerun and pending_events:
             if force:
                 _activate_job_record(job)
             job["fire_claim"] = {
@@ -2871,6 +2872,29 @@ def event_batch_prompt(job_or_claim: Optional[Dict[str, Any]]) -> Optional[str]:
         events = _coerce_event_items(job_or_claim.get("pending_event_batch"))
     parts = [event["context"] for event in events if event.get("context")]
     return "\n\n".join(parts) if parts else None
+
+
+def resolve_event_run_prompt(
+    job: Optional[Dict[str, Any]], extra_prompt: Optional[str] = None,
+) -> Optional[str]:
+    """Prefer the claimed event batch whenever present; do not duplicate extra_prompt.
+
+    Pending batches are not a run prompt — only ``fire_claim.event_batch`` is
+    authoritative for this fire. Caller's extra_prompt is appended only when it
+    is not already one of the claimed event contexts.
+    """
+    if not isinstance(job, dict):
+        return extra_prompt
+    claim = job.get("fire_claim") if isinstance(job.get("fire_claim"), dict) else {}
+    events = _coerce_event_items(claim.get("event_batch") if isinstance(claim, dict) else None)
+    parts = [event["context"] for event in events if event.get("context")]
+    if not parts:
+        return extra_prompt
+    batch = "\n\n".join(parts)
+    extra = str(extra_prompt) if extra_prompt else ""
+    if not extra or extra in batch:
+        return batch
+    return f"{batch}\n\n{extra}"
 
 
 def _event_receipts(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -3502,6 +3526,8 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         and _claim_is_live(job.get("run_claim"), now, run_claim_ttl)
     ):
         return False
+    if _due_for_event_rerun(job, now):
+        return True
 
     next_run = _restore_unclaimed_slot(job, scan) or job.get("next_run_at") or _recover_missing_next_run(job, scan)
     if not next_run:

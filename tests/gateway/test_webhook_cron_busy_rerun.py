@@ -158,3 +158,78 @@ class TestBusyQueueHttpContract:
             assert retry.status == 503
             assert retry_body.get("status") != "duplicate"
         await _drain_background_tasks(adapter)
+
+
+class TestImmediateClaimMergesPendingContexts:
+    @pytest.mark.asyncio
+    async def test_immediate_claim_merging_pending_delivers_every_accepted_context(
+        self, monkeypatch
+    ):
+        """Queued E1/E2 plus a later immediate E3 must run every accepted context once.
+
+        Review F1: admit embeds [E1,E2,E3] on the claim, but the webhook worker
+        passed only ctx(E3) as extra_prompt, so E1/E2 were receipted and dropped.
+        """
+        from cron.jobs import claim_job_for_fire, create_job, get_job, mark_job_run
+        import cron.scheduler as sched
+
+        job = create_job(prompt="controller", schedule="every 5m", name="merge-target")
+        assert claim_job_for_fire(job["id"], manual=True) is True
+        owner = get_job(job["id"])["fire_claim"]["by"]
+        adapter = _make_adapter(
+            {
+                "herdr": {
+                    "secret": _INSECURE_NO_AUTH,
+                    "cron_job": job["id"],
+                    "prompt": "{marker}",
+                }
+            }
+        )
+        prompts = []
+
+        def _fake_run_job(_run_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", _fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            for marker, delivery in (
+                ("ctx-ONE", "delivery-e1"),
+                ("ctx-TWO", "delivery-e2"),
+            ):
+                resp = await cli.post(
+                    "/webhooks/herdr",
+                    data=json.dumps({"marker": marker}).encode(),
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-GitHub-Delivery": delivery,
+                        "X-GitHub-Event": "terminal",
+                    },
+                )
+                assert resp.status == 202
+            assert mark_job_run(job["id"], True, expected_fire_owner=owner) is True
+            pending = (get_job(job["id"]).get("pending_event_batch") or {}).get("events") or []
+            assert [event["delivery_id"] for event in pending] == ["delivery-e1", "delivery-e2"]
+
+            third = await cli.post(
+                "/webhooks/herdr",
+                data=json.dumps({"marker": "ctx-THREE"}).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-GitHub-Delivery": "delivery-e3",
+                    "X-GitHub-Event": "terminal",
+                },
+            )
+            assert third.status == 202
+            await _drain_background_tasks(adapter)
+
+        joined = "\n".join(str(p) for p in prompts if p)
+        assert "ctx-ONE" in joined, f"lost E1 in prompts={prompts!r}"
+        assert "ctx-TWO" in joined, f"lost E2 in prompts={prompts!r}"
+        assert "ctx-THREE" in joined, f"lost E3 in prompts={prompts!r}"
+        assert joined.count("ctx-THREE") == 1
+        refreshed = get_job(job["id"])
+        assert not (refreshed.get("pending_event_batch") or {}).get("events")

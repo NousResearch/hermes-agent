@@ -174,7 +174,7 @@ class TestEventCompletionFollowUp:
         assert admit_job_event(job["id"], delivery_id="d2", context="follow")["status"] == "queued"
         assert mark_job_run(job["id"], True, expected_fire_owner=owner) is True
 
-        promoted = claim_job_for_fire(job["id"], return_job=True)
+        promoted = claim_job_for_fire(job["id"], return_job=True, event_rerun=True)
         assert isinstance(promoted, dict)
         pending, claimed = _contexts(promoted)
         assert pending == []
@@ -306,7 +306,7 @@ class TestEventLifecycle:
         assert is_job_runnable(mid)
         assert mid.get("state") != "completed"
         assert [event["delivery_id"] for event in _contexts(mid)[0]] == ["d-os"]
-        promoted = claim_job_for_fire(job["id"], return_job=True)
+        promoted = claim_job_for_fire(job["id"], return_job=True, event_rerun=True)
         assert isinstance(promoted, dict)
         event_owner = promoted["fire_claim"]["by"]
         assert mark_job_run(job["id"], True, expected_fire_owner=event_owner) is True
@@ -372,3 +372,104 @@ class TestEventSchedulerWiring:
         }
         assert sched.run_one_job(job) is True
         assert captured.get("extra_prompt") and "wake ctx" in captured["extra_prompt"]
+
+
+class TestReviewRepros:
+    def _arm_pending(self, context="ctx-ONE", delivery_id="d-pending"):
+        from cron.jobs import admit_job_event, claim_job_for_fire, create_job, get_job, mark_job_run
+
+        job = create_job(prompt="x", schedule="every 5m", name="q", repeat=5)
+        first = admit_job_event(job["id"], delivery_id="d-run", context="running")
+        owner = first["job"]["fire_claim"]["by"]
+        assert admit_job_event(job["id"], delivery_id=delivery_id, context=context)["status"] == "queued"
+        assert mark_job_run(job["id"], True, expected_fire_owner=owner) is True
+        refreshed = get_job(job["id"])
+        assert refreshed.get("event_rerun_due") is True
+        return refreshed, context
+
+    def test_manual_run_with_prompt_does_not_consume_pending_batch(self, temp_home, monkeypatch):
+        """Review F2: a manual/forced claim must not promote pending events under
+        an unrelated operator prompt. Pending intent survives for its own event run."""
+        from cron.jobs import claim_job_for_fire, get_job
+        from tools.cronjob_tools import _execute_job_now
+        import cron.scheduler as sched
+
+        job, context = self._arm_pending()
+        prompts = []
+
+        def _fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", _fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        result = _execute_job_now(job, extra_prompt="operator says hi")
+        assert result.get("claimed") is True
+        joined = "\n".join(str(p) for p in prompts if p)
+        assert "operator says hi" in joined
+        assert context not in joined
+        after = get_job(job["id"])
+        pending, claimed = _contexts(after)
+        assert [event["context"] for event in pending] == [context]
+        assert claimed == []
+        assert after.get("event_rerun_due") is True
+
+        forced = claim_job_for_fire(job["id"], force=True, return_job=True)
+        assert isinstance(forced, dict)
+        assert not (forced.get("fire_claim") or {}).get("event_batch")
+        pending_after_force, _ = _contexts(get_job(job["id"]))
+        assert [event["context"] for event in pending_after_force] == [context]
+
+        provider = claim_job_for_fire(job["id"], return_job=True)
+        assert provider is False or (
+            isinstance(provider, dict) and not (provider.get("fire_claim") or {}).get("event_batch")
+        )
+        still = get_job(job["id"])
+        pending_still, _ = _contexts(still)
+        assert [event["context"] for event in pending_still] == [context]
+        assert still.get("event_rerun_due") is True
+
+    def test_promoted_event_run_does_not_consume_due_scheduled_slot(self, temp_home, monkeypatch):
+        """Review F3: when a scheduled slot is also due, the event follow-up must
+        not stamp/skip that occurrence. The scheduled run remains due with its
+        own repeat accounting."""
+        from cron.jobs import get_job, load_jobs, save_jobs
+        from cron import jobs as jobs_mod
+        import cron.scheduler as sched
+
+        job, context = self._arm_pending()
+        due_slot = jobs_mod._hermes_now().isoformat()
+        records = load_jobs()
+        for record in records:
+            if record["id"] == job["id"]:
+                record["next_run_at"] = due_slot
+        save_jobs(records)
+        scheduled_next = get_job(job["id"])["next_run_at"]
+
+        prompts = []
+
+        def _fake_run_job(_job, *, extra_prompt=None, **_kw):
+            prompts.append(extra_prompt)
+            return True, "out", "final", None
+
+        monkeypatch.setattr(sched, "run_job", _fake_run_job)
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_k: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_k: None)
+
+        tick1 = sched.tick(verbose=False, sync=True)
+        assert tick1 >= 1
+        assert any(context in str(p) for p in prompts if p), f"event context missing: {prompts!r}"
+        after1 = get_job(job["id"])
+        assert after1["next_run_at"] == scheduled_next
+        assert (after1.get("repeat") or {}).get("completed", 0) == 0
+        assert not (after1.get("pending_event_batch") or {}).get("events")
+
+        prompts.clear()
+        tick2 = sched.tick(verbose=False, sync=True)
+        assert tick2 >= 1, "scheduled occurrence was skipped after the event rerun"
+        after2 = get_job(job["id"])
+        assert after2["next_run_at"] != scheduled_next
+        assert (after2.get("repeat") or {}).get("completed", 0) == 1
+        assert not any(context in str(p) for p in prompts if p)

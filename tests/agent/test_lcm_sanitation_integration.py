@@ -482,3 +482,79 @@ def test_real_lcm_manual_and_overflow_paths_remain_generic(
     assert engine.last_compression_status != "sanitized"
     engine.shutdown()
     db.close()
+
+
+def test_real_lcm_second_attempt_claims_on_same_agent(tmp_path, monkeypatch, caplog):
+    """Fable's paired-fixture gap: the contract fix must make a SECOND
+    compression attempt on the SAME agent instance claim sanitation —
+    the v1 failure mode was claims validating only on a fresh agent's
+    first attempt (pre-bump generation mismatch)."""
+    lcm_engine_module, lcm_config_module, token_module = _load_real_lcm()
+    home = tmp_path / "hermes-home-2"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    messages, raw_values = _sensitive_messages()
+    engine, config = _real_engine(home, lcm_engine_module, lcm_config_module)
+    agent, db = _make_agent(home, messages, engine)
+
+    import agent.conversation_compression as compression
+
+    summary_spy = Mock(
+        side_effect=AssertionError("pure sanitation must not summarize or use network")
+    )
+    monkeypatch.setattr(
+        lcm_engine_module, "summarize_with_escalation", summary_spy
+    )
+
+    prepared_claims: list[object] = []
+    real_prepare = engine.prepare_compression_operation
+    real_compress = engine.compress
+
+    def observe_prepare(*args, **kwargs):
+        prepared = real_prepare(*args, **kwargs)
+        if prepared is not None:
+            prepared_claims.append(prepared[1])
+        return prepared
+
+    def observe_compress(*args, **kwargs):
+        return real_compress(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "prepare_compression_operation", observe_prepare)
+    monkeypatch.setattr(engine, "compress", observe_compress)
+
+    prompt = "byte-stable-second-attempt-prompt"
+    agent._cached_system_prompt = prompt
+
+    assert token_module.count_messages_tokens(messages) < engine.threshold_tokens
+    assert engine.should_compress_preflight(copy.deepcopy(messages)) is True
+
+    # FIRST attempt (fresh agent) — claims.
+    returned1, _ = compression.compress_context(
+        agent, messages, "prompt-builder-input-1",
+        approx_tokens=token_module.count_messages_tokens(messages),
+    )
+    assert len(prepared_claims) == 1, "first attempt must claim"
+
+    # SECOND attempt on the SAME agent: append a NEW message carrying a fresh
+    # sensitive value so a new redaction-pending row exists, then compress again.
+    messages2 = list(returned1) + [
+        {"role": "user", "content": "again password=second-secret-value-99"},
+    ]
+    assert token_module.count_messages_tokens(messages2) < engine.threshold_tokens
+    assert engine.should_compress_preflight(copy.deepcopy(messages2)) is True
+
+    returned2, returned_prompt2 = compression.compress_context(
+        agent, messages2, "prompt-builder-input-2",
+        approx_tokens=token_module.count_messages_tokens(messages2),
+    )
+    assert len(prepared_claims) == 2, (
+        "second attempt on the same agent must ALSO claim (the contract fix)"
+    )
+    assert summary_spy.call_count == 0
+    assert agent._cached_system_prompt is prompt
+    # The new raw value must be redacted in the durable store.
+    assert db.search_messages("second-secret-value-99", include_inactive=True) == []
+    state_values = _sqlite_values(home / "state.db")
+    for raw in ("second-secret-value-99",):
+        assert raw not in state_values
+    engine.shutdown()

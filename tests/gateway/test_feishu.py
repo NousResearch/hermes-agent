@@ -2194,6 +2194,122 @@ class TestFeishuPostTextIsNotMarkdownEscaped(unittest.TestCase):
         self.assertNotIn("\\", text)
 
 
+class TestFeishuPostFlatContentShape(unittest.TestCase):
+    """A flat ``content`` list of element dicts must parse, not fall back.
+
+    Feishu's rich-text composer can send post content as a single level of
+    element dicts instead of a list of rows. That shape used to fall through to
+    ``FALLBACK_POST_TEXT`` ("[Rich text message]"), so the message body reached
+    the agent as a placeholder and was effectively lost.
+    """
+
+    def test_flat_content_list_parses_instead_of_falling_back(self):
+        from plugins.platforms.feishu.adapter import (
+            parse_feishu_post_payload, FALLBACK_POST_TEXT,
+        )
+
+        payload = {"content": [
+            {"tag": "text", "text": "扁平富文本第一句"},
+            {"tag": "text", "text": "第二句"},
+        ]}
+        text = parse_feishu_post_payload(payload).text_content
+        self.assertNotEqual(text, FALLBACK_POST_TEXT)
+        self.assertIn("扁平富文本第一句", text)
+        self.assertIn("第二句", text)
+
+    def test_nested_row_shape_still_parses(self):
+        """Invariant: the documented row-of-rows shape keeps working."""
+        from plugins.platforms.feishu.adapter import (
+            parse_feishu_post_payload, FALLBACK_POST_TEXT,
+        )
+
+        payload = {"title": "", "content": [[
+            {"tag": "text", "text": "嵌套行内容"},
+        ]]}
+        text = parse_feishu_post_payload(payload).text_content
+        self.assertNotEqual(text, FALLBACK_POST_TEXT)
+        self.assertEqual(text, "嵌套行内容")
+
+    def test_empty_content_still_falls_back(self):
+        """Invariant: nothing to render keeps the placeholder, not an empty string."""
+        from plugins.platforms.feishu.adapter import (
+            parse_feishu_post_payload, FALLBACK_POST_TEXT,
+        )
+
+        self.assertEqual(
+            parse_feishu_post_payload({"title": "", "content": []}).text_content,
+            FALLBACK_POST_TEXT,
+        )
+
+
+class TestFeishuPostEmbeddedFiles(unittest.TestCase):
+    """Files sent through the rich-text composer arrive in a post message's
+    ``files`` key with an empty ``content``. The parser ignored ``files``, so the
+    message collapsed to the placeholder and the attachments were never
+    downloaded — the user's files were silently dropped.
+    """
+
+    # Real payload from a Feishu post message carrying two attachments.
+    REAL_PAYLOAD = {
+        "title": "",
+        "content": [[]],
+        "content_v2": [[]],
+        "files": [
+            {"file_key": "file_v3_0015j_2c46993f-bbdd-4243-82ed-9d148241c3ag",
+             "file_name": "toutiao_public_collector (1).py", "is_folder": False},
+            {"file_key": "file_v3_0015j_1e2b0a26-ef7d-48fa-9e52-4d453216514g",
+             "file_name": "README_toutiao_public_collector (1).md", "is_folder": False},
+        ],
+    }
+
+    def test_embedded_files_become_media_refs(self):
+        from plugins.platforms.feishu.adapter import (
+            parse_feishu_post_payload, FALLBACK_POST_TEXT,
+        )
+
+        result = parse_feishu_post_payload(self.REAL_PAYLOAD)
+        self.assertEqual(len(result.media_refs), 2)
+        self.assertEqual(
+            [m.file_name for m in result.media_refs],
+            ["toutiao_public_collector (1).py", "README_toutiao_public_collector (1).md"],
+        )
+        self.assertTrue(all(m.resource_type == "file" for m in result.media_refs))
+        self.assertNotEqual(result.text_content, FALLBACK_POST_TEXT)
+        self.assertIn("toutiao_public_collector (1).py", result.text_content)
+
+    def test_files_without_content_do_not_fall_back(self):
+        """Empty content + files must not be treated as an unknown shape."""
+        from plugins.platforms.feishu.adapter import (
+            parse_feishu_post_payload, FALLBACK_POST_TEXT,
+        )
+
+        payload = {"title": "", "content": [[]], "files": [
+            {"file_key": "file_v3_x", "file_name": "note.md"},
+        ]}
+        result = parse_feishu_post_payload(payload)
+        self.assertNotEqual(result.text_content, FALLBACK_POST_TEXT)
+        self.assertEqual(len(result.media_refs), 1)
+
+    def test_files_nested_under_locale_wrapper_still_found(self):
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        payload = {"zh_cn": {"title": "", "content": [[{"tag": "text", "text": "附上文件"}]],
+                             "files": [{"file_key": "file_v3_y", "file_name": "nested.py"}]}}
+        result = parse_feishu_post_payload(payload)
+        self.assertIn("附上文件", result.text_content)
+        self.assertEqual([m.file_name for m in result.media_refs], ["nested.py"])
+
+    def test_file_entry_without_key_is_ignored(self):
+        """An entry with no file_key cannot be downloaded; skip it, keep the text."""
+        from plugins.platforms.feishu.adapter import parse_feishu_post_payload
+
+        payload = {"content": [[{"tag": "text", "text": "正文"}]],
+                   "files": [{"file_name": "broken.md"}]}
+        result = parse_feishu_post_payload(payload)
+        self.assertEqual(result.media_refs, [])
+        self.assertEqual(result.text_content, "正文")
+
+
 class TestFeishuNormalizeWithMentions(unittest.TestCase):
     def test_text_message_renders_mention_by_name(self):
         from plugins.platforms.feishu.adapter import normalize_feishu_message, _FeishuBotIdentity

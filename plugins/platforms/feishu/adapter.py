@@ -477,19 +477,57 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+def _collect_post_files(payload: Any) -> List[Dict[str, Any]]:
+    """Find file attachments embedded in a post payload.
+
+    Feishu delivers files sent through the rich-text composer inside the post
+    message under a ``files`` key (``content`` stays empty), e.g.::
+
+        {"title": "", "content": [[]], "content_v2": [[]],
+         "files": [{"file_key": "file_v3_...", "file_name": "a.py", "is_folder": false}]}
+
+    The post parser used to read only ``title``/``content``, so such a message
+    produced no text and no media: the attachments were never downloaded and the
+    body collapsed to the ``[Rich text message]`` placeholder. Walk the payload
+    (including locale / ``post`` wrappers) and return every file entry.
+    """
+    found: List[Dict[str, Any]] = []
+
+    def visit(node: Any, depth: int = 0) -> None:
+        if depth > 4 or not isinstance(node, dict):
+            return
+        files = node.get("files")
+        if isinstance(files, list):
+            for item in files:
+                if isinstance(item, dict) and str(item.get("file_key", "") or "").strip():
+                    found.append(item)
+        for value in node.values():
+            if isinstance(value, dict):
+                visit(value, depth + 1)
+
+    visit(payload)
+    return found
+
+
 def parse_feishu_post_payload(
     payload: Any, *, mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
 ) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
-    if not resolved:
+    embedded_files = _collect_post_files(payload)
+    if not resolved and not embedded_files:
+        # When a post payload does not match any known shape we fall back to a
+        # placeholder — log the raw payload so the actual structure is recoverable
+        # instead of the message being silently lost.
+        logger.warning("[Feishu] Unrecognized post payload shape; raw=%s",
+                       json.dumps(payload, ensure_ascii=False)[:1200])
         return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
     image_keys: List[str] = []
     media_refs: List[FeishuPostMediaRef] = []
     parts: List[str] = []
-    title = _normalize_feishu_text(str(resolved.get("title", "")).strip())
+    title = _normalize_feishu_text(str((resolved or {}).get("title", "")).strip())
     if title:
         parts.append(title)
-    for row in resolved.get("content", []) or []:
+    for row in (resolved or {}).get("content", []) or []:
         if not isinstance(row, list):
             continue
         row_text = _normalize_feishu_text(
@@ -497,6 +535,12 @@ def parse_feishu_post_payload(
         )
         if row_text:
             parts.append(row_text)
+    for entry in embedded_files:
+        ref = _build_media_ref_from_payload(entry, resource_type="file")
+        if not ref.file_key:
+            continue
+        media_refs.append(ref)
+        parts.append(_attachment_placeholder(ref.file_name))
     return FeishuPostParseResult(
         text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT, image_keys=image_keys, media_refs=media_refs,
     )
@@ -531,6 +575,11 @@ def _to_post_payload(candidate: Any) -> Dict[str, Any]:
     content = candidate.get("content")
     if not isinstance(content, list):
         return {}
+    # Feishu sends post content as a list of rows (each row a list of elements).
+    # Some rich-text payloads arrive FLAT (a list of element dicts) — that shape
+    # used to fall through to FALLBACK_POST_TEXT. Wrap it as a single row.
+    if content and all(isinstance(el, dict) for el in content):
+        content = [content]
     return {"title": str(candidate.get("title", "") or ""), "content": content}
 
 

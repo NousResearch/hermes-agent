@@ -2741,6 +2741,42 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_preserves_hidden_todo_state_without_text():
+    metadata = {
+        "todo_snapshot": {
+            "todos": [
+                {"id": "plan", "content": "parent", "status": "completed"},
+                {
+                    "id": "child",
+                    "content": "active child",
+                    "status": "in_progress",
+                    "parent": "plan",
+                },
+                {"id": "next", "content": "next", "status": "pending"},
+                {"id": "skip", "content": "skip", "status": "cancelled"},
+            ]
+        }
+    }
+
+    assert server._history_to_messages(
+        [
+            {
+                "role": "user",
+                "content": "opaque todo carrier",
+                "display_kind": "hidden",
+                "display_metadata": metadata,
+            }
+        ]
+    ) == [
+        {
+            "role": "user",
+            "text": "",
+            "display_kind": "hidden",
+            "display_metadata": metadata,
+        }
+    ]
+
+
 def test_history_to_messages_drops_pure_compaction_scaffolding():
     from agent.context_compressor import (
         HISTORICAL_TASK_HEADING,

@@ -68,6 +68,13 @@ const normKey = (profile: null | string | undefined): string => (profile ?? '').
 export const isSessionOwnerRoute = (owner: SessionOwnerScope): owner is SessionOwnerRoute =>
   Boolean(owner && typeof owner === 'object' && 'connectionId' in owner)
 
+export function ownerRouteProfileScope(ownerRoute: SessionOwnerRoute): { connectionId: string; profile: string } {
+  return {
+    connectionId: ownerRoute.connectionId,
+    profile: ownerRoute.targetProfile ?? ownerRoute.profile
+  }
+}
+
 const isRoute = isSessionOwnerRoute
 
 function routeParams(route: SessionProfileRoute, params: Record<string, unknown>): Record<string, unknown> {

@@ -73,14 +73,29 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
   }
 
   if (group.type === 'todo') {
-    return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
+    const counted = group.items.filter(i => i.todoStatus !== 'cancelled')
+    const progress = s.todos(counted.filter(i => i.todoStatus === 'completed').length, counted.length)
+    const presentation = group.items[0]?.todoPresentation
+
+    return presentation === 'working'
+      ? `${s.running} — ${progress}`
+      : presentation === 'continuing'
+        ? `${s.goalActive} — ${progress}`
+        : presentation === 'paused'
+          ? `${s.goalPaused} — ${progress}`
+          : presentation === 'restored'
+            ? `${s.restoredUnfinished} — ${progress}`
+            : progress
   }
 
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
 }
 
 const hasRunningTodo = (group: StatusGroup) =>
-  group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
+  group.type === 'todo' &&
+  group.items.some(
+    item => item.todoPresentation === 'working' && item.todoStatus === 'in_progress' && item.state === 'running'
+  )
 
 interface ComposerStatusStackProps {
   onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean

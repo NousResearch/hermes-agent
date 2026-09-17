@@ -129,6 +129,20 @@ class TestNestedInjection:
         assert text is not None
         assert text.split("\n")[1] == "- [>] a. task a (in_progress)"
 
+    def test_delimiter_bearing_id_uses_versioned_unambiguous_carrier(self):
+        store = TodoStore()
+        store.write([
+            _item("a. b", status="completed", content="parent"),
+            _item("child", status="in_progress", parent="a. b", content="active"),
+        ])
+
+        assert store.format_for_injection().split("\n") == [
+            "[Your active task list was preserved across context compression]",
+            "[Todo carrier format: 2]",
+            '- [x] {"id":"a. b","content":"parent","status":"completed"}',
+            '  - [>] {"id":"child","content":"active","status":"in_progress"}',
+        ]
+
 
 class TestOrderGuard:
     def test_nested_list_keeps_authored_order(self):

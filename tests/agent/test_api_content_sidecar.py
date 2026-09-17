@@ -118,6 +118,11 @@ class TestAutoMigration:
             );
         """)
         conn.execute(
+            "INSERT INTO sessions (id, source, parent_session_id, started_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("s1", "cli", None, 1000.0),
+        )
+        conn.execute(
             "INSERT INTO messages (session_id, role, content, timestamp) "
             "VALUES (?, ?, ?, ?)",
             ("s1", "user", "old row", 1000.0),

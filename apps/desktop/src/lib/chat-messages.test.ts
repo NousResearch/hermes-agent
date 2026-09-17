@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { latestSessionTodos } from '@/lib/todos'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
@@ -366,6 +367,86 @@ describe('toChatMessages', () => {
       expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
       expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
     }
+  })
+
+  it('hides a legacy persisted todo snapshot without losing tool-backed task reconstruction', () => {
+    const snapshotHeader = '[Your active task list was preserved across context compression]'
+    const expectedTodos = [{ content: 'finish the task', id: 'task-1', status: 'in_progress' as const }]
+
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          {
+            function: { arguments: JSON.stringify({ todos: expectedTodos }), name: 'todo' },
+            id: 'todo-1',
+            type: 'function'
+          }
+        ],
+        timestamp: 1
+      },
+      {
+        role: 'tool',
+        content: '[todo] updated task list',
+        timestamp: 2,
+        tool_call_id: 'todo-1',
+        tool_name: 'todo'
+      },
+      {
+        id: 277185,
+        role: 'user',
+        content: `${snapshotHeader}\n- [>] 1. finish the task (in_progress)`,
+        display_kind: null,
+        timestamp: 3
+      }
+    ])
+
+    expect(messages.map(chatMessageText).join('\n')).not.toContain(snapshotHeader)
+    expect(latestSessionTodos(messages)).toEqual(expectedTodos)
+  })
+
+  it('projects a typed composite todo carrier to only the real user turn', () => {
+    const snapshotHeader = '[Your active task list was preserved across context compression]'
+
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content: `REAL ASK\n\n${snapshotHeader}\n- [>] 1. finish the task (in_progress)`,
+        display_metadata: {
+          todo_snapshot: {
+            todos: [{ content: 'finish the task', id: '1', status: 'in_progress' as const }]
+          }
+        },
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('REAL ASK')
+  })
+
+  it.each([
+    'What does [Your active task list was preserved across context compression] mean?',
+    'REAL ASK\n\n[Your active task list was preserved across context compression]\n- [ ] this is quoted prose'
+  ])('does not reclassify ordinary user prose resembling a todo snapshot', content => {
+    const [message] = toChatMessages([{ role: 'user', content, timestamp: 1 }])
+
+    expect(chatMessageText(message)).toBe(content)
+  })
+
+  it('does not truncate an untyped composite quote with a valid producer-shaped checklist', () => {
+    const content = [
+      'Please explain this:',
+      '',
+      '[Your active task list was preserved across context compression]',
+      '- [x] 1. finished parent (completed)',
+      '  - [>] 1.1. active child (in_progress)',
+      '- [ ] 2. next root (pending)',
+      '- [~] 3. cancelled root (cancelled)'
+    ].join('\n')
+    const [message] = toChatMessages([{ content, display_kind: null, role: 'user', timestamp: 1 }])
+
+    expect(chatMessageText(message)).toBe(content)
   })
 
   it('projects persisted composite compaction carriers to their live user turn', () => {
@@ -1429,7 +1510,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,

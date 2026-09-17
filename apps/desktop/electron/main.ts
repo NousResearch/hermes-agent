@@ -36,6 +36,7 @@ import {
   htmlResponseError,
   httpStatusError,
   jsonAgentFor,
+  readApiJsonResponseWithByteLimit,
   readStatusCode,
   withRetry
 } from './api-transport'
@@ -5459,7 +5460,6 @@ function fetchJson(url, token, options: any = {}) {
         const client = parsed.protocol === 'https:' ? https : http
         const agent = jsonAgentFor(parsed.protocol)
         const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
           reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
 
@@ -5486,12 +5486,12 @@ function fetchJson(url, token, options: any = {}) {
             }
           },
           res => {
-            const chunks = []
-            res.on('error', reject)
-            res.on('data', chunk => chunks.push(chunk))
-            res.on('end', () => {
-              const text = Buffer.concat(chunks).toString('utf8')
-
+            readApiJsonResponseWithByteLimit(res, {
+              method: options.method || 'GET',
+              url,
+              path: `${parsed.pathname}${parsed.search}`,
+              abort: () => req.destroy()
+            }).then(text => {
               if ((res.statusCode || 500) >= 400) {
                 reject(httpStatusError(res.statusCode, text, res.statusMessage))
 
@@ -5531,7 +5531,7 @@ function fetchJson(url, token, options: any = {}) {
               } catch {
                 reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
               }
-            })
+            }, reject)
           }
         )
 
@@ -7916,7 +7916,6 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
     const body = serializeJsonBody(options.body)
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-
     const request = electronNet.request({
       method: options.method || 'GET',
       url,
@@ -7947,6 +7946,9 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
     request.on('response', res => {
       wireOauthSessionResponse(res, {
+        abort: () => request.abort(),
+        method: options.method || 'GET',
+        path: `${parsed.pathname}${parsed.search}`,
         url,
         isTimedOut: () => timedOut,
         clearTimer: () => clearTimeout(timer),

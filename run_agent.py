@@ -1023,9 +1023,12 @@ class AIAgent(
             release_or_close(session_db)
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
-        """Replay the most recent todo tool response (the gateway builds a fresh AIAgent per message). Only
-        results paired with an earlier assistant ``todo`` call count — a forged bare ``role: tool`` message
-        must not seed the store (GHSA-5g4g-6jrg-mw3g)."""
+        """Restore the newest trusted persisted carrier or paired Todo result.
+
+        Caller-supplied role/content/display metadata is not authority. A
+        structured carrier is accepted only when SessionDB stamped its
+        process-local provenance marker while decoding a durable row.
+        """
         found = self._latest_todo_response(history)
         if found is not None:
             last_todo_response, last_todo_revision = found
@@ -1042,11 +1045,24 @@ class AIAgent(
         _set_interrupt(False)
 
     def _latest_todo_response(self, history: List[Dict[str, Any]]) -> Optional[tuple]:
-        """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""
+        """Newest trusted carrier or paired, size-bounded result → ``(todos, revision)``."""
+        from agent.message_metadata import has_persisted_todo_snapshot_provenance
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
 
         for idx in range(len(history) - 1, -1, -1):
             msg = history[idx]
+            if has_persisted_todo_snapshot_provenance(msg):
+                todos = self._validated_persisted_todo_carrier(msg)
+                if todos is None:
+                    logger.warning(
+                        "Skipping invalid persisted todo carrier during hydration: session=%s",
+                        self.session_id or "none",
+                    )
+                    return None
+                # Durable carriers predate revision-bearing Todo responses.
+                # Admit one into a cold store without rolling back a newer
+                # live revision already present on an in-place agent.
+                return todos, 1
             content = msg.get("content", "")
             if msg.get("role") != "tool" or not isinstance(content, str) or not self._tool_response_matches_todo_call(history, idx):
                 continue
@@ -1063,6 +1079,31 @@ class AIAgent(
             if "todos" in data and isinstance(data["todos"], list):
                 return data["todos"], data.get("revision", 1)
         return None
+
+    @staticmethod
+    def _validated_persisted_todo_carrier(message: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        """Exact canonical Todo list from one provenance-stamped carrier."""
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS, TodoStore
+
+        metadata = message.get("display_metadata")
+        if not isinstance(metadata, dict) or "todo_snapshot" not in metadata:
+            return None
+        snapshot = metadata["todo_snapshot"]
+        if not isinstance(snapshot, dict) or set(snapshot) != {"todos"}:
+            return None
+        todos = snapshot.get("todos")
+        if not isinstance(todos, list):
+            return None
+        try:
+            encoded = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return None
+        if len(encoded) > MAX_TODO_RESULT_CHARS:
+            return None
+
+        candidate = TodoStore()
+        canonical = candidate.write(todos, merge=False)
+        return canonical if canonical == todos else None
 
     @classmethod
     def _tool_response_matches_todo_call(cls, history: List[Dict[str, Any]], tool_index: int) -> bool:

@@ -35,7 +35,38 @@ function wire(res: ReturnType<typeof makeResponse>) {
 }
 
 describe('OAuth session response', () => {
-  it('settles once when a response body fails after headers', () => {
+  it('enforces the Todo projection byte limit before parsing and absorbs abort errors', async () => {
+    const res = makeResponse(200, { 'content-length': '1100001' })
+    const resolve = vi.fn()
+    const reject = vi.fn()
+    const clearTimer = vi.fn()
+    const abort = vi.fn(() => res.emit('error', new Error('aborted after headers')))
+
+    wireOauthSessionResponse(res, {
+      abort,
+      method: 'GET',
+      path: '/api/sessions/stored/messages?projection=todo-state',
+      url: 'https://gw.example.com/api/sessions/stored/messages?projection=todo-state',
+      isTimedOut: () => false,
+      clearTimer,
+      resolve,
+      reject
+    })
+
+    await vi.waitFor(() => expect(reject).toHaveBeenCalledTimes(1))
+
+    expect(abort).toHaveBeenCalledTimes(1)
+    expect(clearTimer).toHaveBeenCalledTimes(1)
+    expect(resolve).not.toHaveBeenCalled()
+    expect(reject.mock.calls[0][0]).toMatchObject({
+      code: 'HERMES_RESPONSE_BODY_TOO_LARGE',
+      declaredBytes: 1_100_001,
+      observedBytes: 0
+    })
+    expect(() => res.emit('error', new Error('late loader failure'))).not.toThrow()
+  })
+
+  it('settles once when a response body fails after headers', async () => {
     const res = makeResponse()
     const state = wire(res)
     const error = new Error('net::ERR_CONTENT_LENGTH_MISMATCH')
@@ -47,6 +78,7 @@ describe('OAuth session response', () => {
     expect(() => res.emit('error', new Error('late failure'))).not.toThrow()
     res.emit('end')
 
+    await vi.waitFor(() => expect(state.reject).toHaveBeenCalledTimes(1))
     expect(state.reject).toHaveBeenCalledExactlyOnceWith(error)
     expect(state.resolve).not.toHaveBeenCalled()
     expect(state.clearTimer).toHaveBeenCalledTimes(1)
@@ -64,7 +96,7 @@ describe('OAuth session response', () => {
     expect(timedOutState.clearTimer).not.toHaveBeenCalled()
   })
 
-  it('preserves JSON and HTTP error contracts when end wins settlement', () => {
+  it('preserves JSON and HTTP error contracts when end wins settlement', async () => {
     const cases = [
       { status: 200, body: '{"ok":"✓"}', headers: {}, value: { ok: '✓' } },
       { status: 204, body: '', headers: {}, value: null },
@@ -87,6 +119,7 @@ describe('OAuth session response', () => {
       }
 
       res.emit('end')
+      await vi.waitFor(() => expect(state.clearTimer).toHaveBeenCalledTimes(1))
 
       // Late terminal events must not overwrite either success or rejection.
       expect(() => res.emit('error', new Error('late loader failure'))).not.toThrow()

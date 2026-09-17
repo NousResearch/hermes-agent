@@ -42,6 +42,23 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
     )
   }
 
+  if (
+    item.todoStatus === 'in_progress' &&
+    (item.todoPresentation === 'continuing' || item.todoPresentation === 'paused')
+  ) {
+    return (
+      <Codicon
+        className="text-muted-foreground/60"
+        name={item.todoPresentation === 'paused' ? 'debug-pause' : 'debug-continue'}
+        size="0.8rem"
+      />
+    )
+  }
+
+  if (item.todoStatus === 'in_progress' && item.todoPresentation === 'restored') {
+    return <Codicon className="text-muted-foreground/60" name="circle-large-outline" size="0.8rem" />
+  }
+
   if (item.todoStatus === 'pending') {
     return <StatusPendingIcon />
   }
@@ -130,6 +147,11 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
         >
           {item.title}
         </span>
+        {item.type === 'todo' && item.todoStopReason && (
+          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
+            {item.todoStopReason}
+          </span>
+        )}
         {item.type === 'subagent' && item.currentTool && (
           <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
             {toolLabel(item.currentTool)}

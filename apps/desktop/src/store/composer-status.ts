@@ -13,7 +13,14 @@ import { $sessions, lineageAliases } from './session'
 import { ambientRequestFor } from './session-gone-latch'
 import { $sessionStates, requestForOwnedSession } from './session-states'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
-import { $todosBySession } from './todos'
+import {
+  $preservedTodosBySession,
+  $todoContinuationsBySession,
+  $todosBySession,
+  resolveTodoPresentation,
+  type TodoPresentationKind,
+  type TodoPresentationState
+} from './todos'
 
 export {
   isSessionGone,
@@ -45,6 +52,10 @@ export interface ComposerStatusItem {
   title: string
   /** todo: the full four-state status driving the row's checkmark glyph. */
   todoStatus?: TodoStatus
+  /** todo: lifecycle semantics from turn truth plus authoritative continuation. */
+  todoPresentation?: TodoPresentationKind
+  /** todo: backend-provided explanation when durable work is paused. */
+  todoStopReason?: string
   type: StatusItemType
 }
 
@@ -156,12 +167,19 @@ const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   type: 'subagent'
 })
 
-const todoToItem = (t: TodoItem, depth: number): ComposerStatusItem => ({
+const todoToItem = (
+  t: TodoItem,
+  depth: number,
+  presentation: TodoPresentationState,
+  first: boolean
+): ComposerStatusItem => ({
   depth,
   id: `todo:${t.id}`,
-  state: t.status === 'in_progress' ? 'running' : 'done',
+  state: presentation.kind === 'working' && t.status === 'in_progress' ? 'running' : 'done',
   title: t.content,
+  todoPresentation: presentation.kind,
   todoStatus: t.status,
+  todoStopReason: first ? presentation.stopReason : undefined,
   type: 'todo'
 })
 
@@ -193,7 +211,9 @@ const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.exitCode === b.exitCode &&
   a.currentTool === b.currentTool &&
   a.goalStatus === b.goalStatus &&
+  a.todoPresentation === b.todoPresentation &&
   a.todoStatus === b.todoStatus &&
+  a.todoStopReason === b.todoStopReason &&
   a.depth === b.depth &&
   a.sessionId === b.sessionId
 
@@ -210,8 +230,16 @@ const stabilizeItems = (prev: ComposerStatusItem[] | undefined, next: ComposerSt
 let prevStatusItems: Record<string, ComposerStatusItem[]> = {}
 
 export const $statusItemsBySession = computed(
-  [$goalsBySession, $subagentsBySession, $backgroundStatusBySession, $todosBySession],
-  (goals, subs, background, todos) => {
+  [
+    $goalsBySession,
+    $subagentsBySession,
+    $backgroundStatusBySession,
+    $todosBySession,
+    $sessionStates,
+    $todoContinuationsBySession,
+    $preservedTodosBySession
+  ],
+  (goals, subs, background, todos, sessionStates, continuations, preservedTodos) => {
     const out: Record<string, ComposerStatusItem[]> = {}
 
     const push = (sid: string, items: ComposerStatusItem[]) => {
@@ -221,9 +249,24 @@ export const $statusItemsBySession = computed(
     }
 
     for (const [sid, list] of Object.entries(todos)) {
+      const session = sessionStates[sid]
+
+      const presentation = resolveTodoPresentation(list, {
+        continuation: continuations[sid],
+        preserved: preservedTodos[sid],
+        turnLive: Boolean(session?.busy && session.turnLive)
+      })
+
+      if (presentation.kind === 'hidden') {
+        continue
+      }
+
+      const tree = todoTree(list)
+      const firstRemainingIndex = tree.findIndex(([item]) => item.status === 'pending' || item.status === 'in_progress')
+
       push(
         sid,
-        todoTree(list).map(([t, depth]) => todoToItem(t, depth))
+        tree.map(([t, depth], index) => todoToItem(t, depth, presentation, index === firstRemainingIndex))
       )
     }
 

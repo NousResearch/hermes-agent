@@ -2,15 +2,44 @@
 
 from __future__ import annotations
 
+from enum import Enum, auto
 from time import time as wall_time
 from typing import Any, MutableMapping, Optional, TypeVar
 
 
+_TODO_SNAPSHOT_PROVENANCE_KEY = "_todo_snapshot_provenance"
+
+
+class _MessageProvenance(Enum):
+    """Process-local identities that JSON/API callers cannot manufacture."""
+
+    PERSISTED_TODO_SNAPSHOT = auto()
+
+
 # These fields describe Hermes' durable record, not provider-visible message
 # content. They must not influence context-pressure decisions.
-PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset({"timestamp"})
+PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
+    {"timestamp", _TODO_SNAPSHOT_PROVENANCE_KEY}
+)
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
+
+
+def stamp_persisted_todo_snapshot(message: _Message) -> _Message:
+    """Mark structured Todo state decoded from an authoritative SessionDB row."""
+    message[_TODO_SNAPSHOT_PROVENANCE_KEY] = (
+        _MessageProvenance.PERSISTED_TODO_SNAPSHOT
+    )
+    return message
+
+
+def has_persisted_todo_snapshot_provenance(message: Any) -> bool:
+    """Return whether *message* crossed the trusted persisted-session boundary."""
+    return bool(
+        isinstance(message, MutableMapping)
+        and message.get(_TODO_SNAPSHOT_PROVENANCE_KEY)
+        is _MessageProvenance.PERSISTED_TODO_SNAPSHOT
+    )
 
 
 def stamp_message_timestamp(

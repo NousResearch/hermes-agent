@@ -957,12 +957,13 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    provider_blocked: bool = False
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
         # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        return "blocked" if self.provider_blocked else "rate_limited" if self.rate_limited else "crashed"
 
 
 def _classify_dead_worker(
@@ -1027,6 +1028,7 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    provider_blocked: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
@@ -1058,9 +1060,23 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
 
             pid = int(row["worker_pid"])
-            dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
+            from hermes_cli.kanban_worker_failure import provider_verdict, transient_budget_exhausted
+            evidence = provider_verdict(conn, row["id"], pid)
+            if evidence is not None:
+                blocked = not evidence['transient'] or transient_budget_exhausted(conn, row["id"])
+                message = (f"Provider failure: {evidence['reason']}. " +
+                           ("Automatic retries stopped; prerequisite review required." if blocked else
+                            "Temporary provider failure; bounded retry after rate-limit cooldown."))
+                kind, code = _classify_worker_exit(pid)
+                dead = _DeadWorker(kind, code, message, "blocked" if blocked else "rate_limited",
+                    {"pid": pid, "claimer": row["claim_lock"], "exit_code": code,
+                     "provider_failure": evidence}, rate_limited=not blocked, provider_blocked=blocked)
+            else:
+                dead = _classify_dead_worker(pid, row["claim_lock"], task_id=row["id"], board=board)
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
+            if dead.provider_blocked:
+                retry_status = "blocked"
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
@@ -1087,7 +1103,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.provider_blocked:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
@@ -1097,6 +1113,9 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                     "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
+            if dead.provider_blocked:
+                sweep.provider_blocked.append(row["id"])
+                continue
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
             else:
@@ -1183,7 +1202,7 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
     # requeues did NOT count a failure and are NOT crashes.
-    detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
+    detect_crashed_workers._last_auto_blocked = sweep.provider_blocked + auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.

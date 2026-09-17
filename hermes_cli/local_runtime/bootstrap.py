@@ -237,7 +237,12 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),
-                                    port=int(section.get("port", 0)) or None)
+                                    port=int(section.get("port", 0)) or None,
+                                    watchdog_enabled=section.get("watchdog_enabled", True),
+                                    watchdog_failure_threshold=section.get(
+                                        "watchdog_failure_threshold", 3),
+                                    watchdog_cooldown_s=section.get(
+                                        "watchdog_cooldown_s", 300))
         try:
             sup.start()
         except Exception:

@@ -410,3 +410,121 @@ def test_workplan_persists_canonical_lineage_run_and_execution_key():
     assert items[0].run_id == "run_42"
     assert items[0].operation_id == "op_test_1"
 
+
+def test_journal_100_events_streaming_hash_integrity(tmp_path):
+    import time
+    journal_path = tmp_path / "stream_journal.jsonl"
+    journal = ExecutionJournal("task_scale", "session_scale", file_path=journal_path)
+
+    durations = []
+    for i in range(120):
+        t0 = time.monotonic()
+        journal.record(ExecutionEventKind.PROGRESS, f"Step {i}", metadata={"index": i})
+        durations.append(time.monotonic() - t0)
+
+    # Verify O(1) performance: average of last 20 events should not exceed 3x average of first 20 events
+    first_avg = sum(durations[:20]) / 20.0
+    last_avg = sum(durations[-20:]) / 20.0
+    assert last_avg < max(first_avg * 3.0, 0.05)
+
+    integrity = journal.integrity()
+    assert integrity["status"] == "verified"
+    assert integrity["events"] == 120
+
+    events = journal.read_events()
+    assert len(events) == 120
+    for idx, event in enumerate(events):
+        assert event.sequence_number == idx + 1
+        assert event.event_hash is not None
+        if idx > 0:
+            assert event.previous_event_hash == events[idx - 1].event_hash
+
+
+def test_human_takeover_revokes_agent_authority_and_invalidates_fences():
+    from workstation.browser_session import (
+        BrowserControlLeaseManager,
+        BrowserControlMode,
+        HumanTakeoverActiveError,
+    )
+    mgr = BrowserControlLeaseManager()
+    task_id = "task_takeover_fence_test"
+
+    agent_lease = mgr.get_lease(task_id)
+    assert agent_lease.mode == BrowserControlMode.AGENT
+    token_1 = agent_lease.fence_token
+    gen_1 = agent_lease.generation
+
+    # Normal operation with token_1
+    mgr.assert_action_allowed(task_id, "browser_click", fence_token=token_1)
+
+    # Human takeover
+    human_lease = mgr.request_human_control(task_id, "Human solving captcha")
+    assert human_lease.mode == BrowserControlMode.HUMAN
+    assert human_lease.generation == gen_1 + 1
+
+    # Residual mutation calls by agent are strictly rejected
+    import pytest
+    with pytest.raises(HumanTakeoverActiveError, match="Human Takeover is active"):
+        mgr.assert_action_allowed(task_id, "browser_click")
+
+    with pytest.raises(HumanTakeoverActiveError, match="Human Takeover is active"):
+        mgr.assert_action_allowed(task_id, "browser_type")
+
+    # Call with stale token_1 is rejected
+    with pytest.raises(HumanTakeoverActiveError, match="Stale fence token"):
+        mgr.assert_action_allowed(task_id, "read", fence_token=token_1)
+
+    # Non-destructive read without stale token is permitted during human inspection
+    mgr.assert_action_allowed(task_id, "read")
+    mgr.assert_action_allowed(task_id, "snapshot")
+
+    # Resume agent control
+    resumed = mgr.resume_agent_control(task_id)
+    assert resumed.mode == BrowserControlMode.AGENT
+    assert resumed.generation == gen_1 + 2
+    token_2 = resumed.fence_token
+    assert token_2 != token_1
+
+    # Old token still rejected
+    with pytest.raises(HumanTakeoverActiveError, match="Stale fence token"):
+        mgr.assert_action_allowed(task_id, "browser_click", fence_token=token_1)
+
+    # New token accepted
+    mgr.assert_action_allowed(task_id, "browser_click", fence_token=token_2)
+
+
+def test_task_cockpit_exposes_canonical_lineage(tmp_path):
+    from workstation.cockpit import task_cockpit
+    from hermes_cli import kanban_db
+    from workstation.durable_tasks import DurableTaskStore
+    import sqlite3
+
+    db_path = tmp_path / "cockpit_test.db"
+    kanban_db.init_db(board="default", db_path=db_path)
+    conn = kanban_db.connect(db_path=db_path)
+
+    task_id = kanban_db.create_task(conn, title="Cockpit Lineage Test", body="Cockpit objective", session_id="sess_123")
+    cur = conn.execute("INSERT INTO task_runs (task_id, started_at, status) VALUES (?, 100, 'running')", (task_id,))
+    run_id = cur.lastrowid
+    conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, task_id))
+    conn.commit()
+
+    store = DurableTaskStore(conn=conn)
+    plan = store.create_plan(
+        task_id=task_id,
+        title="Cockpit Plan",
+        items=[{"id": 1, "operation_id": "op_cockpit_1"}],
+        run_id=str(run_id),
+        execution_key="exec_key_cockpit",
+    )
+
+    cockpit = task_cockpit(conn, task_id)
+    assert cockpit["task_id"] == task_id
+    lineage = cockpit["lineage"]
+    assert lineage["task_id"] == task_id
+    assert lineage["run_id"] == run_id
+    assert lineage["execution_key"] == "exec_key_cockpit"
+    assert lineage["workplan_id"] == plan.id
+    assert "acceptance_status" in lineage
+
+

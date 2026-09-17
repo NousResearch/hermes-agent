@@ -81,6 +81,41 @@ def get_journal_path(task_id: str) -> Path:
     return get_journal_dir() / f"{safe_name}.jsonl"
 
 
+def _get_last_record(file_path: Path) -> tuple[int, dict[str, Any] | None]:
+    if not file_path.exists():
+        return 0, None
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return 0, None
+    if size == 0:
+        return 0, None
+
+    read_size = min(size, 65536)
+    try:
+        with file_path.open("rb") as f:
+            f.seek(size - read_size)
+            buffer = f.read(read_size)
+        lines = [l.strip() for l in buffer.split(b"\n") if l.strip()]
+        if lines:
+            record = json.loads(lines[-1].decode("utf-8"))
+            if isinstance(record, dict) and "sequence_number" in record:
+                return int(record["sequence_number"]), record
+    except Exception:
+        pass
+
+    records = []
+    with file_path.open(encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped:
+                try:
+                    records.append(json.loads(stripped))
+                except Exception:
+                    pass
+    return len(records), (records[-1] if records else None)
+
+
 class ExecutionJournal:
     """Durable append-only execution and evidence journal for Workstation tasks."""
 
@@ -106,10 +141,10 @@ class ExecutionJournal:
         if event.kind == ExecutionEventKind.TASK_COMPLETED and event.metadata.get("completed") is False:
             raise ValueError("incomplete outcome cannot emit TASK_COMPLETED")
         with _writer_lock(self.file_path):
-            records = self._read_records()
+            last_seq, last_record = _get_last_record(self.file_path)
             data = event.to_dict()
-            data.update(schema_version=2, sequence_number=len(records) + 1,
-                        previous_event_hash=_event_hash(records[-1]) if records else None,
+            data.update(schema_version=2, sequence_number=last_seq + 1,
+                        previous_event_hash=_event_hash(last_record) if last_record else None,
                         writer_id=self.writer_id, environment=self.environment, **self.provenance)
             data["event_hash"] = _event_hash(data)
             for key in ("schema_version", "sequence_number", "previous_event_hash", "event_hash",

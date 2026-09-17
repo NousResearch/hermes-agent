@@ -27,7 +27,13 @@ def task_cockpit(conn, task_id: str) -> dict:
             record = dict(row)
             plan_meta = json.loads(record.get("metadata") or "{}")
             if record["task_id"] == task_id or plan_meta.get("canonical_task_id") == task_id:
-                plans.append({"id": record["id"], "status": record["status"], "metadata": plan_meta})
+                plans.append({
+                    "id": record["id"],
+                    "status": record["status"],
+                    "metadata": plan_meta,
+                    "run_id": record.get("run_id"),
+                    "execution_key": record.get("execution_key"),
+                })
     card = None
     if "hybrid_card_delegations" in tables:
         row = conn.execute("SELECT human_card_id FROM hybrid_card_delegations WHERE agent_task_id=? ORDER BY attempt DESC LIMIT 1", (task_id,)).fetchone()
@@ -46,10 +52,33 @@ def task_cockpit(conn, task_id: str) -> dict:
     browser = sorted({p["metadata"]["browser_task_id"] for p in plans if p["metadata"].get("browser_task_id")})
     workers = sorted({e.metadata["worker_id"] for e in events if e.metadata.get("worker_id")})
     processes = sorted({e.metadata["process_id"] for e in events if e.metadata.get("process_id")})
-    lineage = {"task_id": task.id, "session_id": task.session_id, "human_card": card,
-               "agent_task_id": task.id, "workplans": plans, "browser_tasks": browser,
-               "workers": workers, "processes": processes,
-               "evidence": evidence, "deliverables": outcome.get("deliverables", []), "outcome": outcome}
+    active_run_id = (run.id if run else None) or getattr(task, "current_run_id", None)
+    execution_keys = sorted({p.get("execution_key") for p in plans if p.get("execution_key")})
+    operation_ids = sorted({
+        e.metadata.get("operation_id") for e in events if e.metadata.get("operation_id")
+    } | ({outcome.get("operation_id")} if outcome.get("operation_id") else set()))
+    lineage = {
+        "task_id": task.id,
+        "run_id": active_run_id,
+        "execution_key": execution_keys[0] if len(execution_keys) == 1 else (execution_keys or None),
+        "execution_keys": execution_keys,
+        "operation_id": operation_ids[0] if len(operation_ids) == 1 else (operation_ids or None),
+        "operation_ids": operation_ids,
+        "workplan_id": plans[0]["id"] if plans else None,
+        "human_card_id": card["id"] if card else None,
+        "session_id": task.session_id,
+        "human_card": card,
+        "agent_task_id": task.id,
+        "workplans": plans,
+        "browser_tasks": browser,
+        "workers": workers,
+        "processes": processes,
+        "evidence": evidence,
+        "deliverables": outcome.get("deliverables", []),
+        "outcome": outcome,
+        "acceptance_approved": accepted,
+        "acceptance_status": outcome_status,
+    }
     return {"task_id": task.id, "objective": task.body or task.title, "human_card": card,
             "outcome_status": "waiting_for_human" if handoffs else outcome_status,
             "acceptance_approved": accepted,

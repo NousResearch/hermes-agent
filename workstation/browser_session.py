@@ -16,6 +16,8 @@ import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
 
+from uuid import uuid4
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,6 +46,15 @@ DESTRUCTIVE_ACTIONS = frozenset({
     "logout",
     "refresh",
     "close_terminal",
+    "browser_click",
+    "click",
+    "browser_type",
+    "type",
+    "browser_press",
+    "press",
+    "submit",
+    "browser_fill",
+    "fill",
 })
 
 
@@ -55,6 +66,8 @@ class BrowserControlLease:
     acquired_at: str = field(default_factory=_utc_now)
     acquired_by: str = "agent"
     lock_destructive: bool = True
+    generation: int = 1
+    fence_token: str = field(default_factory=lambda: uuid4().hex)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -94,6 +107,8 @@ class BrowserControlLeaseManager:
     ) -> BrowserControlLease:
         """Lock the browser for human intervention (login, MFA, CAPTCHA)."""
         with self._mutex:
+            prev = self._leases.get(task_id)
+            prev_gen = prev.generation if prev else 0
             lease = BrowserControlLease(
                 task_id=task_id,
                 mode=BrowserControlMode.HUMAN,
@@ -101,29 +116,51 @@ class BrowserControlLeaseManager:
                 acquired_at=_utc_now(),
                 acquired_by=acquired_by,
                 lock_destructive=True,
+                generation=prev_gen + 1,
+                fence_token=uuid4().hex,
             )
             self._leases[task_id] = lease
-            logger.info("Human control lease GRANTED for task %s: %s", task_id, reason)
+            logger.info("Human control lease GRANTED for task %s (gen %s): %s", task_id, lease.generation, reason)
             return lease
 
-    def resume_agent_control(self, task_id: str) -> BrowserControlLease:
+    def resume_agent_control(
+        self,
+        task_id: str,
+        *,
+        acquired_by: str = "agent",
+    ) -> BrowserControlLease:
         """Restore agent control after human user finishes intervention."""
         with self._mutex:
+            prev = self._leases.get(task_id)
+            prev_gen = prev.generation if prev else 0
             lease = BrowserControlLease(
                 task_id=task_id,
                 mode=BrowserControlMode.AGENT,
                 reason=None,
                 acquired_at=_utc_now(),
-                acquired_by="agent",
+                acquired_by=acquired_by,
                 lock_destructive=False,
+                generation=prev_gen + 1,
+                fence_token=uuid4().hex,
             )
             self._leases[task_id] = lease
-            logger.info("Agent control lease RESUMED for task %s", task_id)
+            logger.info("Agent control lease RESUMED for task %s (gen %s)", task_id, lease.generation)
             return lease
 
-    def assert_action_allowed(self, task_id: str, action: str) -> None:
-        """Enforce protection: raise HumanTakeoverActiveError if action is destructive during human lease."""
+    def assert_action_allowed(
+        self,
+        task_id: str,
+        action: str,
+        *,
+        fence_token: Optional[str] = None,
+    ) -> None:
+        """Enforce protection: raise HumanTakeoverActiveError if action is destructive during human lease or fence token is stale."""
         lease = self.get_lease(task_id)
+        if fence_token is not None and fence_token != lease.fence_token:
+            raise HumanTakeoverActiveError(
+                f"Action '{action}' is BLOCKED: Stale fence token for task '{task_id}'. "
+                f"Execution authority was revoked or superseded by generation {lease.generation}."
+            )
         if lease.mode == BrowserControlMode.HUMAN and lease.lock_destructive:
             normalized_action = action.strip().lower()
             if normalized_action in DESTRUCTIVE_ACTIONS:

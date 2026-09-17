@@ -12,11 +12,16 @@ whole-file overwrite of content this task never saw or that changed since.
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
-from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
+from tools.binary_extensions import (
+    has_binary_extension,
+    has_opaque_document_extension,
+    is_pdf_path,
+)
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
 from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
 
@@ -415,6 +420,16 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
 
 
+# SQLite files and their journal sidecars. ``os.path.splitext("x.db-wal")``
+# yields ".db-wal" — NOT in BINARY_EXTENSIONS — so the sidecars of every
+# WAL-mode database (Hermes' own kanban.db among them) defeat a plain
+# extension check. Match on the basename so both the main file and the
+# sidecars are covered.
+_SQLITE_DB_FAMILY_RE = re.compile(
+    r"\.(db|sqlite|sqlite3)([-.](wal|shm|journal))?$", re.IGNORECASE
+)
+
+
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
     EXTRACTED text, so the model may write it back). Opaque formats are always rejected;
@@ -434,6 +449,14 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
+    if _SQLITE_DB_FAMILY_RE.search(os.path.basename(filepath or "")):
+        return (
+            f"Refusing to write plain text to database file '{filepath}'. "
+            "A text write can never produce a valid database, and the text tools' "
+            "read->modify->write round-trip re-encodes the binary bytes lossily "
+            "(the terminal transport decodes stdout with errors=replace), silently "
+            "destroying the file. Use the sqlite3 CLI or a SQLite library via the "
+            "terminal for any database change.")
     if is_pdf_path(filepath):
         try:
             resolved = Path(_resolve_path_for_task(filepath, task_id))
@@ -447,6 +470,28 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
                     "text back would destroy the document. Use the pdf skill or a PDF "
                     "library via the terminal to modify it. (Creating a NEW .pdf file "
                     "is allowed.)")
+        except OSError:
+            pass
+        return None
+    # Other binary extensions (images, archives, fonts, executables, ...):
+    # same corruption argument as the PDF-overwrite rule — the model can only
+    # have "read" an existing binary as mojibake, so writing text back destroys
+    # it. Creating a NEW file with a binary extension stays allowed (a text
+    # file with an unlucky extension like .dat is odd but harmless).
+    if has_binary_extension(filepath):
+        try:
+            resolved = Path(_resolve_path_for_task(filepath, task_id))
+        except Exception:
+            resolved = Path(_expand_tilde(filepath))
+        try:
+            if resolved.is_file():
+                ext = os.path.splitext(filepath)[1].lower()
+                return (
+                    f"Refusing to overwrite existing binary file '{filepath}' ({ext}) "
+                    "with plain text — read_file showed you extracted or mojibake "
+                    "text, not the real bytes, and writing text back would destroy "
+                    "the file. Use a binary-aware tool via the terminal to modify it. "
+                    "(Creating a NEW file with this extension is allowed.)")
         except OSError:
             pass
     return None

@@ -1,0 +1,19 @@
+name: codex-skin
+repo: https://github.com/FPSUnleashed/hermes-codex-skin
+sha: c3a71388a40298fcbf74b1d7637ea5196b79b460
+subdir: codex-chat-look
+description: >-
+  A Codex-inspired look for Hermes Desktop, with refined chat, sidebar and
+  browser styling, native theme support, and optional clean transcript and
+  composer settings. Keeps Hermes' native controls and behavior.
+maintainer: FPSUnleashed
+tier: community
+category: desktop
+docs_url: https://github.com/FPSUnleashed/hermes-codex-skin#readme
+version: "1.7.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

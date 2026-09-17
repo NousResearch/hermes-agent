@@ -31,6 +31,9 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # Set on the env dict by the CDP resolvers when the resolved browser is EXCLUSIVE to this named session
 # (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
+# Internal route provenance: this exec resolved to a browser on the Bot Desktop display and must use
+# the same human-control lease fence as the built-in browser tools. Popped before launching the CLI.
+_BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -391,6 +394,7 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     )
     if err is None:
         env[_PRIVATE_BROWSER_SENTINEL] = "1"
+        env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     return err
 
 
@@ -416,6 +420,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
                 "Run `hermes tools` → Browser Automation to (re)install Chromium, or switch backends.")
     _set_cdp_env(env, cdp)
     env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
+    env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     return None
 
 
@@ -505,6 +510,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     cdp, err = _real_profile_cdp()
     if cdp and not err:
         _set_cdp_env(env, cdp)
+        env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     return err or None
 
 
@@ -627,7 +633,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     route_err = _route_backend(env, session, task_id, bool(local))
     if route_err:
         return tool_error(route_err)
-    _attach_vault_supervisor(env, task_id)
+    bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
@@ -646,14 +652,30 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
-    try:
-        proc = _run_cli_killing_process_group(cmd, code, env, timeout)
-    except subprocess.TimeoutExpired:
-        return tool_error(f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
-                          f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
-                          "append to workspace files — anything already written to the workspace is preserved.")
-    except OSError as e:
-        return tool_error(f"Failed to launch browser-use CLI: {e}")
+
+    def dispatch() -> Dict[str, Any]:
+        _attach_vault_supervisor(env, task_id)
+        try:
+            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+        except subprocess.TimeoutExpired:
+            return {"error_result": tool_error(
+                f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
+                f"with a larger timeout_s (max {_MAX_TIMEOUT_S}), or split the work into several calls that "
+                "append to workspace files — anything already written to the workspace is preserved."
+            )}
+        except OSError as e:
+            return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+
+    if bot_desktop_browser:
+        from tools.browser_tool_session import run_fenced
+        dispatched = run_fenced({"features": {"local": True}}, dispatch)
+    else:
+        dispatched = dispatch()
+    if "proc" not in dispatched:
+        if "error_result" in dispatched:
+            return dispatched["error_result"]
+        return tool_result(dispatched)
+    proc = dispatched["proc"]
 
     result = {"success": proc.returncode == 0, "exit_code": proc.returncode, "output": proc.stdout}
     if workspace:

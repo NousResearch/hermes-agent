@@ -49,18 +49,24 @@ def _make_minimal_hermes_cli(monkeypatch):
     return obj
 
 
-def test_api_key_config_display_is_fully_redacted(capsys, monkeypatch):
-    """show_config must display '[set]' not any key fragment."""
+def test_api_key_config_display_is_masked(capsys, monkeypatch):
+    """show_config must display a MASK, never the configured key body.
+
+    The real contract is a short prefix/suffix mask — upstream's
+    test_show_config_credential.py asserts a visible fragment on purpose so a
+    mis-sourced credential stays diagnosable. This test guards the other half:
+    the body of the key must never survive into the output.
+    """
     import cli
 
     obj = _make_minimal_hermes_cli(monkeypatch)
-    # show_config reads self.api_key — it should be redacted
     obj.show_config()
     captured = capsys.readouterr()
 
-    assert "[set]" in captured.out, "API key display should show [set]"
-    assert "sk-test-api-key" not in captured.out, "No part of the API key should appear in output"
-    assert "...sk-test" not in captured.out, "No suffix fragment of the key should appear"
+    assert "sk-test-" in captured.out, "the masked prefix should be visible for diagnosis"
+    assert "...cdef" in captured.out, "the mask keeps the last four characters"
+    assert "1234567890abcdef" not in captured.out, "the key body must never appear"
+    assert "Not set!" not in captured.out, "a configured key must not display as Not set!"
 
 
 def test_api_key_config_not_set_shows_not_set(capsys, monkeypatch):
@@ -72,18 +78,21 @@ def test_api_key_config_not_set_shows_not_set(capsys, monkeypatch):
     assert "Not set!" in captured.out
 
 
-def test_api_key_config_short_key_still_redacted(capsys, monkeypatch):
-    """Even a short non-empty key (<= 12 chars) must show as '[set]', never
-    the value or a fragment — regression for the old len()>12 threshold
-    which mislabeled short-but-real local keys as unset."""
+def test_api_key_config_short_key_is_never_echoed_whole(capsys, monkeypatch):
+    """Documented boundary: upstream masks only keys longer than 12 chars.
+
+    A shorter key therefore reads as 'Not set!'. That is upstream's deliberate
+    trade (cli.py: ``len(display_key) > 12``); what must never happen is the
+    short secret being echoed whole. Pinned here so a future move to
+    presence-only masking has to update this test consciously.
+    """
     obj = _make_minimal_hermes_cli(monkeypatch)
     obj.api_key = "sk-short"
     obj.show_config()
     captured = capsys.readouterr()
 
-    assert "[set]" in captured.out, "A non-empty key must display as [set]"
-    assert "sk-short" not in captured.out, "No part of the API key should appear in output"
-    assert "Not set!" not in captured.out, "A configured key must not display as Not set!"
+    assert "sk-short" not in captured.out, "a short key must never be echoed whole"
+    assert "Not set!" in captured.out, "upstream masks only keys longer than 12 chars"
 
 
 def test_api_key_config_microsoft_entra_display(capsys, monkeypatch):

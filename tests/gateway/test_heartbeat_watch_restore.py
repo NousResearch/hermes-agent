@@ -125,12 +125,24 @@ async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, mo
         await restore_heartbeat_watches(runner)
         assert sweeps == [1]
 
-        # Fail OPEN: a store the probe cannot open must not suppress the sweep.
+        # A `-p work` multiplexer's routing home is the named profile; an active heartbeat that
+        # lives only in the DEFAULT store must still bring the sweep back.
         dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
             prompt='p', interval_seconds=60, status='cleared').to_json())
+        store._routing_home = named
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1], 'no active row anywhere: still idle'
+        dbs[str(home)].set_meta('heartbeat:root', HeartbeatState(
+            prompt='p', interval_seconds=60, status='active').to_json())
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1, 1], 'active row in the default store must be seen from a named routing home'
+        dbs[str(home)].set_meta('heartbeat:root', HeartbeatState(
+            prompt='p', interval_seconds=60, status='cleared').to_json())
+
+        # Fail OPEN: a store the probe cannot open must not suppress the sweep.
         monkeypatch.setattr('gateway.run_idle_gates._profile_session_db_probe', lambda _home: None)
         await restore_heartbeat_watches(runner)
-        assert sweeps == [1, 1]
+        assert sweeps == [1, 1, 1]
     finally:
         store.close_all_db_handles()
         for db in dbs.values():

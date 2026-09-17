@@ -469,11 +469,15 @@ async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env,
         assert entered == [work_home], (
             f"profile with an active loop must still be scanned; got {entered}")
 
-        # Fail OPEN: a store the probe cannot open is "unknown", never "idle" — the scan runs.
+        # A cleared loop keeps its row (status=cleared): the gate must read status, not key existence.
         entered.clear()
         cleared = loops.LoopState.from_json(raw)
         cleared.status = "cleared"
         work_db.set_meta("loop:sid-work-loop", cleared.to_json())
+        await _run_one_tick()
+        assert entered == [], f"cleared loop row must not open the gate; got {entered}"
+
+        # Fail OPEN: a store the probe cannot open is "unknown", never "idle" — the scan runs.
         monkeypatch.setattr("gateway.run_idle_gates._profile_session_db_probe", lambda _home: None)
         await _run_one_tick()
         assert entered == [work_home], (

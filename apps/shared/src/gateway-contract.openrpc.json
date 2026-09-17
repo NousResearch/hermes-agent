@@ -33551,7 +33551,7 @@
     },
     {
       "name": "secret",
-      "summary": "Masked value for a named env var (skills / setup flows).",
+      "summary": "Masked value for a named env var (agent capture, skills, and setup flows).",
       "params": [
         {
           "name": "params",

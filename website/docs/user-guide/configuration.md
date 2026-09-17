@@ -43,12 +43,35 @@ hermes config get model
 hermes config set model anthropic/claude-opus-4
 hermes config set terminal.backend docker
 hermes config unset terminal.backend
-hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
+# In an interactive Hermes chat, ask: "Store my OPENROUTER_API_KEY"
+# Hermes opens a masked prompt and saves it without sending the value through chat.
 ```
 
 :::tip
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 :::
+
+### Entering or rotating secrets safely
+
+In a local CLI, TUI, or desktop chat, ask Hermes to add, rotate, or replace a named
+secret, for example: `Rotate my OPENROUTER_API_KEY`. Hermes calls the
+`secret_capture` tool, which opens the same masked input panel used for sudo
+passwords. The value goes directly from that panel to the active profile's `.env`
+and is not included in the conversation, model request, logs, shell history, or
+tool result. Capture does not skip an existing variable, so the same flow safely
+replaces stale credentials.
+
+If Bitwarden Secrets Manager is configured, ask Hermes to store the secret there
+instead. Hermes uses Bitwarden's in-process SDK because the `bws secret create`
+and `bws secret edit` commands require values on the process command line. The
+tool creates or replaces the name in the configured project without placing the
+value in argv.
+
+Messaging and other headless sessions cannot display the masked panel. They
+refuse capture rather than asking you to paste a secret into chat; continue in a
+local CLI, TUI, or desktop session. For provider credential pools, running
+`hermes auth add <provider> --type api_key` without `--api-key` also opens a
+masked local prompt.
 
 ## Configuration Precedence
 

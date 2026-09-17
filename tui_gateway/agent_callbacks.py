@@ -166,8 +166,13 @@ def _wire_callbacks(sid: str):
         val = _ask("secret", sid, pl)
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
-        from hermes_cli.config import save_env_value_secure
-        return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
+        if (metadata or {}).get("destination") == "bitwarden_sm":
+            from agent.secret_sources.bitwarden_write import store_bitwarden_secret
+            stored = store_bitwarden_secret(env_var, val)
+        else:
+            from hermes_cli.config import save_env_value_secure
+            stored = save_env_value_secure(env_var, val)
+        return {**stored, "skipped": False, "message": "ok"}
 
     set_sudo_password_callback(lambda: _ask(
         "sudo", sid, {"command": _redact_approval_command(get_sudo_prompt_command())}, timeout=120))

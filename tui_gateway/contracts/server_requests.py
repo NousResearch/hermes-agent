@@ -119,7 +119,7 @@ class SecretRequestParams(ServerRequestParams):
 
 
 server_request("secret", params=SecretRequestParams, result=ValueResult,
-               doc="Masked value for a named env var (skills / setup flows).")
+               doc="Masked value for a named env var (agent capture, skills, and setup flows).")
 
 
 class VaultUnlockRequestParams(ServerRequestParams):

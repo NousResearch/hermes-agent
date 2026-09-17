@@ -98,6 +98,8 @@ def load_env() -> Dict[str, str]:
 def set_secret_capture_callback(callback) -> None:
     global _secret_capture_callback
     _secret_capture_callback = callback
+    from tools.secret_capture_tool import _set_thread_secret_capture_callback
+    _set_thread_secret_capture_callback(callback)
 
 
 def _skill_utils_delegate(attr: str):

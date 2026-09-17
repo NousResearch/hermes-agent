@@ -3821,6 +3821,7 @@ export interface Translations {
     modelSwitchConfirmLabel: string
     modelSwitchConfirmTitle: (model: string) => string
     modelSwitchConfirmTitleFallback: string
+    modelSwitchDontWarnAgainForSession: string
     modelSwitchFailed: string
     modelSwitchKeepLabel: string
     modelSwitchStaleNotice: string

@@ -4466,6 +4466,7 @@ export const en: Translations = {
     modelSwitchConfirmLabel: 'Switch anyway',
     modelSwitchConfirmTitle: (model: string) => `Switch to ${model}?`,
     modelSwitchConfirmTitleFallback: 'Switch models?',
+    modelSwitchDontWarnAgainForSession: "Don't warn about context size again in this session",
     modelSwitchFailed: 'Model switch failed',
     modelSwitchKeepLabel: 'Keep current model',
     modelSwitchStaleNotice: 'Selection changed — the model switch was not applied.',

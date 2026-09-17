@@ -3642,6 +3642,7 @@ export const ja = defineLocale({
     modelSwitchConfirmLabel: 'それでも切り替える',
     modelSwitchConfirmTitle: (model: string) => `${model} に切り替えますか？`,
     modelSwitchConfirmTitleFallback: 'モデルを切り替えますか？',
+    modelSwitchDontWarnAgainForSession: 'このセッションではコンテキストサイズについて再度警告しない',
     modelSwitchFailed: 'モデルの切り替えに失敗しました',
     modelSwitchKeepLabel: '現在のモデルを維持',
     modelSwitchStaleNotice: '選択が変更されたため、モデルの切り替えは適用されませんでした。',

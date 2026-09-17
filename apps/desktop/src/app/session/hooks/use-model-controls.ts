@@ -310,7 +310,8 @@ export function useModelControls({
               cacheSelection(selection.provider, selection.model)
             },
             requestConfirmed: () => requestSwitch(true),
-            rollback: rollbackSelection
+            rollback: rollbackSelection,
+            sessionId: liveSessionId || undefined
           })
 
           return false

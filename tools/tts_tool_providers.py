@@ -406,6 +406,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if group_id and "GroupId=" not in base_url:
         base_url = f"{base_url}{'&' if '?' in base_url else '?'}GroupId={group_id}"
     is_t2a_v2 = "t2a_v2" in base_url
+    language_boost = mm_config.get("language_boost")
     if is_t2a_v2:
         payload = {
             "model": model, "text": text,
@@ -418,6 +419,8 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
                 "format": "mp3", "channel": 1,
             },
         }
+        if language_boost:
+            payload["language_boost"] = language_boost
     else:
         payload = {"model": model, "text": text, "voice_id": voice_id}
     response = _post_json(base_url, payload, {

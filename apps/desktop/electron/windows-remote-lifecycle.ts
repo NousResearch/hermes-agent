@@ -86,6 +86,26 @@ function buildWindowsProbeScript(explicitHermesPath = '') {
     'Assert-NoReparse $hermes $false',
     'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
+    // venv/Scripts/python.exe is a uv trampoline: it reads pyvenv.cfg 'home' and
+    // exec()s cpython from there. uv cannot follow Windows directory junctions in SSH
+    // sessions (uv uses version-aliased junctions: cpython-3.11-win → cpython-3.11.16-win).
+    // Detect the junction and resolve python directly to the real CPython binary.
+    '$venvRoot=Split-Path -Parent (Split-Path -Parent $hermes)',
+    '$pvenvCfg=Join-Path $venvRoot "pyvenv.cfg"',
+    'if(Test-Path -LiteralPath $pvenvCfg -PathType Leaf){',
+    '  $cfgContent=Get-Content -LiteralPath $pvenvCfg -Raw',
+    '  if($cfgContent -match "home\\s*=\\s*([^\\r\\n]+)"){',
+    '    $cfgHome=$Matches[1].Trim()',
+    '    if(Test-Path -LiteralPath $cfgHome){',
+    '      $homeItem=Get-Item -LiteralPath $cfgHome -Force -ErrorAction SilentlyContinue',
+    '      if($homeItem -and ($homeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -and $homeItem.Target){',
+    '        $resolvedHome=$homeItem.Target[0]',
+    '        $realPython=Join-Path $resolvedHome "python.exe"',
+    '        if(Test-Path -LiteralPath $realPython -PathType Leaf){$python=$realPython}',
+    '      }',
+    '    }',
+    '  }',
+    '}',
     'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join('\n')

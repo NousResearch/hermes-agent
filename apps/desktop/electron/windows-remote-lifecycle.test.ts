@@ -404,6 +404,21 @@ test('Windows probe candidate selection skips hermes.exe without a sibling pytho
   )
 })
 
+test('Windows probe resolves uv trampoline via pyvenv.cfg junction to real CPython', () => {
+  const script = buildWindowsProbeScript()
+  // The probe must read pyvenv.cfg to detect a uv junction alias (cpython-3.11-win →
+  // cpython-3.11.16-win) and substitute the real CPython python.exe.
+  assert.match(script, /\$pvenvCfg=Join-Path \$venvRoot "pyvenv\.cfg"/)
+  assert.match(script, /Get-Content -LiteralPath \$pvenvCfg -Raw/)
+  // Regex captures the 'home' value from pyvenv.cfg.
+  assert.match(script, /cfgContent -match "home/)
+  // Junction check: ReparsePoint attribute with a non-empty Target.
+  assert.match(script, /ReparsePoint.*\$homeItem\.Target/)
+  // Real python path uses the resolved junction target, not the alias dir.
+  assert.match(script, /\$realPython=Join-Path \$resolvedHome "python\.exe"/)
+  assert.match(script, /Test-Path -LiteralPath \$realPython.*\$python=\$realPython/)
+})
+
 test('Windows probe and update-marker use staged execution (script in stdinData, not command)', async () => {
   let capturedCommand = ''
   let capturedStdinData: string | undefined

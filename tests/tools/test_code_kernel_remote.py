@@ -18,6 +18,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from tools.code_kernel_remote import (
+    _REGISTRY,
     _REMOTE_KERNELS,
     RemoteKernel,
     execute_in_remote_kernel,
@@ -75,12 +76,22 @@ def _cell(status="ok", stdout="", execution_count=1, **kw):
     return payload
 
 
-def _run(env, code="print(1)", *, task="t1", reset=False, timeout=10,
-         tools=frozenset({"read_file"})):
+def _run(
+    env,
+    code="print(1)",
+    *,
+    task="t1",
+    reset=False,
+    timeout=10,
+    tools=frozenset({"read_file"}),
+    mcp_tools=frozenset(),
+    max_mcp_tool_calls=5,
+):
     return execute_in_remote_kernel(
         code, env=env, env_type="ssh", task_env_id=task,
         sandbox_tools=tools, timeout=timeout,
-        max_tool_calls=5, reset=reset,
+        max_tool_calls=5, reset=reset, mcp_tools=mcp_tools,
+        max_mcp_tool_calls=max_mcp_tool_calls,
     )
 
 
@@ -94,7 +105,7 @@ class RemoteKernelBase(unittest.TestCase):
         )
         self._ship.start()
         self._poll = patch(
-            "tools.code_execution_tool._rpc_poll_loop",
+            "tools.code_execution_rpc._rpc_poll_loop",
         )
         self._poll.start()
 
@@ -132,6 +143,17 @@ class TestSpawnAndReuse(RemoteKernelBase):
         _run(env)
         result = _run(env, reset=True)
         self.assertTrue(result["kernel"].get("state_reset"))
+        self.assertFalse(result["kernel"]["reused"])
+        self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+
+    def test_changed_mcp_tool_set_spawns_matching_stubs(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
+        _run(env, tools=frozenset({"read_file"}))
+        result = _run(
+            env,
+            tools=frozenset({"read_file", "mcp__docs__search"}),
+            mcp_tools=frozenset({"mcp__docs__search"}),
+        )
         self.assertFalse(result["kernel"]["reused"])
         self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
 
@@ -279,9 +301,12 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
-            # Snapshot: the worker thread inserts into the registry concurrently and a live
-            # dict iteration raises "dictionary changed size during iteration".
-            while not any(k.attached for k in list(_REMOTE_KERNELS.values())):
+            # Snapshot under the registry lock: the worker inserts concurrently.
+            while True:
+                with _REGISTRY.lock:
+                    attached = any(k.attached for k in _REMOTE_KERNELS.values())
+                if attached:
+                    break
                 time.sleep(0.005)
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")

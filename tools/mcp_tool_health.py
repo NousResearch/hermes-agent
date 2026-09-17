@@ -138,6 +138,17 @@ class MCPServerHealthMixin:
             old_tool_names = set(self._registered_tool_names)
             async with self._rpc_lock:
                 new_mcp_tools = await _core._paginate_full_list(self.session.list_tools, "tools", self.name)
+            # Drop the old execute_code classification before examining the
+            # refreshed list. Registration restores only exact current
+            # readOnlyHint=True tools, so annotation downgrades fail closed.
+            key = _registration._server_key_for_task(self)
+            with _core._lock:
+                scopes = set(_core._server_tool_scopes.get(key, ()))
+                if not scopes:
+                    scopes = {_core._server_registry_scope(key)}
+            for tool_name in old_tool_names:
+                for scope in scopes:
+                    _registration._forget_mcp_tool_read_only(tool_name, scope)
             # Remove only stale names first — no nuke-and-repave: live turns may hold tool-call
             # IDs pointing at existing handlers; in-place replacement avoids "not connected" races.
             self._deregister_owned(old_tool_names - {mcp_prefixed_tool_name(self.name, tool.name) for tool in new_mcp_tools})

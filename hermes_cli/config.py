@@ -2401,10 +2401,12 @@ def save_config(
 
         ensure_hermes_home()
         config_path = get_config_path()
-        require_readable_config_before_write(config_path)
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
-        # agent.max_turns) so _strip_default_values keeps exactly what the user set.
-        _raw_for_paths = read_raw_config()
+        # agent.max_turns) so _strip_default_values keeps exactly what the user set. The
+        # fail-closed read is the single authority here: ``read_raw_config()`` is cached and
+        # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
+        # strip pass drop every user section whose value matches a default (#113301).
+        _raw_for_paths = require_readable_config_before_write(config_path)
         if merge_existing and _raw_for_paths:
             config = _merge_partial_save(_raw_for_paths, config)
 

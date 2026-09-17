@@ -387,6 +387,7 @@ from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.warning_notifications import diagnostic_wake_muted
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -4080,7 +4081,6 @@ class BasePlatformAdapter(ABC):
         """Tell the user a turn failed rather than leaving radio silence (last resort:
         a failing notice is logged, never raised). Returns the thread metadata used."""
         _thread_metadata = None
-        from gateway.warning_notifications import diagnostic_wake_muted
         try:
             _thread_metadata = _thread_metadata_for_event(event)
             error_detail = str(e)[:300] if str(e) else "no details available"
@@ -4238,7 +4238,6 @@ class BasePlatformAdapter(ABC):
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
-            from gateway.warning_notifications import diagnostic_wake_muted
             with self._media_delivery_scope(event.source):
                 if diagnostic_wake_muted(event):
                     response = None

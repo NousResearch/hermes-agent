@@ -1777,7 +1777,6 @@ def _deliver_result(
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
-    job.pop("_notification_suppressed_targets", None)
     job.pop("_notification_all_targets_suppressed", None)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
@@ -1867,19 +1866,19 @@ def _deliver_result(
         return msg
 
     delivery_errors = []
+    suppressed_targets = 0  # local: `job` is snapshotted into durable deferred records mid-loop
     for target in targets:
         # A failure notice for a platform that hides warning notifications is a suppressed
         # disposition, not a send; requested (non-failure) results are never gated.
         from gateway.warning_notifications import warning_notifications_enabled
         if (for_failure and target["platform"] != BOT_CHAT_PLATFORM
                 and not warning_notifications_enabled(target["platform"], user_cfg)):
-            job.setdefault("_notification_suppressed_targets", []).append(dict(target))
+            suppressed_targets += 1
             continue
         # Bot Chat owns admission; never concurrently resume a live owner's transcript.
         if target["platform"] == BOT_CHAT_PLATFORM:
             bot_chat_error = _deliver_to_bot_chat(job, content, target["chat_id"], for_failure=for_failure)
-            if job.pop("_notification_all_targets_suppressed", False):
-                job.setdefault("_notification_suppressed_targets", []).append(dict(target))
+            suppressed_targets += job.pop("_notification_all_targets_suppressed", False)
             if bot_chat_error:
                 receipt_target = f"bot-chat:{target['chat_id'] or '(own)'}"
                 receipt = job.get("_bot_chat_delivery_receipts", {}).get(receipt_target)
@@ -1907,7 +1906,7 @@ def _deliver_result(
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.
-    if len(job.get("_notification_suppressed_targets", [])) == len(targets):
+    if suppressed_targets == len(targets):
         job["_notification_all_targets_suppressed"] = True
     else:
         delivery_errors.extend(policy_drop_errors)

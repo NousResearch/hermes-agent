@@ -86,9 +86,10 @@ async def test_confirmed_stall_hands_off_before_reusing_updater(monkeypatch, via
     updater.start_polling = AsyncMock()
     adapter._drain_polling_connections = AsyncMock()
     adapter._notify_fatal_error = AsyncMock()
+    error_count_before = adapter._polling_network_error_count
 
     try:
-        with patch("asyncio.sleep", new=AsyncMock()):
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
             if via_verifier:
                 generation, progress = adapter._begin_polling_generation()
                 monkeypatch.setattr(tg_adapter, "_POLLING_PROGRESS_TIMEOUT", 0)
@@ -104,6 +105,12 @@ async def test_confirmed_stall_hands_off_before_reusing_updater(monkeypatch, via
         adapter._notify_fatal_error.assert_awaited_once()
         adapter._mark_degraded.assert_called_once()
         updater.start_polling.assert_not_awaited()
+        # A confirmed stall is a handoff, not a retry: no backoff, no retry-counter bump,
+        # and no in-place stop/drain (the supervisor's disconnect() does the bounded stop).
+        sleep.assert_not_awaited()
+        assert adapter._polling_network_error_count == error_count_before
+        updater.stop.assert_not_awaited()
+        adapter._drain_polling_connections.assert_not_awaited()
     finally:
         background_tasks = tuple(adapter._background_tasks)
         for background_task in background_tasks:

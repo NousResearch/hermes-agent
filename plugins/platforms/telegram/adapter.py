@@ -1967,8 +1967,20 @@ class TelegramAdapter(BasePlatformAdapter):
         """Reconnect polling after a transient network interruption (NetworkError/TimedOut).
 
         Host connectivity loss (sleep, WiFi switch, VPN) kills the long-poll silently. Exponential back-off (5s→60s
-        cap) up to MAX_NETWORK_RETRIES, then retryable-fatal so the supervisor restarts the gateway."""
+        cap) up to MAX_NETWORK_RETRIES, then retryable-fatal so the supervisor restarts the gateway.
+
+        A confirmed polling stall (``_PollingStallError``) skips the ladder entirely: the Updater's long-poll
+        action never quiesced, so it is handed to the supervisor for a rebuild before any backoff."""
         if self._teardown_started or self.has_fatal_error:
+            return
+        if isinstance(error, _PollingStallError):
+            # Not a retry: no counter bump, no backoff, no in-place stop/drain. The supervisor's rebuild
+            # runs disconnect(), which performs the same bounded updater.stop() and app.shutdown().
+            message = (
+                "Telegram polling stall confirmed (getUpdates made no progress); "
+                "rebuilding the adapter instead of reusing an Updater whose long-poll action did not quiesce."
+            )
+            await self._go_fatal_network(message, "[%s] %s (rebuilding adapter via supervisor)", self.name, message)
             return
         MAX_NETWORK_RETRIES = 10
         BASE_DELAY = 5
@@ -2003,18 +2015,6 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._drain_polling_connections()
         if self._teardown_started:
-            return
-        if any(isinstance(cur, _PollingStallError) for cur in _iter_exception_graph(error)):
-            message = (
-                "Telegram polling stall confirmed (getUpdates made no progress); "
-                "rebuilding the adapter instead of reusing an Updater whose long-poll action did not quiesce."
-            )
-            await self._go_fatal_network(
-                message,
-                "[%s] %s (rebuilding adapter via supervisor)",
-                self.name,
-                message,
-            )
             return
         try:
             if not app:
@@ -2225,9 +2225,10 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _check_polling_stall(self) -> None:
         """Watchdog the last successful getUpdates round-trip: a long-poll can wedge without raising
         (CLOSE-WAIT after a route flip) while every other probe stays blind; no round-trip for
-        ``_POLLING_STALL_TIMEOUT`` ⇒ escalate through the bounded reconnect ladder.
+        ``_POLLING_STALL_TIMEOUT`` ⇒ raise ``_PollingStallError`` so the recovery path hands the
+        adapter to the supervisor for a rebuild instead of reusing the wedged Updater.
 
-        See #92991.
+        See #92991, #113618.
         """
         if self._webhook_mode or self._teardown_started or self.has_fatal_error or self._recovery_in_flight():
             return
@@ -2245,7 +2246,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         logger.error(
             "[%s] Telegram polling stalled: no getUpdates progress for %.0fs "
-            "(generation %d). Rebuilding the long-poll consumer through the reconnect ladder instead of staying silently deaf.",
+            "(generation %d). Handing the adapter to the supervisor for a rebuild instead of staying silently deaf.",
             self.name, stalled_for, getattr(self, "_polling_generation", 0))
         self._schedule_polling_recovery(
             _PollingStallError("getUpdates made no progress for %.0fs (polling stall watchdog)" % stalled_for),

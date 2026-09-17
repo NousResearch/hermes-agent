@@ -31,25 +31,55 @@ export async function refreshVoiceLiveStatus(): Promise<null | VoiceLiveStatus> 
   return inflight
 }
 
-/** Selected mode. `chained` until the backend answers, or when the backend predates the mode. */
-export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): 'chained' | 'gpt-live' {
+export type DesktopVoiceChatMode = 'chained' | 'gpt-live' | 'gemini-live'
+export const HERMES_DESKTOP_VOICE_MODE_STORAGE = 'hermes_desktop_voice_mode'
+
+/** Selected mode. Falls back to local desktop preference or backend status. */
+export function selectedVoiceChatMode(status: null | VoiceLiveStatus = $voiceLiveStatus.get()): DesktopVoiceChatMode {
+  try {
+    const local = localStorage.getItem(HERMES_DESKTOP_VOICE_MODE_STORAGE)
+    if (local === 'gemini-live' || local === 'gpt-live' || local === 'chained') {
+      return local
+    }
+  } catch {}
+
   return status?.mode === 'gpt-live' ? 'gpt-live' : 'chained'
 }
 
 /**
- * Persist `voice.voice_chat_mode` on the live gateway (whichever profile/host
- * the app is talking to) and re-read the resolved status, so the menu shows
- * what the backend will actually mount next. Takes effect on the NEXT
- * conversation; an active one keeps its engine.
+ * Persist voice chat mode. Stored in client localStorage so desktop-only
+ * modes like gemini-live work without error even if the remote VPS gateway
+ * has an older schema or rejects the config key.
  */
-export async function setVoiceChatMode(mode: 'chained' | 'gpt-live'): Promise<null | VoiceLiveStatus> {
-  const gateway = activeGateway()
+export async function setVoiceChatMode(mode: DesktopVoiceChatMode): Promise<null | VoiceLiveStatus> {
+  try {
+    localStorage.setItem(HERMES_DESKTOP_VOICE_MODE_STORAGE, mode)
+  } catch {}
 
-  if (!gateway) {
-    throw new Error('gateway not connected')
+  // Also sync to remote gateway if it's one of the gateway-supported modes
+  if (mode === 'chained' || mode === 'gpt-live') {
+    try {
+      const gateway = activeGateway()
+      if (gateway) {
+        await gateway.request('config.set', { key: 'voice.voice_chat_mode', value: mode })
+      }
+    } catch {}
   }
 
-  await gateway.request('config.set', { key: 'voice.voice_chat_mode', value: mode })
+  const current = $voiceLiveStatus.get()
+  if (current) {
+    $voiceLiveStatus.set({ ...current, mode: mode as any })
+  }
 
   return refreshVoiceLiveStatus()
+}
+
+export const $geminiLiveDialogOpen = atom<boolean>(false)
+
+export function openGeminiLiveDialog(): void {
+  $geminiLiveDialogOpen.set(true)
+}
+
+export function closeGeminiLiveDialog(): void {
+  $geminiLiveDialogOpen.set(false)
 }

@@ -49,9 +49,13 @@ class TestJevProfile:
         models = jev_profile.fetch_models(api_key="unused", timeout=0.1)
         assert models == ["jev-latest"]
 
-    def test_picker_lists_jev(self):
+    def test_not_in_session_model_picker(self):
         import model_tools  # noqa: F401
         from hermes_cli.models import CANONICAL_PROVIDERS
 
         slugs = {p.slug for p in CANONICAL_PROVIDERS}
-        assert "jev" in slugs
+        assert "jev" not in slugs
+        assert "typesafe" not in slugs
+
+    def test_systemone_api_mode(self, jev_profile):
+        assert jev_profile.api_mode == "systemone"

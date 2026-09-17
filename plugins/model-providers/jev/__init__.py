@@ -1,11 +1,15 @@
 """TypeSafe Jev provider profile.
 
 Jev is TypeSafe's System One decision model (``jev-latest``), not a chat-
-completions backend. This profile exists so Hermes setup, ``hermes auth``,
-``hermes doctor``, and the model picker know the provider and
-``TYPESAFE_API_KEY``. The live consumer is the out-of-tree
-``typesafe-skill-router`` plugin (POST ``/v1/systemone``). Do not use Jev as
-the session chat model.
+completions backend. This profile wires ``TYPESAFE_API_KEY`` into ``hermes
+setup``, ``hermes auth``, and ``hermes doctor`` — the same judgment-only
+posture as OMP's ``/login typesafe`` / ``TypeSafeJudge`` (no session chat
+model). ``api_mode`` is ``systemone`` so the provider is excluded from
+``hermes model`` / the session picker.
+
+Consumers call ``POST /v1/systemone`` directly — e.g. the community
+``typesafe-skill-router`` plugin or a copy-paste hook. Do not set
+``model.provider: jev`` as the session chat model.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ class JevProfile(ProviderProfile):
 jev = JevProfile(
     name="jev",
     aliases=("typesafe", "typesafe-ai"),
+    api_mode="systemone",
     display_name="TypeSafe (Jev)",
     description="TypeSafe Jev — System One typed decisions (not a chat-completions backend)",
     signup_url="https://console.typesafe.ai/settings/keys",

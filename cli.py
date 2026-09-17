@@ -3167,8 +3167,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             display_key = self.agent.api_key
         if is_token_provider(display_key):
             api_key_display = "Microsoft Entra ID"
-        elif isinstance(display_key, str) and len(display_key) > 12:
-            api_key_display = f"{display_key[:8]}...{display_key[-4:]}"
+        elif display_key:
+            # Never echo any fragment of a credential: an 8+4 mask still discloses
+            # enough of a key to confirm a guess and to correlate leaks across
+            # logs. Presence-only is the correct signal for a config display.
+            api_key_display = "[set]"
         else:
             api_key_display = "Not set!"
 

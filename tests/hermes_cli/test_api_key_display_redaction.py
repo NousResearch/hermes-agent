@@ -42,6 +42,10 @@ def _make_minimal_hermes_cli(monkeypatch):
     obj.session_start = __import__("datetime").datetime.now()
     # Compression setting
     obj.compact = False
+    # The real constructor always seeds self.agent = None (cli.py:2822); this
+    # helper builds the instance via __new__, so it must set the attribute
+    # explicitly — show_config reads self.agent unguarded.
+    obj.agent = None
     return obj
 
 

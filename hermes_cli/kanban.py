@@ -543,6 +543,30 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("started", _fmt_ts(task.started_at))
     if task.completed_at:
         field("completed", _fmt_ts(task.completed_at))
+    # Live claim / worker ownership (#113004). ``status=='running'`` is the
+    # signal that the fields below carry information; for terminal states
+    # they are all NULL/0 and we print nothing.
+    if task.status == "running":
+        print()
+        print("  Ownership:")
+        if task.claim_lock:
+            ttl = (
+                f"expires {_fmt_ts(task.claim_expires)}"
+                if task.claim_expires else "no TTL"
+            )
+            print(f"    claim:    {task.claim_lock}  ({ttl})")
+        else:
+            print("    claim:    (none)")
+        if task.worker_pid:
+            hb = (
+                f"last beat {_fmt_ts(task.last_heartbeat_at)}"
+                if task.last_heartbeat_at else "no heartbeat yet"
+            )
+            print(f"    worker:   pid {task.worker_pid}  ({hb})")
+        elif task.claim_lock:
+            print("    worker:   pid-less claim (control-plane / CLI / library lane)")
+        if task.current_run_id:
+            print(f"    run:      #{task.current_run_id}")
     if parents:
         field("parents", ", ".join(parents))
     if children:
@@ -569,6 +593,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
             el = f"{elapsed}s" if elapsed is not None else "active"
             outcome = r.outcome or r.status or "active"
             print(f"  #{r.id:<3} {outcome:<12} @{r.profile or '-'}  {el}  {_fmt_ts(r.started_at)}")
+            if r.closed_by:
+                # Distinguish same-claimant closes (silent) from foreign closes
+                # (a real audit signal — #113004). The same entity closes
+                # when its host:pid at close time matches the claim's host:pid
+                # at open time (``claim_lock``); both are the same
+                # ``"<host>:<pid>"`` shape so a string compare is sufficient.
+                marker = "" if r.claim_lock and r.closed_by == r.claim_lock else "  ⚠ foreign close"
+                print(f"        closed_by: {r.closed_by}{marker}")
             if r.summary:
                 print(f"        → {r.summary.splitlines()[0][:160]}")
             if r.error:

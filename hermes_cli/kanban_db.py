@@ -790,6 +790,9 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # ``"<host>:<pid>"`` of the caller that wrote the terminal row (#113004);
+    # NULL on legacy rows closed before this column existed.
+    closed_by: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -798,6 +801,7 @@ class Run:
                 col: _lossy_text(row[col]) for col in (
                     "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
                     "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "outcome", "summary", "error",
+                    "closed_by",
                 )
             },
             id=int(row["id"]),
@@ -1949,6 +1953,7 @@ def _append_event(
 def _end_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None, status: Optional[str] = None,
+    closed_by: Optional[str] = None,
 ) -> Optional[int]:
     """Close the active run (``status`` defaults to ``outcome``) and clear
     ``current_run_id``; None when no run was active (never-claimed task).
@@ -1956,11 +1961,20 @@ def _end_run(
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
     is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    to end a worker that survived its own terminal transition.
+
+    ``closed_by`` records the ``"<host>:<pid>"`` of the caller that wrote the
+    terminal row (#113004). Distinct from ``profile`` (= the claimant at open
+    time): ``profile`` says who owned the work, ``closed_by`` says who finally
+    closed it. ``None`` falls back to ``_claimer_id()`` so the field is always
+    populated on freshly-closed rows; pass an explicit ``closed_by`` to record
+    a non-default actor (e.g. a forced operator override).
+    """
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
         return None
+    actor = closed_by if closed_by is not None else _claimer_id()
     conn.execute(
         """
         UPDATE task_runs
@@ -1970,11 +1984,12 @@ def _end_run(
                error         = ?,
                metadata      = ?,
                ended_at      = ?,
-               claim_expires = NULL
+               claim_expires = NULL,
+               closed_by     = ?
          WHERE id = ?
            AND ended_at IS NULL
         """,
-        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
+        (status or outcome, outcome, summary, error, _json_or_null(metadata), now, actor, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
     return run_id
@@ -2696,28 +2711,55 @@ class LiveClaimError(ValueError):
     the caller neither owns its run (``expected_run_id``) nor passed ``force``.
     Completing anyway would close the worker's run row underneath a process
     that is still executing. A ``ValueError`` so tool error handlers treat it
-    as recoverable."""
+    as recoverable.
 
-    def __init__(self, task_id: str):
+    ``claim_lock`` names the holding lane (``"<host>:<pid>"``) when known —
+    #113004 acceptance test: the refusal must name who owns the claim so the
+    caller knows whose ``expected_run_id`` to request.
+    """
+
+    def __init__(self, task_id: str, claim_lock: Optional[str] = None):
+        suffix = f" (held by {claim_lock})" if claim_lock else ""
         super().__init__(
-            f"{task_id} is running under a live worker claim; pass expected_run_id "
-            "(worker ownership) or force=True (explicit operator override) instead "
-            "of closing the live run"
+            f"{task_id} is running under a live claim" + suffix + "; pass "
+            "expected_run_id (worker ownership) or force=True (explicit operator "
+            "override) instead of closing the live run"
         )
+        self.claim_lock = claim_lock
 
 
-def _claim_is_live(trow) -> bool:
-    """True when a ``running`` task's claim still protects a run: the worker process
-    it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
-    or a library/CLI claim that never spawned one, has no run to protect. TTL expiry
-    is deliberately not consulted: ``reclaim_stale_tasks`` extends, not reclaims, the
-    claim of a live worker, so the process is the liveness authority here too."""
-    return bool(
-        trow["status"] == "running"
-        and trow["claim_lock"] is not None
-        and trow["worker_pid"]
-        and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
-    )
+def _claim_is_live(trow, *, caller_lock: Optional[str] = None) -> tuple[bool, Optional[str]]:
+    """``(live, claim_lock)`` for a ``running`` task row.
+
+    A claim protects a write when EITHER a spawned worker process exists (PID +
+    start-time fingerprint; the signal/kill authority used by ``reap_terminal_workers``
+    and the watchdog) OR the claim record itself is still in force
+    (``claim_lock`` set + ``claim_expires`` not yet passed) AND the caller is NOT
+    the claimant. The second disjunct is the #113004 fix: a control-plane / CLI /
+    library lane that claims a card but never spawns (``worker_pid`` NULL) used
+    to fall through both predicates, so a non-claimant's ``complete_task`` silently
+    closed the lane's run. TTL is consulted because the claim record is the only
+    liveness signal a pid-less claim has; ``reclaim_stale_tasks`` extends a live
+    worker's claim, not the record.
+
+    The same-caller library/CLI flow (``claim_task`` then ``complete_task`` from
+    the same process, no spawned worker) still works: ``caller_lock`` is the
+    caller's ``_claimer_id()`` (host:pid) and the claim's host:pid matches it, so
+    the fence does not hold. A live worker ALWAYS wins over caller identity — the
+    worker is the actor of the run, not the claimer (#111764).
+
+    Returns ``(True, claim_lock)`` when the fence holds so callers can name the
+    holding lane in the refusal message (#113004 acceptance test). ``claim_lock``
+    is ``None`` for the no-row / no-claim early exits.
+    """
+    if trow["status"] != "running" or trow["claim_lock"] is None:
+        return False, None
+    if trow["worker_pid"] and _worker_alive(trow["worker_pid"], trow["worker_started_at"]):
+        return True, trow["claim_lock"]
+    if trow["claim_expires"] is None or int(trow["claim_expires"]) <= int(time.time()):
+        return False, None
+    # Claim is in force. The caller is authorised if their host:pid matches.
+    return caller_lock != trow["claim_lock"], trow["claim_lock"]
 
 
 def complete_task(
@@ -2765,15 +2807,19 @@ def complete_task(
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, claim_expires, worker_pid, worker_started_at "
+            "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
-        # _claim_is_live for what "live" means.
-        if expected_run_id is None and not force and trow and _claim_is_live(trow):
-            raise LiveClaimError(task_id)
+        # _claim_is_live for what "live" means. The returned lock is named in
+        # the refusal so the caller knows who holds the lane (#113004).
+        if expected_run_id is None and not force and trow:
+            live, hold_lock = _claim_is_live(trow, caller_lock=_claimer_id())
+            if live:
+                raise LiveClaimError(task_id, hold_lock)
         sql = """
                 UPDATE tasks
                    SET status       = 'done',
@@ -3384,20 +3430,24 @@ def request_review(
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
-                "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "SELECT assignee, status, claim_lock, claim_expires, current_run_id, "
+                "worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
             # Refuse to clear a live worker's claim without proof of ownership
             # (expected_run_id) or an explicit human override (force=True);
             # the same fence as complete_task (_claim_is_live).
-            if expected_run_id is None and not force and _claim_is_live(trow):
-                return _ret(
-                    False, "task is running under a live claim; pass expected_run_id "
-                    "(worker ownership) or force=True (explicit operator "
-                    "override) instead of clearing the live run's claim",
-                )
+            if expected_run_id is None and not force:
+                live, hold_lock = _claim_is_live(trow, caller_lock=_claimer_id())
+                if live:
+                    suffix = f" (held by {hold_lock})" if hold_lock else ""
+                    return _ret(
+                        False, "task is running under a live claim" + suffix + "; "
+                        "pass expected_run_id (worker ownership) or force=True "
+                        "(explicit operator override) instead of clearing the "
+                        "live run's claim",
+                    )
             if reviewer is None:
                 reviewer = _prior_reviewer(conn, task_id)
                 if reviewer is False:

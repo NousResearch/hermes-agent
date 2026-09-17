@@ -219,7 +219,7 @@ _THREAD_REPLY_CHAT_TYPE = {"slack": "group", "matrix": "group", "telegram": "gro
 
 def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Optional[str]:
     """Open a thread for a continuable cron job via ``adapter.create_handoff_thread``. Returns the
-    thread_id, or ``None`` (no thread primitive / failed) = caller falls back to the DM mirror."""
+    thread_id, or ``None`` (no thread primitive / failed); caller owns the fallback policy."""
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
@@ -234,8 +234,7 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
         return str(new_thread_id) if new_thread_id else None
     except Exception as e:
         logger.debug(
-            "Job '%s': create_handoff_thread failed on %s — falling back to "
-            "DM-session mirror: %s",
+            "Job '%s': create_handoff_thread failed on %s: %s",
             job.get("id", "?"), getattr(adapter, "name", "?"), e)
         return None
 
@@ -1136,6 +1135,11 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
         return True
 
 
+def _telegram_error_topics_enabled(cfg: Optional[dict]) -> bool:
+    cron_cfg = (cfg or {}).get("cron")
+    return isinstance(cron_cfg, dict) and cron_cfg.get("telegram_error_topics") is True
+
+
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
     """Persist ``last_delivery_unverified``: list of ``platform:chat_id`` targets acked with no
     evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
@@ -1183,6 +1187,7 @@ class _TargetDelivery:
     inchannel_continuable: bool
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
+    telegram_error_topic: bool = False
 
     @property
     def is_relay(self) -> bool:
@@ -1289,6 +1294,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     thread_id = t.thread_id
     is_ambiguous_telegram_topic = (
         t.platform == Platform.TELEGRAM
+        and not t.telegram_error_topic  # create_handoff_thread returns a forum topic, never a channel DM lane.
         and thread_id is not None
         and looks_like_telegram_private_chat_id(str(t.chat_id))
         and _looks_like_int(str(thread_id))
@@ -1316,6 +1322,12 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         media_metadata = {"notify": t.notify_delivery}
         if thread_id:
             media_metadata["thread_id"] = thread_id
+
+    if t.telegram_error_topic:
+        # Existing adapter contract: a just-created topic needs no reply anchor and must never
+        # retry a missing thread in the root chat (including negative-id forum groups).
+        route_metadata["telegram_dm_topic_created_for_send"] = True
+        media_metadata["telegram_dm_topic_created_for_send"] = True
 
     # Relay egress needs metadata.scope_id (fail-closed tenant guard; scope cache is COLD after a
     # restart; router stamps HOME only). Origin targets only: a wrong fan-out scope is worse than
@@ -1596,6 +1608,10 @@ def _deliver_standalone(
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
+    if t.telegram_error_topic:
+        # Standalone cannot preserve the live adapter's no-root-fallback contract or seed context.
+        delivery_errors.extend(target_errors or [f"error topic delivery to {t.where} failed"])
+        return
     if t.is_relay:
         # Relay owns the destination and credential; a native retry could duplicate — fail closed.
         if not target_errors:
@@ -1627,7 +1643,7 @@ def _deliver_standalone(
 
 def _prepare_target_delivery(
     job: dict, target: dict, *, adapters, loop, config, notify_delivery: bool, mirror_enabled: bool,
-    mirror_text: str, delivery_errors: list,
+    mirror_text: str, delivery_errors: list, telegram_error_topic: bool = False,
 ) -> Optional[_TargetDelivery]:
     """Per-target prologue of ``_deliver_result``: origin/mirror/in_channel gates, transport
     resolution, continuable-thread open. None (error noted in ``delivery_errors``) if unservable."""
@@ -1679,6 +1695,20 @@ def _prepare_target_delivery(
         return None
     transport, pconfig, runtime_adapter, target_adapters = resolved
 
+    if telegram_error_topic:
+        # Relay's thread-create helper has no logical-platform argument or guaranteed no-root
+        # fallback contract. A topic-scoped shared route cannot authorize a new sibling topic.
+        if transport is not None and transport.is_relay:
+            _note_target_error(
+                job, "Telegram error topics require a native live gateway adapter", delivery_errors)
+            return None
+        if (isinstance(adapters, _preflight.SharedRouteAdapters)
+                and adapters.get(platform, {**target, "thread_id": None}) is None):
+            _note_target_error(
+                job, f"cannot create Telegram error topic outside the profile route for {chat_id}",
+                delivery_errors)
+            return None
+
     # Live send needs a RUNNING loop, not just an adapter. Computed ONCE so the in_channel
     # thread_id clear below stays in lockstep with the seed (standalone cannot seed flat).
     live_adapter_ready = (
@@ -1710,7 +1740,22 @@ def _prepare_target_delivery(
     # successful send. DM-only platforms return None → mirror the origin DM. in_channel SKIPS
     # this: it posts flat and _seed_cron_channel_session CREATES the session.
     opened_thread_id: Optional[str] = None
-    if (
+    if telegram_error_topic:
+        from gateway.delivery import looks_like_telegram_private_chat_id
+
+        in_channel_surface = False
+        # Origin may be absent, or describe a different fan-out destination. Telegram reply
+        # keys use the destination's DM/group shape, not the origin's chat_type.
+        is_dm_target = looks_like_telegram_private_chat_id(str(chat_id))
+        if live_adapter_ready:
+            opened_thread_id = _open_continuable_cron_thread(job, runtime_adapter, chat_id, loop)
+        if not opened_thread_id:
+            _note_target_error(
+                job, f"cannot create Telegram error topic for telegram:{chat_id}; "
+                "delivery requires a live topic-capable gateway adapter", delivery_errors)
+            return None
+        thread_id = opened_thread_id
+    elif (
         mirror_this_target
         and not in_channel_surface
         and runtime_adapter is not None
@@ -1728,7 +1773,8 @@ def _prepare_target_delivery(
         origin=origin, origin_target=origin_target, origin_user_id=origin_user_id,
         is_dm_target=is_dm_target, mirror_text=mirror_text, mirror_this_target=mirror_this_target,
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
-        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready)
+        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready,
+        telegram_error_topic=telegram_error_topic)
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
@@ -1762,6 +1808,11 @@ def _deliver_result(
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
+    # Recheck at this boundary for direct/queued callers and after removing outcome metadata.
+    # Ack and blocked-config alert-once policy remains with the caller that composes the notice.
+    if _sched._is_cron_silence_response(content):
+        _record_delivery_verification(job, [])
+        return None
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])
@@ -1785,6 +1836,10 @@ def _deliver_result(
         job["last_delivery_queued"] = refreshed.get("last_delivery_queued")
         return error
 
+    # Keep the raw marker in queued payloads so the receiving gateway can classify it too.
+    from cron.scheduler_prompt import _split_cron_business_error
+    business_error, content = _split_cron_business_error(content)
+
     from gateway.config import load_gateway_config
 
     # Wrap with header/footer unless cron.wrap_response: false.
@@ -1795,6 +1850,7 @@ def _deliver_result(
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
+    error_topics = (for_failure or business_error) and _telegram_error_topics_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
@@ -1859,9 +1915,16 @@ def _deliver_result(
                     unverified_targets.append(bot_chat_error)
             continue
 
+        telegram_error_topic = error_topics and target["platform"] == "telegram"
+        if telegram_error_topic and not cleaned_delivery_content.strip() and not media_files:
+            _note_target_error(
+                job, "Telegram error topic delivery skipped (empty text and no media)",
+                delivery_errors)
+            continue
         t = _prepare_target_delivery(
             job, target, adapters=adapters, loop=loop, config=config,
             notify_delivery=notify_delivery,
+            telegram_error_topic=telegram_error_topic,
             mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
         if t is None:
             continue

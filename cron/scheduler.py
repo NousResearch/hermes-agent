@@ -471,11 +471,16 @@ def _is_cron_silence_response(text: str) -> bool:
     Recognizes the bracketed ``[SILENT]`` sentinel (whole-response, first line, or last line) plus the
     bracketless ``SILENT`` / ``NO_REPLY`` / ``NO REPLY`` variants the model emits when it drops the brackets
     (#51438, #46917). Whitespace-trimmed and case-insensitive. A token buried mid-sentence is treated as
-    real content and delivered.
+    real content and delivered. Business outcome metadata is removed before checking silence;
+    a whole-response NO_MESSAGE or an empty business report also suppresses delivery.
     """
     from gateway.response_filters import is_autonomous_silence_response
+    from cron.scheduler_prompt import _split_cron_business_error
 
-    return is_autonomous_silence_response(text)
+    business_error, text = _split_cron_business_error(text or "")
+    return (is_autonomous_silence_response(text)
+            or text.strip() in {"NO_MESSAGE", "[NO_MESSAGE]"}
+            or (business_error and not text.strip()))
 
 # Persistent pool for parallel cron jobs: tick() submits and returns; long jobs never block it.
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None

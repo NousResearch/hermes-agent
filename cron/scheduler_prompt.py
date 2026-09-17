@@ -212,6 +212,28 @@ _CRON_HINT = (
 )
 
 
+CRON_BUSINESS_ERROR_MARKER = "[CRON_BUSINESS_ERROR]"
+
+
+def _split_cron_business_error(content: str) -> tuple[bool, str]:
+    """Only an exact first-line sentinel is outcome metadata; quotes/history remain content."""
+    first, _, remainder = content.partition("\n")
+    if first.strip() == CRON_BUSINESS_ERROR_MARKER:
+        return True, remainder
+    return False, content
+
+
+_CRON_BUSINESS_ERROR_HINT = (
+    "[CRON OUTCOME: If this run could not fulfill its task (for example expired authentication, "
+    "missing mandatory data, or a blocked dependency), put " + CRON_BUSINESS_ERROR_MARKER +
+    " on its own first line of your final response, then explain what failed and what is needed. "
+    "This is outcome metadata for the current run, not a quote of earlier errors. "
+    "Do not use it for successful work, recovered errors, or historical/quoted failures. "
+    "Existing silence and notification-suppression instructions take precedence; when silent, "
+    "emit only the silence marker. Do not send messages yourself.]\n\n"
+)
+
+
 def _build_job_prompt(
     job: dict, prerun_script: Optional[tuple] = None, extra_prompt: Optional[str] = None,
     runtime_data_prompt: Optional[str] = None,
@@ -264,7 +286,11 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    outcome_hint = (
+        _CRON_BUSINESS_ERROR_HINT
+        if _delivery._telegram_error_topics_enabled(_sched.load_config()) else ""
+    )
+    prompt = _CRON_HINT + outcome_hint + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

@@ -630,6 +630,48 @@ cleared by the next run that delivers with evidence. An empty payload (no text
 and no media) is never handed to an adapter; it fails closed and is reported in
 `last_delivery_error` instead of being logged as delivered.
 
+### Telegram exception topics
+
+`cron.telegram_error_topics` defaults to `false`. Enable it with
+`hermes config set cron.telegram_error_topics true` to put each otherwise-deliverable
+Telegram execution failure or explicitly reported business failure into a fresh topic.
+The delivered brief seeds that topic's reply session. Existing topics, including an
+origin topic or a home topic, are replaced for that notification only; stored job
+destinations and `attach_to_session` are unchanged. Normal deliveries (including
+continuable jobs) and other platforms retain their existing routing.
+
+When enabled, agent jobs receive instructions to report an inability to fulfill the
+current task by placing this exact marker alone on the **first line** of the final
+response. Script-only jobs can use the same first line on stdout:
+
+```text
+[CRON_BUSINESS_ERROR]
+The report could not be completed because mandatory input is unavailable.
+```
+
+The marker is removed before delivery and context seeding, even when the switch is
+off. Quoted markers, markers later in a report, historical failures, and error-like
+words do not classify a run. A business marker changes notification presentation;
+the execution remains successful and its output stays on `deliver`, without being
+redirected to `failure_deliver`. Execution failures still honor `failure_deliver`,
+including `local`, and existing acknowledged-incident/alert-once suppression.
+
+Silence takes precedence, including when it follows the business marker:
+`[SILENT]`, the existing silence variants, and a whole-response `NO_MESSAGE` or
+`[NO_MESSAGE]` suppress delivery. A marker with no report is also silent. Local-only
+jobs stay local. `cron.delivery.notify: false` still delivers without a push notification.
+
+Exception topics require a running native gateway adapter capable of creating Telegram
+topics. Detached workers retain the outcome marker in the existing delivery queue;
+the gateway creates and seeds the topic when it consumes the notification. If no live
+adapter is available, topic creation fails, or the topic send fails, delivery reports
+an error and does not retry in the root chat or via the standalone sender. The output
+remains in the local cron audit. Session seeding uses the existing best-effort mirror;
+seeding failures are logged. Relay delivery is unsupported for this option because
+its topic-creation helper cannot explicitly select the logical platform. A shared
+profile route restricted to an existing topic also cannot authorize a new sibling
+topic; these cases report a delivery error without sending.
+
 ### Continuable jobs (reply to a cron delivery)
 
 By default a cron delivery is fire-and-forget: the message is sent, but it does

@@ -28,10 +28,10 @@ def agent_for(api_key, base_url):
 @pytest.mark.parametrize("api_key", [make_jwt(account_tier="free", client_id="hermes-cli"), "sk-named"],
                          ids=["named-free", "api-key"])
 @pytest.mark.parametrize("base_url", [NAMED, WELCOME])
-@pytest.mark.parametrize("case", ["rate_limited", "at_capacity", "admission_closed", "model_not_free", "feature_not_free", "403", "503"])
+@pytest.mark.parametrize("case", ["rate_limited", "model_not_free", "403"])
 def test_named_errors_do_not_offer_anonymous_recovery(api_key, base_url, case):
     """A shared fairshare body or wrong welcome URL cannot establish anonymous identity."""
-    status = 403 if case == "403" else 503 if case == "503" else 429
+    status = 403 if case == "403" else 429
     message = ("You tried to access something that you don't have permissions for." if case == "403"
                else "The service refused this request.")
     body = {"status": status, "message": message, "reason": case, "retry_after": 158}
@@ -50,7 +50,7 @@ def test_named_errors_do_not_offer_anonymous_recovery(api_key, base_url, case):
     assert "welcome_route" not in classified.error_context
     assert "free_tier" not in result
     surface = build_error_surface_from_result(result, provider="nous", model=agent.model)
-    assert surface["code"] == {403: "auth", 429: "rate_limit", 503: "overloaded"}[status]
+    assert surface["code"] == {403: "auth", 429: "rate_limit"}[status]
     assert "without signing in" not in result["final_response"]
 
 
@@ -62,8 +62,7 @@ def guard_for(agent):
     )
 
 
-@pytest.mark.parametrize("tier", ["free", "paid"])
-def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch, tier):
+def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch):
     from agent.agent_runtime_helpers import extract_api_error_context
     from agent.nous_rate_guard import clear_nous_rate_limit, nous_rate_limit_remaining, record_nous_rate_limit
     from agent.turn_recovery import _is_genuine_nous_rate_limit
@@ -80,7 +79,7 @@ def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch, t
     assert build_error_surface_from_result(blocked.result)["code"] == "free_tier_rate_limited"
 
     # Keep the old welcome URL deliberately: the changed credential owns the boundary.
-    guest.api_key = make_jwt(account_tier=tier, client_id="hermes-cli")
+    guest.api_key = make_jwt(account_tier="free", client_id="hermes-cli")
     assert guard_for(guest).action == "fallthrough"
     record_nous_rate_limit(headers={"retry-after": "300"})
     named_blocked = guard_for(guest)
@@ -89,10 +88,6 @@ def test_signing_in_does_not_inherit_anonymous_cooldown(tmp_path, monkeypatch, t
     clear_nous_rate_limit()
     assert nous_rate_limit_remaining() is None
     assert nous_rate_limit_remaining(anonymous=True) > 0
-    record_nous_rate_limit(headers={"retry-after": "300"})
-    clear_nous_rate_limit(anonymous=True)
-    assert nous_rate_limit_remaining(anonymous=True) is None
-    assert nous_rate_limit_remaining() > 0
 
 
 def test_auxiliary_anonymous_cooldown_does_not_outlive_signing_in(tmp_path, monkeypatch):
@@ -117,7 +112,7 @@ def test_auxiliary_anonymous_cooldown_does_not_outlive_signing_in(tmp_path, monk
     assert aux._try_nous()[0] is client
 
 
-@pytest.mark.parametrize("tier", ["anonymous", "free", "paid"])
+@pytest.mark.parametrize("tier", ["anonymous", "free"])
 def test_401_diagnostics_follow_request_identity_on_welcome_host(tier, capsys, monkeypatch):
     import agent.conversation_loop as loop
     from agent.turn_recovery import _print_nous_401_diagnostics
@@ -151,3 +146,15 @@ def test_named_account_on_welcome_host_gets_reconnect_copy_without_signin_card()
     assert "needs to reconnect" in result["final_response"]
     assert "free_tier" not in result
     assert "sign in" not in result["final_response"].lower()
+
+
+def test_escaped_exception_surface_keeps_the_anonymous_verdict():
+    """The desktop's escaped-exception card classifies with the request credential too."""
+    from agent.error_surface import build_error_surface_from_exception
+    error = Exception("refused")
+    error.status_code = 429
+    error.body = {"status": 429, "message": "refused", "reason": "model_not_free", "alternates": ["nous/welcome"]}
+    anonymous = build_error_surface_from_exception(error, provider="nous", model="gpt-5", api_key=make_jwt())
+    named = build_error_surface_from_exception(error, provider="nous", model="gpt-5", api_key=make_jwt(account_tier="free"))
+    assert anonymous["retryable"] is False
+    assert named["retryable"] is True

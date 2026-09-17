@@ -1023,6 +1023,59 @@ export function setSessionOwnerHint(sessionId: string, route: SessionOwnerRoute)
   }
 }
 
+/** Re-key exact local routes after a profile directory rename. Connection ids
+ * stay stable; only the backend profile identity moves. */
+export function migrateSessionOwnerHintsProfile(oldName: string, newName: string, connectionId: string): void {
+  const oldProfile = oldName.trim() || 'default'
+  const newProfile = newName.trim() || 'default'
+
+  // Another renderer may have persisted a newer route since this window
+  // hydrated. Merge that shared truth before re-keying so this migration
+  // cannot erase hints it has never seen.
+  hydrateSessionOwnerHints()
+
+  const entries = [...sessionOwnerHints.values()]
+
+  if (
+    oldProfile === newProfile ||
+    !entries.some(
+      entry =>
+        entry.route.connectionId === connectionId &&
+        (entry.route.profile === oldProfile || entry.route.targetProfile === oldProfile)
+    )
+  ) {
+    return
+  }
+
+  sessionOwnerHints.clear()
+
+  for (const entry of entries) {
+    const matchesConnection = entry.route.connectionId === connectionId
+
+    rememberSessionOwnerHint(entry.id, {
+      ...entry.route,
+      profile: matchesConnection && entry.route.profile === oldProfile ? newProfile : entry.route.profile,
+      ...(matchesConnection && entry.route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+    })
+  }
+
+  persistSessionOwnerHints()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('hermes:profile-renamed', event => {
+    const detail = (event as CustomEvent<{ connectionId?: unknown; newName?: unknown; oldName?: unknown }>).detail
+
+    if (
+      typeof detail?.connectionId === 'string' &&
+      typeof detail.oldName === 'string' &&
+      typeof detail.newName === 'string'
+    ) {
+      migrateSessionOwnerHintsProfile(detail.oldName, detail.newName, detail.connectionId)
+    }
+  })
+}
+
 /** Drop every hint naming `connectionId` — the registry no longer has it, so
  *  nothing can dial that route again (fail-closed would otherwise pin those
  *  sessions to a dead source forever). */

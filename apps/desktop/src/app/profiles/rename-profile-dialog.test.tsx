@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { renameProfile } from '@/hermes'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import { stageProfileRenameState } from '@/store/profile-rename-state'
 
 import { RenameProfileDialog } from './rename-profile-dialog'
 
@@ -25,6 +26,23 @@ vi.mock('@/store/gateway', () => ({
   retireLocalProfileGateways: vi.fn()
 }))
 
+vi.mock('@/store/profile-rename-state', () => ({
+  cancelProfileRenameState: vi.fn(),
+  completeProfileRenameState: vi.fn(),
+  stageProfileRenameState: vi.fn()
+}))
+
+vi.mock('@/store/session', () => ({
+  $connection: {
+    get: () => ({
+      baseUrl: 'https://gateway-a.example',
+      connectionId: 'gateway-a',
+      mode: 'remote',
+      profile: 'default'
+    })
+  }
+}))
+
 it('retires the old-name local gateways before issuing the rename', async () => {
   const order: string[] = []
 
@@ -44,6 +62,11 @@ it('retires the old-name local gateways before issuing the rename', async () => 
 
   await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed'))
   expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
+  expect(stageProfileRenameState).toHaveBeenCalledWith('selena', 'renamed', {
+    connectionId: 'local',
+    oldNavigationSuffix: '',
+    newNavigationSuffix: ''
+  })
   expect(order).toEqual(['retire', 'rename'])
 })
 
@@ -56,4 +79,20 @@ it('does not retire gateways when validation rejects the submit', async () => {
   await waitFor(() => expect(screen.getByText('Name is required.')).toBeTruthy())
   expect(retireLocalProfileGateways).not.toHaveBeenCalled()
   expect(renameProfile).not.toHaveBeenCalled()
+})
+
+it('does not borrow active navigation scope when renaming an inactive profile', async () => {
+  const scope = { connectionId: 'gateway-a', profile: 'work' }
+
+  render(<RenameProfileDialog currentName="work" onClose={vi.fn()} open scope={scope} />)
+
+  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'personal' } })
+  fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+
+  await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('work', 'personal', scope))
+  expect(stageProfileRenameState).toHaveBeenCalledWith('work', 'personal', {
+    connectionId: 'gateway-a',
+    oldNavigationSuffix: null,
+    newNavigationSuffix: null
+  })
 })

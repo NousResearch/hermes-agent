@@ -15,9 +15,16 @@ import { Field, FieldHint } from '@/components/ui/field'
 import { SanitizedInput } from '@/components/ui/sanitized-input'
 import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { activeConnectionScopeSuffix, connectionScopeSuffix } from '@/lib/connection-scoped'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import {
+  cancelProfileRenameState,
+  completeProfileRenameState,
+  stageProfileRenameState
+} from '@/store/profile-rename-state'
+import { $connection } from '@/store/session'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -85,7 +92,44 @@ export function RenameProfileDialog({
     setStatus('saving')
     setError(null)
 
+    const connection = $connection.get()
+
+    const scopedConnectionId = scope && typeof scope === 'object' ? scope.connectionId : undefined
+    const connectionId = scopedConnectionId?.trim() || 'local'
+
+    const ownsActiveNavigation =
+      (connection?.connectionId?.trim() || 'local') === connectionId &&
+      (connection?.profile?.trim().toLowerCase() || 'default') === currentName.trim().toLowerCase()
+
+    // Local profile navigation always uses the bare connection suffix, even
+    // when this window currently shows another profile or a remote backend.
+    // An inactive remote profile stays unknown because its base URL is not
+    // recoverable from the profile-only rename scope.
+    const oldNavigationSuffix = ownsActiveNavigation
+      ? activeConnectionScopeSuffix()
+      : scope == null
+        ? ''
+        : null
+
+    const newNavigationSuffix = ownsActiveNavigation
+      ? connectionScopeSuffix(connection ? { ...connection, profile: trimmed } : null)
+      : scope == null
+        ? ''
+        : null
+
+    const renameStateScope = {
+      connectionId,
+      oldNavigationSuffix,
+      newNavigationSuffix
+    }
+
+    let renameAttemptId: string | undefined
+
     try {
+      if (!isDefault) {
+        renameAttemptId = stageProfileRenameState(currentName, trimmed, renameStateScope)
+      }
+
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
@@ -95,10 +139,19 @@ export function RenameProfileDialog({
       }
 
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+
+      if (!isDefault) {
+        completeProfileRenameState(currentName, trimmed, renameStateScope, renameAttemptId)
+      }
+
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)
     } catch (err) {
+      if (!isDefault && renameAttemptId) {
+        cancelProfileRenameState(currentName, trimmed, renameStateScope, renameAttemptId)
+      }
+
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedRename)
     }

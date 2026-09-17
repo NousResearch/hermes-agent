@@ -17,8 +17,10 @@ import {
   respondToApprovalAction
 } from '@/store/native-notifications'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { recoverPendingProfileRenameState } from '@/store/profile-rename-state'
 import { openFolderAsProject } from '@/store/projects'
 import {
+  $connection,
   $selectedStoredSessionId,
   getRememberedRoute,
   getRememberedSessionId,
@@ -114,6 +116,11 @@ export function useDesktopIntegrations({
     if (!profileReady || isHudWindow() || isBrowserWindow()) {
       return
     }
+
+    // A primary-profile rename reloads this renderer before the initiating
+    // request promise resumes. Finish its staged local presentation-state move
+    // before remembered navigation or persisted tabs can route by the old name.
+    recoverPendingProfileRenameState(activeProfile, $connection.get()?.connectionId?.trim() || 'local')
 
     if (!restoredRef.current) {
       // Only cold-start navigation at the default route is replaceable; a deep

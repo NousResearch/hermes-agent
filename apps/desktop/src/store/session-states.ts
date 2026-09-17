@@ -1034,6 +1034,99 @@ function saveTiles(tiles: SessionTile[]) {
   $sessionTiles.set(tiles)
 }
 
+/** Move persisted/open tabs with a renamed profile instead of leaving their
+ * owner routes pointed at a backend name that no longer exists. */
+export function migrateSessionTilesProfile(oldName: string, newName: string, connectionId: string): void {
+  const oldProfile = normalizeProfileKey(oldName)
+  const newProfile = normalizeProfileKey(newName)
+
+  if (oldProfile === newProfile) {
+    return
+  }
+
+  // Shared storage may contain tiles opened by another renderer after this
+  // window hydrated. Reload before re-keying so a stale window cannot clobber
+  // those newer tabs when it receives the rename broadcast.
+  const latestTiles = loadTilesByProfile()
+
+  for (const profile of Object.keys(tilesByProfile)) {
+    delete tilesByProfile[profile]
+  }
+
+  Object.assign(tilesByProfile, latestTiles)
+
+  const belongsToRenamedProfile = (tile: StoredTile): boolean => {
+    const route = tile.ownerRoute
+
+    return route
+      ? route.connectionId === connectionId &&
+          (tile.ownerProfile === oldProfile || route.profile === oldProfile || route.targetProfile === oldProfile)
+      : connectionId === LOCAL_CONNECTION_ID && tile.ownerProfile === oldProfile
+  }
+
+  const migrateTile = (tile: StoredTile): StoredTile => {
+    const route = tile.ownerRoute
+
+    if (!belongsToRenamedProfile(tile)) {
+      return tile
+    }
+
+    return {
+      ...tile,
+      ...(tile.ownerProfile === oldProfile ? { ownerProfile: newProfile } : {}),
+      ...(route
+        ? {
+            ownerRoute: {
+              ...route,
+              profile: route.profile === oldProfile ? newProfile : route.profile,
+              ...(route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+            }
+          }
+        : {})
+    }
+  }
+
+  const oldTiles = tilesByProfile[oldProfile] ?? []
+  const staying = oldTiles.filter(tile => !belongsToRenamedProfile(tile))
+  const moved = [...(tilesByProfile[newProfile] ?? []), ...oldTiles.filter(belongsToRenamedProfile).map(migrateTile)]
+
+  if (moved.length > 0) {
+    tilesByProfile[newProfile] = moved
+  }
+
+  if (staying.length > 0) {
+    tilesByProfile[oldProfile] = staying
+  } else {
+    delete tilesByProfile[oldProfile]
+  }
+
+  if (tilesByProfile[BOTS_TILE_BUCKET]) {
+    tilesByProfile[BOTS_TILE_BUCKET] = tilesByProfile[BOTS_TILE_BUCKET].map(migrateTile)
+  }
+
+  persistTiles()
+
+  const activeConnectionId = $connection.get()?.connectionId ?? LOCAL_CONNECTION_ID
+
+  if (activeConnectionId === connectionId && [oldProfile, newProfile].includes(profileKey())) {
+    $sessionTiles.set([...(tilesByProfile[newProfile] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('hermes:profile-renamed', event => {
+    const detail = (event as CustomEvent<{ connectionId?: unknown; newName?: unknown; oldName?: unknown }>).detail
+
+    if (
+      typeof detail?.connectionId === 'string' &&
+      typeof detail.oldName === 'string' &&
+      typeof detail.newName === 'string'
+    ) {
+      migrateSessionTilesProfile(detail.oldName, detail.newName, detail.connectionId)
+    }
+  })
+}
+
 // Profile switch: surface the new profile's tiles with runtime ids cleared so
 // they re-resume against the now-current gateway. (Fires immediately on
 // subscribe; harmless — the init value already matches.) A secondary window

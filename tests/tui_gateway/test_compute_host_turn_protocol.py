@@ -116,6 +116,35 @@ def test_turn_start_streams_deltas_then_turn_end_with_history_identity(turn_env)
     assert "ended_ns" in end
 
 
+def test_turn_start_hands_pre_persisted_user_to_the_worker_session(turn_env, monkeypatch):
+    out = io.StringIO()
+    host = ComputeHost(stdout=out, heartbeat_secs=0)
+    sid = "durable"
+    marker = {"role": "user", "content": "keep this", "timestamp": 123.0, "_db_persisted": True}
+    session = _session(_agent(["done"]))
+    seen = []
+    server._sessions[sid] = session
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, worker_session, _text, **_kwargs: seen.append(worker_session["_prepersisted_user_message"]),
+    )
+    try:
+        host._run_real_turn({
+            "type": "turn.start",
+            "sid": sid,
+            "request_id": "turn",
+            "prompt": "keep this",
+            "prepersisted_user_message": marker,
+        })
+    finally:
+        server._sessions.pop(sid, None)
+        host.close()
+
+    assert seen == [marker]
+    assert "_prepersisted_user_message" not in session
+
+
 def test_turn_start_without_sid_is_a_turn_error(turn_env):
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)

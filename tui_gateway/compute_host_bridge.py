@@ -54,6 +54,7 @@ def _compute_host_turn_frame(
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
         attached_images = list(image_paths if image_paths is not None else session.get("attached_images", []))
+        prepersisted_user = session.get("_prepersisted_user_message")
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
@@ -67,6 +68,7 @@ def _compute_host_turn_frame(
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
         "auth_user_id": _session_auth_user_id(session),
+        **({"prepersisted_user_message": prepersisted_user} if isinstance(prepersisted_user, dict) else {}),
         "queued_prompt_generation": queued_prompt_generation}
 
 
@@ -228,9 +230,15 @@ def _submit_prompt_to_compute_host(
     # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
     # dispatch lifetime token, installed before a fast child can send activity.
     turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
+    transferred_user = frame.get("prepersisted_user_message")
     with session["history_lock"]:
         session["_compute_host_turn_id"] = turn_id
         session.pop("_compute_host_activity_ns", None)
+        if (
+            isinstance(transferred_user, dict)
+            and session.get("_prepersisted_user_message") is transferred_user
+        ):
+            session.pop("_prepersisted_user_message", None)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure via the callback before re-raising;
@@ -249,6 +257,11 @@ def _submit_prompt_to_compute_host(
             if session.get("_compute_host_turn_id") == turn_id:
                 session.pop("_compute_host_turn_id", None)
                 session.pop("_compute_host_activity_ns", None)
+            if (
+                isinstance(transferred_user, dict)
+                and "_prepersisted_user_message" not in session
+            ):
+                session["_prepersisted_user_message"] = transferred_user
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
         session["_compute_host_active"] = True

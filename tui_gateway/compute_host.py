@@ -221,13 +221,23 @@ class ComputeHost:
             session = self._ensure_server_session(server, frame)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
+            prepersisted_user = frame.get("prepersisted_user_message")
+            if isinstance(prepersisted_user, dict):
+                session["_prepersisted_user_message"] = dict(prepersisted_user)
+
+            def clear_unconsumed_user() -> None:
+                with session["history_lock"]:
+                    session.pop("_prepersisted_user_message", None)
+
             with session["history_lock"]:
                 queued_gen = frame.get("queued_prompt_generation")
                 current_gen = int(session.get("_queued_prompt_generation", 0))
                 if queued_gen is not None and current_gen != int(queued_gen):
+                    session.pop("_prepersisted_user_message", None)
                     self._reply("turn.end", sid, request_id, interrupted=True, ended_ns=now_ns())
                     return
                 if session.get("running"):
+                    session.pop("_prepersisted_user_message", None)
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
@@ -249,6 +259,7 @@ class ComputeHost:
                     run_thread.join(timeout=1.0)
                     if run_thread.is_alive() and frame.get("turn_id"):
                         self._emit_turn_activity(sid, session, frame["turn_id"], turn_started_at)
+            clear_unconsumed_user()
             with session["history_lock"]:
                 meta = _history_meta(session)
                 interrupted = bool(session.get("_turn_cancel_requested"))
@@ -264,6 +275,7 @@ class ComputeHost:
                 session = server._sessions.get(sid)
                 if session is not None:
                     with session.get("history_lock", threading.Lock()):
+                        session.pop("_prepersisted_user_message", None)
                         session["running"] = False
                         server._clear_inflight_turn(session)
             self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))

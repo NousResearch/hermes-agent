@@ -82,6 +82,10 @@ class TestGenerateTitle:
             ("修复登录按钮", "修复登录按钮"),
             ("42", "42"),
             ('```json\n{"title": "Fix login button"', "Fix login button"),
+            # Bracket/brace-prefixed prose and a literal fence inside a sentence are titles, not
+            # truncated JSON — a provider that ignores response_format still gets its title kept.
+            ("[WIP] Fix login flow", "[WIP] Fix login flow"),
+            ("Fix ``` rendering in chat", "Fix ``` rendering in chat"),
         ],
     )
     def test_truncated_structured_output_never_becomes_the_title(self, content, expected):

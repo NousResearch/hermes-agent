@@ -245,9 +245,10 @@ def _extract_json_title(raw: str) -> Optional[str]:
 def _is_truncated_structured_output(raw: str) -> bool:
     """Structured output the token cap cut before its closing quote/brace/fence (``{"title``, a bare fence opener).
 
-    Checked only after the JSON paths failed, and on structure alone (a leading brace/bracket, an
-    unclosed fence) so quoted or *emphasized* prose titles are untouched (#83903)."""
-    return raw.count("```") % 2 == 1 or raw.startswith(("{", "["))
+    Checked only after the JSON paths failed, and on structure alone (a JSON-shaped opener, a fence
+    opener that is never closed) so quoted, *emphasized* or ``[WIP]``-prefixed prose titles are
+    untouched (#83903)."""
+    return raw.startswith(('{"', '["', "[{")) or (raw.startswith("```") and raw.count("```") % 2 == 1)
 
 
 def _extract_title_text(content: str) -> str:

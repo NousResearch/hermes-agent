@@ -167,7 +167,11 @@ class _PathReadBudget:
             warn = (handles > _HANDLES_PER_PATH_WARN and not self._duplicate_handles_warned)
             if warn:
                 self._duplicate_handles_warned = True
-                creation_sites = ", ".join(sorted(member._creation_site for member in self._members))
+                # Same population as `handles`: the read-only attaches the count skips
+                # must not reappear in the list, or the list no longer explains the number.
+                creation_sites = ", ".join(sorted(
+                    member._creation_site for member in self._members if not member.read_only
+                ))
         if warn:
             # Writer connections cannot be capped; the only bound is not opening
             # redundant handles, so make the duplicate visible before it's an incident.

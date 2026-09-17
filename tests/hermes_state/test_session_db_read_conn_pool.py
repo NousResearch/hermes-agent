@@ -651,9 +651,14 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     def open_extra_handle():
         return SessionDB(db_path=db.db_path)
 
+    def open_read_only_attach():
+        return SessionDB(db_path=db.db_path, read_only=True)
+
     extra = []
     try:
         with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            # A read-only attach is outside the count (#110934); it must be outside the list too.
+            extra.append(open_read_only_attach())
             for _ in range(_HANDLES_PER_PATH_WARN + 1):
                 extra.append(open_extra_handle())
         warnings = [
@@ -668,6 +673,7 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
         # site must still be available when another caller triggers the warning.
         assert re.search(rf"{re.escape(__name__)}\.db:\d+", warning)
         assert len(re.findall(rf"{re.escape(__name__)}\.open_extra_handle:\d+", warning)) == _HANDLES_PER_PATH_WARN
+        assert "open_read_only_attach" not in warning, "listed a holder the count excludes"
     finally:
         for d in extra:
             d.close()

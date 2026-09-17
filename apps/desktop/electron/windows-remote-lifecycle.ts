@@ -88,7 +88,7 @@ function buildWindowsProbeScript(explicitHermesPath = '') {
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
     'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
-  ].join(';')
+  ].join('\n')
 }
 
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
@@ -127,9 +127,9 @@ public static class HermesMarkerNoFollow {
     '$parent=$item.Parent.FullName;if(-not $parent -or $parent -eq $current){break};$current=$parent;$first=$false',
     '}',
     '}',
-    `$home=${psLiteral(hermesHome)}`,
-    '$installRoot=$home',
-    '$parent=Split-Path -Parent $home',
+    `$hermesDir=${psLiteral(hermesHome)}`,
+    '$installRoot=$hermesDir',
+    '$parent=Split-Path -Parent $hermesDir',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
     '$result="UNCERTAIN"',
@@ -157,7 +157,7 @@ public static class HermesMarkerNoFollow {
     '}',
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
-  ].join(';')
+  ].join('\n')
 }
 
 /**
@@ -216,7 +216,7 @@ function buildWindowsListProfilesScript() {
     '$profilesDir=Join-Path $hermesHome "profiles"',
     'if(-not (Test-Path -LiteralPath $profilesDir -PathType Container)){exit 0}',
     'Get-ChildItem -LiteralPath $profilesDir -Directory | Select-Object -ExpandProperty Name'
-  ].join(';')
+  ].join('\n')
 }
 
 async function listWindowsRemoteHermesProfiles(ssh): Promise<string[]> {
@@ -322,9 +322,9 @@ function buildAtomicWindowsSpawnScript(runtime, reservation: any = {}, backendJs
 
   return [
     '$ErrorActionPreference="Stop"',
-    `$home=${psLiteral(runtime.hermesHome)}`,
-    '$installRoot=$home',
-    '$parent=Split-Path -Parent $home',
+    `$hermesDir=${psLiteral(runtime.hermesHome)}`,
+    '$installRoot=$hermesDir',
+    '$parent=Split-Path -Parent $hermesDir',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
     '$mutexPath=$marker+".mutex"',
@@ -351,7 +351,7 @@ function buildAtomicWindowsSpawnScript(runtime, reservation: any = {}, backendJs
     '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'
   ]
     .filter(line => line !== '')
-    .join(';')
+    .join('\n')
 }
 
 async function atomicWindowsSpawn(ssh, runtime, reservation: any = {}, backendJson = '') {
